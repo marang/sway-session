@@ -6,6 +6,7 @@ max_art_columns = 220
 title_reserve_columns = 18
 showcase_hold_frames = 260
 showcase_blend_frames = 75
+detect_child_process = true
 
 [showcase]
 presets = [

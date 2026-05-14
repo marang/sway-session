@@ -44,6 +44,7 @@ max_art_columns = 220
 title_reserve_columns = 18
 showcase_hold_frames = 260
 showcase_blend_frames = 75
+detect_child_process = true
 
 [showcase]
 presets = [
@@ -106,6 +107,7 @@ var (
 		TitleReserveColumns: defaultTitleReserve,
 		ShowcaseHoldFrames:  defaultShowcaseHold,
 		ShowcaseBlendFrames: defaultShowcaseBlend,
+		DetectChildProcess:  true,
 	}
 
 	auroraBars        = []rune("▁▂▃▄▅▆▇█")
@@ -176,6 +178,7 @@ type Settings struct {
 	TitleReserveColumns int
 	ShowcaseHoldFrames  int
 	ShowcaseBlendFrames int
+	DetectChildProcess  bool
 }
 
 type Config struct {
@@ -194,6 +197,7 @@ type ConfigSettings struct {
 	TitleReserveColumns *int     `toml:"title_reserve_columns"`
 	ShowcaseHoldFrames  *int     `toml:"showcase_hold_frames"`
 	ShowcaseBlendFrames *int     `toml:"showcase_blend_frames"`
+	DetectChildProcess  *bool    `toml:"detect_child_process"`
 }
 
 type ConfigShowcase struct {
@@ -233,6 +237,7 @@ type Node struct {
 	ID               int64            `json:"id"`
 	Name             string           `json:"name"`
 	Type             string           `json:"type"`
+	PID              int              `json:"pid"`
 	Layout           string           `json:"layout"`
 	AppID            *string          `json:"app_id"`
 	Window           *int64           `json:"window"`
@@ -254,6 +259,11 @@ type Node struct {
 type nodeWithParent struct {
 	node   *Node
 	parent *Node
+}
+
+type cachedProcessLabel struct {
+	label     string
+	checkedAt time.Time
 }
 
 type IPC struct {
@@ -988,6 +998,9 @@ func applyConfig(config Config) {
 	if config.Settings.ShowcaseBlendFrames != nil {
 		settings.ShowcaseBlendFrames = *config.Settings.ShowcaseBlendFrames
 	}
+	if config.Settings.DetectChildProcess != nil {
+		settings.DetectChildProcess = *config.Settings.DetectChildProcess
+	}
 	applyGlyphConfig(config.Glyphs)
 	for needle, icon := range config.Icons {
 		iconRules = append([]struct {
@@ -1043,18 +1056,20 @@ func filterKnownPresets(names []string) []string {
 }
 
 type TitleAnimator struct {
-	ipc         *IPC
-	lastFormats map[int64]string
-	windowsByID map[int64]nodeWithParent
-	focusedID   int64
-	hasFocus    bool
+	ipc           *IPC
+	lastFormats   map[int64]string
+	processLabels map[int]cachedProcessLabel
+	windowsByID   map[int64]nodeWithParent
+	focusedID     int64
+	hasFocus      bool
 }
 
 func NewTitleAnimator(ipc *IPC) *TitleAnimator {
 	return &TitleAnimator{
-		ipc:         ipc,
-		lastFormats: map[int64]string{},
-		windowsByID: map[int64]nodeWithParent{},
+		ipc:           ipc,
+		lastFormats:   map[int64]string{},
+		processLabels: map[int]cachedProcessLabel{},
+		windowsByID:   map[int64]nodeWithParent{},
 	}
 }
 
@@ -1073,6 +1088,7 @@ func (animator *TitleAnimator) RefreshTree(phase int) {
 
 	windows := []nodeWithParent{}
 	newWindows := map[int64]nodeWithParent{}
+	livePIDs := map[int]bool{}
 	animator.focusedID = 0
 	animator.hasFocus = false
 	for _, item := range all {
@@ -1081,6 +1097,9 @@ func (animator *TitleAnimator) RefreshTree(phase int) {
 		}
 		windows = append(windows, item)
 		newWindows[item.node.ID] = item
+		if item.node.PID > 0 {
+			livePIDs[item.node.PID] = true
+		}
 		if item.node.Focused {
 			animator.focusedID = item.node.ID
 			animator.hasFocus = true
@@ -1093,14 +1112,43 @@ func (animator *TitleAnimator) RefreshTree(phase int) {
 			delete(animator.lastFormats, id)
 		}
 	}
+	for pid := range animator.processLabels {
+		if !livePIDs[pid] {
+			delete(animator.processLabels, pid)
+		}
+	}
 	for _, item := range windows {
 		animator.ApplyNode(item.node, item.parent, phase)
 	}
 }
 
+func (animator *TitleAnimator) WindowLabel(node *Node) string {
+	label := appLabel(node)
+	if !settings.DetectChildProcess || node.PID <= 0 || !isTerminalWindow(node) {
+		return label
+	}
+	child := animator.CachedChildProcessLabel(node.PID)
+	if child == "" {
+		return label
+	}
+	return label + " › " + truncateColumns(child, 18)
+}
+
+func (animator *TitleAnimator) CachedChildProcessLabel(pid int) string {
+	if cached, ok := animator.processLabels[pid]; ok && time.Since(cached.checkedAt) < 750*time.Millisecond {
+		return cached.label
+	}
+	label := childProcessLabel(pid)
+	animator.processLabels[pid] = cachedProcessLabel{
+		label:     label,
+		checkedAt: time.Now(),
+	}
+	return label
+}
+
 func (animator *TitleAnimator) ApplyNode(node *Node, parent *Node, phase int) {
 	icon := iconFor(node)
-	label := appLabel(node)
+	label := animator.WindowLabel(node)
 	statusText := visibleStatusText(node)
 	visiblePrefix := fmt.Sprintf("%s %s%s: ", icon, label, statusText)
 	title := node.Name

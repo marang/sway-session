@@ -102,6 +102,7 @@ frame-based animations.
 [settings]
 fps = 25
 motion = 0.22
+detect_child_process = true
 
 [showcase]
 presets = ["aurora", "spectrum", "radar", "comet"]
@@ -125,6 +126,9 @@ Run with a specific config:
 ```sh
 sway-title-animator --config ~/.config/sway-title-animator/config.toml
 ```
+
+With `detect_child_process = true`, terminal windows can include the active
+child process in the label, for example `Alacritty › codex`.
 
 ## Notes
 

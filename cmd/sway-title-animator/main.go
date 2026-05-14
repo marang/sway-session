@@ -1309,16 +1309,6 @@ type statusBadge struct {
 
 func statusBadges(node *Node) []statusBadge {
 	badges := []statusBadge{}
-	if node.Shell != "" {
-		shell := node.Shell
-		switch shell {
-		case "xdg_shell":
-			shell = "wl"
-		case "xwayland":
-			shell = "x11"
-		}
-		badges = append(badges, statusBadge{text: shell, color: "#666666"})
-	}
 	if node.Urgent {
 		badges = append(badges, statusBadge{text: "!", color: "#cd2d2d", weight: "bold"})
 	}

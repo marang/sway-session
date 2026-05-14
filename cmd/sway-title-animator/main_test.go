@@ -42,6 +42,14 @@ func TestAnimationFrameKeyCoalescesStillMotionFrames(t *testing.T) {
 	}
 }
 
+func TestVisibleStatusTextDoesNotExposeWaylandShell(t *testing.T) {
+	node := &Node{Shell: "xdg_shell"}
+
+	if status := visibleStatusText(node); status != "" {
+		t.Fatalf("expected shell protocol to stay hidden, got %q", status)
+	}
+}
+
 func TestSelectChildProcessLabelPrefersForegroundProcessGroupLeader(t *testing.T) {
 	children := map[int][]int{
 		1: {2},

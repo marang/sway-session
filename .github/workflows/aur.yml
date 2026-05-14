@@ -47,23 +47,21 @@ jobs:
         run: |
           sudo -u build makepkg --printsrcinfo > .SRCINFO
 
-      - name: Configure SSH for AUR
-        env:
-          AUR_PRIVATE_KEY: ${{ secrets.AUR_PRIVATE_KEY }}
+      - name: Prepare SSH agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.AUR_PRIVATE_KEY }}
+
+      - name: Trust AUR host key
         run: |
-          install -m 700 -d "$HOME/.ssh"
-          printf '%s\n' "$AUR_PRIVATE_KEY" | tr -d '\r' > "$HOME/.ssh/aur"
-          chmod 600 "$HOME/.ssh/aur"
-          ssh-keyscan -T 30 -t rsa,ecdsa,ed25519 aur.archlinux.org > "$HOME/.ssh/known_hosts"
-          ssh-keygen -F aur.archlinux.org -f "$HOME/.ssh/known_hosts" >/dev/null
-          chmod 644 "$HOME/.ssh/known_hosts"
-          {
-            printf 'GIT_SSH_COMMAND<<EOF\n'
-            printf 'ssh -i %s/.ssh/aur -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=%s/.ssh/known_hosts\n' "$HOME" "$HOME"
-            printf 'EOF\n'
-          } >> "$GITHUB_ENV"
+          install -m 700 -d ~/.ssh
+          ssh-keyscan -t ed25519 aur.archlinux.org >> ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
 
       - name: Clone AUR repo
+        env:
+          GIT_SSH_COMMAND: "ssh -o StrictHostKeyChecking=accept-new"
+          SSH_AUTH_SOCK: ${{ env.SSH_AUTH_SOCK }}
         run: |
           git clone ssh://aur@aur.archlinux.org/${AUR_REPO}.git aur
 

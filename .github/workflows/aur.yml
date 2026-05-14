@@ -51,15 +51,22 @@ jobs:
         env:
           AUR_PRIVATE_KEY: ${{ secrets.AUR_PRIVATE_KEY }}
         run: |
-          install -m 700 -d ~/.ssh
-          printf '%s\n' "$AUR_PRIVATE_KEY" | tr -d '\r' > ~/.ssh/aur
-          chmod 600 ~/.ssh/aur
-          ssh-keyscan -t ed25519 aur.archlinux.org >> ~/.ssh/known_hosts
-          chmod 644 ~/.ssh/known_hosts
+          install -m 700 -d "$HOME/.ssh"
+          printf '%s\n' "$AUR_PRIVATE_KEY" | tr -d '\r' > "$HOME/.ssh/aur"
+          chmod 600 "$HOME/.ssh/aur"
+          ssh-keyscan aur.archlinux.org > "$HOME/.ssh/known_hosts"
+          ssh-keygen -F aur.archlinux.org -f "$HOME/.ssh/known_hosts" >/dev/null
+          chmod 644 "$HOME/.ssh/known_hosts"
+          {
+            printf 'Host aur.archlinux.org\n'
+            printf '  IdentityFile %s/.ssh/aur\n' "$HOME"
+            printf '  IdentitiesOnly yes\n'
+            printf '  StrictHostKeyChecking yes\n'
+            printf '  UserKnownHostsFile %s/.ssh/known_hosts\n' "$HOME"
+          } > "$HOME/.ssh/config"
+          chmod 600 "$HOME/.ssh/config"
 
       - name: Clone AUR repo
-        env:
-          GIT_SSH_COMMAND: "ssh -i ~/.ssh/aur -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes"
         run: |
           git clone ssh://aur@aur.archlinux.org/${AUR_REPO}.git aur
 
@@ -69,7 +76,6 @@ jobs:
           GIT_AUTHOR_EMAIL: ${{ secrets.AUR_COMMIT_EMAIL || 'github-actions[bot]@users.noreply.github.com' }}
           GIT_COMMITTER_NAME: ${{ secrets.AUR_COMMIT_NAME || 'github-actions[bot]' }}
           GIT_COMMITTER_EMAIL: ${{ secrets.AUR_COMMIT_EMAIL || 'github-actions[bot]@users.noreply.github.com' }}
-          GIT_SSH_COMMAND: "ssh -i ~/.ssh/aur -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes"
         run: |
           ver="${{ steps.v.outputs.version }}"
           cp PKGBUILD .SRCINFO aur/

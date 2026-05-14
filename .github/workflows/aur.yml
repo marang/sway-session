@@ -47,21 +47,19 @@ jobs:
         run: |
           sudo -u build makepkg --printsrcinfo > .SRCINFO
 
-      - name: Prepare SSH agent
-        uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.AUR_PRIVATE_KEY }}
-
-      - name: Trust AUR host key
+      - name: Configure SSH for AUR
+        env:
+          AUR_PRIVATE_KEY: ${{ secrets.AUR_PRIVATE_KEY }}
         run: |
           install -m 700 -d ~/.ssh
+          printf '%s\n' "$AUR_PRIVATE_KEY" | tr -d '\r' > ~/.ssh/aur
+          chmod 600 ~/.ssh/aur
           ssh-keyscan -t ed25519 aur.archlinux.org >> ~/.ssh/known_hosts
           chmod 644 ~/.ssh/known_hosts
 
       - name: Clone AUR repo
         env:
-          GIT_SSH_COMMAND: "ssh -o StrictHostKeyChecking=accept-new"
-          SSH_AUTH_SOCK: ${{ env.SSH_AUTH_SOCK }}
+          GIT_SSH_COMMAND: "ssh -i ~/.ssh/aur -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes"
         run: |
           git clone ssh://aur@aur.archlinux.org/${AUR_REPO}.git aur
 
@@ -71,6 +69,7 @@ jobs:
           GIT_AUTHOR_EMAIL: ${{ secrets.AUR_COMMIT_EMAIL || 'github-actions[bot]@users.noreply.github.com' }}
           GIT_COMMITTER_NAME: ${{ secrets.AUR_COMMIT_NAME || 'github-actions[bot]' }}
           GIT_COMMITTER_EMAIL: ${{ secrets.AUR_COMMIT_EMAIL || 'github-actions[bot]@users.noreply.github.com' }}
+          GIT_SSH_COMMAND: "ssh -i ~/.ssh/aur -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes"
         run: |
           ver="${{ steps.v.outputs.version }}"
           cp PKGBUILD .SRCINFO aur/

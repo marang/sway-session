@@ -9,12 +9,6 @@ in Sway's `tabbed` and `stacked` layouts.
 This is a Linux/Wayland tool. It talks directly to Sway's IPC socket, so it is
 not useful on macOS or Windows.
 
-```text
-▣ Alacritty wl: shell ▁▂▃▄▅▆▇█▇▆▅▄▃▂▁
-🌐 firefox wl: GitHub ╶◜╴──┄──═●═──┄──
-♪ riotbox wl: session ╱╱╱╳╲╲╲╳╱╱╱╳╲╲
-```
-
 ## Demo
 
 Built-in animation presets:
@@ -53,9 +47,6 @@ Make sure `~/.local/bin` is in your `PATH`.
 Add this to your Sway config:
 
 ```conf
-title_align left
-titlebar_border_thickness 1
-titlebar_padding 8 3
 show_marks yes
 exec_always --no-startup-id sway-title-animator --replace --preset showcase --fps 25
 ```

@@ -48,8 +48,8 @@ detect_child_process = true
 
 [showcase]
 presets = [
+  "loom",
   "aurora",
-  "lift",
   "spectrum",
   "radar",
   "constellation",
@@ -77,14 +77,17 @@ alacritty = "▣"
 firefox = "🌐"
 riotbox = "♪"
 
-[animation.lift]
+[animation.ribbon]
 fill = true
 frames = [
-  "▁▁▂▃▄▅▆▇█▇▆▅▄▃▂▁",
-  "▁▂▃▄▅▆▇█▇▆▅▄▃▂▁▁",
-  "▂▃▄▅▆▇█▇▆▅▄▃▂▁▁▁",
-  "▃▄▅▆▇█▇▆▅▄▃▂▁▁▁▂",
-  "▄▅▆▇█▇▆▅▄▃▂▁▁▁▂▃",
+  "··░░▒▒▓▓▒▒░░··  ",
+  "·░░▒▒▓▓▒▒░░··  ·",
+  "░░▒▒▓▓▒▒░░··  ··",
+  "░▒▒▓▓▒▒░░··  ··░",
+  "▒▒▓▓▒▒░░··  ··░░",
+  "▒▓▓▒▒░░··  ··░░▒",
+  "▓▓▒▒░░··  ··░░▒▒",
+  "▓▒▒░░··  ··░░▒▒▓",
 ]
 
 [animation.shutter]
@@ -760,6 +763,51 @@ func braidArt(width int, phase int) string {
 	return string(chars)
 }
 
+func loomArt(width int, phase int) string {
+	width = artWidth(width)
+	if width == 0 {
+		return ""
+	}
+	if width < 8 {
+		return shortFrame(width, phase, []string{"≈⌁░", "░≋▒", "▒⌁▓", "▓✦▒", "▒≋░", "░⌁≈"})
+	}
+
+	chars := make([]rune, 0, width)
+	t := float64(phase) * 0.041
+	knotA := float64(width) * (0.24 + 0.13*math.Sin(t*0.71))
+	knotB := float64(width) * (0.52 + 0.17*math.Sin(t*0.53+1.9))
+	knotC := float64(width) * (0.79 + 0.10*math.Sin(t*0.67+4.1))
+
+	for index := range width {
+		x := float64(index)
+		warp := math.Sin(x*0.17+t) + math.Sin(x*0.043-t*0.82+math.Sin(t*0.31)*2.2)
+		weft := math.Sin(x*0.31-t*1.17) * math.Cos(x*0.071+t*0.47)
+		moire := (math.Sin(warp*1.7+weft*1.1) + 1.0) * 0.5
+		softGrain := pseudoRandom(index, phase/9, 12.4) * 0.11
+		level := 0.12 + moire*0.54 + softGrain
+
+		knot := math.Exp(-math.Pow((x-knotA)/4.8, 2))
+		knot = math.Max(knot, math.Exp(-math.Pow((x-knotB)/5.8, 2))*0.94)
+		knot = math.Max(knot, math.Exp(-math.Pow((x-knotC)/4.2, 2))*0.86)
+		level = math.Max(level, knot)
+
+		crossing := math.Abs(math.Sin(warp+t*0.4)) < 0.075 && math.Abs(weft) > 0.38
+		switch {
+		case knot > 0.93 && (phase/8+index)%3 == 0:
+			chars = append(chars, '✦')
+		case knot > 0.78:
+			chars = append(chars, '⌁')
+		case crossing:
+			chars = append(chars, '≋')
+		case level > 0.74:
+			chars = append(chars, '≈')
+		default:
+			chars = append(chars, rampPick(shadeRamp, level))
+		}
+	}
+	return string(chars)
+}
+
 func cometArt(width int, phase int) string {
 	width = artWidth(width)
 	if width == 0 {
@@ -817,10 +865,12 @@ var animationPresets = map[string]animationFunc{
 	"constellation": constellationArt,
 	"circuit":       circuitArt,
 	"braid":         braidArt,
+	"loom":          loomArt,
 	"comet":         cometArt,
 }
 
 var showcasePresets = []string{
+	"loom",
 	"aurora",
 	"spectrum",
 	"radar",

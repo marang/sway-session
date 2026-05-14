@@ -10,8 +10,8 @@ detect_child_process = true
 
 [showcase]
 presets = [
+  "loom",
   "aurora",
-  "lift",
   "spectrum",
   "radar",
   "constellation",
@@ -39,14 +39,17 @@ alacritty = "▣"
 firefox = "🌐"
 riotbox = "♪"
 
-[animation.lift]
+[animation.ribbon]
 fill = true
 frames = [
-  "▁▁▂▃▄▅▆▇█▇▆▅▄▃▂▁",
-  "▁▂▃▄▅▆▇█▇▆▅▄▃▂▁▁",
-  "▂▃▄▅▆▇█▇▆▅▄▃▂▁▁▁",
-  "▃▄▅▆▇█▇▆▅▄▃▂▁▁▁▂",
-  "▄▅▆▇█▇▆▅▄▃▂▁▁▁▂▃",
+  "··░░▒▒▓▓▒▒░░··  ",
+  "·░░▒▒▓▓▒▒░░··  ·",
+  "░░▒▒▓▓▒▒░░··  ··",
+  "░▒▒▓▓▒▒░░··  ··░",
+  "▒▒▓▓▒▒░░··  ··░░",
+  "▒▓▓▒▒░░··  ··░░▒",
+  "▓▓▒▒░░··  ··░░▒▒",
+  "▓▒▒░░··  ··░░▒▒▓",
 ]
 
 [animation.shutter]

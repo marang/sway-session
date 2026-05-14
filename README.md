@@ -15,6 +15,7 @@ Built-in animation presets:
 
 ```text
 aurora         ▁▂▃▄▅▆▇█▇▆▅▄▃▂▁
+loom           ░▒≈⌁≋░▒▓✦▓▒░≋⌁≈▒░
 spectrum       ·─━▆⟨▇█▇▆━┃━▆▇█▇⟩▆━─·
 radar          ╶◜╴──┄──═●═──┄──╋──┄──
 constellation       ·   ✦      •    ✧
@@ -105,19 +106,19 @@ motion = 0.22
 detect_child_process = true
 
 [showcase]
-presets = ["aurora", "spectrum", "radar", "comet"]
+presets = ["loom", "aurora", "spectrum", "radar", "comet"]
 
 [icons]
 alacritty = "▣"
 firefox = "🌐"
 riotbox = "♪"
 
-[animation.lift]
+[animation.ribbon]
 fill = true
 frames = [
-  "▁▁▂▃▄▅▆▇█▇▆▅▄▃▂▁",
-  "▁▂▃▄▅▆▇█▇▆▅▄▃▂▁▁",
-  "▂▃▄▅▆▇█▇▆▅▄▃▂▁▁▁",
+  "··░░▒▒▓▓▒▒░░··  ",
+  "·░░▒▒▓▓▒▒░░··  ·",
+  "░░▒▒▓▓▒▒░░··  ··",
 ]
 ```
 

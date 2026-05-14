@@ -905,6 +905,19 @@ func activityArt(width int, phase int) string {
 	return animationFuncFor(animationPreset)(width, motionPhase(phase))
 }
 
+func animationFrameKey(phase int) int {
+	if animationPreset != "showcase" {
+		return motionPhase(phase)
+	}
+	cycleFrames := settings.ShowcaseHoldFrames + settings.ShowcaseBlendFrames
+	presetIndex := (phase / cycleFrames) % len(showcasePresets)
+	offset := phase % cycleFrames
+	if offset < settings.ShowcaseHoldFrames {
+		return presetIndex*1_000_000 + motionPhase(phase)
+	}
+	return 10_000_000 + phase
+}
+
 func blendArt(from string, to string, width int, phase int, progress float64) string {
 	width = artWidth(width)
 	if width == 0 {
@@ -1106,12 +1119,18 @@ func filterKnownPresets(names []string) []string {
 }
 
 type TitleAnimator struct {
-	ipc           *IPC
-	lastFormats   map[int64]string
-	processLabels map[int]cachedProcessLabel
-	windowsByID   map[int64]nodeWithParent
-	focusedID     int64
-	hasFocus      bool
+	ipc                  *IPC
+	lastFormats          map[int64]string
+	processLabels        map[int]cachedProcessLabel
+	windowsByID          map[int64]nodeWithParent
+	focusedID            int64
+	focusedBase          string
+	focusedArtColumns    int
+	focusedAnimationKey  int
+	focusedBaseCheckedAt time.Time
+	focusedNeedsRefresh  bool
+	focusedCacheIsActive bool
+	hasFocus             bool
 }
 
 func NewTitleAnimator(ipc *IPC) *TitleAnimator {
@@ -1156,6 +1175,7 @@ func (animator *TitleAnimator) RefreshTree(phase int) {
 		}
 	}
 	animator.windowsByID = newWindows
+	animator.focusedCacheIsActive = false
 
 	for id := range animator.lastFormats {
 		if _, ok := newWindows[id]; !ok {
@@ -1197,22 +1217,19 @@ func (animator *TitleAnimator) CachedChildProcessLabel(pid int) string {
 }
 
 func (animator *TitleAnimator) ApplyNode(node *Node, parent *Node, phase int) {
-	icon := iconFor(node)
-	label := animator.WindowLabel(node)
-	statusText := visibleStatusText(node)
-	visiblePrefix := fmt.Sprintf("%s %s%s: ", icon, label, statusText)
-	title := node.Name
-	suffix := ""
-	if animator.hasFocus && node.ID == animator.focusedID {
-		tabColumns := int(float64(tabWidthPX(node, parent)) / settings.ApproxCharWidth)
-		prefixColumns := textColumns(visiblePrefix)
-		maxTitleColumns := min(textColumns(node.Name), max(settings.TitleReserveColumns, tabColumns-prefixColumns-24))
-		title = truncateColumns(node.Name, maxTitleColumns)
-		fixedColumns := prefixColumns + textColumns(title) + 1
-		artColumns := max(0, tabColumns-fixedColumns+2)
-		suffix = " " + activityArt(artColumns, phase)
+	base, artColumns := animator.NodeFrameParts(node, parent)
+	value := base
+	if artColumns > 0 {
+		value += " " + activityArt(artColumns, phase)
 	}
-	value := fmt.Sprintf("%s%s%s", visiblePrefix, title, suffix)
+	if animator.hasFocus && node.ID == animator.focusedID {
+		animator.focusedBase = base
+		animator.focusedArtColumns = artColumns
+		animator.focusedAnimationKey = animationFrameKey(phase)
+		animator.focusedBaseCheckedAt = time.Now()
+		animator.focusedNeedsRefresh = settings.DetectChildProcess && node.PID > 0 && isTerminalWindow(node)
+		animator.focusedCacheIsActive = true
+	}
 	if animator.lastFormats[node.ID] == value {
 		return
 	}
@@ -1220,17 +1237,56 @@ func (animator *TitleAnimator) ApplyNode(node *Node, parent *Node, phase int) {
 	animator.lastFormats[node.ID] = value
 }
 
+func (animator *TitleAnimator) NodeFrameParts(node *Node, parent *Node) (string, int) {
+	icon := iconFor(node)
+	label := animator.WindowLabel(node)
+	statusText := visibleStatusText(node)
+	visiblePrefix := fmt.Sprintf("%s %s%s: ", icon, label, statusText)
+	title := node.Name
+	if animator.hasFocus && node.ID == animator.focusedID {
+		tabColumns := int(float64(tabWidthPX(node, parent)) / settings.ApproxCharWidth)
+		prefixColumns := textColumns(visiblePrefix)
+		maxTitleColumns := min(textColumns(node.Name), max(settings.TitleReserveColumns, tabColumns-prefixColumns-24))
+		title = truncateColumns(node.Name, maxTitleColumns)
+		fixedColumns := prefixColumns + textColumns(title) + 1
+		return visiblePrefix + title, max(0, tabColumns-fixedColumns+2)
+	}
+	return visiblePrefix + title, 0
+}
+
+func (animator *TitleAnimator) ApplyFocusedFrame(phase int) {
+	key := animationFrameKey(phase)
+	if animator.focusedCacheIsActive && animator.focusedAnimationKey == key {
+		return
+	}
+	animator.focusedAnimationKey = key
+
+	value := animator.focusedBase
+	if animator.focusedArtColumns > 0 {
+		value += " " + activityArt(animator.focusedArtColumns, phase)
+	}
+	if animator.lastFormats[animator.focusedID] == value {
+		return
+	}
+	animator.SetTitleFormat(animator.focusedID, value)
+	animator.lastFormats[animator.focusedID] = value
+}
+
 func (animator *TitleAnimator) Tick(phase int) {
-	if !animator.hasFocus {
+	if !animator.hasFocus || !animator.focusedCacheIsActive {
 		animator.RefreshTree(phase)
 		return
 	}
-	item, ok := animator.windowsByID[animator.focusedID]
-	if !ok {
+	if _, ok := animator.windowsByID[animator.focusedID]; !ok {
 		animator.RefreshTree(phase)
 		return
 	}
-	animator.ApplyNode(item.node, item.parent, phase)
+	if animator.focusedNeedsRefresh && time.Since(animator.focusedBaseCheckedAt) >= 750*time.Millisecond {
+		item := animator.windowsByID[animator.focusedID]
+		animator.ApplyNode(item.node, item.parent, phase)
+		return
+	}
+	animator.ApplyFocusedFrame(phase)
 }
 
 func (animator *TitleAnimator) ResetAll() {

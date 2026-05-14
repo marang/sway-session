@@ -16,24 +16,23 @@ var (
 		"wezterm",
 		"terminal",
 	}
-
-	ignoredProcessNames = map[string]bool{
-		"":          true,
-		"alacritty": true,
-		"bash":      true,
-		"dash":      true,
-		"env":       true,
-		"fish":      true,
-		"foot":      true,
-		"kitty":     true,
-		"login":     true,
-		"sh":        true,
-		"sudo":      true,
-		"su":        true,
-		"wezterm":   true,
-		"zsh":       true,
-	}
 )
+
+type processStat struct {
+	ppid    int
+	pgrp    int
+	session int
+	ttyNr   int
+	tpgid   int
+}
+
+type processCandidate struct {
+	pid     int
+	depth   int
+	label   string
+	stat    processStat
+	hasStat bool
+}
 
 func isTerminalWindow(node *Node) bool {
 	for _, value := range identifiers(node) {
@@ -117,24 +116,58 @@ func procChildrenByPPIDMap() map[int][]int {
 }
 
 func procPPID(pid int) int {
+	stat, ok := readProcessStat(pid)
+	if !ok {
+		return 0
+	}
+	return stat.ppid
+}
+
+func readProcessStat(pid int) (processStat, bool) {
 	data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
 	if err != nil {
-		return 0
+		return processStat{}, false
 	}
-	stat := string(data)
-	end := strings.LastIndex(stat, ")")
-	if end < 0 || end+2 >= len(stat) {
-		return 0
+	raw := string(data)
+	end := strings.LastIndex(raw, ")")
+	if end < 0 || end+2 >= len(raw) {
+		return processStat{}, false
 	}
-	fields := strings.Fields(stat[end+2:])
-	if len(fields) < 2 {
-		return 0
+	fields := strings.Fields(raw[end+2:])
+	if len(fields) < 6 {
+		return processStat{}, false
 	}
-	ppid, err := strconv.Atoi(fields[1])
-	if err != nil {
-		return 0
+	parse := func(index int) (int, bool) {
+		value, err := strconv.Atoi(fields[index])
+		return value, err == nil
 	}
-	return ppid
+	ppid, ok := parse(1)
+	if !ok {
+		return processStat{}, false
+	}
+	pgrp, ok := parse(2)
+	if !ok {
+		return processStat{}, false
+	}
+	session, ok := parse(3)
+	if !ok {
+		return processStat{}, false
+	}
+	ttyNr, ok := parse(4)
+	if !ok {
+		return processStat{}, false
+	}
+	tpgid, ok := parse(5)
+	if !ok {
+		return processStat{}, false
+	}
+	return processStat{
+		ppid:    ppid,
+		pgrp:    pgrp,
+		session: session,
+		ttyNr:   ttyNr,
+		tpgid:   tpgid,
+	}, true
 }
 
 func childProcessLabel(rootPID int) string {
@@ -149,30 +182,79 @@ func childProcessLabel(rootPID int) string {
 			return procChildren(pid, ppidChildren)
 		},
 		processCommandName,
+		readProcessStat,
 	)
 }
 
-func selectChildProcessLabel(rootPID int, children func(int) []int, name func(int) string) string {
+func selectChildProcessLabel(rootPID int, children func(int) []int, name func(int) string, stat func(int) (processStat, bool)) string {
 	if rootPID <= 0 {
 		return ""
 	}
 
+	candidates := []processCandidate{}
 	seen := map[int]bool{rootPID: true}
-	queue := []int{rootPID}
+	queue := []processCandidate{{pid: rootPID}}
 	for len(queue) > 0 && len(seen) < 96 {
 		current := queue[0]
 		queue = queue[1:]
-		for _, child := range children(current) {
+		for _, child := range children(current.pid) {
 			if child <= 0 || seen[child] {
 				continue
 			}
 			seen[child] = true
 			label := name(child)
-			if !ignoredProcessNames[label] {
-				return label
+			childStat, hasStat := stat(child)
+			candidate := processCandidate{
+				pid:     child,
+				depth:   current.depth + 1,
+				label:   label,
+				stat:    childStat,
+				hasStat: hasStat,
 			}
-			queue = append(queue, child)
+			if label != "" {
+				candidates = append(candidates, candidate)
+			}
+			queue = append(queue, candidate)
 		}
+	}
+	if label := foregroundProcessGroupLabel(candidates); label != "" {
+		return label
+	}
+	if len(candidates) > 0 {
+		return candidates[0].label
+	}
+	return ""
+}
+
+func foregroundProcessGroupLabel(candidates []processCandidate) string {
+	// A terminal's foreground job is represented by tpgid. Prefer that process
+	// group leader over deeper helper children.
+	foregroundPgrp := 0
+	for _, candidate := range candidates {
+		if candidate.hasStat && candidate.stat.ttyNr != 0 && candidate.stat.tpgid > 0 {
+			foregroundPgrp = candidate.stat.tpgid
+			break
+		}
+	}
+	if foregroundPgrp == 0 {
+		return ""
+	}
+
+	var fallback *processCandidate
+	for index := range candidates {
+		candidate := &candidates[index]
+		if !candidate.hasStat || candidate.stat.pgrp != foregroundPgrp {
+			continue
+		}
+		if candidate.pid == foregroundPgrp {
+			return candidate.label
+		}
+		if fallback == nil || candidate.depth < fallback.depth {
+			fallback = candidate
+		}
+	}
+	if fallback != nil {
+		return fallback.label
 	}
 	return ""
 }

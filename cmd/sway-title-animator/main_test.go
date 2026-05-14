@@ -42,7 +42,7 @@ func TestAnimationFrameKeyCoalescesStillMotionFrames(t *testing.T) {
 	}
 }
 
-func TestSelectChildProcessLabelPrefersNearestUserProcess(t *testing.T) {
+func TestSelectChildProcessLabelPrefersForegroundProcessGroupLeader(t *testing.T) {
 	children := map[int][]int{
 		1: {2},
 		2: {3},
@@ -51,24 +51,34 @@ func TestSelectChildProcessLabelPrefersNearestUserProcess(t *testing.T) {
 	}
 	names := map[int]string{
 		1: "alacritty",
-		2: "zsh",
+		2: "launcher",
 		3: "editor",
 		4: "language-server",
 		5: "compiler",
+	}
+	stats := map[int]processStat{
+		2: {pgrp: 2, ttyNr: 34818, tpgid: 3},
+		3: {pgrp: 3, ttyNr: 34818, tpgid: 3},
+		4: {pgrp: 3, ttyNr: 34818, tpgid: 3},
+		5: {pgrp: 3, ttyNr: 34818, tpgid: 3},
 	}
 
 	label := selectChildProcessLabel(
 		1,
 		func(pid int) []int { return children[pid] },
 		func(pid int) string { return names[pid] },
+		func(pid int) (processStat, bool) {
+			stat, ok := stats[pid]
+			return stat, ok
+		},
 	)
 
 	if label != "editor" {
-		t.Fatalf("expected nearest user process label, got %q", label)
+		t.Fatalf("expected foreground process group leader, got %q", label)
 	}
 }
 
-func TestSelectChildProcessLabelSkipsShellWrappers(t *testing.T) {
+func TestSelectChildProcessLabelFallsBackToFirstDescendantWithoutTTY(t *testing.T) {
 	children := map[int][]int{
 		1: {2},
 		2: {3},
@@ -76,19 +86,20 @@ func TestSelectChildProcessLabelSkipsShellWrappers(t *testing.T) {
 	}
 	names := map[int]string{
 		1: "foot",
-		2: "bash",
-		3: "sudo",
-		4: "nvim",
+		2: "launcher",
+		3: "tool",
+		4: "helper",
 	}
 
 	label := selectChildProcessLabel(
 		1,
 		func(pid int) []int { return children[pid] },
 		func(pid int) string { return names[pid] },
+		func(pid int) (processStat, bool) { return processStat{}, false },
 	)
 
-	if label != "nvim" {
-		t.Fatalf("expected shell wrappers to be skipped, got %q", label)
+	if label != "launcher" {
+		t.Fatalf("expected first descendant fallback, got %q", label)
 	}
 }
 

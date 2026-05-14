@@ -1,0 +1,58 @@
+[settings]
+fps = 25
+motion = 0.22
+approx_char_width = 8.5
+max_art_columns = 220
+title_reserve_columns = 18
+showcase_hold_frames = 260
+showcase_blend_frames = 75
+
+[showcase]
+presets = [
+  "aurora",
+  "lift",
+  "spectrum",
+  "radar",
+  "constellation",
+  "circuit",
+  "braid",
+  "comet",
+]
+
+[glyphs]
+aurora_bars = "▁▂▃▄▅▆▇█"
+aurora_dots = "·∙•"
+aurora_sparkles = "✦✧"
+shade_ramp = " ·░▒▓█"
+spectrum_bars = "▁▂▃▄▅▆▇█"
+spectrum_left = "⟨([{<"
+spectrum_right = ">}])⟩"
+radar_levels = " ·┄─═●"
+radar_sweep = "◜◠◝◞◡◟"
+constellation_stars = "✦✧✶✷"
+circuit_tiles = "─╴╶═╡╞╪┄╍╾╼"
+comet_trail = "·░▒▓"
+
+[icons]
+alacritty = "▣"
+firefox = "🌐"
+riotbox = "♪"
+
+[animation.lift]
+fill = true
+frames = [
+  "▁▁▂▃▄▅▆▇█▇▆▅▄▃▂▁",
+  "▁▂▃▄▅▆▇█▇▆▅▄▃▂▁▁",
+  "▂▃▄▅▆▇█▇▆▅▄▃▂▁▁▁",
+  "▃▄▅▆▇█▇▆▅▄▃▂▁▁▁▂",
+  "▄▅▆▇█▇▆▅▄▃▂▁▁▁▂▃",
+]
+
+[animation.shutter]
+fill = true
+frames = [
+  "░░▒▒▓▓██▓▓▒▒░░··",
+  "·░░▒▒▓▓██▓▓▒▒░░·",
+  "··░░▒▒▓▓██▓▓▒▒░░",
+  "░··░░▒▒▓▓██▓▓▒▒░",
+]

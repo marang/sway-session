@@ -25,3 +25,21 @@ func TestChildProcessLabelFindsDescendant(t *testing.T) {
 	}
 	t.Fatalf("expected to find sleep child process")
 }
+
+func TestProcessLabelScorePrefersInteractiveParent(t *testing.T) {
+	codexScore := processLabelScore("codex", 2)
+	nodeScore := processLabelScore("node", 4)
+
+	if codexScore <= nodeScore {
+		t.Fatalf("expected codex score %d to beat node helper score %d", codexScore, nodeScore)
+	}
+}
+
+func TestProcessLabelScorePrefersNearbySamePriorityProcess(t *testing.T) {
+	near := processLabelScore("node", 2)
+	deep := processLabelScore("npm", 4)
+
+	if near <= deep {
+		t.Fatalf("expected nearby node score %d to beat deeper npm score %d", near, deep)
+	}
+}

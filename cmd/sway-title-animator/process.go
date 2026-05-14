@@ -60,6 +60,33 @@ var (
 		"vim":     true,
 		"yarn":    true,
 	}
+
+	processNamePriorities = map[string]int{
+		"codex":   90,
+		"lazygit": 85,
+		"nvim":    85,
+		"ssh":     85,
+		"tmux":    85,
+		"vim":     85,
+		"btop":    80,
+		"htop":    80,
+		"less":    80,
+		"man":     80,
+		"top":     80,
+		"bat":     70,
+		"gh":      65,
+		"git":     65,
+		"cargo":   55,
+		"go":      55,
+		"just":    55,
+		"make":    55,
+		"python":  55,
+		"python3": 55,
+		"node":    35,
+		"npm":     35,
+		"pnpm":    35,
+		"yarn":    35,
+	}
 )
 
 func isTerminalWindow(node *Node) bool {
@@ -170,6 +197,17 @@ func procPPID(pid int) int {
 	return ppid
 }
 
+func processLabelScore(name string, depth int) int {
+	if depth <= 0 || ignoredProcessNames[name] {
+		return 0
+	}
+	priority := processNamePriorities[name]
+	if priority == 0 {
+		priority = 10
+	}
+	return priority*100 - depth
+}
+
 func childProcessLabel(rootPID int) string {
 	if rootPID <= 0 {
 		return ""
@@ -199,10 +237,7 @@ func childProcessLabel(rootPID int) string {
 			depth := current.depth + 1
 			name := processCommandName(child)
 			if !ignoredProcessNames[name] {
-				score := 10 + depth
-				if interestingProcessNames[name] {
-					score = 100 + depth
-				}
+				score := processLabelScore(name, depth)
 				if score > best.score {
 					best = candidate{label: name, score: score}
 				}

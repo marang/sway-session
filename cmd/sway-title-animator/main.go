@@ -36,6 +36,66 @@ const (
 	ipcGetTree    = 4
 )
 
+const defaultConfigContents = `[settings]
+fps = 25
+motion = 0.22
+approx_char_width = 8.5
+max_art_columns = 220
+title_reserve_columns = 18
+showcase_hold_frames = 260
+showcase_blend_frames = 75
+
+[showcase]
+presets = [
+  "aurora",
+  "lift",
+  "spectrum",
+  "radar",
+  "constellation",
+  "circuit",
+  "braid",
+  "comet",
+]
+
+[glyphs]
+aurora_bars = "▁▂▃▄▅▆▇█"
+aurora_dots = "·∙•"
+aurora_sparkles = "✦✧"
+shade_ramp = " ·░▒▓█"
+spectrum_bars = "▁▂▃▄▅▆▇█"
+spectrum_left = "⟨([{<"
+spectrum_right = ">}])⟩"
+radar_levels = " ·┄─═●"
+radar_sweep = "◜◠◝◞◡◟"
+constellation_stars = "✦✧✶✷"
+circuit_tiles = "─╴╶═╡╞╪┄╍╾╼"
+comet_trail = "·░▒▓"
+
+[icons]
+alacritty = "▣"
+firefox = "🌐"
+riotbox = "♪"
+
+[animation.lift]
+fill = true
+frames = [
+  "▁▁▂▃▄▅▆▇█▇▆▅▄▃▂▁",
+  "▁▂▃▄▅▆▇█▇▆▅▄▃▂▁▁",
+  "▂▃▄▅▆▇█▇▆▅▄▃▂▁▁▁",
+  "▃▄▅▆▇█▇▆▅▄▃▂▁▁▁▂",
+  "▄▅▆▇█▇▆▅▄▃▂▁▁▁▂▃",
+]
+
+[animation.shutter]
+fill = true
+frames = [
+  "░░▒▒▓▓██▓▓▒▒░░··",
+  "·░░▒▒▓▓██▓▓▒▒░░·",
+  "··░░▒▒▓▓██▓▓▒▒░░",
+  "░··░░▒▒▓▓██▓▓▒▒░",
+]
+`
+
 var (
 	animationPreset = "showcase"
 	settings        = Settings{
@@ -891,6 +951,21 @@ func loadConfig(path string) error {
 	return nil
 }
 
+func initConfig(path string) error {
+	if path == "" {
+		return errors.New("config path is empty")
+	}
+	if _, err := os.Stat(path); err == nil {
+		return fmt.Errorf("%s already exists", path)
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(defaultConfigContents), 0o644)
+}
+
 func applyConfig(config Config) {
 	if config.Settings.FPS != nil {
 		settings.FPS = *config.Settings.FPS
@@ -1249,9 +1324,19 @@ func main() {
 	preset := flag.String("preset", envDefault("SWAY_TAB_ANIMATION", animationPreset), "animation preset")
 	fps := flag.Float64("fps", 0, "animation frames per second")
 	configPath := flag.String("config", envDefault("SWAY_TITLE_ANIMATOR_CONFIG", defaultConfigPath()), "TOML config path")
+	initConfigFlag := flag.Bool("init-config", false, "write an example config if it does not exist")
 	list := flag.Bool("list-presets", false, "list animation presets")
 	socket := flag.String("socket", os.Getenv("SWAYSOCK"), "sway IPC socket")
 	flag.Parse()
+
+	if *initConfigFlag {
+		if err := initConfig(*configPath); err != nil {
+			fmt.Fprintf(os.Stderr, "Unable to initialize config %s: %v\n", *configPath, err)
+			os.Exit(1)
+		}
+		fmt.Printf("Created %s\n", *configPath)
+		return
+	}
 
 	if err := loadConfig(*configPath); err != nil {
 		fmt.Fprintf(os.Stderr, "Unable to load config %s: %v\n", *configPath, err)

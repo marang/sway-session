@@ -90,9 +90,11 @@ By default, the tool reads:
 Start from the example config:
 
 ```sh
-mkdir -p ~/.config/sway-title-animator
-cp config.example.toml ~/.config/sway-title-animator/config.toml
+sway-title-animator --init-config
 ```
+
+This creates `~/.config/sway-title-animator/config.toml` if it does not exist.
+It will not overwrite an existing config.
 
 The config can change timing, glyphs, app icons, showcase order, and simple
 frame-based animations.

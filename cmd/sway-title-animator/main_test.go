@@ -26,24 +26,6 @@ func TestChildProcessLabelFindsDescendant(t *testing.T) {
 	t.Fatalf("expected to find sleep child process")
 }
 
-func TestProcessLabelScorePrefersInteractiveParent(t *testing.T) {
-	codexScore := processLabelScore("codex", 2)
-	nodeScore := processLabelScore("node", 4)
-
-	if codexScore <= nodeScore {
-		t.Fatalf("expected codex score %d to beat node helper score %d", codexScore, nodeScore)
-	}
-}
-
-func TestProcessLabelScorePrefersNearbySamePriorityProcess(t *testing.T) {
-	near := processLabelScore("node", 2)
-	deep := processLabelScore("npm", 4)
-
-	if near <= deep {
-		t.Fatalf("expected nearby node score %d to beat deeper npm score %d", near, deep)
-	}
-}
-
 func TestAnimationFrameKeyCoalescesStillMotionFrames(t *testing.T) {
 	originalPreset := animationPreset
 	t.Cleanup(func() {
@@ -57,6 +39,56 @@ func TestAnimationFrameKeyCoalescesStillMotionFrames(t *testing.T) {
 	}
 	if first, later := animationFrameKey(1), animationFrameKey(6); first == later {
 		t.Fatalf("expected later frame to advance key, got %d and %d", first, later)
+	}
+}
+
+func TestSelectChildProcessLabelPrefersNearestUserProcess(t *testing.T) {
+	children := map[int][]int{
+		1: {2},
+		2: {3},
+		3: {4},
+		4: {5},
+	}
+	names := map[int]string{
+		1: "alacritty",
+		2: "zsh",
+		3: "editor",
+		4: "language-server",
+		5: "compiler",
+	}
+
+	label := selectChildProcessLabel(
+		1,
+		func(pid int) []int { return children[pid] },
+		func(pid int) string { return names[pid] },
+	)
+
+	if label != "editor" {
+		t.Fatalf("expected nearest user process label, got %q", label)
+	}
+}
+
+func TestSelectChildProcessLabelSkipsShellWrappers(t *testing.T) {
+	children := map[int][]int{
+		1: {2},
+		2: {3},
+		3: {4},
+	}
+	names := map[int]string{
+		1: "foot",
+		2: "bash",
+		3: "sudo",
+		4: "nvim",
+	}
+
+	label := selectChildProcessLabel(
+		1,
+		func(pid int) []int { return children[pid] },
+		func(pid int) string { return names[pid] },
+	)
+
+	if label != "nvim" {
+		t.Fatalf("expected shell wrappers to be skipped, got %q", label)
 	}
 }
 

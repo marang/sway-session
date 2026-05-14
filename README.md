@@ -129,7 +129,7 @@ sway-title-animator --config ~/.config/sway-title-animator/config.toml
 ```
 
 With `detect_child_process = true`, terminal windows can include the active
-child process in the label, for example `Alacritty › codex`.
+child process in the label, for example `Alacritty › nvim`.
 
 ## Notes
 

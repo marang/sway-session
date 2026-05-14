@@ -33,60 +33,6 @@ var (
 		"wezterm":   true,
 		"zsh":       true,
 	}
-
-	interestingProcessNames = map[string]bool{
-		"bat":     true,
-		"btop":    true,
-		"cargo":   true,
-		"codex":   true,
-		"gh":      true,
-		"git":     true,
-		"go":      true,
-		"htop":    true,
-		"just":    true,
-		"lazygit": true,
-		"less":    true,
-		"make":    true,
-		"man":     true,
-		"node":    true,
-		"nvim":    true,
-		"npm":     true,
-		"pnpm":    true,
-		"python":  true,
-		"python3": true,
-		"ssh":     true,
-		"tmux":    true,
-		"top":     true,
-		"vim":     true,
-		"yarn":    true,
-	}
-
-	processNamePriorities = map[string]int{
-		"codex":   90,
-		"lazygit": 85,
-		"nvim":    85,
-		"ssh":     85,
-		"tmux":    85,
-		"vim":     85,
-		"btop":    80,
-		"htop":    80,
-		"less":    80,
-		"man":     80,
-		"top":     80,
-		"bat":     70,
-		"gh":      65,
-		"git":     65,
-		"cargo":   55,
-		"go":      55,
-		"just":    55,
-		"make":    55,
-		"python":  55,
-		"python3": 55,
-		"node":    35,
-		"npm":     35,
-		"pnpm":    35,
-		"yarn":    35,
-	}
 )
 
 func isTerminalWindow(node *Node) bool {
@@ -111,12 +57,6 @@ func processCommandName(pid int) string {
 	cmdline, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "cmdline"))
 	if err == nil && len(cmdline) > 0 {
 		fields := strings.Split(strings.TrimRight(string(cmdline), "\x00"), "\x00")
-		for _, field := range fields {
-			name := normalizeProcessName(field)
-			if interestingProcessNames[name] {
-				return name
-			}
-		}
 		if len(fields) > 0 {
 			return normalizeProcessName(fields[0])
 		}
@@ -197,53 +137,42 @@ func procPPID(pid int) int {
 	return ppid
 }
 
-func processLabelScore(name string, depth int) int {
-	if depth <= 0 || ignoredProcessNames[name] {
-		return 0
-	}
-	priority := processNamePriorities[name]
-	if priority == 0 {
-		priority = 10
-	}
-	return priority*100 - depth
-}
-
 func childProcessLabel(rootPID int) string {
 	if rootPID <= 0 {
 		return ""
 	}
 
-	type candidate struct {
-		label string
-		score int
-	}
-	type queuedPID struct {
-		pid   int
-		depth int
+	ppidChildren := procChildrenByPPIDMap()
+	return selectChildProcessLabel(
+		rootPID,
+		func(pid int) []int {
+			return procChildren(pid, ppidChildren)
+		},
+		processCommandName,
+	)
+}
+
+func selectChildProcessLabel(rootPID int, children func(int) []int, name func(int) string) string {
+	if rootPID <= 0 {
+		return ""
 	}
 
-	best := candidate{}
-	ppidChildren := procChildrenByPPIDMap()
 	seen := map[int]bool{rootPID: true}
-	queue := []queuedPID{{pid: rootPID, depth: 0}}
+	queue := []int{rootPID}
 	for len(queue) > 0 && len(seen) < 96 {
 		current := queue[0]
 		queue = queue[1:]
-		for _, child := range procChildren(current.pid, ppidChildren) {
+		for _, child := range children(current) {
 			if child <= 0 || seen[child] {
 				continue
 			}
 			seen[child] = true
-			depth := current.depth + 1
-			name := processCommandName(child)
-			if !ignoredProcessNames[name] {
-				score := processLabelScore(name, depth)
-				if score > best.score {
-					best = candidate{label: name, score: score}
-				}
+			label := name(child)
+			if !ignoredProcessNames[label] {
+				return label
 			}
-			queue = append(queue, queuedPID{pid: child, depth: depth})
+			queue = append(queue, child)
 		}
 	}
-	return best.label
+	return ""
 }

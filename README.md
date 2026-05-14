@@ -47,7 +47,6 @@ Make sure `~/.local/bin` is in your `PATH`.
 Add this to your Sway config:
 
 ```conf
-show_marks yes
 exec_always --no-startup-id sway-title-animator --replace --preset showcase --fps 25
 ```
 

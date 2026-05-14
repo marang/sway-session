@@ -1060,6 +1060,13 @@ func (animator *TitleAnimator) Tick(phase int) {
 	animator.ApplyNode(item.node, item.parent, phase)
 }
 
+func (animator *TitleAnimator) ResetAll() {
+	for conID := range animator.lastFormats {
+		animator.SetTitleFormat(conID, "%title")
+	}
+	animator.lastFormats = map[int64]string{}
+}
+
 func (animator *TitleAnimator) SetTitleFormat(conID int64, value string) {
 	command := fmt.Sprintf("[con_id=%d] title_format %s", conID, quoteSwayString(value))
 	_, _, _ = animator.ipc.Request(ipcRunCommand, command)
@@ -1127,7 +1134,7 @@ func quoteSwayString(value string) string {
 	return "\"" + escaped + "\""
 }
 
-func subscribe(socket string, events chan<- struct{}, done <-chan struct{}) {
+func subscribe(socket string, events chan<- struct{}, shutdown chan<- struct{}, done <-chan struct{}) {
 	for {
 		select {
 		case <-done:
@@ -1168,7 +1175,12 @@ func subscribe(socket string, events chan<- struct{}, done <-chan struct{}) {
 			}
 			_ = json.Unmarshal(body, &event)
 			if event.Change == "shutdown" {
-				os.Exit(0)
+				select {
+				case shutdown <- struct{}{}:
+				default:
+				}
+				_ = conn.Close()
+				return
 			}
 			select {
 			case events <- struct{}{}:
@@ -1189,9 +1201,14 @@ func runLoopWithFPS(socket string, fps float64) int {
 
 	animator := NewTitleAnimator(control)
 	events := make(chan struct{}, 16)
+	shutdown := make(chan struct{}, 1)
 	done := make(chan struct{})
 	defer close(done)
-	go subscribe(socket, events, done)
+	go subscribe(socket, events, shutdown, done)
+
+	signals := make(chan os.Signal, 2)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(signals)
 
 	phase := 0
 	animator.RefreshTree(phase)
@@ -1202,6 +1219,12 @@ func runLoopWithFPS(socket string, fps float64) int {
 		select {
 		case <-events:
 			animator.RefreshTree(phase)
+		case <-shutdown:
+			animator.ResetAll()
+			return 0
+		case <-signals:
+			animator.ResetAll()
+			return 0
 		case <-ticker.C:
 			phase++
 			animator.Tick(phase)
@@ -1284,16 +1307,10 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Unable to write pid file: %v\n", err)
 		os.Exit(1)
 	}
-	defer cleanupPIDFile(pidFile)
-	signals := make(chan os.Signal, 2)
-	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		<-signals
-		cleanupPIDFile(pidFile)
-		os.Exit(0)
-	}()
 
-	os.Exit(runLoopWithFPS(*socket, settings.FPS))
+	exitCode := runLoopWithFPS(*socket, settings.FPS)
+	cleanupPIDFile(pidFile)
+	os.Exit(exitCode)
 }
 
 func defaultConfigPath() string {

@@ -34,7 +34,7 @@ jobs:
           sed -i "s/^pkgver=.*/pkgver=${ver}/" PKGBUILD
 
           tarball="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/v${ver}.tar.gz"
-          sum=$(curl -L "$tarball" | sha256sum | cut -d' ' -f1)
+          sum=$(curl -fsSL "$tarball" | sha256sum | cut -d' ' -f1)
           sed -i "s/^sha256sums=.*/sha256sums=('${sum}')/" PKGBUILD
 
       - name: Create non-root build user

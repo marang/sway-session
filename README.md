@@ -1,5 +1,9 @@
 # sway-title-animator
 
+<p align="center">
+  <img src="docs/assets/logo.svg" alt="sway-title-animator logo" width="900">
+</p>
+
 Animated Unicode titlebars for Sway.
 
 It adds app labels, small status badges, and a generated animation to the

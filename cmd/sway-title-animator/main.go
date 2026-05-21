@@ -1481,16 +1481,22 @@ func runLoopWithFPS(socket string, fps float64) int {
 
 	phase := 0
 	animator.RefreshTree(phase)
-	timer := time.NewTimer(frameDuration(fps))
+	initialDuration := frameDuration(fps)
+	timer := time.NewTimer(initialDuration)
 	defer timer.Stop()
 	nextFrames := 1
+	nextWakeAt := time.Now().Add(initialDuration)
 
 	for {
 		select {
 		case <-events:
 			animator.RefreshTree(phase)
-			nextFrames = animator.FramesUntilNextWake(phase)
-			resetTimer(timer, time.Duration(nextFrames)*frameDuration(fps))
+			candidateFrames := animator.FramesUntilNextWake(phase)
+			candidateDuration := time.Duration(candidateFrames) * frameDuration(fps)
+			if time.Now().Add(candidateDuration).Before(nextWakeAt) {
+				nextFrames = candidateFrames
+				nextWakeAt = resetTimer(timer, candidateDuration)
+			}
 		case <-shutdown:
 			animator.ResetAll()
 			return 0
@@ -1501,7 +1507,7 @@ func runLoopWithFPS(socket string, fps float64) int {
 			phase += nextFrames
 			animator.Tick(phase)
 			nextFrames = animator.FramesUntilNextWake(phase)
-			resetTimer(timer, time.Duration(nextFrames)*frameDuration(fps))
+			nextWakeAt = resetTimer(timer, time.Duration(nextFrames)*frameDuration(fps))
 		}
 	}
 }
@@ -1510,7 +1516,7 @@ func frameDuration(fps float64) time.Duration {
 	return time.Duration(float64(time.Second) / fps)
 }
 
-func resetTimer(timer *time.Timer, duration time.Duration) {
+func resetTimer(timer *time.Timer, duration time.Duration) time.Time {
 	if !timer.Stop() {
 		select {
 		case <-timer.C:
@@ -1518,6 +1524,7 @@ func resetTimer(timer *time.Timer, duration time.Duration) {
 		}
 	}
 	timer.Reset(duration)
+	return time.Now().Add(duration)
 }
 
 func listPresets() {

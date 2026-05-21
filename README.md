@@ -75,6 +75,9 @@ Run a single preset:
 sway-title-animator --replace --preset aurora --fps 25
 sway-title-animator --replace --preset radar --fps 25
 sway-title-animator --replace --preset comet --fps 25
+sway-title-animator --replace --preset wave --fps 25
+sway-title-animator --replace --preset spline --fps 25
+sway-title-animator --replace --preset smileys --fps 25
 ```
 
 Use `showcase` to rotate through all configured presets:
@@ -110,7 +113,7 @@ motion = 0.22
 detect_child_process = true
 
 [showcase]
-presets = ["loom", "aurora", "spectrum", "radar", "comet"]
+presets = ["loom", "aurora", "spectrum", "radar", "comet", "wave", "spline", "smileys"]
 
 [icons]
 alacritty = "▣"

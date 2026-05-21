@@ -18,6 +18,9 @@ presets = [
   "circuit",
   "braid",
   "comet",
+  "smileys",
+  "wave",
+  "spline",
 ]
 
 [glyphs]

@@ -202,6 +202,22 @@ func TestFramesUntilNextAnimationKeyKeepsShowcaseBlendAtFullFPS(t *testing.T) {
 	}
 }
 
+func TestNewAnimationPresetsRenderMotion(t *testing.T) {
+	for _, name := range []string{"smileys", "wave", "spline"} {
+		t.Run(name, func(t *testing.T) {
+			fn := animationPresets[name]
+			first := fn(80, 1)
+			later := fn(80, 12)
+			if first == "" {
+				t.Fatalf("expected nonempty frame")
+			}
+			if first == later {
+				t.Fatalf("expected preset to move, got identical frames %q", first)
+			}
+		})
+	}
+}
+
 func TestApplyFocusedFrameReassertsCachedFrame(t *testing.T) {
 	var setID int64
 	var setValue string

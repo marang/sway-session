@@ -57,6 +57,9 @@ presets = [
   "circuit",
   "braid",
   "comet",
+  "smileys",
+  "wave",
+  "spline",
 ]
 
 [glyphs]
@@ -857,6 +860,301 @@ func cometArt(width int, phase int) string {
 	return string(chars)
 }
 
+func smileysArt(width int, phase int) string {
+	width = artWidth(width)
+	if width == 0 {
+		return ""
+	}
+	if width < 8 {
+		return shortFrame(width, phase, []string{"ಠ_ಠ", ">_<", "^_^", "ʕ•ᴥ", "☞ﾟヮ"})
+	}
+
+	chars := make([]rune, width)
+	for index := range chars {
+		switch {
+		case (index+phase/2)%29 == 0:
+			chars[index] = '✧'
+		case (index-phase/3)%23 == 0:
+			chars[index] = '·'
+		case math.Sin(float64(index)*0.25+float64(phase)*0.043) > 0.90:
+			chars[index] = '｡'
+		default:
+			chars[index] = ' '
+		}
+	}
+
+	faces := []string{
+		"¯\\_(ツ)_/¯",
+		"¯\\_◉‿◉_/¯",
+		"ʅ(°_°)ʃ",
+		"┐(￣ヘ￣)┌",
+		"┐(´д`)┌",
+		"乁(ツ)ㄏ",
+		"ヽ(~ ～~ )ノ",
+		"ヾ(・ω・*)ノ",
+		"(ノ°∀°)ノ",
+		"(づ｡◕‿‿◕｡)づ",
+		"(づ ◕‿◕ )づ",
+		"(つ≧▽≦)つ",
+		"(っ╹◡╹)っ",
+		"⊂(･ω･*⊂)",
+		"⊂(◉‿◉)つ",
+		"(⊃｡•́‿•̀｡)⊃",
+		"(ง'̀-'́)ง",
+		"(ง •̀_•́)ง",
+		"ᕙ(‾̀◡‾́)ᕗ",
+		"(¬‿¬)ง",
+		"ʕ•ᴥ•ʔ",
+		"ʕ ≧ᴥ≦ ʔ",
+		"ʕ •̀ω•́ʔ",
+		"ʕ·ᴥ·ʔ",
+		"ʕっ•ᴥ•ʔっ",
+		"(ᵔᴥᵔ)/",
+		"(=^･ω･^=)",
+		"U・ᴥ・U",
+		"▼・ᴥ・▼",
+		"( •_•)>⌐■-■",
+		"(⌐■_■)",
+		"༼ つ ◕_◕ ༽つ",
+		"༼ つ ಥ_ಥ ༽つ",
+		"ಠ_ಠ",
+		"(¬_¬)",
+		"(◣_◢)",
+		"ヽ(ಠ_ಠ)ノ",
+		"(╬ಠ益ಠ)",
+		"(╬ Ò﹏Ó)",
+		"(ﾉ°益°)ﾉ",
+		"(╯°□°)╯︵ ┻━┻",
+		"(ノಠ益ಠ)ノ彡┻━┻",
+		"┬─┬ ノ( ゜-゜ノ)",
+		"ᕕ( ᐛ )ᕗ",
+		"ᕙ(⇀‸↼‶)ᕗ",
+		"┗(＾0＾)┓",
+		"(☞ﾟヮﾟ)☞",
+		"☜(ﾟヮﾟ☜)",
+		"(☞ﾟ∀ﾟ)☞",
+		"(ﾉ◕ヮ◕)ﾉ*:･ﾟ✧",
+		"(ﾉ´ヮ`)ﾉ*: ･ﾟ",
+		"♡҉٩(*´︶`*)۶҉",
+		"°˖✧◝(⁰▿⁰)◜✧˖°",
+		"٩(◕‿◕｡)۶",
+		"ヽ(•‿•)ノ",
+		"(｡♥‿♥｡)",
+		"(♡˙︶˙♡)",
+		"( ˘ ³˘)♥",
+		"(◕‿◕✿)",
+		"(✿◠‿◠)",
+		"(≧◡≦)",
+		"(＾▽＾)",
+		"(⁄ ⁄•⁄ω⁄•⁄ ⁄)",
+		"(ಥ﹏ಥ)",
+		"(╥﹏╥)",
+		"(;﹏;)",
+		"(｡•́︿•̀｡)",
+		"(⋟﹏⋞)",
+		"(>_<)",
+		"(⊙_⊙)",
+		"( ⚆ _ ⚆ )",
+		"(○口○)",
+		"(＠_＠)",
+		"(ʘ‿ʘ)",
+		"(ó_ò)",
+		"(・・?)ゞ",
+		"(´･ω･`)?",
+		"(^_^)",
+		"(^_−)☆",
+		"ｍ(＿ ＿)ｍ",
+		"<(_ _)>",
+		"(っ˘ω˘ς)",
+		"(－ω－) zzZ",
+		"( ͡° ͜ʖ ͡°)",
+		"(¬‿¬)ψ",
+	}
+	count := max(1, min(4, width/30))
+	for faceIndex := 0; faceIndex < count; faceIndex++ {
+		lane := float64(faceIndex) / float64(count)
+		face := []rune(faces[(phase/18+faceIndex*9)%len(faces)])
+		span := max(1, width-len(face))
+		base := float64(span) * (0.14 + lane*0.72)
+		bob := float64(span) * 0.12 * math.Sin(float64(phase)*0.034+lane*math.Pi*2.0)
+		wander := float64(span) * 0.04 * math.Sin(float64(phase)*0.077+float64(faceIndex)*1.7)
+		pos := int(math.Mod(base+bob+wander+float64(phase)*(0.08+lane*0.04), float64(span)))
+		for offset, r := range face {
+			target := pos + offset
+			if target >= 0 && target < width {
+				chars[target] = r
+			}
+		}
+		if pos > 1 && (phase/6+faceIndex)%2 == 0 {
+			chars[pos-2] = '｡'
+			chars[pos-1] = '･'
+		}
+		tail := pos + len(face)
+		if tail+1 < width && (phase/5+faceIndex)%3 == 0 {
+			chars[tail] = '･'
+			chars[tail+1] = 'ﾟ'
+		}
+	}
+	return string(chars)
+}
+
+func waveArt(width int, phase int) string {
+	width = artWidth(width)
+	if width == 0 {
+		return ""
+	}
+	if width < 8 {
+		return shortFrame(width, phase, []string{"▁▃▅", "▂▅▇", "▃▆◟", "▅█╲", "▇▅▂"})
+	}
+
+	chars := make([]rune, 0, width)
+	crestA := math.Mod(float64(width)*0.82-float64(phase)*0.34, float64(width))
+	crestB := math.Mod(float64(width)*0.33-float64(phase)*0.18, float64(width))
+	for index := range width {
+		x := float64(index)
+		swell := (math.Sin(x*0.115-float64(phase)*0.073) + 1.0) * 0.5
+		backwash := (math.Sin(x*0.041+float64(phase)*0.029+1.4) + 1.0) * 0.5
+		curl := math.Exp(-math.Pow((x-crestA)/6.5, 2))
+		outer := math.Exp(-math.Pow((x-crestB)/10.0, 2)) * 0.58
+		level := 0.10 + 0.46*swell + 0.18*backwash + 0.30*math.Max(curl, outer)
+
+		switch {
+		case curl > 0.91:
+			chars = append(chars, []rune("◜◝◞◟")[(phase/3+index)%4])
+		case curl > 0.70:
+			chars = append(chars, []rune("▇█▇")[(phase/3+index)%3])
+		case curl > 0.46:
+			if (index+phase)%2 == 0 {
+				chars = append(chars, '╱')
+			} else {
+				chars = append(chars, '╲')
+			}
+		case outer > 0.36 && (index+phase/2)%3 == 0:
+			if (index+phase)%2 == 0 {
+				chars = append(chars, '▂')
+			} else {
+				chars = append(chars, '▃')
+			}
+		case level > 0.76:
+			chars = append(chars, '█')
+		case level > 0.64:
+			chars = append(chars, '▇')
+		case level > 0.52:
+			chars = append(chars, '▅')
+		case level > 0.40:
+			chars = append(chars, '▃')
+		case level > 0.28:
+			chars = append(chars, '▁')
+		default:
+			chars = append(chars, ' ')
+		}
+	}
+	return string(chars)
+}
+
+func splineArt(width int, phase int) string {
+	width = artWidth(width)
+	if width == 0 {
+		return ""
+	}
+	if width < 12 {
+		return shortFrame(width, phase, []string{"⢀⣠⠤", "⠉⠢⣀", "⣀⠔⠉", "⠤⣄⡀"})
+	}
+
+	masks := make([]int, width)
+	dotMask := func(row int, col int) int {
+		if col == 0 {
+			return []int{0x01, 0x02, 0x04, 0x40}[row]
+		}
+		return []int{0x08, 0x10, 0x20, 0x80}[row]
+	}
+	plot := func(pixelX int, row int) {
+		if pixelX < 0 || pixelX >= width*2 || row < 0 || row > 3 {
+			return
+		}
+		masks[pixelX/2] |= dotMask(row, pixelX%2)
+	}
+	plotBrush := func(pixelX int, y float64) {
+		center := int(math.Round(y))
+		plot(pixelX, center)
+		if y-float64(center) > 0.28 {
+			plot(pixelX, center+1)
+		}
+		if float64(center)-y > 0.28 {
+			plot(pixelX, center-1)
+		}
+	}
+
+	pixelWidth := width * 2
+	t := float64(phase) * 0.038
+	segments := max(2, min(5, width/18))
+	segmentWidth := max(10, pixelWidth/segments)
+	for segment := 0; segment < segments; segment++ {
+		left := segment * segmentWidth
+		right := min(pixelWidth-1, (segment+1)*segmentWidth)
+		if segment == segments-1 {
+			right = pixelWidth - 1
+		}
+		if right <= left {
+			continue
+		}
+
+		localT := t + float64(segment)*1.27
+		y0 := 1.5 + 1.25*math.Sin(localT)
+		y1 := 1.5 + 1.35*math.Sin(localT+1.7)
+		c0 := 1.5 + 1.85*math.Sin(localT+0.68)
+		c1 := 1.5 + 1.85*math.Sin(localT+2.38)
+
+		for sample := 0; sample <= right-left; sample++ {
+			u := float64(sample) / float64(max(1, right-left))
+			a := math.Pow(1-u, 3)
+			b := 3 * math.Pow(1-u, 2) * u
+			c := 3 * (1 - u) * u * u
+			d := u * u * u
+			y := a*y0 + b*c0 + c*c1 + d*y1
+			plotBrush(left+sample, math.Max(0, math.Min(3, y)))
+		}
+
+		for _, point := range []struct {
+			x int
+			y float64
+		}{
+			{left, y0},
+			{left + (right-left)/3, c0},
+			{left + 2*(right-left)/3, c1},
+			{right, y1},
+		} {
+			row := int(math.Round(math.Max(0, math.Min(3, point.y))))
+			plot(point.x, row)
+			plot(point.x-1, row)
+			plot(point.x+1, row)
+			plot(point.x, row-1)
+			plot(point.x, row+1)
+		}
+	}
+
+	chars := make([]rune, width)
+	for index, mask := range masks {
+		if mask == 0 {
+			switch {
+			case (index+phase/4)%37 == 0:
+				chars[index] = '·'
+			case (index-phase/5)%53 == 0:
+				chars[index] = '⋅'
+			default:
+				chars[index] = ' '
+			}
+			continue
+		}
+		chars[index] = rune(0x2800 + mask)
+	}
+
+	tracer := int(math.Mod(float64(phase)*0.42, float64(width)))
+	chars[tracer] = []rune{'◆', '✦', '◇', '✧'}[(phase/6)%4]
+
+	return string(chars)
+}
+
 type animationFunc func(width int, phase int) string
 
 var animationPresets = map[string]animationFunc{
@@ -868,6 +1166,9 @@ var animationPresets = map[string]animationFunc{
 	"braid":         braidArt,
 	"loom":          loomArt,
 	"comet":         cometArt,
+	"smileys":       smileysArt,
+	"wave":          waveArt,
+	"spline":        splineArt,
 }
 
 var showcasePresets = []string{
@@ -879,6 +1180,9 @@ var showcasePresets = []string{
 	"circuit",
 	"braid",
 	"comet",
+	"smileys",
+	"wave",
+	"spline",
 }
 
 func showcaseArt(width int, phase int) string {

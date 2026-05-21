@@ -12,6 +12,12 @@ builds:
     binary: sway-title-animator
     env:
       - CGO_ENABLED=0
+    flags:
+      - -trimpath
+      - -buildvcs=false
+    ldflags:
+      - -s -w -buildid=
+    mod_timestamp: "{{ .CommitTimestamp }}"
     goos:
       - linux
     goarch:

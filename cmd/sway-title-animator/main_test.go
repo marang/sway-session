@@ -1,11 +1,79 @@
 package main
 
 import (
+	"errors"
+	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 )
+
+func TestIPCDialUnixSocketRoundTrip(t *testing.T) {
+	socket := filepath.Join(t.TempDir(), "sway.sock")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		if errors.Is(err, syscall.EPERM) {
+			t.Skipf("unix sockets are not permitted in this sandbox: %v", err)
+		}
+		t.Fatalf("listen unix socket: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = listener.Close()
+	})
+
+	serverDone := make(chan error, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		defer conn.Close()
+
+		body, messageType, err := readIPCMessage(conn)
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		if messageType != 99 || string(body) != "hello" {
+			serverDone <- &testError{message: "unexpected request"}
+			return
+		}
+		if err := writeFull(conn, ipcHeader(100, len([]byte("ok")))); err != nil {
+			serverDone <- err
+			return
+		}
+		if err := writeFull(conn, []byte("ok")); err != nil {
+			serverDone <- err
+			return
+		}
+		serverDone <- nil
+	}()
+
+	ipc := &IPC{socket: socket}
+	t.Cleanup(ipc.Close)
+	body, messageType, err := ipc.Request(99, "hello")
+	if err != nil {
+		t.Fatalf("ipc request: %v", err)
+	}
+	if messageType != 100 || string(body) != "ok" {
+		t.Fatalf("unexpected response type=%d body=%q", messageType, body)
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatalf("server: %v", err)
+	}
+}
+
+type testError struct {
+	message string
+}
+
+func (err *testError) Error() string {
+	return err.message
+}
 
 func TestChildProcessLabelFindsDescendant(t *testing.T) {
 	cmd := exec.Command("sleep", "2")
@@ -39,6 +107,44 @@ func TestAnimationFrameKeyCoalescesStillMotionFrames(t *testing.T) {
 	}
 	if first, later := animationFrameKey(1), animationFrameKey(6); first == later {
 		t.Fatalf("expected later frame to advance key, got %d and %d", first, later)
+	}
+}
+
+func TestValidateSettingsRejectsLayoutBreakingValues(t *testing.T) {
+	valid := Settings{
+		FPS:                 25,
+		Motion:              0.22,
+		ApproxCharWidth:     8.5,
+		MaxArtColumns:       220,
+		TitleReserveColumns: 18,
+		ShowcaseHoldFrames:  260,
+		ShowcaseBlendFrames: 75,
+	}
+	tests := []struct {
+		name   string
+		mutate func(*Settings)
+	}{
+		{"fps too low", func(settings *Settings) { settings.FPS = 0 }},
+		{"fps too high", func(settings *Settings) { settings.FPS = 61 }},
+		{"motion zero", func(settings *Settings) { settings.Motion = 0 }},
+		{"char width zero", func(settings *Settings) { settings.ApproxCharWidth = 0 }},
+		{"negative art columns", func(settings *Settings) { settings.MaxArtColumns = -1 }},
+		{"negative title reserve", func(settings *Settings) { settings.TitleReserveColumns = -1 }},
+		{"showcase hold zero", func(settings *Settings) { settings.ShowcaseHoldFrames = 0 }},
+		{"showcase blend zero", func(settings *Settings) { settings.ShowcaseBlendFrames = 0 }},
+	}
+
+	if err := validateSettings(valid); err != nil {
+		t.Fatalf("expected valid settings, got %v", err)
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			settings := valid
+			test.mutate(&settings)
+			if err := validateSettings(settings); err == nil {
+				t.Fatalf("expected invalid settings")
+			}
+		})
 	}
 }
 

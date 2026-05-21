@@ -2,14 +2,11 @@ package main
 
 import (
 	"bufio"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"math"
-	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -31,10 +28,6 @@ const (
 	defaultShowcaseHold    = 260
 	defaultShowcaseBlend   = 75
 	titleReassertInterval  = 2 * time.Second
-
-	ipcRunCommand = 0
-	ipcSubscribe  = 2
-	ipcGetTree    = 4
 )
 
 const defaultConfigContents = `[settings]
@@ -271,81 +264,6 @@ type nodeWithParent struct {
 type cachedProcessLabel struct {
 	label     string
 	checkedAt time.Time
-}
-
-type IPC struct {
-	socket string
-	conn   net.Conn
-}
-
-func (ipc *IPC) Close() {
-	if ipc.conn != nil {
-		_ = ipc.conn.Close()
-		ipc.conn = nil
-	}
-}
-
-func (ipc *IPC) ensure() error {
-	if ipc.conn != nil {
-		return nil
-	}
-	conn, err := net.Dial("unix", ipc.socket)
-	if err != nil {
-		return err
-	}
-	ipc.conn = conn
-	return nil
-}
-
-func (ipc *IPC) Request(messageType uint32, payload string) ([]byte, uint32, error) {
-	for attempt := 0; attempt < 2; attempt++ {
-		if err := ipc.ensure(); err != nil {
-			return nil, 0, err
-		}
-		body, responseType, err := ipc.requestOnce(messageType, payload)
-		if err == nil {
-			return body, responseType, nil
-		}
-		ipc.Close()
-	}
-	return nil, 0, errors.New("ipc request failed after reconnect")
-}
-
-func (ipc *IPC) requestOnce(messageType uint32, payload string) ([]byte, uint32, error) {
-	if _, err := ipc.conn.Write(ipcHeader(messageType, len([]byte(payload)))); err != nil {
-		return nil, 0, err
-	}
-	if payload != "" {
-		if _, err := ipc.conn.Write([]byte(payload)); err != nil {
-			return nil, 0, err
-		}
-	}
-	return readIPCMessage(ipc.conn)
-}
-
-func ipcHeader(messageType uint32, length int) []byte {
-	header := make([]byte, 14)
-	copy(header, []byte("i3-ipc"))
-	binary.LittleEndian.PutUint32(header[6:10], uint32(length))
-	binary.LittleEndian.PutUint32(header[10:14], messageType)
-	return header
-}
-
-func readIPCMessage(reader io.Reader) ([]byte, uint32, error) {
-	header := make([]byte, 14)
-	if _, err := io.ReadFull(reader, header); err != nil {
-		return nil, 0, err
-	}
-	if string(header[:6]) != "i3-ipc" {
-		return nil, 0, errors.New("invalid ipc magic")
-	}
-	length := binary.LittleEndian.Uint32(header[6:10])
-	messageType := binary.LittleEndian.Uint32(header[10:14])
-	body := make([]byte, length)
-	if _, err := io.ReadFull(reader, body); err != nil {
-		return nil, 0, err
-	}
-	return body, messageType, nil
 }
 
 func runtimeFile() string {
@@ -883,97 +801,10 @@ func smileysArt(width int, phase int) string {
 		}
 	}
 
-	faces := []string{
-		"¯\\_(ツ)_/¯",
-		"¯\\_◉‿◉_/¯",
-		"ʅ(°_°)ʃ",
-		"┐(￣ヘ￣)┌",
-		"┐(´д`)┌",
-		"乁(ツ)ㄏ",
-		"ヽ(~ ～~ )ノ",
-		"ヾ(・ω・*)ノ",
-		"(ノ°∀°)ノ",
-		"(づ｡◕‿‿◕｡)づ",
-		"(づ ◕‿◕ )づ",
-		"(つ≧▽≦)つ",
-		"(っ╹◡╹)っ",
-		"⊂(･ω･*⊂)",
-		"⊂(◉‿◉)つ",
-		"(⊃｡•́‿•̀｡)⊃",
-		"(ง'̀-'́)ง",
-		"(ง •̀_•́)ง",
-		"ᕙ(‾̀◡‾́)ᕗ",
-		"(¬‿¬)ง",
-		"ʕ•ᴥ•ʔ",
-		"ʕ ≧ᴥ≦ ʔ",
-		"ʕ •̀ω•́ʔ",
-		"ʕ·ᴥ·ʔ",
-		"ʕっ•ᴥ•ʔっ",
-		"(ᵔᴥᵔ)/",
-		"(=^･ω･^=)",
-		"U・ᴥ・U",
-		"▼・ᴥ・▼",
-		"( •_•)>⌐■-■",
-		"(⌐■_■)",
-		"༼ つ ◕_◕ ༽つ",
-		"༼ つ ಥ_ಥ ༽つ",
-		"ಠ_ಠ",
-		"(¬_¬)",
-		"(◣_◢)",
-		"ヽ(ಠ_ಠ)ノ",
-		"(╬ಠ益ಠ)",
-		"(╬ Ò﹏Ó)",
-		"(ﾉ°益°)ﾉ",
-		"(╯°□°)╯︵ ┻━┻",
-		"(ノಠ益ಠ)ノ彡┻━┻",
-		"┬─┬ ノ( ゜-゜ノ)",
-		"ᕕ( ᐛ )ᕗ",
-		"ᕙ(⇀‸↼‶)ᕗ",
-		"┗(＾0＾)┓",
-		"(☞ﾟヮﾟ)☞",
-		"☜(ﾟヮﾟ☜)",
-		"(☞ﾟ∀ﾟ)☞",
-		"(ﾉ◕ヮ◕)ﾉ*:･ﾟ✧",
-		"(ﾉ´ヮ`)ﾉ*: ･ﾟ",
-		"♡҉٩(*´︶`*)۶҉",
-		"°˖✧◝(⁰▿⁰)◜✧˖°",
-		"٩(◕‿◕｡)۶",
-		"ヽ(•‿•)ノ",
-		"(｡♥‿♥｡)",
-		"(♡˙︶˙♡)",
-		"( ˘ ³˘)♥",
-		"(◕‿◕✿)",
-		"(✿◠‿◠)",
-		"(≧◡≦)",
-		"(＾▽＾)",
-		"(⁄ ⁄•⁄ω⁄•⁄ ⁄)",
-		"(ಥ﹏ಥ)",
-		"(╥﹏╥)",
-		"(;﹏;)",
-		"(｡•́︿•̀｡)",
-		"(⋟﹏⋞)",
-		"(>_<)",
-		"(⊙_⊙)",
-		"( ⚆ _ ⚆ )",
-		"(○口○)",
-		"(＠_＠)",
-		"(ʘ‿ʘ)",
-		"(ó_ò)",
-		"(・・?)ゞ",
-		"(´･ω･`)?",
-		"(^_^)",
-		"(^_−)☆",
-		"ｍ(＿ ＿)ｍ",
-		"<(_ _)>",
-		"(っ˘ω˘ς)",
-		"(－ω－) zzZ",
-		"( ͡° ͜ʖ ͡°)",
-		"(¬‿¬)ψ",
-	}
 	count := max(1, min(4, width/30))
 	for faceIndex := 0; faceIndex < count; faceIndex++ {
 		lane := float64(faceIndex) / float64(count)
-		face := []rune(faces[(phase/18+faceIndex*9)%len(faces)])
+		face := []rune(smileyFaces[(phase/18+faceIndex*9)%len(smileyFaces)])
 		span := max(1, width-len(face))
 		base := float64(span) * (0.14 + lane*0.72)
 		bob := float64(span) * 0.12 * math.Sin(float64(phase)*0.034+lane*math.Pi*2.0)
@@ -1397,6 +1228,28 @@ func applyConfig(config Config) {
 	}
 }
 
+func validateSettings(settings Settings) error {
+	if settings.FPS < 1 || settings.FPS > 60 {
+		return errors.New("FPS must be between 1 and 60")
+	}
+	if settings.Motion <= 0 {
+		return errors.New("Motion must be greater than 0")
+	}
+	if settings.ApproxCharWidth <= 0 {
+		return errors.New("ApproxCharWidth must be greater than 0")
+	}
+	if settings.MaxArtColumns < 0 {
+		return errors.New("MaxArtColumns must be greater than or equal to 0")
+	}
+	if settings.TitleReserveColumns < 0 {
+		return errors.New("TitleReserveColumns must be greater than or equal to 0")
+	}
+	if settings.ShowcaseHoldFrames < 1 || settings.ShowcaseBlendFrames < 1 {
+		return errors.New("Showcase hold/blend frames must be greater than 0")
+	}
+	return nil
+}
+
 func applyGlyphConfig(glyphs ConfigGlyphs) {
 	assignRunes := func(value string, target *[]rune) {
 		if value != "" {
@@ -1715,17 +1568,17 @@ func subscribe(socket string, events chan<- struct{}, shutdown chan<- struct{}, 
 		default:
 		}
 
-		conn, err := net.Dial("unix", socket)
+		conn, err := dialUnixSocket(socket)
 		if err != nil {
 			time.Sleep(time.Second)
 			continue
 		}
-		if _, err := conn.Write(ipcHeader(ipcSubscribe, len([]byte(`["window","workspace","shutdown"]`)))); err != nil {
+		if err := writeFull(conn, ipcHeader(ipcSubscribe, len([]byte(`["window","workspace","shutdown"]`)))); err != nil {
 			_ = conn.Close()
 			time.Sleep(time.Second)
 			continue
 		}
-		if _, err := conn.Write([]byte(`["window","workspace","shutdown"]`)); err != nil {
+		if err := writeFull(conn, []byte(`["window","workspace","shutdown"]`)); err != nil {
 			_ = conn.Close()
 			time.Sleep(time.Second)
 			continue
@@ -1887,16 +1740,8 @@ func main() {
 		}
 	}
 	animationPreset = *preset
-	if settings.FPS < 1 || settings.FPS > 60 {
-		fmt.Fprintln(os.Stderr, "FPS must be between 1 and 60")
-		os.Exit(2)
-	}
-	if settings.Motion <= 0 {
-		fmt.Fprintln(os.Stderr, "Motion must be greater than 0")
-		os.Exit(2)
-	}
-	if settings.ShowcaseHoldFrames < 1 || settings.ShowcaseBlendFrames < 1 {
-		fmt.Fprintln(os.Stderr, "Showcase hold/blend frames must be greater than 0")
+	if err := validateSettings(settings); err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
 	if *socket == "" {

@@ -30,6 +30,7 @@ const (
 	defaultTitleReserve    = 18
 	defaultShowcaseHold    = 260
 	defaultShowcaseBlend   = 75
+	titleReassertInterval  = 2 * time.Second
 
 	ipcRunCommand = 0
 	ipcSubscribe  = 2
@@ -918,6 +919,16 @@ func animationFrameKey(phase int) int {
 	return 10_000_000 + phase
 }
 
+func framesUntilNextAnimationKey(phase int) int {
+	current := animationFrameKey(phase)
+	for frames := 1; frames <= 240; frames++ {
+		if animationFrameKey(phase+frames) != current {
+			return frames
+		}
+	}
+	return 1
+}
+
 func blendArt(from string, to string, width int, phase int, progress float64) string {
 	width = artWidth(width)
 	if width == 0 {
@@ -1120,7 +1131,9 @@ func filterKnownPresets(names []string) []string {
 
 type TitleAnimator struct {
 	ipc                  *IPC
+	titleSetter          func(int64, string)
 	lastFormats          map[int64]string
+	lastFormatSetAt      map[int64]time.Time
 	processLabels        map[int]cachedProcessLabel
 	windowsByID          map[int64]nodeWithParent
 	focusedID            int64
@@ -1135,10 +1148,11 @@ type TitleAnimator struct {
 
 func NewTitleAnimator(ipc *IPC) *TitleAnimator {
 	return &TitleAnimator{
-		ipc:           ipc,
-		lastFormats:   map[int64]string{},
-		processLabels: map[int]cachedProcessLabel{},
-		windowsByID:   map[int64]nodeWithParent{},
+		ipc:             ipc,
+		lastFormats:     map[int64]string{},
+		lastFormatSetAt: map[int64]time.Time{},
+		processLabels:   map[int]cachedProcessLabel{},
+		windowsByID:     map[int64]nodeWithParent{},
 	}
 }
 
@@ -1180,6 +1194,7 @@ func (animator *TitleAnimator) RefreshTree(phase int) {
 	for id := range animator.lastFormats {
 		if _, ok := newWindows[id]; !ok {
 			delete(animator.lastFormats, id)
+			delete(animator.lastFormatSetAt, id)
 		}
 	}
 	for pid := range animator.processLabels {
@@ -1230,11 +1245,11 @@ func (animator *TitleAnimator) ApplyNode(node *Node, parent *Node, phase int) {
 		animator.focusedNeedsRefresh = settings.DetectChildProcess && node.PID > 0 && isTerminalWindow(node)
 		animator.focusedCacheIsActive = true
 	}
-	if animator.lastFormats[node.ID] == value {
+	if !animator.shouldSetTitleFormat(node.ID, value) {
 		return
 	}
 	animator.SetTitleFormat(node.ID, value)
-	animator.lastFormats[node.ID] = value
+	animator.rememberTitleFormat(node.ID, value)
 }
 
 func (animator *TitleAnimator) NodeFrameParts(node *Node, parent *Node) (string, int) {
@@ -1257,6 +1272,10 @@ func (animator *TitleAnimator) NodeFrameParts(node *Node, parent *Node) (string,
 func (animator *TitleAnimator) ApplyFocusedFrame(phase int) {
 	key := animationFrameKey(phase)
 	if animator.focusedCacheIsActive && animator.focusedAnimationKey == key {
+		if value, ok := animator.lastFormats[animator.focusedID]; ok && animator.shouldSetTitleFormat(animator.focusedID, value) {
+			animator.SetTitleFormat(animator.focusedID, value)
+			animator.rememberTitleFormat(animator.focusedID, value)
+		}
 		return
 	}
 	animator.focusedAnimationKey = key
@@ -1265,11 +1284,11 @@ func (animator *TitleAnimator) ApplyFocusedFrame(phase int) {
 	if animator.focusedArtColumns > 0 {
 		value += " " + activityArt(animator.focusedArtColumns, phase)
 	}
-	if animator.lastFormats[animator.focusedID] == value {
+	if !animator.shouldSetTitleFormat(animator.focusedID, value) {
 		return
 	}
 	animator.SetTitleFormat(animator.focusedID, value)
-	animator.lastFormats[animator.focusedID] = value
+	animator.rememberTitleFormat(animator.focusedID, value)
 }
 
 func (animator *TitleAnimator) Tick(phase int) {
@@ -1289,16 +1308,47 @@ func (animator *TitleAnimator) Tick(phase int) {
 	animator.ApplyFocusedFrame(phase)
 }
 
+func (animator *TitleAnimator) FramesUntilNextWake(phase int) int {
+	frames := framesUntilNextAnimationKey(phase)
+	if !animator.focusedNeedsRefresh || !animator.focusedCacheIsActive {
+		return frames
+	}
+	elapsed := time.Since(animator.focusedBaseCheckedAt)
+	if elapsed >= 750*time.Millisecond {
+		return 1
+	}
+	refreshFrames := int(math.Ceil(float64((750*time.Millisecond)-elapsed) / float64(frameDuration(settings.FPS))))
+	return max(1, min(frames, refreshFrames))
+}
+
 func (animator *TitleAnimator) ResetAll() {
 	for conID := range animator.lastFormats {
 		animator.SetTitleFormat(conID, "%title")
 	}
 	animator.lastFormats = map[int64]string{}
+	animator.lastFormatSetAt = map[int64]time.Time{}
 }
 
 func (animator *TitleAnimator) SetTitleFormat(conID int64, value string) {
+	if animator.titleSetter != nil {
+		animator.titleSetter(conID, value)
+		return
+	}
 	command := fmt.Sprintf("[con_id=%d] title_format %s", conID, quoteSwayString(value))
 	_, _, _ = animator.ipc.Request(ipcRunCommand, command)
+}
+
+func (animator *TitleAnimator) shouldSetTitleFormat(conID int64, value string) bool {
+	if animator.lastFormats[conID] != value {
+		return true
+	}
+	lastSetAt, ok := animator.lastFormatSetAt[conID]
+	return !ok || time.Since(lastSetAt) >= titleReassertInterval
+}
+
+func (animator *TitleAnimator) rememberTitleFormat(conID int64, value string) {
+	animator.lastFormats[conID] = value
+	animator.lastFormatSetAt[conID] = time.Now()
 }
 
 type statusBadge struct {
@@ -1431,24 +1481,43 @@ func runLoopWithFPS(socket string, fps float64) int {
 
 	phase := 0
 	animator.RefreshTree(phase)
-	ticker := time.NewTicker(time.Duration(float64(time.Second) / fps))
-	defer ticker.Stop()
+	timer := time.NewTimer(frameDuration(fps))
+	defer timer.Stop()
+	nextFrames := 1
 
 	for {
 		select {
 		case <-events:
 			animator.RefreshTree(phase)
+			nextFrames = animator.FramesUntilNextWake(phase)
+			resetTimer(timer, time.Duration(nextFrames)*frameDuration(fps))
 		case <-shutdown:
 			animator.ResetAll()
 			return 0
 		case <-signals:
 			animator.ResetAll()
 			return 0
-		case <-ticker.C:
-			phase++
+		case <-timer.C:
+			phase += nextFrames
 			animator.Tick(phase)
+			nextFrames = animator.FramesUntilNextWake(phase)
+			resetTimer(timer, time.Duration(nextFrames)*frameDuration(fps))
 		}
 	}
+}
+
+func frameDuration(fps float64) time.Duration {
+	return time.Duration(float64(time.Second) / fps)
+}
+
+func resetTimer(timer *time.Timer, duration time.Duration) {
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
+	timer.Reset(duration)
 }
 
 func listPresets() {

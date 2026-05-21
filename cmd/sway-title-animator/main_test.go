@@ -111,6 +111,46 @@ func TestSelectChildProcessLabelFallsBackToFirstDescendantWithoutTTY(t *testing.
 	}
 }
 
+func TestCommandLineLabelPrefersScriptCommandOverRuntime(t *testing.T) {
+	label := commandLineLabel([]string{"/usr/bin/node", "/opt/tools/codex.js"})
+
+	if label != "codex" {
+		t.Fatalf("expected script command label, got %q", label)
+	}
+}
+
+func TestCommandLineLabelKeepsRuntimeForInlineCommand(t *testing.T) {
+	label := commandLineLabel([]string{"/usr/bin/node", "-e", "console.log('inline')"})
+
+	if label != "node" {
+		t.Fatalf("expected runtime label, got %q", label)
+	}
+}
+
+func TestProcessLabelPrefersKernelNameOverRuntimeCommandline(t *testing.T) {
+	label := processLabel([]string{"/usr/bin/node", "/opt/tools/cli.js"}, "codex\n")
+
+	if label != "codex" {
+		t.Fatalf("expected kernel process name, got %q", label)
+	}
+}
+
+func TestProcessLabelKeepsScriptCommandWhenKernelNameMatchesRuntime(t *testing.T) {
+	label := processLabel([]string{"/usr/bin/node", "/opt/tools/codex.js"}, "node\n")
+
+	if label != "codex" {
+		t.Fatalf("expected script command label, got %q", label)
+	}
+}
+
+func TestProcessLabelIgnoresTruncatedKernelName(t *testing.T) {
+	label := processLabel([]string{"/usr/bin/verylongprocessname", "/opt/tools/codex.js"}, "verylongprocess\n")
+
+	if label != "codex" {
+		t.Fatalf("expected script command label, got %q", label)
+	}
+}
+
 func TestAnimationFrameKeyKeepsShowcaseBlendFramesDistinct(t *testing.T) {
 	originalPreset := animationPreset
 	originalHold := settings.ShowcaseHoldFrames
@@ -127,5 +167,61 @@ func TestAnimationFrameKeyKeepsShowcaseBlendFramesDistinct(t *testing.T) {
 
 	if first, second := animationFrameKey(2), animationFrameKey(3); first == second {
 		t.Fatalf("expected blend frames to stay distinct, got %d and %d", first, second)
+	}
+}
+
+func TestFramesUntilNextAnimationKeySkipsStillMotionFrames(t *testing.T) {
+	originalPreset := animationPreset
+	t.Cleanup(func() {
+		animationPreset = originalPreset
+	})
+
+	animationPreset = "aurora"
+
+	if frames := framesUntilNextAnimationKey(1); frames <= 1 {
+		t.Fatalf("expected still motion frames to be skipped, got %d", frames)
+	}
+}
+
+func TestFramesUntilNextAnimationKeyKeepsShowcaseBlendAtFullFPS(t *testing.T) {
+	originalPreset := animationPreset
+	originalHold := settings.ShowcaseHoldFrames
+	originalBlend := settings.ShowcaseBlendFrames
+	t.Cleanup(func() {
+		animationPreset = originalPreset
+		settings.ShowcaseHoldFrames = originalHold
+		settings.ShowcaseBlendFrames = originalBlend
+	})
+
+	animationPreset = "showcase"
+	settings.ShowcaseHoldFrames = 2
+	settings.ShowcaseBlendFrames = 3
+
+	if frames := framesUntilNextAnimationKey(2); frames != 1 {
+		t.Fatalf("expected blend frames to run at full fps, got %d", frames)
+	}
+}
+
+func TestApplyFocusedFrameReassertsCachedFrame(t *testing.T) {
+	var setID int64
+	var setValue string
+	setCount := 0
+	animator := NewTitleAnimator(nil)
+	animator.titleSetter = func(conID int64, value string) {
+		setID = conID
+		setValue = value
+		setCount++
+	}
+	animator.focusedID = 42
+	animator.focusedBase = "base"
+	animator.focusedAnimationKey = animationFrameKey(1)
+	animator.focusedCacheIsActive = true
+	animator.lastFormats[42] = "base"
+	animator.lastFormatSetAt[42] = time.Now().Add(-titleReassertInterval - time.Second)
+
+	animator.ApplyFocusedFrame(1)
+
+	if setCount != 1 || setID != 42 || setValue != "base" {
+		t.Fatalf("expected cached frame to be reasserted once, got count=%d id=%d value=%q", setCount, setID, setValue)
 	}
 }

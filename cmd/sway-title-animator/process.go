@@ -52,19 +52,67 @@ func normalizeProcessName(value string) string {
 	return strings.ToLower(value)
 }
 
+func normalizeCommandLabel(value string, stripExtension bool) string {
+	label := normalizeProcessName(value)
+	if stripExtension {
+		if ext := filepath.Ext(label); ext != "" {
+			label = strings.TrimSuffix(label, ext)
+		}
+	}
+	return label
+}
+
+func commandLineLabel(fields []string) string {
+	if len(fields) == 0 {
+		return ""
+	}
+	executable := normalizeCommandLabel(fields[0], false)
+	for _, field := range fields[1:] {
+		field = strings.TrimSpace(field)
+		if field == "" || strings.HasPrefix(field, "-") || !strings.Contains(field, "/") {
+			continue
+		}
+		label := normalizeCommandLabel(field, true)
+		if label != "" && label != executable {
+			return label
+		}
+	}
+	return executable
+}
+
+func processLabel(fields []string, comm string) string {
+	executable := ""
+	if len(fields) > 0 {
+		executable = normalizeCommandLabel(fields[0], false)
+	}
+	commLabel := normalizeProcessName(comm)
+	if commLabel != "" && (executable == "" || !commMatchesExecutable(commLabel, executable)) {
+		return commLabel
+	}
+	if label := commandLineLabel(fields); label != "" {
+		return label
+	}
+	return commLabel
+}
+
+func commMatchesExecutable(commLabel string, executable string) bool {
+	if commLabel == executable {
+		return true
+	}
+	return len(commLabel) > 0 && len(commLabel) <= 15 && strings.HasPrefix(executable, commLabel)
+}
+
 func processCommandName(pid int) string {
+	fields := []string{}
 	cmdline, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "cmdline"))
 	if err == nil && len(cmdline) > 0 {
-		fields := strings.Split(strings.TrimRight(string(cmdline), "\x00"), "\x00")
-		if len(fields) > 0 {
-			return normalizeProcessName(fields[0])
-		}
+		fields = strings.Split(strings.TrimRight(string(cmdline), "\x00"), "\x00")
 	}
 	comm, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "comm"))
 	if err != nil {
-		return ""
+		return processLabel(fields, "")
 	}
-	return normalizeProcessName(string(comm))
+	return processLabel(fields, string(comm))
 }
 
 func procChildren(pid int, ppidChildren map[int][]int) []int {
@@ -175,11 +223,18 @@ func childProcessLabel(rootPID int) string {
 		return ""
 	}
 
-	ppidChildren := procChildrenByPPIDMap()
+	var ppidChildren map[int][]int
 	return selectChildProcessLabel(
 		rootPID,
 		func(pid int) []int {
-			return procChildren(pid, ppidChildren)
+			children, err := procChildrenFile(pid)
+			if err == nil {
+				return children
+			}
+			if ppidChildren == nil {
+				ppidChildren = procChildrenByPPIDMap()
+			}
+			return ppidChildren[pid]
 		},
 		processCommandName,
 		readProcessStat,

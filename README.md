@@ -21,6 +21,7 @@ Built-in animation presets:
 aurora         ▁▂▃▄▅▆▇█▇▆▅▄▃▂▁
 aurora_sound   ▁▁▂▃▇╿▅▂▁▆┃▃▁
 loom           ░▒≈⌁≋░▒▓✦▓▒░≋⌁≈▒░
+loom_sound     ▒⌁≋≈▒░▒⌁≋≈▒░
 bloom          ──⌁──❧─⌁──✦
 bloom_sound    ──⌁──✦──⌁──
 spectrum       ·─━▆⟨▇█▇▆━┃━▆▇█▇⟩▆━─·
@@ -37,6 +38,7 @@ circuit        ─╍──╪──═●═──╍──╼╾───
 circuit_sound  ───╾╪╼───═●═────
 glitch         ───╍╪▒▓╳──┄──
 braid          ╱╱╱╳╲╲╲╳╱╱╱╳╲╲╲
+braid_sound    ╱╱╳╲╲╲╱✦╱╳╲╲
 ribbon         ·░▒▓██▓▒░··░▒▓█▓▒░·
 shutter        ███▶░│     │░◀███
 shutter_sound  ▒▓█›      ┆      ‹█▓▒

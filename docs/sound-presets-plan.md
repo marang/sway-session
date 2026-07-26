@@ -293,7 +293,7 @@ presets that look effectively identical.
 - Stereo balance selects the initial current direction.
 - Silence shows the intact circuit with a single low-power diagnostic pulse.
 
-### `braid_sound`
+### `braid_sound` — implemented
 
 - Bass increases the braid's lateral amplitude.
 - Midrange controls crossing density and strand separation.
@@ -302,7 +302,7 @@ presets that look effectively identical.
 - Stereo balance determines which strand receives the highlight.
 - Silence keeps a relaxed, slowly woven braid.
 
-### `loom_sound`
+### `loom_sound` — implemented
 
 - Low frequencies control the spacing of the heavy warp threads.
 - Mids modulate the interlaced weft density.
@@ -428,7 +428,7 @@ presets that look effectively identical.
    - `radar_sound` and `shutter_sound` — implemented in LAB-37;
    - `comet_sound` and `bloom_sound` — implemented in LAB-38;
    - `constellation_sound` and `circuit_sound` — implemented in LAB-42;
-   - `braid_sound` and `loom_sound`;
+   - `braid_sound` and `loom_sound` — implemented in LAB-39;
    - `spline_sound` and `ribbon_sound`; and
    - `smileys_sound` and `glitch_sound`.
 4. After all sound companions are implemented, expand the Bubble Tea preview

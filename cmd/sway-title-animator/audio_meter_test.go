@@ -724,8 +724,11 @@ func TestWaveSoundUsesAudioFeaturesAndOnsetBreakers(t *testing.T) {
 	if !strings.ContainsAny(frame, "◜◝◞◟╱╲") {
 		t.Fatalf("expected a breaker from the recent onset, got %q", frame)
 	}
-	if !strings.ContainsAny(frame, "▁▂▃▅▇█") {
-		t.Fatalf("wave_sound must preserve wave's swell vocabulary: %q", frame)
+	if !strings.ContainsAny(frame, "─⌁⌒≈") {
+		t.Fatalf("wave_sound must preserve a continuous swell vocabulary: %q", frame)
+	}
+	if strings.ContainsAny(frame, "▁▂▃▄▅▆▇█┃╿") {
+		t.Fatalf("wave_sound must remain distinct from Aurora bars: %q", frame)
 	}
 
 	withoutOnset := audio

@@ -18,10 +18,9 @@ accents without restarting or replacing the base cycle. Short onset reactions
 remain local and bounded. During silence, the complete base animation continues
 unchanged.
 
-The target balance during active audio is approximately 60% broad, smoothed
+The target balance during active audio is approximately 60–70% broad, smoothed
 audio influence and 40% slow organic motion. Audio-reactive events replace
-competing random special events while sound is active. Rare preset-specific
-idle events may remain during silence.
+competing random special events while sound is active.
 
 Sound companions are never added to the default rotation automatically. Users
 opt in by naming them in `[rotation].presets`.
@@ -130,17 +129,18 @@ established the visual timing contract:
 - release: about 720 ms;
 - normalization: substantially slower than envelope release.
 
-Before rendering, adjacent frequency bands are combined into broad regions and
-the response range is compressed. At most the newest meaningful general, bass,
-and high-frequency onset remain visible simultaneously. General onsets use an
+Before rendering, immediately adjacent frequency bands are combined into broad
+regions and the already time-smoothed energy uses a response-preserving curve.
+At most the newest meaningful general, bass, and high-frequency onset remain
+visible simultaneously. General onsets use an
 approximately 360 ms cooldown and region-specific events about 520 ms. These
 limits are part of the visual motion contract: presets should emphasize phrases
 and accents, not every analyzer hop.
 
 On startup or reconnect, collect roughly 300–500 ms of warm-up history while
-showing the calm idle form, then blend into the audio response. A strong first
-onset may pass through once the detector has enough data to classify it
-reliably.
+showing the complete base animation, then blend into the audio response. A
+strong first onset may pass through once the detector has enough data to
+classify it reliably.
 
 Audio-driven event motion uses elapsed real time and is independent of the
 configured FPS. Slow organic base motion may remain phase-based.
@@ -165,8 +165,7 @@ Every sound preset has three distinct states:
 
 1. **No capture:** render the normal base preset and emit one friendly,
    actionable warning per process lifetime.
-2. **Capture with silence:** render a calm, recognizable preset-specific idle
-   form without random twitching.
+2. **Capture with silence:** render the complete normal base animation.
 3. **Active audio:** attack deliberately, decay smoothly, and retain slow
    organic motion without competing random special events.
 
@@ -265,8 +264,9 @@ presets that look effectively identical.
 
 ### `aurora_sound` — implemented reference
 
-- The complete Aurora lift, hover, and settling cycle always continues.
-- Frequency bands and overall level raise existing Aurora bars.
+- Frequency bands directly determine grouped Aurora bar heights.
+- Overall level supplies the common lift while a slow breath prevents a rigid
+  equalizer appearance.
 - Strong band peaks become `╿`; extreme peaks become `┃`.
 - Silence renders the unchanged base Aurora.
 
@@ -276,16 +276,16 @@ presets that look effectively identical.
 - Map bass to the outer bars, mids toward the inner bars, and treble to the
   center so the form still reads as a symmetric instrument display.
 - Peak hold creates brief `┃` accents; centroid gently shifts the bright center.
-- Silence retains a dim, narrow symmetric pulse.
+- Silence renders the unchanged base spectrum.
 
 ### `radar_sound` — implemented
 
-- Bass controls sweep speed and the weight of the central target.
+- The sweep keeps a constant tempo; bass controls its width and target weight.
 - Onsets create temporary echoes at positions derived from the strongest
   frequency band.
 - Treble adds short fine-grained blips; mids widen detected targets.
 - Stereo balance places new echoes left or right of center.
-- Silence keeps one slow sweep rather than freezing the preset.
+- Silence renders the unchanged base radar.
 
 ### `constellation_sound` — implemented
 
@@ -307,7 +307,8 @@ presets that look effectively identical.
 
 ### `braid_sound` — implemented
 
-- Preserve the base weave; bass and midrange add stable local crossings.
+- Preserve the woven form; bass controls crossing weight and midrange controls
+  crossing width and frequency.
 - Strong onsets emphasize one crossing with `╳`; treble adds brief highlights
   that travel along a strand.
 - Stereo balance determines which strand receives the highlight.
@@ -320,7 +321,7 @@ presets that look effectively identical.
 - Treble adds small thread glints; onsets tighten one section like a shuttle
   impact.
 - Stereo balance selects shuttle direction.
-- Silence returns to a loose, readable textile pattern.
+- Silence renders the unchanged base loom.
 
 ### `comet_sound` — implemented
 
@@ -330,13 +331,14 @@ presets that look effectively identical.
   audio more quickly.
 - Stereo balance selects launch side and direction.
 - Treble creates short tail sparkles without spawning additional full comets.
-- Silence leaves occasional very slow ambient particles.
+- Silence renders the unchanged base comet.
 
 ### `smileys_sound` — implemented
 
 - Reuse the full base Kaomoji parade and keep each face unchanged throughout
   its complete traversal.
-- Treble adds sparse sparkle accents.
+- Level controls a slowly changing field of sparse accompaniment; bass favors
+  weight marks and treble sparkle accents.
 - Strong onsets briefly add one reaction figure, with bounded lifetime.
 - Level and stereo never change travel speed, mirror the parade, or make faces
   appear and disappear mid-flight.
@@ -344,8 +346,9 @@ presets that look effectively identical.
 
 ### `wave_sound` — implemented
 
-- Preserve the complete base swell, backwash, moving crests, and curl cycle.
-- Bass raises existing swells; high mids add sparse foam to existing crests.
+- Preserve a continuous swell, backwash, moving crest, and curl cycle in the
+  Wave glyph language.
+- Bass changes swell height and wavelength; high mids create foam.
 - Treble produces sparse spray accents.
 - Strong onsets create a breaker that travels across the existing wave.
 - Stereo balance selects breaker direction.
@@ -358,7 +361,7 @@ presets that look effectively identical.
   audio-shaped curve rather than independent bars.
 - Centroid moves the tracer; strong onsets briefly increase its brightness.
 - Stereo balance biases the tracer direction.
-- Silence settles toward a shallow, slowly breathing curve.
+- Silence renders the unchanged base spline.
 
 ### `square_sound` — implemented
 
@@ -368,7 +371,7 @@ presets that look effectively identical.
 - Onsets launch the existing overwrite runner; onset strength controls its
   length and speed.
 - Stereo balance selects the initial build or runner direction.
-- Silence draws a low-frequency trace with rare, slow runners.
+- Silence renders the unchanged base square.
 
 ### `ripples_sound` — implemented
 
@@ -377,14 +380,13 @@ presets that look effectively identical.
 - Onset strength controls initial radius and glyph weight.
 - Bass makes broad slow ripples; treble makes narrow fast ones.
 - Overall level controls how many simultaneous ripples may survive.
-- Silence allows existing ripples to decay completely before a subtle idle
-  pulse.
+- Silence renders the unchanged base ripples.
 
 ### `bloom_sound` — implemented
 
-- Preserve every base growth, flower, decay, and drifting seed event.
-- Bass strengthens existing stems; mids emphasize existing petal tips.
-- Strong onsets and treble add one local flower and sparse pollen accents.
+- Keep a continuously breathing bloom form.
+- Level and mids control opening and petal span; bass strengthens its stem.
+- Strong onsets open it locally and treble adds sparse pollen.
 - Silence renders the unchanged base bloom.
 
 ### `glitch_sound` — implemented
@@ -403,10 +405,11 @@ presets that look effectively identical.
 - Frequency bands modulate brightness along the existing woven ribbon.
 - Bass changes ribbon width, mids change curvature, and treble adds traveling
   highlights.
-- Centroid controls drift speed; stereo balance controls drift direction.
+- The phase clock and direction stay stable; audio controls fold width,
+  curvature, brightness, highlights, and local onset twists.
 - Strong onsets create one twist that propagates through the ribbon rather than
   a screen-wide glitch.
-- Silence retains a dim, slowly floating ribbon.
+- Silence renders the unchanged base ribbon.
 
 ### `shutter_sound` — implemented
 
@@ -417,7 +420,6 @@ presets that look effectively identical.
 - Peak strength controls the weight of the inward arrows and center seam.
 - Stereo affects short impulses only; it never shifts the aperture center.
 - Silence renders the unchanged base shutter.
-- Silence leaves the aperture mostly open with a slow mechanical breath.
 
 ## Delivery sequence
 
@@ -473,8 +475,9 @@ For the shared engine and every sound companion:
 - exactly `width` terminal columns at every tested width;
 - no panic for widths from zero through the configured maximum;
 - deterministic output for a fixed animation seed, time, and audio snapshot;
-- clearly different frames for silence, bass-heavy, mid-heavy, treble-heavy,
-  stereo-biased, and onset inputs where the preset uses those features;
+- clearly different frames for bass-heavy, mid-heavy, treble-heavy,
+  stereo-biased, and onset inputs where the preset uses those features, while
+  silence renders the unchanged base preset;
 - attack, release, warm-up, normalization, and event expiry remain
   time-based and FPS-independent;
 - base and sound variants satisfy the kinship and active-response rules;

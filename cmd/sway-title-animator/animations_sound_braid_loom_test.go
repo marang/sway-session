@@ -45,6 +45,14 @@ func TestBraidSoundHighlightFollowsStereo(t *testing.T) {
 	if lastIndexRune(string(right), '✦') >= lastIndexRune(string(left), '✦') {
 		t.Fatalf("opposite strands should travel oppositely: right=%q left=%q", string(right), string(left))
 	}
+
+	quiet, loud := []rune(strings.Repeat("╱", 80)), []rune(strings.Repeat("╱", 80))
+	addBraidSoundHighlight(quiet, 30, 0.4, 1)
+	addBraidSoundHighlight(loud, 30, 1, 1)
+	if lastIndexRune(string(quiet), '✦') != lastIndexRune(string(loud), '✦') {
+		t.Fatalf("instantaneous treble must not relocate the moving highlight: quiet=%q loud=%q",
+			string(quiet), string(loud))
+	}
 }
 
 func TestLoomSoundWarpWeftShuttleAndGlints(t *testing.T) {

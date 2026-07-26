@@ -15,31 +15,27 @@ func braidSoundArtWithSnapshot(width int, phase int, audio audioSnapshot) string
 	if width == 0 {
 		return ""
 	}
-	chars := fitRunes(braidArt(width, phase), width)
 	if !audio.Active {
-		return string(chars)
+		return string(fitRunes(braidArt(width, phase), width))
 	}
 	mids := (audio.LowMid + audio.HighMid) / 2
+	frequency := 0.32 + mids*0.16
+	clock := float64(phase)*0.044 +
+		signedOrganicNoise("braid_sound", 1, float64(phase)/151)*0.44
+	crossingWidth := 0.10 + mids*0.20
+	chars := make([]rune, width)
 	for index := range chars {
-		if chars[index] == '╳' && audio.Bass > 0.65 &&
-			(index+phase/19)%11 == 0 {
+		strand := math.Sin(float64(index)*frequency + clock)
+		crossing := math.Abs(strand)
+		switch {
+		case crossing < crossingWidth && audio.Bass > 0.58:
 			chars[index] = '╬'
-			continue
-		}
-		if chars[index] == '╳' && mids > 0.65 &&
-			(index-phase/23)%9 == 0 {
-			chars[index] = '╬'
-			continue
-		}
-		if chars[index] != '╱' && chars[index] != '╲' {
-			continue
-		}
-		bassCrossing := audio.Bass > 0.42 &&
-			(index+phase/13)%max(9, 17-int(math.Round(audio.Bass*5))) == 0
-		midCrossing := mids > 0.34 &&
-			(index-phase/17)%max(7, 15-int(math.Round(mids*6))) == 0
-		if bassCrossing || midCrossing {
+		case crossing < crossingWidth:
 			chars[index] = '╳'
+		case strand > 0:
+			chars[index] = '╱'
+		default:
+			chars[index] = '╲'
 		}
 	}
 	addBraidSoundCrossing(chars, audio)
@@ -84,7 +80,7 @@ func addBraidSoundHighlight(chars []rune, phase int, treble float64, balance flo
 		direction = -1
 	}
 	position := int(math.Mod(
-		float64(phase)*(0.07+treble*0.20)+float64(len(chars))*100,
+		float64(phase)*0.16+float64(len(chars))*100,
 		float64(len(chars)),
 	))
 	if direction < 0 {

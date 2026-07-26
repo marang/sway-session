@@ -61,23 +61,23 @@ of repeating a short fixed performance.
 `aurora_sound` keeps Aurora's bar language but maps the bars to
 frequency bands from the current default audio output. It reads
 `@DEFAULT_MONITOR@` through `parec`, reacts at the full configured FPS, and
-uses a straight `▁` bottom line while capture is available but silent. If
-capture is unavailable, every sound companion renders its normal base preset
+renders the normal Aurora while capture is available but silent. If capture is
+unavailable, every sound companion also renders its normal base preset
 after the single actionable warning. Strong peaks use `╿`; extreme peaks use
 `┃`. Sound companions are opt-in and are not part of the default rotation.
 
 `spectrum_sound` keeps Spectrum's mirrored instrument display, arranging bass
 toward the outside and treble near the center. `wave_sound` maps bass and mids
 to the swell and body of the wave, adds bounded treble spray, and sends a
-breaker across the trace when an onset arrives. Their silent forms continue as
-a narrow symmetric pulse and a small tide. Like all sound companions, both are
-opt-in and stay out of the default rotation.
+breaker across the trace when an onset arrives. During silence they render
+their complete base animations. Like all sound companions, both are opt-in and
+stay out of the default rotation.
 
 `square_sound` preserves Square's connected scan line while bass changes its
 plateau lengths, level changes duty cycle, and onsets send an overwrite runner
 in the stereo-selected direction. `ripples_sound` turns bounded onset history
-into broad bass rings or narrow high-frequency rings. Their silent forms remain
-a slow low-frequency trace and a subtle breathing ripple.
+into broad bass rings or narrow high-frequency rings. During silence they
+render their complete base animations.
 
 Sound-reactive presets require the `parec` command. Install the PulseAudio
 command-line utilities for your distribution (`libpulse` on Arch Linux,

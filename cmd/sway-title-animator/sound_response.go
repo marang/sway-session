@@ -6,7 +6,7 @@ import (
 	"slices"
 )
 
-const soundBandBlurRadius = 2
+const soundBandBlurRadius = 1
 
 func currentSoundSnapshot() audioSnapshot {
 	return calmSoundSnapshot(
@@ -35,12 +35,12 @@ func calmSoundSnapshot(snapshot audioSnapshot) audioSnapshot {
 	snapshot.Treble = calmSoundEnergy(snapshot.Treble)
 	snapshot.LeftLevel = calmSoundEnergy(snapshot.LeftLevel)
 	snapshot.RightLevel = calmSoundEnergy(snapshot.RightLevel)
-	snapshot.SpectralFlux = calmSoundTransient(snapshot.SpectralFlux) * 0.68
+	snapshot.SpectralFlux = calmSoundTransient(snapshot.SpectralFlux)
 	snapshot.Peak = calmSoundTransient(snapshot.Peak)
-	snapshot.Balance = math.Max(-1, math.Min(1, snapshot.Balance)) * 0.55
+	snapshot.Balance = math.Max(-1, math.Min(1, snapshot.Balance)) * 0.70
 	if snapshot.Active {
 		snapshot.Centroid = 0.5 +
-			(math.Max(0, math.Min(1, snapshot.Centroid))-0.5)*0.68
+			(math.Max(0, math.Min(1, snapshot.Centroid))-0.5)*0.82
 	}
 
 	snapshot.Onsets, snapshot.OnsetCount = calmSoundOnsets(snapshot)
@@ -48,13 +48,13 @@ func calmSoundSnapshot(snapshot audioSnapshot) audioSnapshot {
 }
 
 func calmSoundEnergy(value float64) float64 {
-	value = (math.Max(0, math.Min(1, value)) - 0.04) / 0.96
-	return smoothstep(value) * 0.90
+	value = math.Max(0, math.Min(1, value))
+	return math.Pow(value, 0.82)
 }
 
 func calmSoundTransient(value float64) float64 {
-	value = (math.Max(0, math.Min(1, value)) - 0.12) / 0.88
-	return smoothstep(value)
+	value = math.Max(0, math.Min(1, value))
+	return math.Pow(value, 0.72)
 }
 
 func calmSoundOnsets(snapshot audioSnapshot) ([audioEventCapacity]audioOnset, int) {
@@ -67,10 +67,8 @@ func calmSoundOnsets(snapshot audioSnapshot) ([audioEventCapacity]audioOnset, in
 			continue
 		}
 		if !found[region] || onset.ID > newest[region].ID {
-			onset.Strength = math.Min(
-				0.90,
-				0.34+calmSoundTransient(onset.Strength)*0.56,
-			)
+			onset.Strength = math.Min(0.95,
+				0.20+calmSoundTransient(onset.Strength)*0.80)
 			newest[region] = onset
 			found[region] = true
 		}

@@ -24,18 +24,25 @@ func constellationSoundArtWithSnapshot(width int, phase int, audio audioSnapshot
 		return string(chars)
 	}
 	for index := range width {
-		if chars[index] == ' ' {
-			continue
-		}
 		position := float64(index) / float64(max(1, width-1))
 		energy := interpolatedAudioBand(
 			audio.Bands,
 			position*float64(audioBandCount-1),
 		)
-		if energy > 0.72 {
+		twinkle := 0.76 + 0.28*organicNoise(
+			"constellation_sound", uint64(100+index), float64(phase)/7.5,
+		)
+		energy = math.Min(1, energy*twinkle+audio.Level*0.10)
+		density := animationRandom("constellation_sound", 10, int64(index))
+		switch {
+		case chars[index] != ' ' && energy > 0.68:
 			chars[index] = '✦'
-		} else if energy > 0.48 && chars[index] == '·' {
+		case chars[index] != ' ' && energy > 0.42:
 			chars[index] = '•'
+		case chars[index] == ' ' && density > 0.94 && energy > 0.48:
+			chars[index] = '✧'
+		case chars[index] == ' ' && density > 0.86 && energy > 0.30:
+			chars[index] = '·'
 		}
 	}
 
@@ -82,7 +89,7 @@ func addConstellationShootingStar(chars []rune, phase int, audio audioSnapshot) 
 		direction = -1
 	}
 	position := int(math.Mod(
-		float64(phase)*(0.12+audio.SpectralFlux*0.20)+float64(len(chars))*100,
+		float64(phase)*0.18+float64(len(chars))*100,
 		float64(len(chars)),
 	))
 	for distance, glyph := range []rune{'✧', '─', '╴'} {
@@ -117,17 +124,42 @@ func circuitSoundArtWithSnapshot(width int, phase int, audio audioSnapshot) stri
 			position*float64(audioBandCount-1),
 		)
 		switch {
-		case energy > 0.82 && chars[index] == '╪':
+		case energy > 0.70 && strings.ContainsRune("╪╾╼", chars[index]):
 			chars[index] = '●'
-		case energy > 0.64 && strings.ContainsRune("─╍┄═", chars[index]):
+		case energy > 0.52 && strings.ContainsRune("─╍┄═", chars[index]):
 			chars[index] = '═'
-		case energy > 0.38 && chars[index] == '─':
+		case energy > 0.28 && chars[index] == '─':
 			chars[index] = '╍'
 		}
 	}
+	addCircuitSoundFlow(chars, phase, audio)
 	addCircuitSoundCurrent(chars, audio)
 	addCircuitSoundSparks(chars, phase, audio)
 	return string(chars)
+}
+
+func addCircuitSoundFlow(chars []rune, phase int, audio audioSnapshot) {
+	if len(chars) == 0 || audio.Level < 0.12 {
+		return
+	}
+	center := int(math.Mod(
+		float64(phase)*0.18+
+			organicNoise("circuit_sound", 3, 0.41)*float64(len(chars)),
+		float64(len(chars)),
+	))
+	mids := (audio.LowMid + audio.HighMid) / 2
+	radius := 2 + int(math.Round(mids*math.Min(8, float64(len(chars))*0.08)))
+	for offset := -radius; offset <= radius; offset++ {
+		index := center + offset
+		if index < 0 || index >= len(chars) {
+			continue
+		}
+		if offset == 0 && audio.Bass > 0.42 {
+			chars[index] = '●'
+		} else if math.Abs(float64(offset)) <= float64(radius)*audio.Level {
+			chars[index] = '═'
+		}
+	}
 }
 
 func addCircuitSoundCurrent(chars []rune, audio audioSnapshot) {

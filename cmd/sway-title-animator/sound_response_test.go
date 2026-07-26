@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-func TestCalmSoundSnapshotBroadensBandsAndCompressesMotion(t *testing.T) {
+func TestCalmSoundSnapshotBroadensBandsWithoutDestroyingResponse(t *testing.T) {
 	snapshot := audioSnapshot{
 		Active:       true,
 		Level:        0.8,
@@ -25,16 +25,16 @@ func TestCalmSoundSnapshotBroadensBandsAndCompressesMotion(t *testing.T) {
 	}
 
 	calm := calmSoundSnapshot(snapshot)
-	if calm.Level >= snapshot.Level ||
-		calm.Bass >= snapshot.Bass ||
-		calm.SpectralFlux >= snapshot.SpectralFlux ||
+	if calm.Level <= snapshot.Level ||
+		calm.Bass <= snapshot.Bass ||
+		calm.SpectralFlux <= snapshot.SpectralFlux ||
 		calm.Balance >= snapshot.Balance {
-		t.Fatalf("expected a compressed visual response, got %+v", calm)
+		t.Fatalf("expected lifted visual energy with bounded balance, got %+v", calm)
 	}
 
 	rawVariation := maximumAdjacentBandDifference(snapshot.Bands)
 	calmVariation := maximumAdjacentBandDifference(calm.Bands)
-	if calmVariation >= rawVariation*0.35 {
+	if calmVariation >= rawVariation*0.60 {
 		t.Fatalf("expected broad frequency regions, raw variation %.3f calm variation %.3f",
 			rawVariation, calmVariation)
 	}
@@ -66,7 +66,7 @@ func TestCalmSoundSnapshotKeepsOnlyNewestOnsetPerRegion(t *testing.T) {
 		if calm.Onsets[index].ID != id {
 			t.Fatalf("unexpected onset selection: %+v", calm.Onsets)
 		}
-		if calm.Onsets[index].Strength > 0.90 {
+		if calm.Onsets[index].Strength > 0.95 {
 			t.Fatalf("visual onset strength must remain bounded: %+v", calm.Onsets[index])
 		}
 	}

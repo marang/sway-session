@@ -53,17 +53,18 @@ func TestCometSoundCentroidVelocityStereoAndTailFeatures(t *testing.T) {
 	}
 }
 
-func TestCometSoundSilenceUsesOnlySlowAmbientParticles(t *testing.T) {
+func TestCometSoundSilenceUsesCompleteBaseAnimation(t *testing.T) {
 	frames := map[string]bool{}
 	for _, phase := range []int{0, 47, 113, 229} {
 		frame := cometSoundArtWithSnapshot(80, phase, audioSnapshot{})
-		if strings.ContainsRune(frame, '☄') || !strings.ContainsAny(frame, "·∙") {
-			t.Fatalf("silence should contain particles but no comet: %q", frame)
+		if want := cometArt(80, phase); frame != want {
+			t.Fatalf("silence should render the complete base comet:\nwant: %q\ngot:  %q",
+				want, frame)
 		}
 		frames[frame] = true
 	}
 	if len(frames) < 2 {
-		t.Fatalf("ambient particles should drift slowly, got %v", frames)
+		t.Fatalf("base comet should keep moving, got %v", frames)
 	}
 }
 

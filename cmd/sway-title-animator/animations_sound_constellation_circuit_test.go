@@ -50,6 +50,17 @@ func TestConstellationSoundSupernovaAndFluxFollowStereo(t *testing.T) {
 	if !strings.ContainsAny(right, "─╴") || !strings.ContainsAny(left, "─╴") {
 		t.Fatal("spectral flux should create a bounded shooting star")
 	}
+
+	lowFlux, highFlux := make([]rune, 100), make([]rune, 100)
+	audio.Balance = 1
+	audio.SpectralFlux = 0.3
+	addConstellationShootingStar(lowFlux, 20, audio)
+	audio.SpectralFlux = 0.9
+	addConstellationShootingStar(highFlux, 20, audio)
+	if lastIndexRune(string(lowFlux), '✧') != lastIndexRune(string(highFlux), '✧') {
+		t.Fatalf("instantaneous flux must not relocate the shooting star: low=%q high=%q",
+			string(lowFlux), string(highFlux))
+	}
 }
 
 func TestCircuitSoundBandsCurrentMidsAndTreble(t *testing.T) {

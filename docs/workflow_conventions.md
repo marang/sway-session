@@ -111,7 +111,7 @@ For sound-reactive changes, verify these states separately:
 
 - capture unavailable: base visual plus one actionable process-lifetime
   warning;
-- capture available but silent: calm preset-specific idle;
+- capture available but silent: unchanged, complete base animation;
 - active audio: bounded, smooth response without frame-rate-dependent motion.
 
 Never claim a real Sway or sound check that was not actually run.

@@ -19,21 +19,22 @@ func smileysSoundArtWithSnapshot(width int, phase int, audio audioSnapshot) stri
 	if !audio.Active {
 		return string(chars)
 	}
-	if audio.Treble > 0.58 {
-		accented := false
-		for index := range chars {
-			if (chars[index] == '·' || chars[index] == '｡') &&
-				(index+phase/11)%5 == 0 {
-				chars[index] = '✦'
-				accented = true
-			}
+	mids := (audio.LowMid + audio.HighMid) / 2
+	for index := range chars {
+		if chars[index] != ' ' {
+			continue
 		}
-		if !accented {
-			for index := range chars {
-				if chars[index] == ' ' {
-					chars[index] = '✦'
-					break
-				}
+		pulse := organicNoise(
+			"smileys_sound", uint64(100+index), float64(phase)/24,
+		)
+		if pulse > 0.92-audio.Level*0.30 {
+			switch {
+			case audio.Treble > 0.48:
+				chars[index] = '✦'
+			case audio.Bass > mids:
+				chars[index] = '●'
+			default:
+				chars[index] = '·'
 			}
 		}
 	}
@@ -70,20 +71,38 @@ func glitchSoundArtWithSnapshot(width int, phase int, audio audioSnapshot) strin
 		return string(chars)
 	}
 
-	density := math.Max(0, math.Min(1, audio.SpectralFlux*0.72))
-	spacing := max(8, 23-int(math.Round(density*12)))
+	density := math.Max(0, math.Min(1, audio.SpectralFlux*0.82+audio.Level*0.18))
+	spacing := max(5, 19-int(math.Round(density*12)))
 	motionPhase := phase / 5
 	for index := range chars {
 		if (index+motionPhase)%spacing == 0 && chars[index] == '─' {
 			chars[index] = '┄'
 		}
-		if audio.Treble > 0.48 &&
-			(index*3+motionPhase)%max(11, 23-int(math.Round(audio.Treble*8))) == 0 {
+		if audio.Treble > 0.32 &&
+			(index*3+motionPhase)%max(7, 19-int(math.Round(audio.Treble*9))) == 0 {
 			chars[index] = []rune{'╴', '╶', '╪'}[(index+motionPhase)%3]
 		}
 	}
+	addGlitchSoundWindow(chars, phase, density)
 	addGlitchSoundDisplacement(chars, audio)
 	return string(chars)
+}
+
+func addGlitchSoundWindow(chars []rune, phase int, density float64) {
+	if len(chars) == 0 || density < 0.16 {
+		return
+	}
+	center := int(organicNoise(
+		"glitch_sound", 8, float64(phase)/58,
+	) * float64(len(chars)-1))
+	radius := 2 + int(math.Round(density*math.Min(10, float64(len(chars))*0.10)))
+	tiles := []rune{'╴', '╶', '╪', '╳', '░', '▒'}
+	for index := max(0, center-radius); index <= min(len(chars)-1, center+radius); index++ {
+		if animationRandom("glitch_sound", 80, int64(index+phase/9)) > density {
+			continue
+		}
+		chars[index] = tiles[abs(index+phase/7)%len(tiles)]
+	}
 }
 
 func addGlitchSoundDisplacement(chars []rune, audio audioSnapshot) {

@@ -288,21 +288,18 @@ func radarSoundArtWithSnapshot(width int, phase int, audio audioSnapshot) string
 	bass := audio.Bass
 	mids := (audio.LowMid + audio.HighMid) / 2
 	treble := audio.Treble
-	speed := 0.10
-	if audio.Active {
-		speed += bass * 0.62
-	}
+	speed := 0.18
 	sweep := radarSoundSweepPosition(width, phase, speed)
-	sweepWidth := 3.2 + bass*5.2
+	sweepWidth := 2.6 + bass*8.0
 	for index := range width {
 		distance := wrappedDistance(float64(index), sweep, float64(width))
 		levels[index] = math.Max(0, 1-distance/sweepWidth)
 	}
 
 	targetWidth := 0.65 + mids*3.2
-	targetWeight := 0.38
+	targetWeight := 0.30
 	if audio.Active {
-		targetWeight += bass * 0.62
+		targetWeight += bass * 0.70
 	}
 	for index := range width {
 		distance := math.Abs(float64(index) - center)
@@ -455,12 +452,13 @@ func shutterSoundArtWithSnapshot(width int, phase int, audio audioSnapshot) stri
 
 func shutterSoundGeometry(width int, phase int, audio audioSnapshot) (float64, float64, float64) {
 	center := float64(max(0, width-1)) / 2
-	breathClock := float64(phase)*0.018 + signedOrganicNoise("shutter_sound", 1, 0.41)*0.65
+	breathClock := float64(phase)*0.024 + signedOrganicNoise("shutter_sound", 1, 0.41)*0.65
 	breath := 0.5 + 0.5*math.Sin(breathClock)
 	openness := 0.22 + breath*0.66
 	closure := 1 - openness
 	if audio.Active {
-		closure += (audio.LowMid - 0.5) * 0.18
+		audioClosure := 0.08 + audio.LowMid*0.76
+		closure = closure*0.55 + audioClosure*0.45
 		if onset, ok := newestSoundOnset(audio, audioRegionBass); ok {
 			const lifetime = 1350 * time.Millisecond
 			if onset.Age >= 0 && onset.Age < lifetime {

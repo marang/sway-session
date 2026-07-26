@@ -18,12 +18,15 @@ func cometSoundArtWithSnapshot(width int, phase int, audio audioSnapshot) string
 	if width == 0 {
 		return ""
 	}
+	if !audio.Active {
+		return string(fitRunes(cometArt(width, phase), width))
+	}
 
 	chars := make([]rune, width)
 	for index := range chars {
 		chars[index] = ' '
 	}
-	addCometSoundParticles(chars, phase, audio.Active)
+	addCometSoundParticles(chars, phase, audio)
 	onset, ok := newestSoundOnset(audio, audioRegionBass)
 	head, direction, envelope, live := cometSoundFlight(width, onset, audio.Centroid)
 	if !ok || !live {
@@ -49,7 +52,7 @@ func cometSoundArtWithSnapshot(width int, phase int, audio audioSnapshot) string
 			chars[index] = '▒'
 		case density > 0.18:
 			chars[index] = '░'
-		case chars[index] == 0:
+		case chars[index] == ' ':
 			chars[index] = '·'
 		}
 	}
@@ -80,24 +83,31 @@ func cometSoundFlight(width int, onset audioOnset, centroid float64) (float64, i
 	return head, direction, envelope, true
 }
 
-func addCometSoundParticles(chars []rune, phase int, active bool) {
+func addCometSoundParticles(chars []rune, phase int, audio audioSnapshot) {
 	if len(chars) == 0 {
 		return
 	}
-	count := max(4, len(chars)/14)
-	if active {
-		count = max(3, len(chars)/24)
-	}
+	count := max(3, int(math.Round(
+		float64(len(chars))*(0.025+audio.Level*0.14),
+	)))
+	count = min(max(3, len(chars)/6), count)
 	for particle := range count {
 		origin := organicNoise("comet_sound", uint64(10+particle), 0.29) * float64(len(chars))
 		speed := 0.007 + organicNoise("comet_sound", uint64(30+particle), 0.73)*0.012
 		position := math.Mod(origin+float64(phase)*speed, float64(len(chars)))
 		index := max(0, min(len(chars)-1, int(position)))
-		if particle%5 == 0 {
+		bandPosition := float64(index) / float64(max(1, len(chars)-1))
+		energy := 0.45*audio.Level + 0.55*interpolatedAudioBand(
+			audio.Bands, bandPosition*float64(audioBandCount-1),
+		)
+		switch {
+		case audio.Treble > 0.52 && particle%4 == 0:
 			chars[index] = '✧'
-		} else if particle%3 == 0 {
+		case energy > 0.58:
+			chars[index] = '░'
+		case particle%3 == 0:
 			chars[index] = '∙'
-		} else {
+		default:
 			chars[index] = '·'
 		}
 	}
@@ -116,28 +126,87 @@ func bloomSoundArtWithSnapshot(width int, phase int, audio audioSnapshot) string
 	if width == 0 {
 		return ""
 	}
-	chars := fitRunes(bloomArt(width, phase), width)
 	if !audio.Active {
-		return string(chars)
+		return string(fitRunes(bloomArt(width, phase), width))
 	}
+
+	openness, onset := bloomSoundOpenness(phase, audio)
+	center := width / 2
+	mids := (audio.LowMid + audio.HighMid) / 2
+	span := 3 + int(math.Round(openness*(5+mids*math.Min(16, float64(width)*0.18))))
+	left := max(0, center-span)
+	right := min(width-1, center+span)
+	stem := '─'
+	if audio.Bass > 0.48 {
+		stem = '━'
+	}
+
+	chars := make([]rune, width)
 	for index := range chars {
-		if audio.Bass > 0.58 && chars[index] == '─' {
-			chars[index] = '━'
-		}
-		if audio.HighMid > 0.55 &&
-			(chars[index] == '╴' || chars[index] == '─' || chars[index] == '━') &&
-			(index+phase/11)%7 == 0 {
+		chars[index] = ' '
+	}
+	for index := left; index <= right; index++ {
+		distance := math.Abs(float64(index-center)) / float64(max(1, span))
+		switch {
+		case index == center:
+			if openness > 0.66 {
+				chars[index] = '✦'
+			} else {
+				chars[index] = '❧'
+			}
+		case distance > 0.80:
 			chars[index] = '⌁'
+		case distance > 0.62:
+			chars[index] = '╴'
+		default:
+			chars[index] = stem
 		}
 	}
-	onset, ok := newestSoundOnset(audio, audioRegionGeneral)
-	if ok && onset.Strength > 0.52 && onset.Age >= 0 && onset.Age < 1200*time.Millisecond {
-		center := int(math.Round((0.5 + onset.Position*0.4) * float64(width-1)))
-		center = max(0, min(width-1, center))
-		chars[center] = '✦'
-		if audio.Treble > 0.4 && center+2 < width {
-			chars[center+2] = '·'
-		}
-	}
+	addBloomSoundPollen(chars, phase, audio, onset, left, right)
 	return string(chars)
+}
+
+func bloomSoundOpenness(phase int, audio audioSnapshot) (float64, audioOnset) {
+	breath := 0.5 + 0.5*math.Sin(
+		float64(phase)*0.018+signedOrganicNoise("bloom_sound", 1, 0.47)*0.8,
+	)
+	openness := 0.12 + breath*0.20 + audio.Level*0.56
+	onset, ok := newestSoundOnset(audio, audioRegionGeneral)
+	if !ok || onset.Strength < 0.48 || onset.Age < 0 {
+		return math.Min(1, openness), audioOnset{}
+	}
+	const lifetime = 1500 * time.Millisecond
+	if onset.Age >= lifetime {
+		return math.Min(1, openness), audioOnset{}
+	}
+	progress := float64(onset.Age) / float64(lifetime)
+	envelope := 1 - smoothstep(progress)
+	return math.Min(1, math.Max(openness, onset.Strength*envelope)), onset
+}
+
+func addBloomSoundPollen(
+	chars []rune,
+	phase int,
+	audio audioSnapshot,
+	onset audioOnset,
+	left int,
+	right int,
+) {
+	if audio.Treble < 0.36 {
+		return
+	}
+	count := 1 + int(math.Round(audio.Treble*3))
+	for particle := range count {
+		distance := 2 + particle*3 + phase/12%4
+		index := left - distance
+		if particle%2 == 1 {
+			index = right + distance
+		}
+		if onset.ID != 0 {
+			index += int(onset.ID%3) - 1
+		}
+		if index >= 0 && index < len(chars) {
+			chars[index] = '·'
+		}
+	}
 }

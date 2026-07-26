@@ -63,7 +63,7 @@ long-running behavior.
   Intentional relationships require a documented allowlist entry.
 - Sound variants use the `<base>_sound` name, keep the base preset's visual
   language, use the base preset when capture is unavailable, and provide a calm
-  preset-specific idle when capture is available but silent.
+  complete base animation when capture is available but silent.
 - Do not add sound variants to the default rotation; users opt in explicitly.
 
 ## Audio

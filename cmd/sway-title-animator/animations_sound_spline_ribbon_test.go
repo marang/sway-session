@@ -63,8 +63,8 @@ func TestRibbonSoundBandsBassMidsTrebleAndDirection(t *testing.T) {
 		t.Fatalf("audio should shape ribbon and highlights: %q", energized)
 	}
 	active.Balance = -1
-	if reversed := ribbonSoundArtWithSnapshot(120, 20, active); reversed == energized {
-		t.Fatal("stereo balance should reverse ribbon drift")
+	if reversed := ribbonSoundArtWithSnapshot(120, 20, active); reversed != energized {
+		t.Fatal("instantaneous stereo balance must not reverse or jump the ribbon")
 	}
 }
 

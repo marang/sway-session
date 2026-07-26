@@ -26,7 +26,7 @@ func splineSoundArtWithSnapshot(width int, phase int, audio audioSnapshot) strin
 			energy = interpolatedAudioBand(audio.Bands, position*float64(audioBandCount-1))
 		}
 		y := 1.5 + seedLift +
-			math.Sin(position*math.Pi*2+clock)*0.24 + (energy-0.5)*1.70
+			math.Sin(position*math.Pi*2+clock)*0.24 + (energy-0.5)*2.20
 		chars[index] = splineSoundCurveGlyph(y)
 	}
 	tracer := splineSoundTracer(width, phase, audio)
@@ -59,14 +59,16 @@ func splineSoundTracer(width int, phase int, audio audioSnapshot) int {
 	if width <= 0 {
 		return 0
 	}
-	centroid, direction := 0.5, 1.0
+	centroid := 0.5
+	balance := 0.0
 	if audio.Active {
 		centroid = math.Max(0, math.Min(1, audio.Centroid))
-		if audio.Balance < 0 {
-			direction = -1
-		}
+		balance = math.Max(-1, math.Min(1, audio.Balance))
 	}
-	position := centroid*float64(width-1) + direction*float64(phase)*0.035
+	centroidOffset := (centroid - 0.5) * float64(width-1) * 0.22
+	balanceOffset := balance * float64(width-1) * 0.08
+	position := float64(width-1)*0.5 + centroidOffset +
+		balanceOffset + float64(phase)*0.050
 	return int(math.Mod(position+float64(width)*100, float64(width)))
 }
 
@@ -80,19 +82,14 @@ func ribbonSoundArtWithSnapshot(width int, phase int, audio audioSnapshot) strin
 	if width == 0 {
 		return ""
 	}
-	bass, mids, treble, centroid := audio.Bass, (audio.LowMid+audio.HighMid)/2,
-		audio.Treble, audio.Centroid
+	bass, mids, treble := audio.Bass, (audio.LowMid+audio.HighMid)/2,
+		audio.Treble
 	if !audio.Active {
-		bass, mids, treble, centroid = 0.18, 0.18, 0, 0.22
+		return string(fitRunes(ribbonArt(width, phase), width))
 	}
-	direction := 1.0
-	if audio.Balance < 0 {
-		direction = -1
-	}
-	speed := 0.012 + centroid*0.040
-	clock := direction*float64(phase)*speed +
-		signedOrganicNoise("ribbon_sound", 1, float64(phase)/218)*1.55
-	frequency := 0.10 + mids*0.13
+	clock := float64(phase)*0.026 +
+		signedOrganicNoise("ribbon_sound", 1, float64(phase)/173)*0.62
+	frequency := 0.11 + mids*0.12
 	ramp := []rune("·░▒▓█")
 	chars := make([]rune, width)
 	twistCenter, twistEnvelope, twistLive := ribbonSoundTwist(width, audio)
@@ -104,14 +101,14 @@ func ribbonSoundArtWithSnapshot(width int, phase int, audio audioSnapshot) strin
 		}
 		fold := 0.5 + 0.5*math.Sin(float64(index)*frequency+clock)
 		curve := 0.5 + 0.5*math.Sin(float64(index)*frequency*0.47-clock*0.63)
-		level := 0.10 + fold*(0.30+bass*0.30) + curve*mids*0.18 + band*0.28
+		level := 0.06 + fold*(0.24+bass*0.36) + curve*mids*0.20 + band*0.42
 		if twistLive {
 			distance := math.Abs(float64(index) - twistCenter)
 			twist := math.Exp(-math.Pow(distance/3.4, 2)) * twistEnvelope
 			level = level*(1-twist) + (1-level)*twist
 		}
-		if treble > 0.55 &&
-			(index+phase/6)%max(11, 20-int(math.Round(treble*6))) == 0 {
+		if treble > 0.46 &&
+			(index+phase/7)%max(9, 19-int(math.Round(treble*7))) == 0 {
 			chars[index] = '✦'
 		} else {
 			chars[index] = rampPick(ramp, math.Max(0, math.Min(1, level)))

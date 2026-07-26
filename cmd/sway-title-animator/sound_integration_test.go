@@ -1,6 +1,7 @@
 package main
 
 import (
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -43,7 +44,103 @@ func TestInactiveAudioPreservesEveryCompleteBaseChoreography(t *testing.T) {
 }
 
 func TestEverySoundCompanionKeepsMovingWithSteadyAudio(t *testing.T) {
-	renderers := map[string]func(int, int, audioSnapshot) string{
+	renderers := soundSnapshotRenderers()
+	audio := steadySoundTestSnapshot()
+
+	for name, render := range renderers {
+		t.Run(name, func(t *testing.T) {
+			frames := map[string]bool{}
+			for _, phase := range []int{0, 73, 149, 227} {
+				frames[render(100, phase, audio)] = true
+			}
+			if len(frames) < 2 {
+				t.Fatalf("steady audio froze the animation across its sampled cycle")
+			}
+		})
+	}
+}
+
+func TestEverySoundCompanionRespondsClearlyToMusic(t *testing.T) {
+	renderers := soundSnapshotRenderers()
+	quiet := steadySoundTestSnapshot()
+	quiet.Level, quiet.Bass, quiet.LowMid, quiet.HighMid, quiet.Treble = 0.16, 0.14, 0.12, 0.15, 0.10
+	for index := range quiet.Bands {
+		quiet.Bands[index] = 0.10 + float64(index%3)*0.025
+	}
+	normal := steadySoundTestSnapshot()
+	normal.OnsetCount = 3
+	normal.Onsets[0] = audioOnset{
+		ID: 1, Age: 220 * time.Millisecond, Strength: 0.78,
+		Region: audioRegionGeneral, Position: 0.35,
+	}
+	normal.Onsets[1] = audioOnset{
+		ID: 2, Age: 180 * time.Millisecond, Strength: 0.82,
+		Region: audioRegionBass, Position: -0.25,
+	}
+	normal.Onsets[2] = audioOnset{
+		ID: 3, Age: 140 * time.Millisecond, Strength: 0.74,
+		Region: audioRegionHigh, Position: 0.15,
+	}
+
+	const (
+		width                  = 100
+		phase                  = 83
+		minimumBaseDifference  = 0.04
+		minimumAudioDifference = 0.08
+	)
+	for name, render := range renderers {
+		t.Run(name, func(t *testing.T) {
+			baseName := strings.TrimSuffix(name, "_sound")
+			base := string(fitRunes(animationPresets[baseName](width, phase), width))
+			quietFrame := render(width, phase, quiet)
+			normalFrame := render(width, phase, normal)
+			difference := frameDifferenceRatio(base, normalFrame)
+			if difference < minimumBaseDifference {
+				t.Fatalf("normal music response is too close to %s: difference %.3f\nbase:  %q\nsound: %q",
+					baseName, difference, base, normalFrame)
+			}
+			if audioDifference := frameDifferenceRatio(quietFrame, normalFrame); audioDifference < minimumAudioDifference {
+				t.Fatalf("quiet-to-normal music response is too small: difference %.3f\nquiet:  %q\nnormal: %q",
+					audioDifference, quietFrame, normalFrame)
+			}
+		})
+	}
+}
+
+func TestSoundCompanionsDoNotJumpForSmallAudioChange(t *testing.T) {
+	audio := steadySoundTestSnapshot()
+	nearby := audio
+	nearby.Level += 0.015
+	nearby.Bass += 0.015
+	nearby.LowMid += 0.015
+	nearby.HighMid += 0.015
+	nearby.Treble += 0.015
+	nearby.Centroid += 0.015
+	nearby.Balance += 0.015
+	nearby.SpectralFlux += 0.015
+	for index := range nearby.Bands {
+		nearby.Bands[index] = math.Min(1, nearby.Bands[index]+0.015)
+	}
+
+	for name, render := range soundSnapshotRenderers() {
+		t.Run(name, func(t *testing.T) {
+			if name == "square_sound" {
+				// Plateau lengths are the audio signal; a one-column change
+				// intentionally reflows the connected waveform.
+				return
+			}
+			first := render(100, 83, audio)
+			second := render(100, 83, nearby)
+			if difference := frameDifferenceRatio(first, second); difference > 0.45 {
+				t.Fatalf("small audio change replaced too much of the frame: difference %.3f\nfirst:  %q\nsecond: %q",
+					difference, first, second)
+			}
+		})
+	}
+}
+
+func soundSnapshotRenderers() map[string]func(int, int, audioSnapshot) string {
+	return map[string]func(int, int, audioSnapshot) string{
 		"aurora_sound":        auroraSoundArtWithSnapshot,
 		"bloom_sound":         bloomSoundArtWithSnapshot,
 		"braid_sound":         braidSoundArtWithSnapshot,
@@ -62,6 +159,9 @@ func TestEverySoundCompanionKeepsMovingWithSteadyAudio(t *testing.T) {
 		"square_sound":        squareSoundArtWithSnapshot,
 		"wave_sound":          waveSoundArtWithSnapshot,
 	}
+}
+
+func steadySoundTestSnapshot() audioSnapshot {
 	audio := audioSnapshot{
 		CaptureAvailable: true,
 		Active:           true,
@@ -78,18 +178,30 @@ func TestEverySoundCompanionKeepsMovingWithSteadyAudio(t *testing.T) {
 	for index := range audio.Bands {
 		audio.Bands[index] = 0.28 + float64(index%7)*0.08
 	}
+	return audio
+}
 
-	for name, render := range renderers {
-		t.Run(name, func(t *testing.T) {
-			frames := map[string]bool{}
-			for _, phase := range []int{0, 73, 149, 227} {
-				frames[render(100, phase, audio)] = true
-			}
-			if len(frames) < 2 {
-				t.Fatalf("steady audio froze the animation across its sampled cycle")
-			}
-		})
+func frameDifferenceRatio(first string, second string) float64 {
+	firstRunes := []rune(first)
+	secondRunes := []rune(second)
+	width := max(len(firstRunes), len(secondRunes))
+	if width == 0 {
+		return 0
 	}
+	different := 0
+	for index := range width {
+		var firstRune, secondRune rune
+		if index < len(firstRunes) {
+			firstRune = firstRunes[index]
+		}
+		if index < len(secondRunes) {
+			secondRune = secondRunes[index]
+		}
+		if firstRune != secondRune {
+			different++
+		}
+	}
+	return float64(different) / float64(width)
 }
 
 func BenchmarkAllSoundPresets(b *testing.B) {

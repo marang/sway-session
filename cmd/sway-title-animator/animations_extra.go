@@ -3,7 +3,6 @@ package main
 import (
 	"math"
 	"slices"
-	"strings"
 	"time"
 )
 
@@ -185,7 +184,7 @@ func auroraSoundArt(width int, phase int) string {
 }
 
 const (
-	auroraSoundNeedleThreshold     = 0.72
+	auroraSoundNeedleThreshold     = 0.58
 	auroraSoundHardNeedleThreshold = 0.86
 )
 
@@ -194,11 +193,12 @@ func auroraSoundArtWithSnapshot(width int, phase int, audio audioSnapshot) strin
 	if width == 0 {
 		return ""
 	}
-	chars := fitRunes(auroraArt(width, phase), width)
 	if !audio.Active {
-		return string(chars)
+		return string(fitRunes(auroraArt(width, phase), width))
 	}
 
+	chars := make([]rune, width)
+	breathe := 0.94 + 0.06*math.Sin(float64(phase)*0.018)
 	for index := range width {
 		groupCenter := (index/3)*3 + 1
 		groupCenter = min(width-1, groupCenter)
@@ -208,19 +208,17 @@ func auroraSoundArtWithSnapshot(width int, phase int, audio audioSnapshot) strin
 		}
 		bandPosition := math.Pow(position, 0.72) * float64(audioBandCount-1)
 		energy := interpolatedAudioBand(audio.Bands, bandPosition)
-		level := energy*0.82 + audio.Level*0.12
+		level := (energy*0.84 + audio.Level*0.16) * breathe
 		level = math.Max(0, math.Min(1, level))
 
 		switch {
-		case energy >= auroraSoundHardNeedleThreshold:
+		case energy >= auroraSoundHardNeedleThreshold ||
+			(energy >= 0.68 && audio.Peak >= 0.72):
 			chars[index] = '┃'
 		case energy >= auroraSoundNeedleThreshold:
 			chars[index] = '╿'
-		case slices.Contains(auroraBars, chars[index]):
-			audioGlyph := rampPick(auroraBars, level)
-			if slices.Index(auroraBars, audioGlyph) > slices.Index(auroraBars, chars[index]) {
-				chars[index] = audioGlyph
-			}
+		default:
+			chars[index] = rampPick(auroraBars, level)
 		}
 	}
 	return string(chars)
@@ -349,48 +347,80 @@ func waveSoundArtWithSnapshot(width int, phase int, audio audioSnapshot) string 
 	if width == 0 {
 		return ""
 	}
-	chars := fitRunes(waveArt(width, phase), width)
+	chars := make([]rune, width)
+	slowPhase := float64(phase)*0.020 +
+		signedOrganicNoise("wave_sound", 1, float64(phase)/193)*1.4 +
+		signedOrganicNoise("wave_sound", 2, 0.37)*math.Pi
 	if !audio.Active {
-		return string(chars)
+		return string(fitRunes(waveArt(width, phase), width))
 	}
 
+	waveNumber := 0.105 - audio.Bass*0.040
+	swellHeight := 0.24 + audio.Bass*0.46
+	body := 0.10 + audio.LowMid*0.26
+	foamAmount := audio.HighMid
+	sprayAmount := audio.Treble
 	breakerOnset, hasBreaker := newestSoundOnset(audio, audioRegionGeneral)
 	breakerCenter, breakerEnvelope, breakerLive := waveSoundBreaker(width, breakerOnset)
 	hasBreaker = hasBreaker && breakerLive
 	for index := range chars {
-		if audio.Bass > 0.56 {
-			switch chars[index] {
-			case '▁':
-				chars[index] = '▃'
-			case '▃':
-				chars[index] = '▅'
-			case '▅':
-				chars[index] = '▇'
-			}
-		}
-		if audio.HighMid > 0.52 && strings.ContainsRune("▇█◜◝◞◟", chars[index]) &&
-			(index+phase/7)%7 == 0 {
-			chars[index] = '≈'
-		}
-		if audio.Treble > 0.62 && chars[index] != ' ' && (index+phase/9)%17 == 0 {
-			chars[index] = '·'
-		}
+		x := float64(index)
+		angle := x*waveNumber - slowPhase*0.82
+		backwashAngle := x*waveNumber*0.43 + slowPhase*0.25 + 1.7
+		swell := 0.5 + 0.5*math.Sin(angle)
+		backwash := 0.5 + 0.5*math.Sin(backwashAngle)
+		level := math.Min(1, 0.06+swell*swellHeight+backwash*body)
+		slope := math.Cos(angle)*waveNumber*swellHeight +
+			math.Cos(backwashAngle)*waveNumber*0.43*body
+
+		breaker := 0.0
 		if hasBreaker {
-			distance := math.Abs(float64(index) - breakerCenter)
 			spread := 4.8 + breakerOnset.Strength*5.2
-			breaker := breakerEnvelope * math.Exp(-math.Pow(distance/spread, 2))
-			if breaker > 0.72 {
-				chars[index] = []rune("◜◝◞◟")[(index+phase/7)%4]
-			} else if breaker > 0.46 {
-				if index < int(math.Round(breakerCenter)) {
-					chars[index] = '╱'
-				} else {
-					chars[index] = '╲'
-				}
-			}
+			breaker = breakerEnvelope *
+				math.Exp(-math.Pow((x-breakerCenter)/spread, 2))
+		}
+		foam := foamAmount * math.Max(0, math.Sin(angle+0.65))
+		spray := sprayAmount * math.Max(0, math.Sin(x*0.43+slowPhase*0.65))
+		chars[index] = waveSoundGlyph(level, slope, foam, breaker, index, phase)
+		if spray > 0.78 && foam > 0.38 && (index+phase/5)%11 == 0 {
+			chars[index] = '·'
 		}
 	}
 	return string(chars)
+}
+
+func waveSoundGlyph(
+	level float64,
+	slope float64,
+	foam float64,
+	breaker float64,
+	index int,
+	phase int,
+) rune {
+	switch {
+	case breaker > 0.72:
+		return []rune("◜⌒◝")[(index+phase/7)%3]
+	case breaker > 0.42:
+		if slope >= 0 {
+			return '╱'
+		}
+		return '╲'
+	case math.Abs(slope) > 0.055:
+		if slope > 0 {
+			return '╱'
+		}
+		return '╲'
+	case foam > 0.42:
+		return '≈'
+	case level > 0.72:
+		return '◜'
+	case level > 0.52:
+		return '⌒'
+	case level > 0.30:
+		return '⌁'
+	default:
+		return '─'
+	}
 }
 
 func waveSoundBreaker(width int, onset audioOnset) (float64, float64, bool) {

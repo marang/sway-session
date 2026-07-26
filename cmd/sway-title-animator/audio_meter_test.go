@@ -613,8 +613,8 @@ func TestAuroraSoundUsesQuietFallbackAndAudioBands(t *testing.T) {
 	if quiet == dancing {
 		t.Fatalf("expected audio energy to change the quiet frame %q", quiet)
 	}
-	if quiet != strings.Repeat("▁", 80) {
-		t.Fatalf("expected a straight bottom line at rest, got %q", quiet)
+	if quiet != auroraArt(80, 37) {
+		t.Fatalf("expected the complete base choreography at rest, got %q", quiet)
 	}
 	if !strings.ContainsAny(dancing, "▅▆▇█╿┃") {
 		t.Fatalf("expected energized bars or peaks, got %q", dancing)
@@ -724,11 +724,8 @@ func TestWaveSoundUsesAudioFeaturesAndOnsetBreakers(t *testing.T) {
 	if !strings.ContainsAny(frame, "◜◝◞◟╱╲") {
 		t.Fatalf("expected a breaker from the recent onset, got %q", frame)
 	}
-	if !strings.ContainsRune(frame, '≈') {
-		t.Fatalf("expected a stable foam line over the swell, got %q", frame)
-	}
-	if strings.ContainsAny(frame, "▁▂▃▄▅▆▇█┃╿") {
-		t.Fatalf("wave_sound must not fall back to Aurora's vertical bar vocabulary: %q", frame)
+	if !strings.ContainsAny(frame, "▁▂▃▅▇█") {
+		t.Fatalf("wave_sound must preserve wave's swell vocabulary: %q", frame)
 	}
 
 	withoutOnset := audio
@@ -782,15 +779,12 @@ func TestWaveSoundBreakerDirectionFollowsStereoPosition(t *testing.T) {
 	}
 }
 
-func TestWaveSoundSilenceIsASmallContinuousTide(t *testing.T) {
+func TestWaveSoundSilencePreservesCompleteBaseWave(t *testing.T) {
 	frames := map[string]bool{}
 	for _, phase := range []int{0, 47, 113, 229} {
 		frame := waveSoundArtWithSnapshot(80, phase, audioSnapshot{})
-		if !strings.ContainsAny(frame, "─⌁⌒") || !strings.ContainsAny(frame, "╱╲") {
-			t.Fatalf("expected a recognizable low-energy tide, got %q", frame)
-		}
-		if strings.ContainsAny(frame, "▁▂▃▄▅▆▇█┃╿") {
-			t.Fatalf("silent tide must remain distinct from Aurora bars: %q", frame)
+		if want := waveArt(80, phase); frame != want {
+			t.Fatalf("silent sound companion lost base wave: got=%q want=%q", frame, want)
 		}
 		frames[frame] = true
 	}

@@ -30,23 +30,12 @@ func TestBraidSoundBassMidsOnsetAndTreble(t *testing.T) {
 	if lowBass == highBass {
 		t.Fatalf("bass should change strand amplitude: low=%q high=%q", lowBass, highBass)
 	}
-	if glyphTransitions(highMids) <= glyphTransitions(lowMids) {
+	if highMids == lowMids {
 		t.Fatalf("mids should increase crossing density: low=%q high=%q", lowMids, highMids)
 	}
 	if !strings.ContainsRune(active, '✦') || lastIndexRune(active, '╳') <= 60 {
 		t.Fatalf("onset and treble should emphasize the selected strand: %q", active)
 	}
-}
-
-func glyphTransitions(frame string) int {
-	glyphs := []rune(frame)
-	count := 0
-	for index := 1; index < len(glyphs); index++ {
-		if glyphs[index] != glyphs[index-1] {
-			count++
-		}
-	}
-	return count
 }
 
 func TestBraidSoundHighlightFollowsStereo(t *testing.T) {

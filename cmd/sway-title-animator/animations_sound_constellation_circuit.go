@@ -2,6 +2,7 @@ package main
 
 import (
 	"math"
+	"strings"
 	"time"
 )
 
@@ -18,47 +19,29 @@ func constellationSoundArtWithSnapshot(width int, phase int, audio audioSnapshot
 	if width == 0 {
 		return ""
 	}
-	chars := make([]rune, width)
-	drift := int(math.Round(signedOrganicNoise(
-		"constellation_sound", 1, float64(phase)/192,
-	) * 2))
+	chars := fitRunes(constellationArt(width, phase), width)
+	if !audio.Active {
+		return string(chars)
+	}
 	for index := range width {
-		source := index - drift
-		density := animationRandom("constellation_sound", 10, int64(source))
-		if density < 0.84 {
-			chars[index] = ' '
+		if chars[index] == ' ' {
 			continue
 		}
-		energy := 0.12
-		if audio.Active {
-			position := float64(max(0, min(width-1, source))) /
-				float64(max(1, width-1))
-			energy = interpolatedAudioBand(
-				audio.Bands,
-				position*float64(audioBandCount-1),
-			)
+		position := float64(index) / float64(max(1, width-1))
+		energy := interpolatedAudioBand(
+			audio.Bands,
+			position*float64(audioBandCount-1),
+		)
+		if energy > 0.72 {
+			chars[index] = '✦'
+		} else if energy > 0.48 && chars[index] == '·' {
+			chars[index] = '•'
 		}
-		chars[index] = constellationSoundStar(energy, density)
 	}
 
 	addConstellationSupernova(chars, audio)
 	addConstellationShootingStar(chars, phase, audio)
 	return string(chars)
-}
-
-func constellationSoundStar(energy float64, density float64) rune {
-	switch {
-	case energy > 0.78:
-		return '✦'
-	case energy > 0.52:
-		return '✧'
-	case energy > 0.26:
-		return '•'
-	case density > 0.94:
-		return '•'
-	default:
-		return '·'
-	}
 }
 
 func addConstellationSupernova(chars []rune, audio audioSnapshot) {
@@ -123,41 +106,27 @@ func circuitSoundArtWithSnapshot(width int, phase int, audio audioSnapshot) stri
 	if width == 0 {
 		return ""
 	}
-	chars := make([]rune, width)
+	chars := fitRunes(circuitArt(width, phase), width)
+	if !audio.Active {
+		return string(chars)
+	}
 	for index := range width {
+		position := float64(index) / float64(max(1, width-1))
+		energy := interpolatedAudioBand(
+			audio.Bands,
+			position*float64(audioBandCount-1),
+		)
 		switch {
-		case index%17 == 8:
-			chars[index] = '╪'
-		case index%17 == 7:
-			chars[index] = '╾'
-		case index%17 == 9:
-			chars[index] = '╼'
-		default:
-			chars[index] = '─'
+		case energy > 0.82 && chars[index] == '╪':
+			chars[index] = '●'
+		case energy > 0.64 && strings.ContainsRune("─╍┄═", chars[index]):
+			chars[index] = '═'
+		case energy > 0.38 && chars[index] == '─':
+			chars[index] = '╍'
 		}
 	}
-
-	if audio.Active {
-		for index := range width {
-			position := float64(index) / float64(max(1, width-1))
-			energy := interpolatedAudioBand(
-				audio.Bands,
-				position*float64(audioBandCount-1),
-			)
-			switch {
-			case energy > 0.82 && index%17 == 8:
-				chars[index] = '●'
-			case energy > 0.64:
-				chars[index] = '═'
-			case energy > 0.38 && chars[index] == '─':
-				chars[index] = '╍'
-			}
-		}
-		addCircuitSoundCurrent(chars, audio)
-		addCircuitSoundSparks(chars, phase, audio)
-	} else {
-		addCircuitDiagnostic(chars, phase)
-	}
+	addCircuitSoundCurrent(chars, audio)
+	addCircuitSoundSparks(chars, phase, audio)
 	return string(chars)
 }
 
@@ -215,20 +184,5 @@ func addCircuitSoundSparks(chars []rune, phase int, audio audioSnapshot) {
 		if (index+phase/6)%max(7, 13-int(math.Round(audio.Treble*4))) == 0 {
 			chars[index] = '✦'
 		}
-	}
-}
-
-func addCircuitDiagnostic(chars []rune, phase int) {
-	if len(chars) == 0 {
-		return
-	}
-	seedOffset := organicNoise("circuit_sound", 1, 0.39) * float64(len(chars))
-	position := int(math.Mod(seedOffset+float64(phase)*0.04, float64(len(chars))))
-	chars[position] = '●'
-	if position > 0 {
-		chars[position-1] = '═'
-	}
-	if position+1 < len(chars) {
-		chars[position+1] = '═'
 	}
 }

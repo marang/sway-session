@@ -67,27 +67,6 @@ func TestCometSoundSilenceUsesOnlySlowAmbientParticles(t *testing.T) {
 	}
 }
 
-func TestBloomSoundOnsetOpensAndDecaysWhileSustainHolds(t *testing.T) {
-	trigger := audioSnapshot{Active: true, Level: 0.1, OnsetCount: 1}
-	trigger.Onsets[0] = audioOnset{
-		ID: 7, Age: 650 * time.Millisecond, Strength: 1,
-		Region: audioRegionGeneral,
-	}
-	open, onset := bloomSoundOpenness(trigger)
-	if open < 0.8 || onset.ID != 7 {
-		t.Fatalf("strong onset should open bloom: openness=%.2f onset=%+v", open, onset)
-	}
-	trigger.Onsets[0].Age = 2200 * time.Millisecond
-	closing, _ := bloomSoundOpenness(trigger)
-	if closing >= open {
-		t.Fatalf("bloom should close as onset decays: open=%.2f closing=%.2f", open, closing)
-	}
-	sustained, _ := bloomSoundOpenness(audioSnapshot{Active: true, Level: 0.95})
-	if sustained < 0.45 {
-		t.Fatalf("sustained audio should hold petals open: %.2f", sustained)
-	}
-}
-
 func TestBloomSoundMidsBassBalanceAndPollenPreserveForm(t *testing.T) {
 	base := audioSnapshot{
 		Active: true, Level: 0.8, Bass: 0.2, LowMid: 0.1, HighMid: 0.1,
@@ -103,8 +82,8 @@ func TestBloomSoundMidsBassBalanceAndPollenPreserveForm(t *testing.T) {
 	wideAudio.HighMid = 1
 	wideAudio.Bass = 1
 	wide := bloomSoundArtWithSnapshot(100, 20, wideAudio)
-	if nonSpaceCount(wide) <= nonSpaceCount(narrow) {
-		t.Fatalf("mids should widen petals: narrow=%q wide=%q", narrow, wide)
+	if strings.Count(wide, "⌁") <= strings.Count(narrow, "⌁") {
+		t.Fatalf("mids should emphasize existing petal tips: narrow=%q wide=%q", narrow, wide)
 	}
 	if !strings.ContainsRune(wide, '━') {
 		t.Fatalf("bass should strengthen the stem: %q", wide)
@@ -113,13 +92,8 @@ func TestBloomSoundMidsBassBalanceAndPollenPreserveForm(t *testing.T) {
 		t.Fatalf("treble should add post-open pollen: %q", wide)
 	}
 
-	rightAudio := wideAudio
-	rightAudio.Balance = 1
-	leftCenter := bloomBrightCenter(narrow)
-	rightCenter := bloomBrightCenter(bloomSoundArtWithSnapshot(100, 20, rightAudio))
-	if rightCenter <= leftCenter || rightCenter-leftCenter > 8 {
-		t.Fatalf("balance should bend, not translate, the bloom: left=%d right=%d",
-			leftCenter, rightCenter)
+	if silent := bloomSoundArtWithSnapshot(100, 20, audioSnapshot{}); silent != bloomArt(100, 20) {
+		t.Fatalf("silence should preserve the complete base bloom: %q", silent)
 	}
 }
 
@@ -152,23 +126,4 @@ func TestCometAndBloomSoundStayBoundedAndDeterministic(t *testing.T) {
 			}
 		})
 	}
-}
-
-func nonSpaceCount(frame string) int {
-	count := 0
-	for _, glyph := range frame {
-		if glyph != ' ' && glyph != 0 {
-			count++
-		}
-	}
-	return count
-}
-
-func bloomBrightCenter(frame string) int {
-	for index, glyph := range []rune(frame) {
-		if glyph == '✦' {
-			return index
-		}
-	}
-	return -1
 }

@@ -107,9 +107,11 @@ sway-title-animator --preview
 ```
 
 The Bubble Tea preview uses one labeled line per preset with a blank spacer
-between animations. If the terminal is not tall enough, scroll manually with
-the arrow keys, `Page Up`/`Page Down`, or `Home`/`End`; it never auto-scrolls.
-Press `q` or `Ctrl-C` to exit and restore the previous terminal contents.
+between animations. Every base preset is immediately followed by its
+`<base>_sound` companion, so both forms can be compared while scrolling. If the
+terminal is not tall enough, scroll manually with the arrow keys,
+`Page Up`/`Page Down`, or `Home`/`End`; it never auto-scrolls. Press `q` or
+`Ctrl-C` to exit and restore the previous terminal contents.
 
 ## Install
 

@@ -262,11 +262,9 @@ func TestShutterSoundBoundsAsymmetryAndPeakVocabulary(t *testing.T) {
 	right.Balance = 1
 	leftCenter, _, _ := shutterSoundGeometry(100, 9, left)
 	rightCenter, _, _ := shutterSoundGeometry(100, 9, right)
-	if leftCenter >= 50 || rightCenter <= 50 {
-		t.Fatalf("balance should shift closure center: left=%.2f right=%.2f", leftCenter, rightCenter)
-	}
-	if rightCenter-leftCenter > 16 {
-		t.Fatalf("stereo asymmetry exceeded bound: left=%.2f right=%.2f", leftCenter, rightCenter)
+	if leftCenter != rightCenter {
+		t.Fatalf("stereo must not make the aperture center twitch: left=%.2f right=%.2f",
+			leftCenter, rightCenter)
 	}
 
 	light := shutterSoundArtWithSnapshot(80, 9, left)

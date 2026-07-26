@@ -36,10 +36,15 @@ func TestConstellationSoundSupernovaAndFluxFollowStereo(t *testing.T) {
 		Region: audioRegionGeneral, Position: 0.9,
 	}
 	right := constellationSoundArtWithSnapshot(100, 20, audio)
+	rightSupernova := make([]rune, 100)
+	addConstellationSupernova(rightSupernova, audio)
 	audio.Onsets[0].Position = -0.9
 	audio.Balance = -1
 	left := constellationSoundArtWithSnapshot(100, 20, audio)
-	if lastIndexRune(right, '✦') <= 50 || lastIndexRune(left, '✦') >= 50 {
+	leftSupernova := make([]rune, 100)
+	addConstellationSupernova(leftSupernova, audio)
+	if lastIndexRune(string(rightSupernova), '✦') <= 50 ||
+		lastIndexRune(string(leftSupernova), '✦') >= 50 {
 		t.Fatalf("supernova should follow stereo: left=%q right=%q", left, right)
 	}
 	if !strings.ContainsAny(right, "─╴") || !strings.ContainsAny(left, "─╴") {
@@ -88,8 +93,8 @@ func TestCircuitSoundStereoDirectionAndSilentDiagnostic(t *testing.T) {
 	}
 	first := circuitSoundArtWithSnapshot(80, 0, audioSnapshot{})
 	second := circuitSoundArtWithSnapshot(80, 220, audioSnapshot{})
-	if first == second || strings.Count(first, "●") != 1 || strings.Count(second, "●") != 1 {
-		t.Fatalf("silence should preserve one moving diagnostic pulse: first=%q second=%q",
+	if first == second || first != circuitArt(80, 0) || second != circuitArt(80, 220) {
+		t.Fatalf("silence should preserve the complete moving circuit: first=%q second=%q",
 			first, second)
 	}
 }

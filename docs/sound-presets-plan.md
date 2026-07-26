@@ -12,8 +12,11 @@ Linear project:
 ## Goal
 
 Add an opt-in `<preset>_sound` companion for every visual preset. Each companion
-must retain the base preset's visual language. Audio changes its motion and
-events instead of replacing it with a generic equalizer.
+preserves the complete choreography, stable tempo, silhouette, and core glyph
+language of its base preset. Audio modulates weight, shape, density, and sparse
+accents without restarting or replacing the base cycle. Short onset reactions
+remain local and bounded. During silence, the complete base animation continues
+unchanged.
 
 The target balance during active audio is approximately 60% broad, smoothed
 audio influence and 40% slow organic motion. Audio-reactive events replace
@@ -222,6 +225,7 @@ Planned preview modes:
 
 The initial viewport supports:
 
+- base/sound family pairing in the all-presets ordering;
 - arrow keys for line scrolling;
 - `Page Up` and `Page Down`;
 - `Home` and `End`;
@@ -261,10 +265,10 @@ presets that look effectively identical.
 
 ### `aurora_sound` — implemented reference
 
-- Frequency bands select the height of adjacent Aurora bars.
-- Overall level scales the available height.
+- The complete Aurora lift, hover, and settling cycle always continues.
+- Frequency bands and overall level raise existing Aurora bars.
 - Strong band peaks become `╿`; extreme peaks become `┃`.
-- Silence becomes a continuous `▁` baseline.
+- Silence renders the unchanged base Aurora.
 
 ### `spectrum_sound` — implemented
 
@@ -285,30 +289,29 @@ presets that look effectively identical.
 
 ### `constellation_sound` — implemented
 
-- Map frequency bands to fixed horizontal star regions.
-- Energy controls star brightness (`·`, `•`, `✧`, `✦`) without randomly moving
-  the entire sky.
+- Preserve the drifting star field, shimmer, lanes, and moving clusters.
+- Frequency regions brighten stars already present in the base choreography.
 - Strong onsets trigger one short supernova; spectral flux produces small
   shooting stars.
 - Stereo balance selects the side on which transient stars appear.
-- Silence leaves a sparse, slowly drifting constellation.
+- Silence renders the unchanged base constellation.
 
 ### `circuit_sound` — implemented
 
-- Bass launches current pulses into the circuit.
-- Frequency bands choose which branches light up; mids lengthen active routes.
+- Preserve all three moving base currents and circuit gates.
+- Bass launches additional current pulses; frequency bands brighten existing
+  routes and mids lengthen those pulses.
 - Treble creates short contact sparks at junction glyphs.
 - Stereo balance selects the initial current direction.
-- Silence shows the intact circuit with a single low-power diagnostic pulse.
+- Silence renders the unchanged base circuit.
 
 ### `braid_sound` — implemented
 
-- Bass increases the braid's lateral amplitude.
-- Midrange controls crossing density and strand separation.
+- Preserve the base weave; bass and midrange add stable local crossings.
 - Strong onsets emphasize one crossing with `╳`; treble adds brief highlights
   that travel along a strand.
 - Stereo balance determines which strand receives the highlight.
-- Silence keeps a relaxed, slowly woven braid.
+- Silence renders the unchanged base braid.
 
 ### `loom_sound` — implemented
 
@@ -331,24 +334,22 @@ presets that look effectively identical.
 
 ### `smileys_sound` — implemented
 
-- Bass makes faces bounce by changing their local vertical/weight vocabulary,
-  not their terminal row.
-- Overall level controls travel speed and spacing.
-- Midrange selects open/closed mouth expressions; treble adds ear or sparkle
-  accents.
-- Strong onsets trigger a brief synchronized reaction, with a cooldown to avoid
-  visual spam.
-- Stereo balance biases where new faces enter.
-- Silence keeps one relaxed face drifting slowly.
+- Reuse the full base Kaomoji parade and keep each face unchanged throughout
+  its complete traversal.
+- Treble adds sparse sparkle accents.
+- Strong onsets briefly add one reaction figure, with bounded lifetime.
+- Level and stereo never change travel speed, mirror the parade, or make faces
+  appear and disappear mid-flight.
+- Silence renders the unchanged base parade.
 
 ### `wave_sound` — implemented
 
-- Bass controls swell height and wavelength.
-- Low mids shape the body of the wave; high mids generate foam.
+- Preserve the complete base swell, backwash, moving crests, and curl cycle.
+- Bass raises existing swells; high mids add sparse foam to existing crests.
 - Treble produces sparse spray accents.
 - Strong onsets create a breaker that travels across the existing wave.
 - Stereo balance selects breaker direction.
-- Silence retains a small continuous tide.
+- Silence renders the unchanged base wave.
 
 ### `spline_sound` — implemented
 
@@ -381,22 +382,21 @@ presets that look effectively identical.
 
 ### `bloom_sound` — implemented
 
-- Strong onsets open a bloom from bud to flower.
-- Bass controls the stem/anchor weight; mids control petal span.
-- Treble creates short pollen sparkles after the bloom opens.
-- Sustained audio keeps petals open without repeatedly retriggering them.
-- Stereo balance gently bends the bloom rather than moving it wholesale.
-- Silence closes the bloom gradually to a small bud.
+- Preserve every base growth, flower, decay, and drifting seed event.
+- Bass strengthens existing stems; mids emphasize existing petal tips.
+- Strong onsets and treble add one local flower and sparse pollen accents.
+- Silence renders the unchanged base bloom.
 
 ### `glitch_sound` — implemented
 
-- Spectral flux controls glitch density; stable sustained tones remain mostly
-  stable.
+- Preserve the base defect lines and organic moving glitch windows.
+- Spectral flux increases local defect density; stable sustained tones remain
+  close to the base choreography.
 - Bass transients create short horizontal displacement blocks.
 - Treble controls fine noise and broken-line accents.
-- A very strong onset may produce one bounded full-width tear with a cooldown.
-- Stereo balance biases displacement direction.
-- Silence becomes an almost clean line, preserving contrast with `ribbon`.
+- Full-width tears are forbidden; onsets remain local and bounded.
+- Stereo balance biases local displacement direction.
+- Silence renders the unchanged base glitch.
 
 ### `ribbon_sound` — implemented
 
@@ -411,11 +411,12 @@ presets that look effectively identical.
 ### `shutter_sound` — implemented
 
 - Bass onsets close the aperture briefly and then release it.
-- Sustained low-mid energy controls how far the doors remain closed.
+- Sustained low-mid energy gently changes the aperture range without replacing
+  or freezing its complete open/close cycle.
 - Treble adds thin edge highlights; it must not introduce glitch fragments.
 - Peak strength controls the weight of the inward arrows and center seam.
-- Stereo balance permits slightly asymmetric closing without breaking the
-  mechanical form.
+- Stereo affects short impulses only; it never shifts the aperture center.
+- Silence renders the unchanged base shutter.
 - Silence leaves the aperture mostly open with a slow mechanical breath.
 
 ## Delivery sequence

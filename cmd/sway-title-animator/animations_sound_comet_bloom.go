@@ -116,118 +116,28 @@ func bloomSoundArtWithSnapshot(width int, phase int, audio audioSnapshot) string
 	if width == 0 {
 		return ""
 	}
-
-	openness, onset := bloomSoundOpenness(audio)
-	if !audio.Active && onset.ID == 0 {
-		breathClock := float64(phase)*0.018 +
-			signedOrganicNoise("bloom_sound", 1, 0.47)*0.8
-		openness = 0.14 + (0.5+0.5*math.Sin(breathClock))*0.28
+	chars := fitRunes(bloomArt(width, phase), width)
+	if !audio.Active {
+		return string(chars)
 	}
-	center := float64(width-1) / 2
-	bend := 0.0
-	if audio.Active {
-		bend = math.Max(-1, math.Min(1, audio.Balance)) * math.Min(3, float64(width)*0.05)
-	} else {
-		center += signedOrganicNoise("bloom_sound", 2, 0.39) *
-			math.Min(3, float64(width)*0.04)
-	}
-	anchor := max(0, min(width-1, int(math.Round(center))))
-	petalCenter := max(0, min(width-1, int(math.Round(center+bend*openness))))
-	mids := (audio.LowMid + audio.HighMid) / 2
-	span := 3 + int(math.Round(openness*(4+mids*math.Min(14, float64(width)*0.18))))
-	left := max(0, petalCenter-span)
-	right := min(width-1, petalCenter+span)
-	stem := '─'
-	if audio.Active && audio.Bass > 0.58 {
-		stem = '━'
-	}
-
-	chars := make([]rune, width)
 	for index := range chars {
-		chars[index] = ' '
-	}
-	for index := left; index <= right; index++ {
-		distance := math.Abs(float64(index-petalCenter)) / float64(max(1, span))
-		switch {
-		case index == petalCenter:
-			if openness > 0.76 {
-				chars[index] = '✦'
-			} else {
-				chars[index] = '❧'
-			}
-		case distance > 0.78 && openness > 0.42:
+		if audio.Bass > 0.58 && chars[index] == '─' {
+			chars[index] = '━'
+		}
+		if audio.HighMid > 0.55 &&
+			(chars[index] == '╴' || chars[index] == '─' || chars[index] == '━') &&
+			(index+phase/11)%7 == 0 {
 			chars[index] = '⌁'
-		case openness > 0.30:
-			chars[index] = stem
-		default:
-			chars[index] = '╴'
 		}
-	}
-	if anchor != petalCenter {
-		step := 1
-		if anchor < petalCenter {
-			step = -1
-		}
-		for index := petalCenter; index != anchor; index += step {
-			if chars[index] == 0 {
-				chars[index] = stem
-			}
-		}
-		chars[anchor] = '❧'
-	}
-
-	addBloomSoundPollen(chars, phase, audio, onset, left, right)
-	return string(chars)
-}
-
-func bloomSoundOpenness(audio audioSnapshot) (float64, audioOnset) {
-	openness := 0.08
-	var trigger audioOnset
-	if audio.Active {
-		openness = math.Max(openness, audio.Level*0.52)
 	}
 	onset, ok := newestSoundOnset(audio, audioRegionGeneral)
-	if !ok || onset.Strength < 0.52 || onset.Age < 0 {
-		return openness, trigger
-	}
-	const lifetime = 2400 * time.Millisecond
-	if onset.Age >= lifetime {
-		return openness, trigger
-	}
-	progress := float64(onset.Age) / float64(lifetime)
-	eventOpen := smoothstep(math.Min(1, progress/0.24))
-	if progress > 0.62 {
-		eventOpen *= 1 - smoothstep((progress-0.62)/0.38)
-	}
-	eventOpen *= onset.Strength
-	return math.Max(openness, eventOpen), onset
-}
-
-func addBloomSoundPollen(
-	chars []rune,
-	phase int,
-	audio audioSnapshot,
-	onset audioOnset,
-	left int,
-	right int,
-) {
-	if audio.Treble < 0.28 || onset.ID == 0 ||
-		onset.Age < 260*time.Millisecond || onset.Age >= 1200*time.Millisecond {
-		return
-	}
-	count := 1 + int(math.Round(audio.Treble))
-	for particle := range count {
-		side := -1
-		if (particle+int(onset.ID))%2 == 0 {
-			side = 1
-		}
-		distance := 2 + particle*2 + int(onset.Age/(240*time.Millisecond))
-		index := left - distance
-		if side > 0 {
-			index = right + distance
-		}
-		if index >= 0 && index < len(chars) {
-			chars[index] = '·'
+	if ok && onset.Strength > 0.52 && onset.Age >= 0 && onset.Age < 1200*time.Millisecond {
+		center := int(math.Round((0.5 + onset.Position*0.4) * float64(width-1)))
+		center = max(0, min(width-1, center))
+		chars[center] = '✦'
+		if audio.Treble > 0.4 && center+2 < width {
+			chars[center+2] = '·'
 		}
 	}
+	return string(chars)
 }

@@ -7,39 +7,34 @@ import (
 )
 
 func TestSmileysSoundAudioControlsFaceTravelAndReaction(t *testing.T) {
-	quietFace := string(smileysSoundFace(0.1, 0.1, false))
-	loudFace := string(smileysSoundFace(1, 1, false))
-	if quietFace == loudFace || !strings.ContainsAny(loudFace, "●▽") {
-		t.Fatalf("bass and mids should change local face weight/expression: %q %q", quietFace, loudFace)
-	}
 	audio := audioSnapshot{Active: true, Level: 1, Bass: 1, LowMid: 1, Treble: 1}
 	active := smileysSoundArtWithSnapshot(120, 40, audio)
-	if strings.Count(active, "ʕ") < 2 || !strings.ContainsRune(active, '✦') {
-		t.Fatalf("level and treble should add spaced faces and accents: %q", active)
+	if !strings.ContainsRune(active, '✦') {
+		t.Fatalf("treble should accent the complete smiley parade: %q", active)
 	}
 	audio.OnsetCount = 1
 	audio.Onsets[0] = audioOnset{
 		ID: 1, Age: 100 * time.Millisecond, Strength: 1, Region: audioRegionGeneral,
 	}
-	if reaction := smileysSoundArtWithSnapshot(120, 40, audio); !strings.Contains(reaction, ">_<") {
+	if reaction := smileysSoundArtWithSnapshot(120, 40, audio); !strings.Contains(reaction, "(ﾉ◕ヮ◕)ﾉ✦") {
 		t.Fatalf("strong onset should synchronize one reaction: %q", reaction)
 	}
 }
 
-func TestSmileysSoundStereoBiasAndSilentSingleFace(t *testing.T) {
+func TestSmileysSoundBalanceDoesNotJitterAndSilencePreservesBase(t *testing.T) {
 	right := audioSnapshot{Active: true, Level: 0.2, Balance: 1}
 	left := right
 	left.Balance = -1
 	rightFrame := smileysSoundArtWithSnapshot(100, 40, right)
 	leftFrame := smileysSoundArtWithSnapshot(100, 40, left)
-	rightPosition := firstIndexRune(rightFrame, 'ʕ')
-	leftPosition := firstIndexRune(leftFrame, 'ʕ')
-	if rightPosition == leftPosition || rightPosition+leftPosition != 95 {
-		t.Fatalf("entry side should follow stereo: right=%q left=%q", rightFrame, leftFrame)
+	if rightFrame != leftFrame {
+		t.Fatalf("instantaneous balance must not mirror or jitter faces: right=%q left=%q",
+			rightFrame, leftFrame)
 	}
 	silent := smileysSoundArtWithSnapshot(100, 80, audioSnapshot{})
-	if strings.Count(silent, "ʕ") != 1 {
-		t.Fatalf("silence should keep one relaxed face: %q", silent)
+	if want := fitRunes(smileysArt(100, 80), 100); silent != string(want) {
+		t.Fatalf("silence should preserve the complete base parade: got=%q want=%q",
+			silent, string(want))
 	}
 }
 
@@ -63,18 +58,19 @@ func TestGlitchSoundFluxBassTrebleAndTear(t *testing.T) {
 	audio.Onsets[0].Region = audioRegionGeneral
 	audio.Onsets[0].Age = 80 * time.Millisecond
 	tear := glitchSoundArtWithSnapshot(100, 20, audio)
-	if strings.Count(tear, "═") < 80 {
-		t.Fatalf("very strong onset should create one bounded tear: %q", tear)
+	if strings.Count(tear, "═") > 20 {
+		t.Fatalf("general onset must not replace the complete base glitch with a tear: %q", tear)
 	}
 }
 
-func TestGlitchSoundSilenceIsAlmostCleanAndMoving(t *testing.T) {
+func TestGlitchSoundSilencePreservesCompleteBaseMotion(t *testing.T) {
 	first := glitchSoundArtWithSnapshot(80, 0, audioSnapshot{})
 	second := glitchSoundArtWithSnapshot(80, 220, audioSnapshot{})
-	if first == second || countNotRune(first, '─') != 1 || countNotRune(second, '─') != 1 {
-		t.Fatalf("silence should keep one moving defect: first=%q second=%q", first, second)
+	if first == second || first != glitchArt(80, 0) || second != glitchArt(80, 220) {
+		t.Fatalf("silence should keep the complete moving glitch: first=%q second=%q",
+			first, second)
 	}
-	if strings.ContainsAny(first, "█▓▒") {
+	if strings.ContainsRune(first, '█') {
 		t.Fatalf("silent glitch must remain distinct from ribbon: %q", first)
 	}
 }
@@ -96,15 +92,6 @@ func TestSmileysAndGlitchSoundStayBoundedAndDeterministic(t *testing.T) {
 			}
 		})
 	}
-}
-
-func firstIndexRune(frame string, target rune) int {
-	for index, glyph := range []rune(frame) {
-		if glyph == target {
-			return index
-		}
-	}
-	return -1
 }
 
 func countNotRune(frame string, target rune) int {

@@ -457,10 +457,10 @@ func shutterSoundGeometry(width int, phase int, audio audioSnapshot) (float64, f
 	center := float64(max(0, width-1)) / 2
 	breathClock := float64(phase)*0.018 + signedOrganicNoise("shutter_sound", 1, 0.41)*0.65
 	breath := 0.5 + 0.5*math.Sin(breathClock)
-	openness := 0.76 + breath*0.10
+	openness := 0.22 + breath*0.66
 	closure := 1 - openness
 	if audio.Active {
-		closure = 0.10 + audio.LowMid*0.44
+		closure += (audio.LowMid - 0.5) * 0.18
 		if onset, ok := newestSoundOnset(audio, audioRegionBass); ok {
 			const lifetime = 1350 * time.Millisecond
 			if onset.Age >= 0 && onset.Age < lifetime {
@@ -470,8 +470,6 @@ func shutterSoundGeometry(width int, phase int, audio audioSnapshot) (float64, f
 			}
 		}
 		closure = math.Max(0.06, math.Min(0.92, closure))
-		center += math.Max(-1, math.Min(1, audio.Balance)) * float64(width) * 0.045
-		center = math.Max(float64(width)*0.12, math.Min(float64(width-1)-float64(width)*0.12, center))
 	}
 	openness = 1 - closure
 	gapRadius := math.Max(1, openness*float64(max(1, width-1))/2)

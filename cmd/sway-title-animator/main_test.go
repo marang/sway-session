@@ -6,7 +6,6 @@ import (
 	"net"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -157,11 +156,9 @@ func TestSoundPresetFallsBackOnlyWhenCaptureIsUnavailable(t *testing.T) {
 		return audioSnapshot{CaptureAvailable: true}
 	}
 	got := animationFuncFor("aurora_sound")(width, phase)
-	if got != strings.Repeat("▁", width) {
-		t.Fatalf("captured silence should render sound-specific idle: %q", got)
-	}
-	if got == auroraArt(width, phase) {
-		t.Fatal("captured silence must not be confused with unavailable capture")
+	if want := auroraArt(width, phase); got != want {
+		t.Fatalf("captured silence should preserve the complete base choreography: got=%q want=%q",
+			got, want)
 	}
 }
 

@@ -133,12 +133,6 @@ func TestAllBuiltInAnimationsAreBoundedAndMove(t *testing.T) {
 			for _, phase := range phases {
 				frames[animation(80, phase)] = true
 			}
-			if name == "aurora_sound" {
-				if len(frames) != 1 || !frames[strings.Repeat("▁", 80)] {
-					t.Fatalf("expected sound-reactive preset to hold a bottom line during silence, got %v", frames)
-				}
-				return
-			}
 			if len(frames) < 2 {
 				t.Fatalf("expected motion across sampled phases, got %q", animation(80, phases[0]))
 			}
@@ -650,25 +644,50 @@ func frameContainsBraille(frame string) bool {
 	return false
 }
 
-func TestPreviewPresetNamesUseRotationThenSortedRemainder(t *testing.T) {
+func TestPreviewPresetNamesPairSoundCompanionsWithinRotationThenSortedRemainder(t *testing.T) {
 	originalPresets := animationPresets
 	originalRotation := rotationPresets
+	originalSoundNames := soundPresetNames
 	animationPresets = map[string]animationFunc{
-		"aurora": func(int, int) string { return "a" },
-		"bloom":  func(int, int) string { return "b" },
-		"alpha":  func(int, int) string { return "c" },
-		"zebra":  func(int, int) string { return "d" },
+		"aurora":       func(int, int) string { return "a" },
+		"aurora_sound": func(int, int) string { return "A" },
+		"bloom":        func(int, int) string { return "b" },
+		"bloom_sound":  func(int, int) string { return "B" },
+		"alpha":        func(int, int) string { return "c" },
+		"zebra":        func(int, int) string { return "d" },
 	}
-	rotationPresets = []string{"bloom", "aurora", "bloom", "missing"}
+	soundPresetNames = map[string]bool{
+		"aurora_sound": true,
+		"bloom_sound":  true,
+	}
+	rotationPresets = []string{"bloom_sound", "aurora", "bloom", "missing"}
 	t.Cleanup(func() {
 		animationPresets = originalPresets
 		rotationPresets = originalRotation
+		soundPresetNames = originalSoundNames
 	})
 
 	got := previewPresetNames()
-	want := []string{"bloom", "aurora", "alpha", "zebra"}
+	want := []string{
+		"bloom", "bloom_sound",
+		"aurora", "aurora_sound",
+		"alpha", "zebra",
+	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("expected %v, got %v", want, got)
+	}
+}
+
+func TestPreviewPresetNamesPlaceEveryBuiltInSoundPresetAfterItsBase(t *testing.T) {
+	names := previewPresetNames()
+	for index, name := range names {
+		if !isSoundPreset(name) {
+			continue
+		}
+		base := strings.TrimSuffix(name, "_sound")
+		if index == 0 || names[index-1] != base {
+			t.Fatalf("expected %q immediately after %q, got %v", name, base, names)
+		}
 	}
 }
 

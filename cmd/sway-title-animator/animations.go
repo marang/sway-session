@@ -300,9 +300,9 @@ func braidArt(width int, phase int) string {
 	}
 
 	chars := make([]rune, 0, width)
-	tightness := 0.49 + organicNoise("braid", 1, float64(phase)/74)*0.18
-	timeA := float64(phase)*0.12 + signedOrganicNoise("braid", 2, float64(phase)/53)*1.8
-	timeB := float64(phase)*0.10 + signedOrganicNoise("braid", 3, float64(phase)/67)*2.1
+	tightness := 0.34 + organicNoise("braid", 1, float64(phase)/112)*0.10
+	timeA := float64(phase)*0.052 + signedOrganicNoise("braid", 2, float64(phase)/97)*0.72
+	timeB := float64(phase)*0.052 + signedOrganicNoise("braid", 3, float64(phase)/109)*0.72
 	knots := organicEvents("braid", 4, float64(phase), 43, 16, 30)
 	for index := range width {
 		waveA := math.Sin(float64(index)*tightness + timeA)
@@ -311,7 +311,7 @@ func braidArt(width int, phase int) string {
 		for _, event := range knots {
 			center := eventRandom("braid", 4, event.Index, 2) * float64(width-1)
 			if math.Abs(float64(index)-center) < 2.5+event.Envelope*4 {
-				cross *= 1 - event.Envelope*0.72
+				cross *= 1 - event.Envelope*0.46
 			}
 		}
 		switch {
@@ -864,7 +864,7 @@ func motionPhase(phase int) int {
 }
 
 func animationFuncFor(name string) animationFunc {
-	if isSoundPreset(name) && !currentAudioSnapshot().CaptureAvailable {
+	if isSoundPreset(name) && !currentAudioSnapshot().Active {
 		if base, ok := animationPresets[strings.TrimSuffix(name, "_sound")]; ok {
 			return base
 		}

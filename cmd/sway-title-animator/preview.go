@@ -40,14 +40,7 @@ func previewPresetNames() []string {
 	names := make([]string, 0, len(animationPresets))
 	seen := map[string]bool{}
 	for _, name := range rotationPresets {
-		if seen[name] {
-			continue
-		}
-		if _, ok := animationPresets[name]; !ok {
-			continue
-		}
-		names = append(names, name)
-		seen[name] = true
+		names = appendPreviewPresetFamily(names, seen, name)
 	}
 
 	remaining := make([]string, 0, len(animationPresets)-len(names))
@@ -57,7 +50,41 @@ func previewPresetNames() []string {
 		}
 	}
 	sort.Strings(remaining)
-	return append(names, remaining...)
+	for _, name := range remaining {
+		names = appendPreviewPresetFamily(names, seen, name)
+	}
+	return names
+}
+
+func appendPreviewPresetFamily(names []string, seen map[string]bool, name string) []string {
+	if seen[name] {
+		return names
+	}
+	if _, ok := animationPresets[name]; !ok {
+		return names
+	}
+
+	base := name
+	if isSoundPreset(name) {
+		candidate := strings.TrimSuffix(name, "_sound")
+		if _, ok := animationPresets[candidate]; ok {
+			base = candidate
+		}
+	}
+	for _, member := range []string{base, base + "_sound"} {
+		if seen[member] {
+			continue
+		}
+		if _, ok := animationPresets[member]; !ok {
+			continue
+		}
+		if member != base && !isSoundPreset(member) {
+			continue
+		}
+		names = append(names, member)
+		seen[member] = true
+	}
+	return names
 }
 
 func calculatePreviewLayout(names []string, width int, height int) (previewLayout, error) {

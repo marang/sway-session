@@ -206,7 +206,9 @@ not aliases. Rename them to `[rotation]`, `rotation_hold_frames`, and
 `audio.device` can select a specific playback-monitor source. `sensitivity`
 adjusts captured signal gain and `motion` adjusts the global visual response;
 both accept values greater than `0` through `10`. There is no backend setting:
-`parec` is currently the single production capture backend.
+`parec` is currently the single production capture backend. Capture uses
+48 kHz stereo PCM; the shared analyzer retains left/right balance while
+providing 32 frequency bands and aggregate bass-to-treble features.
 
 Run with a specific config:
 

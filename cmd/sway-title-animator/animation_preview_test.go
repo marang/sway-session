@@ -771,14 +771,19 @@ func TestPreviewModelScrollsAndQuits(t *testing.T) {
 	}
 }
 
-func TestAudioSequenceAloneDoesNotForcePreviewRedraw(t *testing.T) {
-	first := audioSnapshot{Sequence: 1}
-	second := audioSnapshot{Sequence: 99}
+func TestAudioRevisionControlsPreviewRedraw(t *testing.T) {
+	first := audioSnapshot{Revision: 1}
+	second := audioSnapshot{Revision: 1}
 	if !sameAudioVisual(first, second) {
-		t.Fatal("sequence-only audio updates should not trigger a visual redraw")
+		t.Fatal("matching audio revisions should not trigger a visual redraw")
 	}
+	second.Revision = 2
+	if sameAudioVisual(first, second) {
+		t.Fatal("a new visible audio revision must trigger a redraw")
+	}
+	second.Revision = first.Revision
 	second.Active = true
 	if sameAudioVisual(first, second) {
-		t.Fatal("visible audio state changes must trigger a redraw")
+		t.Fatal("stale/active state changes must trigger a redraw")
 	}
 }

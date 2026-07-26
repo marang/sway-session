@@ -1,9 +1,10 @@
 # Sound-reactive preset plan
 
 Status: Accepted design; the unnamed default rotation, startup audio
-configuration, backend-neutral capture seam, `aurora_sound`, and the scrollable
-Bubble Tea preview foundation are implemented. The remaining sound engine work,
-companions, diagnostics, and expanded preview modes are planned.
+configuration, backend-neutral capture seam, 48 kHz stereo continuous feature
+analysis, `aurora_sound`, and the scrollable Bubble Tea preview foundation are
+implemented. Normalization, onset events, the remaining companions,
+diagnostics, and expanded preview modes are planned.
 
 Linear project:
 [Sway Title Animator | P001 | Sound-Reactive Presets](https://linear.app/riotbox/project/sway-title-animator-or-p001-or-sound-reactive-presets-e8a4308a9902)
@@ -59,9 +60,10 @@ presets = ["aurora", "loom", "square"]
 
 The startup fields and backend-neutral capture seam were implemented in
 [LAB-31](https://linear.app/riotbox/issue/LAB-31/add-audio-configuration-and-a-backend-neutral-capture-contract).
-The current analyzer still uses its original mono format; the accepted 48 kHz
-stereo format and expanded shared feature model belong to the next engine
-slice.
+The 48 kHz stereo stream and continuous shared features were implemented in
+[LAB-33](https://linear.app/riotbox/issue/LAB-33/upgrade-the-shared-analyzer-to-48-khz-stereo-features).
+Normalization, warm-up, onset classes/history, and peak hold remain the next
+engine slice.
 
 Only playback monitor/output sources are supported. Microphone capture is not
 part of this feature. `--doctor` should reject a custom source that it can
@@ -403,7 +405,9 @@ presets that look effectively identical.
    unnamed default behavior are implemented in LAB-29; startup audio
    configuration and the capture seam are implemented in LAB-31.
 2. Implement the fixed-format `parec` lifecycle, smoothing/normalization,
-   spectral features, and deterministic audio test harness.
+   spectral features, and deterministic audio test harness. The 48 kHz stereo
+   format, continuous features, time-based smoothing, and stereo fixtures are
+   implemented in LAB-33; normalization and event features remain.
 3. Replace the preview plumbing with Bubble Tea and implement the four planned
    preview modes, manual viewport, status hint, and grouped preset listing.
 4. Deliver sound companions in reviewable PRs of no more than two related

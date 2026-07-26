@@ -31,16 +31,10 @@ func (backend fakeAudioCaptureBackend) Capture(ctx context.Context, consume func
 }
 
 func TestAudioBandBinsAreOrderedAndDoNotOverlap(t *testing.T) {
-	const (
-		minFrequency = 55.0
-		maxFrequency = 11_000.0
-	)
 	previousLast := 0
 	distinctRanges := map[[2]int]bool{}
-	for band := range audioBandCount {
-		low := minFrequency * math.Pow(maxFrequency/minFrequency, float64(band)/audioBandCount)
-		high := minFrequency * math.Pow(maxFrequency/minFrequency, float64(band+1)/audioBandCount)
-		first, last := audioBandBinRange(low, high)
+	for band, binRange := range audioBandRanges() {
+		first, last := binRange[0], binRange[1]
 		if first <= previousLast {
 			t.Fatalf("band %d overlaps the preceding range: first=%d previousLast=%d", band, first, previousLast)
 		}
@@ -91,6 +85,10 @@ func TestDefaultAudioBackendUsesConfiguredDevice(t *testing.T) {
 	}
 	if !slices.Contains(backend.arguments(), "--device=alsa_output.test.monitor") {
 		t.Fatalf("expected configured device in parec arguments: %v", backend.arguments())
+	}
+	if !slices.Contains(backend.arguments(), "--rate=48000") ||
+		!slices.Contains(backend.arguments(), "--channels=2") {
+		t.Fatalf("expected 48 kHz stereo parec arguments: %v", backend.arguments())
 	}
 }
 
@@ -179,20 +177,27 @@ func TestAudioMeterReportsInjectedCaptureFailureOnce(t *testing.T) {
 
 func TestAudioConsumeBuildsOverlappingAnalysisWindow(t *testing.T) {
 	samples := sineSamples(880, 0.45)
-	var encoded bytes.Buffer
-	for _, sample := range samples {
-		if err := binary.Write(&encoded, binary.LittleEndian, sample); err != nil {
-			t.Fatalf("encode samples: %v", err)
-		}
-	}
+	encoded := bytes.NewReader(encodeStereoSamples(samples, samples))
 
 	var meter audioMeter
-	if err := meter.consume(&encoded); !errors.Is(err, io.EOF) {
+	if err := meter.consume(&limitedReader{reader: encoded, limit: 7}); !errors.Is(err, io.EOF) {
 		t.Fatalf("expected end of finite test stream, got %v", err)
 	}
 	if snapshot := meter.snapshot(); !snapshot.Active || snapshot.Level <= 0.1 {
 		t.Fatalf("expected consumed audio to update the meter, got %+v", snapshot)
 	}
+}
+
+type limitedReader struct {
+	reader io.Reader
+	limit  int
+}
+
+func (reader *limitedReader) Read(buffer []byte) (int, error) {
+	if len(buffer) > reader.limit {
+		buffer = buffer[:reader.limit]
+	}
+	return reader.reader.Read(buffer)
 }
 
 func TestAnalyzeAudioBlockSeparatesLowAndHighFrequencies(t *testing.T) {
@@ -209,12 +214,49 @@ func TestAnalyzeAudioBlockSeparatesLowAndHighFrequencies(t *testing.T) {
 	}
 }
 
+func TestAnalyzeStereoAudioExposesRegionsAndBalance(t *testing.T) {
+	silence := make([]int16, audioBlockSize)
+	low := sineSamples(120, 0.35)
+	high := sineSamples(6000, 0.35)
+
+	lowAnalysis := analyzeStereoAudioBlock(low, low)
+	if lowAnalysis.Bass <= lowAnalysis.HighMid || lowAnalysis.Bass <= lowAnalysis.Treble {
+		t.Fatalf("expected bass-heavy analysis, got %+v", lowAnalysis)
+	}
+	if math.Abs(lowAnalysis.Balance) > 0.01 {
+		t.Fatalf("expected centered stereo balance, got %.3f", lowAnalysis.Balance)
+	}
+
+	highAnalysis := analyzeStereoAudioBlock(high, high)
+	if highAnalysis.Treble <= highAnalysis.Bass || highAnalysis.Centroid <= lowAnalysis.Centroid {
+		t.Fatalf("expected bright treble-heavy analysis, low=%+v high=%+v", lowAnalysis, highAnalysis)
+	}
+
+	leftAnalysis := analyzeStereoAudioBlock(low, silence)
+	if leftAnalysis.LeftLevel <= 0.1 || leftAnalysis.RightLevel != 0 || leftAnalysis.Balance > -0.9 {
+		t.Fatalf("expected strongly left-panned analysis, got %+v", leftAnalysis)
+	}
+	rightAnalysis := analyzeStereoAudioBlock(silence, low)
+	if rightAnalysis.RightLevel <= 0.1 || rightAnalysis.LeftLevel != 0 || rightAnalysis.Balance < 0.9 {
+		t.Fatalf("expected strongly right-panned analysis, got %+v", rightAnalysis)
+	}
+
+	inverted := make([]int16, len(low))
+	for index, sample := range low {
+		inverted[index] = -sample
+	}
+	antiPhase := analyzeStereoAudioBlock(low, inverted)
+	if antiPhase.Level <= 0.1 || antiPhase.Bass <= 0 {
+		t.Fatalf("opposite channel phase must not cancel shared energy: %+v", antiPhase)
+	}
+}
+
 func TestAudioMeterAttacksQuicklyAndReleasesSmoothly(t *testing.T) {
 	var meter audioMeter
 	now := time.Now()
 	meter.update(sineSamples(880, 0.4), now)
 	active := meter.snapshot()
-	if !active.Active || active.Level <= 0.1 || active.Sequence != 1 {
+	if !active.Active || active.Level <= 0.05 || active.Revision != 1 {
 		t.Fatalf("expected an active first audio frame, got %+v", active)
 	}
 
@@ -229,6 +271,43 @@ func TestAudioMeterAttacksQuicklyAndReleasesSmoothly(t *testing.T) {
 	}
 	if quiet := meter.snapshot(); quiet.Active || quiet.Level >= 0.025 {
 		t.Fatalf("expected sustained silence to settle into the quiet state, got %+v", quiet)
+	}
+}
+
+func TestAudioSmoothingDependsOnElapsedTimeNotUpdateCount(t *testing.T) {
+	silence := make([]int16, audioBlockSize)
+	tone := sineSamples(880, 0.25)
+	start := time.Now()
+	var frequent audioMeter
+	var sparse audioMeter
+	frequent.update(silence, start)
+	sparse.update(silence, start)
+
+	for step := 1; step <= 10; step++ {
+		frequent.update(tone, start.Add(time.Duration(step)*10*time.Millisecond))
+	}
+	sparse.update(tone, start.Add(100*time.Millisecond))
+
+	if difference := math.Abs(frequent.snapshot().Level - sparse.snapshot().Level); difference > 0.001 {
+		t.Fatalf("expected elapsed-time-equivalent smoothing, difference=%.6f", difference)
+	}
+}
+
+func TestAudioRevisionChangesOnlyForMaterialVisualState(t *testing.T) {
+	silence := make([]int16, audioBlockSize)
+	now := time.Now()
+	var meter audioMeter
+	meter.update(silence, now)
+	first := meter.snapshot().Revision
+	meter.update(silence, now.Add(20*time.Millisecond))
+	if second := meter.snapshot().Revision; second != first {
+		t.Fatalf("steady silence must not advance visual revision: first=%d second=%d", first, second)
+	}
+
+	meter.update(sineSamples(440, 0.3), now.Add(40*time.Millisecond))
+	active := meter.snapshot()
+	if active.Revision <= first || active.Bass == 0 || active.LowMid == 0 {
+		t.Fatalf("material audio must advance revision and aggregate features: %+v", active)
 	}
 }
 
@@ -341,6 +420,15 @@ func sineSamples(frequency float64, amplitude float64) []int16 {
 		samples[index] = int16(value * 32767)
 	}
 	return samples
+}
+
+func encodeStereoSamples(left []int16, right []int16) []byte {
+	var encoded bytes.Buffer
+	for index := range min(len(left), len(right)) {
+		_ = binary.Write(&encoded, binary.LittleEndian, left[index])
+		_ = binary.Write(&encoded, binary.LittleEndian, right[index])
+	}
+	return encoded.Bytes()
 }
 
 func strongestAudioBand(bands [audioBandCount]float64) int {

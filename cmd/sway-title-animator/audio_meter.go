@@ -14,28 +14,61 @@ import (
 )
 
 const (
-	audioBandCount  = 32
-	audioBlockSize  = 2048
-	audioHopSize    = 512
-	audioSampleRate = 24_000
-	audioStaleAfter = 300 * time.Millisecond
-	audioRetryDelay = 1500 * time.Millisecond
+	audioBandCount    = 32
+	audioBlockSize    = 2048
+	audioHopSize      = 1024
+	audioSampleRate   = 48_000
+	audioChannelCount = 2
+	audioAttack       = 100 * time.Millisecond
+	audioRelease      = 320 * time.Millisecond
+	audioStaleAfter   = 300 * time.Millisecond
+	audioRetryDelay   = 1500 * time.Millisecond
 )
 
 type audioSnapshot struct {
-	Bands    [audioBandCount]float64
-	Level    float64
-	Active   bool
-	Sequence uint64
+	Bands      [audioBandCount]float64
+	Level      float64
+	Bass       float64
+	LowMid     float64
+	HighMid    float64
+	Treble     float64
+	Centroid   float64
+	LeftLevel  float64
+	RightLevel float64
+	Balance    float64
+	Active     bool
+	Revision   uint64
+}
+
+type audioAnalysis struct {
+	Bands      [audioBandCount]float64
+	Level      float64
+	Bass       float64
+	LowMid     float64
+	HighMid    float64
+	Treble     float64
+	Centroid   float64
+	LeftLevel  float64
+	RightLevel float64
+	Balance    float64
 }
 
 type audioMeter struct {
-	mu          sync.RWMutex
-	bands       [audioBandCount]float64
-	level       float64
-	sensitivity float64
-	lastUpdate  time.Time
-	sequence    uint64
+	mu                sync.RWMutex
+	bands             [audioBandCount]float64
+	level             float64
+	bass              float64
+	lowMid            float64
+	highMid           float64
+	treble            float64
+	centroid          float64
+	leftLevel         float64
+	rightLevel        float64
+	balance           float64
+	sensitivity       float64
+	lastUpdate        time.Time
+	revision          uint64
+	visualFingerprint uint64
 }
 
 type audioCaptureBackend interface {
@@ -170,8 +203,8 @@ func (backend parecCaptureBackend) arguments() []string {
 		"--device=" + backend.device,
 		"--raw",
 		"--format=s16le",
-		"--rate=24000",
-		"--channels=1",
+		"--rate=48000",
+		"--channels=2",
 		"--latency-msec=60",
 		"--process-time-msec=20",
 		"--client-name=sway-title-animator",
@@ -180,8 +213,9 @@ func (backend parecCaptureBackend) arguments() []string {
 }
 
 func (meter *audioMeter) consume(reader io.Reader) error {
-	buffer := make([]byte, audioHopSize*2)
-	window := make([]int16, audioBlockSize)
+	buffer := make([]byte, audioHopSize*audioChannelCount*2)
+	leftWindow := make([]int16, audioBlockSize)
+	rightWindow := make([]int16, audioBlockSize)
 	filled := 0
 	for {
 		if _, err := io.ReadFull(reader, buffer); err != nil {
@@ -189,25 +223,34 @@ func (meter *audioMeter) consume(reader io.Reader) error {
 		}
 		if filled < audioBlockSize {
 			for index := range audioHopSize {
-				window[filled+index] = int16(binary.LittleEndian.Uint16(buffer[index*2:]))
+				offset := index * audioChannelCount * 2
+				leftWindow[filled+index] = int16(binary.LittleEndian.Uint16(buffer[offset:]))
+				rightWindow[filled+index] = int16(binary.LittleEndian.Uint16(buffer[offset+2:]))
 			}
 			filled += audioHopSize
 			if filled < audioBlockSize {
 				continue
 			}
 		} else {
-			copy(window, window[audioHopSize:])
+			copy(leftWindow, leftWindow[audioHopSize:])
+			copy(rightWindow, rightWindow[audioHopSize:])
 			for index := range audioHopSize {
-				window[audioBlockSize-audioHopSize+index] =
-					int16(binary.LittleEndian.Uint16(buffer[index*2:]))
+				offset := index * audioChannelCount * 2
+				target := audioBlockSize - audioHopSize + index
+				leftWindow[target] = int16(binary.LittleEndian.Uint16(buffer[offset:]))
+				rightWindow[target] = int16(binary.LittleEndian.Uint16(buffer[offset+2:]))
 			}
 		}
-		meter.update(window, time.Now())
+		meter.updateStereo(leftWindow, rightWindow, time.Now())
 	}
 }
 
 func (meter *audioMeter) update(samples []int16, now time.Time) {
-	targetBands, targetLevel := analyzeAudioBlock(samples)
+	meter.updateStereo(samples, samples, now)
+}
+
+func (meter *audioMeter) updateStereo(left []int16, right []int16, now time.Time) {
+	target := analyzeStereoAudioBlock(left, right)
 	meter.mu.Lock()
 	defer meter.mu.Unlock()
 
@@ -215,22 +258,39 @@ func (meter *audioMeter) update(samples []int16, now time.Time) {
 	if sensitivity <= 0 {
 		sensitivity = defaultAudioSensitivity
 	}
-	for index, target := range targetBands {
-		target = math.Min(1, target*sensitivity)
-		factor := 0.16
-		if target > meter.bands[index] {
-			factor = 0.68
-		}
-		meter.bands[index] += (target - meter.bands[index]) * factor
+	for index, value := range target.Bands {
+		target.Bands[index] = math.Min(1, value*sensitivity)
 	}
-	targetLevel = math.Min(1, targetLevel*sensitivity)
-	levelFactor := 0.14
-	if targetLevel > meter.level {
-		levelFactor = 0.72
+	target.Level = math.Min(1, target.Level*sensitivity)
+	target.Bass = math.Min(1, target.Bass*sensitivity)
+	target.LowMid = math.Min(1, target.LowMid*sensitivity)
+	target.HighMid = math.Min(1, target.HighMid*sensitivity)
+	target.Treble = math.Min(1, target.Treble*sensitivity)
+	target.LeftLevel = math.Min(1, target.LeftLevel*sensitivity)
+	target.RightLevel = math.Min(1, target.RightLevel*sensitivity)
+
+	elapsed := time.Second * audioHopSize / audioSampleRate
+	if !meter.lastUpdate.IsZero() && now.After(meter.lastUpdate) {
+		elapsed = now.Sub(meter.lastUpdate)
 	}
-	meter.level += (targetLevel - meter.level) * levelFactor
+	for index, value := range target.Bands {
+		meter.bands[index] = smoothAudioValue(meter.bands[index], value, elapsed)
+	}
+	meter.level = smoothAudioValue(meter.level, target.Level, elapsed)
+	meter.bass = smoothAudioValue(meter.bass, target.Bass, elapsed)
+	meter.lowMid = smoothAudioValue(meter.lowMid, target.LowMid, elapsed)
+	meter.highMid = smoothAudioValue(meter.highMid, target.HighMid, elapsed)
+	meter.treble = smoothAudioValue(meter.treble, target.Treble, elapsed)
+	meter.centroid = smoothAudioValue(meter.centroid, target.Centroid, elapsed)
+	meter.leftLevel = smoothAudioValue(meter.leftLevel, target.LeftLevel, elapsed)
+	meter.rightLevel = smoothAudioValue(meter.rightLevel, target.RightLevel, elapsed)
+	meter.balance = smoothSignedAudioValue(meter.balance, target.Balance, elapsed)
 	meter.lastUpdate = now
-	meter.sequence++
+	fingerprint := meter.fingerprint()
+	if fingerprint != meter.visualFingerprint {
+		meter.visualFingerprint = fingerprint
+		meter.revision++
+	}
 }
 
 func (meter *audioMeter) setSensitivity(sensitivity float64) {
@@ -244,13 +304,21 @@ func (meter *audioMeter) snapshot() audioSnapshot {
 	defer meter.mu.RUnlock()
 
 	if meter.lastUpdate.IsZero() || time.Since(meter.lastUpdate) > audioStaleAfter {
-		return audioSnapshot{Sequence: meter.sequence}
+		return audioSnapshot{Revision: meter.revision}
 	}
 	return audioSnapshot{
-		Bands:    meter.bands,
-		Level:    meter.level,
-		Active:   meter.level > 0.025,
-		Sequence: meter.sequence,
+		Bands:      meter.bands,
+		Level:      meter.level,
+		Bass:       meter.bass,
+		LowMid:     meter.lowMid,
+		HighMid:    meter.highMid,
+		Treble:     meter.treble,
+		Centroid:   meter.centroid,
+		LeftLevel:  meter.leftLevel,
+		RightLevel: meter.rightLevel,
+		Balance:    meter.balance,
+		Active:     meter.level > 0.025,
+		Revision:   meter.revision,
 	}
 }
 
@@ -259,16 +327,62 @@ func (meter *audioMeter) clear() {
 	defer meter.mu.Unlock()
 	clear(meter.bands[:])
 	meter.level = 0
+	meter.bass = 0
+	meter.lowMid = 0
+	meter.highMid = 0
+	meter.treble = 0
+	meter.centroid = 0
+	meter.leftLevel = 0
+	meter.rightLevel = 0
+	meter.balance = 0
 	meter.lastUpdate = time.Time{}
-	meter.sequence++
+	if meter.visualFingerprint != 0 {
+		meter.visualFingerprint = 0
+		meter.revision++
+	}
 }
 
 func analyzeAudioBlock(samples []int16) ([audioBandCount]float64, float64) {
-	var bands [audioBandCount]float64
-	if len(samples) != audioBlockSize {
-		return bands, 0
-	}
+	analysis := analyzeStereoAudioBlock(samples, samples)
+	return analysis.Bands, analysis.Level
+}
 
+func analyzeStereoAudioBlock(left []int16, right []int16) audioAnalysis {
+	if len(left) != audioBlockSize || len(right) != audioBlockSize {
+		return audioAnalysis{}
+	}
+	leftBands, leftLevel, leftCentroid := analyzeMonoSpectrum(left)
+	rightBands, rightLevel, rightCentroid := analyzeMonoSpectrum(right)
+	var bands [audioBandCount]float64
+	for index := range bands {
+		bands[index] = (leftBands[index] + rightBands[index]) / 2
+	}
+	level := (leftLevel + rightLevel) / 2
+	centroid := 0.0
+	if level > 0 {
+		centroid = (leftCentroid*leftLevel + rightCentroid*rightLevel) /
+			(leftLevel + rightLevel)
+	}
+	balance := 0.0
+	if total := leftLevel + rightLevel; total > 0.0001 {
+		balance = (rightLevel - leftLevel) / total
+	}
+	return audioAnalysis{
+		Bands:      bands,
+		Level:      level,
+		Bass:       aggregateBandEnergy(bands, 55, 250),
+		LowMid:     aggregateBandEnergy(bands, 250, 1000),
+		HighMid:    aggregateBandEnergy(bands, 1000, 4000),
+		Treble:     aggregateBandEnergy(bands, 4000, 11_000),
+		Centroid:   centroid,
+		LeftLevel:  leftLevel,
+		RightLevel: rightLevel,
+		Balance:    balance,
+	}
+}
+
+func analyzeMonoSpectrum(samples []int16) ([audioBandCount]float64, float64, float64) {
+	var bands [audioBandCount]float64
 	realValues := make([]float64, audioBlockSize)
 	imaginaryValues := make([]float64, audioBlockSize)
 	sumSquares := 0.0
@@ -285,7 +399,7 @@ func analyzeAudioBlock(samples []int16) ([audioBandCount]float64, float64) {
 	}
 	rms := math.Sqrt(sumSquares / audioBlockSize)
 	if rms < 0.0008 {
-		return bands, 0
+		return bands, 0, 0
 	}
 
 	fft(realValues, imaginaryValues)
@@ -293,24 +407,142 @@ func analyzeAudioBlock(samples []int16) ([audioBandCount]float64, float64) {
 		minFrequency = 55.0
 		maxFrequency = 11_000.0
 	)
-	for band := range audioBandCount {
-		lowFrequency := minFrequency * math.Pow(maxFrequency/minFrequency, float64(band)/audioBandCount)
-		highFrequency := minFrequency * math.Pow(maxFrequency/minFrequency, float64(band+1)/audioBandCount)
-		firstBin, lastBin := audioBandBinRange(lowFrequency, highFrequency)
+	ranges := audioBandRanges()
+	weightedFrequency := 0.0
+	totalMagnitude := 0.0
+	for band, binRange := range ranges {
 		peak := 0.0
-		for bin := firstBin; bin <= lastBin; bin++ {
+		for bin := binRange[0]; bin <= binRange[1]; bin++ {
 			magnitude := math.Hypot(realValues[bin], imaginaryValues[bin]) / audioBlockSize
 			peak = math.Max(peak, magnitude)
+			frequency := float64(bin) * audioSampleRate / audioBlockSize
+			weightedFrequency += frequency * magnitude
+			totalMagnitude += magnitude
 		}
 		bands[band] = math.Min(1, math.Sqrt(peak*8))
 	}
-	return bands, math.Min(1, math.Sqrt(rms*4))
+	centroid := 0.0
+	if totalMagnitude > 0 {
+		frequency := math.Max(minFrequency, math.Min(maxFrequency, weightedFrequency/totalMagnitude))
+		centroid = math.Log(frequency/minFrequency) / math.Log(maxFrequency/minFrequency)
+	}
+	return bands, math.Min(1, math.Sqrt(rms*4)), centroid
 }
 
-func audioBandBinRange(lowFrequency float64, highFrequency float64) (int, int) {
-	firstBin := max(1, int(math.Ceil(lowFrequency*audioBlockSize/audioSampleRate)))
-	lastBin := min(audioBlockSize/2-1, int(math.Ceil(highFrequency*audioBlockSize/audioSampleRate))-1)
-	return firstBin, max(firstBin, lastBin)
+func audioBandRanges() [audioBandCount][2]int {
+	const (
+		minFrequency = 55.0
+		maxFrequency = 11_000.0
+	)
+	var ranges [audioBandCount][2]int
+	previousLast := int(math.Ceil(minFrequency*audioBlockSize/audioSampleRate)) - 1
+	for band := range audioBandCount {
+		highFrequency := minFrequency * math.Pow(maxFrequency/minFrequency, float64(band+1)/audioBandCount)
+		first := previousLast + 1
+		last := min(audioBlockSize/2-1, int(math.Ceil(highFrequency*audioBlockSize/audioSampleRate))-1)
+		last = max(first, last)
+		ranges[band] = [2]int{first, last}
+		previousLast = last
+	}
+	return ranges
+}
+
+func aggregateBandEnergy(bands [audioBandCount]float64, lowFrequency float64, highFrequency float64) float64 {
+	const (
+		minFrequency = 55.0
+		maxFrequency = 11_000.0
+	)
+	total := 0.0
+	count := 0
+	for band, energy := range bands {
+		position := (float64(band) + 0.5) / audioBandCount
+		frequency := minFrequency * math.Pow(maxFrequency/minFrequency, position)
+		if frequency >= lowFrequency && frequency < highFrequency {
+			total += energy
+			count++
+		}
+	}
+	if count == 0 {
+		return 0
+	}
+	return total / float64(count)
+}
+
+func smoothAudioValue(current float64, target float64, elapsed time.Duration) float64 {
+	const minimumElapsed = time.Millisecond
+	if elapsed < minimumElapsed {
+		elapsed = minimumElapsed
+	}
+	tau := audioRelease
+	if target > current {
+		tau = audioAttack
+	}
+	factor := 1 - math.Exp(-float64(elapsed)/float64(tau))
+	return current + (target-current)*factor
+}
+
+func smoothSignedAudioValue(current float64, target float64, elapsed time.Duration) float64 {
+	if math.Abs(target) > math.Abs(current) {
+		factor := 1 - math.Exp(-float64(max(elapsed, time.Millisecond))/float64(audioAttack))
+		return current + (target-current)*factor
+	}
+	factor := 1 - math.Exp(-float64(max(elapsed, time.Millisecond))/float64(audioRelease))
+	return current + (target-current)*factor
+}
+
+func (meter *audioMeter) fingerprint() uint64 {
+	visible := meter.level > 1.0/256 ||
+		meter.bass > 1.0/256 ||
+		meter.lowMid > 1.0/256 ||
+		meter.highMid > 1.0/256 ||
+		meter.treble > 1.0/256 ||
+		meter.centroid > 1.0/256 ||
+		meter.leftLevel > 1.0/256 ||
+		meter.rightLevel > 1.0/256 ||
+		math.Abs(meter.balance) > 1.0/256
+	if !visible {
+		for _, value := range meter.bands {
+			if value > 1.0/256 {
+				visible = true
+				break
+			}
+		}
+	}
+	if !visible {
+		return 0
+	}
+	hash := uint64(1469598103934665603)
+	add := func(value float64, signed bool) {
+		if signed {
+			value = (math.Max(-1, math.Min(1, value)) + 1) / 2
+		} else {
+			value = math.Max(0, math.Min(1, value))
+		}
+		quantized := uint64(math.Round(value * 128))
+		hash ^= quantized
+		hash *= 1099511628211
+	}
+	for _, value := range meter.bands {
+		add(value, false)
+	}
+	for _, value := range []float64{
+		meter.level,
+		meter.bass,
+		meter.lowMid,
+		meter.highMid,
+		meter.treble,
+		meter.centroid,
+		meter.leftLevel,
+		meter.rightLevel,
+	} {
+		add(value, false)
+	}
+	add(meter.balance, true)
+	if meter.level > 0.025 {
+		hash ^= 1
+		hash *= 1099511628211
+	}
+	return hash
 }
 
 func fft(realValues []float64, imaginaryValues []float64) {

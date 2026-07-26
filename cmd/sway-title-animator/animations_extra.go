@@ -222,6 +222,12 @@ func auroraSoundArtWithSnapshot(width int, _ int, audio audioSnapshot) string {
 
 func scaleAudioSnapshot(snapshot audioSnapshot, scale float64) audioSnapshot {
 	snapshot.Level = math.Min(1, snapshot.Level*scale)
+	snapshot.Bass = math.Min(1, snapshot.Bass*scale)
+	snapshot.LowMid = math.Min(1, snapshot.LowMid*scale)
+	snapshot.HighMid = math.Min(1, snapshot.HighMid*scale)
+	snapshot.Treble = math.Min(1, snapshot.Treble*scale)
+	snapshot.LeftLevel = math.Min(1, snapshot.LeftLevel*scale)
+	snapshot.RightLevel = math.Min(1, snapshot.RightLevel*scale)
 	for index := range snapshot.Bands {
 		snapshot.Bands[index] = math.Min(1, snapshot.Bands[index]*scale)
 	}

@@ -242,8 +242,7 @@ func runPreview(output *os.File, fps float64) error {
 }
 
 func sameAudioVisual(first audioSnapshot, second audioSnapshot) bool {
-	return first.Bands == second.Bands &&
-		first.Level == second.Level &&
+	return first.Revision == second.Revision &&
 		first.Active == second.Active
 }
 

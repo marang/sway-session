@@ -30,11 +30,23 @@ type audioSnapshot struct {
 }
 
 type audioMeter struct {
-	mu         sync.RWMutex
-	bands      [audioBandCount]float64
-	level      float64
-	lastUpdate time.Time
-	sequence   uint64
+	mu          sync.RWMutex
+	bands       [audioBandCount]float64
+	level       float64
+	sensitivity float64
+	lastUpdate  time.Time
+	sequence    uint64
+}
+
+type audioCaptureBackend interface {
+	Name() string
+	Available() error
+	Capture(context.Context, func(io.Reader) error) error
+}
+
+type parecCaptureBackend struct {
+	executable string
+	device     string
 }
 
 var (
@@ -43,17 +55,25 @@ var (
 )
 
 func startDefaultAudioMonitor() func() {
-	if _, err := exec.LookPath("parec"); err != nil {
-		fmt.Fprintln(os.Stderr, "aurora_sound: parec is unavailable; install the PulseAudio command-line utilities to enable sound reactivity")
-		defaultAudioMeter.clear()
+	return startAudioMonitor(defaultAudioCaptureBackend(), &defaultAudioMeter, os.Stderr)
+}
+
+func defaultAudioCaptureBackend() audioCaptureBackend {
+	return parecCaptureBackend{executable: "parec", device: audioSettings.Device}
+}
+
+func startAudioMonitor(backend audioCaptureBackend, meter *audioMeter, diagnostics io.Writer) func() {
+	meter.setSensitivity(audioSettings.Sensitivity)
+	if err := backend.Available(); err != nil {
+		fmt.Fprintf(diagnostics, "sound-reactive presets: %s is unavailable: %v; install the PulseAudio command-line utilities or check the configured playback monitor\n", backend.Name(), err)
+		meter.clear()
 		return func() {}
 	}
-
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		defaultAudioMeter.run(ctx)
+		meter.run(ctx, backend, diagnostics, audioRetryDelay)
 	}()
 
 	var once sync.Once
@@ -68,16 +88,23 @@ func startDefaultAudioMonitor() func() {
 	}
 }
 
-func (meter *audioMeter) run(ctx context.Context) {
+func (meter *audioMeter) run(
+	ctx context.Context,
+	backend audioCaptureBackend,
+	diagnostics io.Writer,
+	retryDelay time.Duration,
+) {
 	reported := false
 	report := func(err error) {
 		if err == nil || ctx.Err() != nil || reported {
 			return
 		}
 		reported = true
-		fmt.Fprintf(os.Stderr, "aurora_sound: audio capture unavailable: %v; retrying\n", err)
+		fmt.Fprintf(diagnostics, "sound-reactive presets: %s capture unavailable: %v; retrying\n", backend.Name(), err)
 	}
-	meter.runCaptureLoop(ctx, meter.capture, audioRetryDelay, report)
+	meter.runCaptureLoop(ctx, func(ctx context.Context) error {
+		return backend.Capture(ctx, meter.consume)
+	}, retryDelay, report)
 }
 
 func (meter *audioMeter) runCaptureLoop(
@@ -109,19 +136,17 @@ func (meter *audioMeter) runCaptureLoop(
 	}
 }
 
-func (meter *audioMeter) capture(ctx context.Context) error {
-	command := exec.CommandContext(ctx, "parec",
-		"--record",
-		"--device=@DEFAULT_MONITOR@",
-		"--raw",
-		"--format=s16le",
-		"--rate=24000",
-		"--channels=1",
-		"--latency-msec=60",
-		"--process-time-msec=20",
-		"--client-name=sway-title-animator",
-		"--stream-name=aurora-sound-meter",
-	)
+func (backend parecCaptureBackend) Name() string {
+	return "parec"
+}
+
+func (backend parecCaptureBackend) Available() error {
+	_, err := exec.LookPath(backend.executable)
+	return err
+}
+
+func (backend parecCaptureBackend) Capture(ctx context.Context, consume func(io.Reader) error) error {
+	command := exec.CommandContext(ctx, backend.executable, backend.arguments()...)
 	output, err := command.StdoutPipe()
 	if err != nil {
 		return err
@@ -130,12 +155,28 @@ func (meter *audioMeter) capture(ctx context.Context) error {
 		return err
 	}
 
-	readErr := meter.consume(output)
-	waitErr := command.Wait()
+	readErr := consume(output)
 	if readErr != nil {
+		_ = command.Process.Kill()
+		_ = command.Wait()
 		return readErr
 	}
-	return waitErr
+	return command.Wait()
+}
+
+func (backend parecCaptureBackend) arguments() []string {
+	return []string{
+		"--record",
+		"--device=" + backend.device,
+		"--raw",
+		"--format=s16le",
+		"--rate=24000",
+		"--channels=1",
+		"--latency-msec=60",
+		"--process-time-msec=20",
+		"--client-name=sway-title-animator",
+		"--stream-name=sway-title-animator-meter",
+	}
 }
 
 func (meter *audioMeter) consume(reader io.Reader) error {
@@ -170,13 +211,19 @@ func (meter *audioMeter) update(samples []int16, now time.Time) {
 	meter.mu.Lock()
 	defer meter.mu.Unlock()
 
+	sensitivity := meter.sensitivity
+	if sensitivity <= 0 {
+		sensitivity = defaultAudioSensitivity
+	}
 	for index, target := range targetBands {
+		target = math.Min(1, target*sensitivity)
 		factor := 0.16
 		if target > meter.bands[index] {
 			factor = 0.68
 		}
 		meter.bands[index] += (target - meter.bands[index]) * factor
 	}
+	targetLevel = math.Min(1, targetLevel*sensitivity)
 	levelFactor := 0.14
 	if targetLevel > meter.level {
 		levelFactor = 0.72
@@ -184,6 +231,12 @@ func (meter *audioMeter) update(samples []int16, now time.Time) {
 	meter.level += (targetLevel - meter.level) * levelFactor
 	meter.lastUpdate = now
 	meter.sequence++
+}
+
+func (meter *audioMeter) setSensitivity(sensitivity float64) {
+	meter.mu.Lock()
+	defer meter.mu.Unlock()
+	meter.sensitivity = sensitivity
 }
 
 func (meter *audioMeter) snapshot() audioSnapshot {

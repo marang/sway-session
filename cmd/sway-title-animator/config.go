@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -22,7 +23,7 @@ func loadConfig(path string) error {
 		}
 		return err
 	}
-	if err := rejectObsoleteShowcaseConfig(data); err != nil {
+	if err := validateConfigCompatibility(data); err != nil {
 		return err
 	}
 	var config Config
@@ -73,6 +74,15 @@ func applyConfig(config Config) {
 	if config.Settings.DetectChildProcess != nil {
 		settings.DetectChildProcess = *config.Settings.DetectChildProcess
 	}
+	if config.Audio.Device != nil {
+		audioSettings.Device = strings.TrimSpace(*config.Audio.Device)
+	}
+	if config.Audio.Sensitivity != nil {
+		audioSettings.Sensitivity = *config.Audio.Sensitivity
+	}
+	if config.Audio.Motion != nil {
+		audioSettings.Motion = *config.Audio.Motion
+	}
 	applyGlyphConfig(config.Glyphs)
 	iconRules = append(configuredIconRules(config.Icons), iconRules...)
 	for name, animation := range config.Animation {
@@ -89,7 +99,7 @@ func applyConfig(config Config) {
 	}
 }
 
-func rejectObsoleteShowcaseConfig(data []byte) error {
+func validateConfigCompatibility(data []byte) error {
 	var raw map[string]any
 	if err := toml.Unmarshal(data, &raw); err != nil {
 		return err
@@ -97,14 +107,17 @@ func rejectObsoleteShowcaseConfig(data []byte) error {
 	if _, exists := raw["showcase"]; exists {
 		return errors.New("obsolete [showcase] config section; rename it to [rotation]")
 	}
-	rawSettings, ok := raw["settings"].(map[string]any)
-	if !ok {
-		return nil
+	if rawSettings, ok := raw["settings"].(map[string]any); ok {
+		for _, name := range []string{"showcase_hold_frames", "showcase_blend_frames"} {
+			if _, exists := rawSettings[name]; exists {
+				replacement := strings.Replace(name, "showcase_", "rotation_", 1)
+				return fmt.Errorf("obsolete settings.%s option; rename it to settings.%s", name, replacement)
+			}
+		}
 	}
-	for _, name := range []string{"showcase_hold_frames", "showcase_blend_frames"} {
-		if _, exists := rawSettings[name]; exists {
-			replacement := strings.Replace(name, "showcase_", "rotation_", 1)
-			return fmt.Errorf("obsolete settings.%s option; rename it to settings.%s", name, replacement)
+	if rawAudio, ok := raw["audio"].(map[string]any); ok {
+		if _, exists := rawAudio["backend"]; exists {
+			return errors.New("audio.backend is not supported; parec is the only production audio backend")
 		}
 	}
 	return nil
@@ -147,6 +160,34 @@ func validateSettings(settings Settings) error {
 		return errors.New("rotation hold/blend frames must be greater than 0")
 	}
 	return nil
+}
+
+func validateAudioSettings(settings AudioSettings) error {
+	device := strings.TrimSpace(settings.Device)
+	if device == "" {
+		return errors.New("audio device must not be empty")
+	}
+	if len(device) > 512 || strings.IndexFunc(device, func(character rune) bool {
+		return character < 0x20 || character == 0x7f
+	}) >= 0 {
+		return errors.New("audio device must be at most 512 characters and contain no control characters")
+	}
+	if math.IsNaN(settings.Sensitivity) || math.IsInf(settings.Sensitivity, 0) ||
+		settings.Sensitivity <= 0 || settings.Sensitivity > 10 {
+		return errors.New("audio sensitivity must be greater than 0 and at most 10")
+	}
+	if math.IsNaN(settings.Motion) || math.IsInf(settings.Motion, 0) ||
+		settings.Motion <= 0 || settings.Motion > 10 {
+		return errors.New("audio motion must be greater than 0 and at most 10")
+	}
+	return nil
+}
+
+func validateRuntimeSettings() error {
+	if err := validateSettings(settings); err != nil {
+		return err
+	}
+	return validateAudioSettings(audioSettings)
 }
 
 func applyGlyphConfig(glyphs ConfigGlyphs) {

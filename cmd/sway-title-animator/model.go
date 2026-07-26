@@ -3,15 +3,18 @@ package main
 import "time"
 
 const (
-	defaultFPS             = 25.0
-	defaultMotion          = 0.22
-	defaultApproxCharWidth = 8.5
-	defaultMaxArtColumns   = 220
-	defaultTitleReserve    = 18
-	defaultRotationHold    = 260
-	defaultRotationBlend   = 75
-	titleReassertInterval  = 2 * time.Second
-	rotationSelection      = ""
+	defaultFPS              = 25.0
+	defaultMotion           = 0.22
+	defaultApproxCharWidth  = 8.5
+	defaultMaxArtColumns    = 220
+	defaultTitleReserve     = 18
+	defaultRotationHold     = 260
+	defaultRotationBlend    = 75
+	defaultAudioDevice      = "@DEFAULT_MONITOR@"
+	defaultAudioSensitivity = 1.0
+	defaultAudioMotion      = 1.0
+	titleReassertInterval   = 2 * time.Second
+	rotationSelection       = ""
 )
 
 const defaultConfigContents = `[settings]
@@ -23,6 +26,11 @@ title_reserve_columns = 18
 rotation_hold_frames = 260
 rotation_blend_frames = 75
 detect_child_process = true
+
+[audio]
+# device = "@DEFAULT_MONITOR@"
+sensitivity = 1.0
+motion = 1.0
 
 [rotation]
 presets = [
@@ -79,6 +87,11 @@ var (
 		RotationHoldFrames:  defaultRotationHold,
 		RotationBlendFrames: defaultRotationBlend,
 		DetectChildProcess:  true,
+	}
+	audioSettings = AudioSettings{
+		Device:      defaultAudioDevice,
+		Sensitivity: defaultAudioSensitivity,
+		Motion:      defaultAudioMotion,
 	}
 
 	auroraBars        = []rune("▁▂▃▄▅▆▇█")
@@ -148,8 +161,15 @@ type Settings struct {
 	DetectChildProcess  bool
 }
 
+type AudioSettings struct {
+	Device      string
+	Sensitivity float64
+	Motion      float64
+}
+
 type Config struct {
 	Settings  ConfigSettings            `toml:"settings"`
+	Audio     ConfigAudio               `toml:"audio"`
 	Rotation  ConfigRotation            `toml:"rotation"`
 	Glyphs    ConfigGlyphs              `toml:"glyphs"`
 	Icons     map[string]string         `toml:"icons"`
@@ -165,6 +185,12 @@ type ConfigSettings struct {
 	RotationHoldFrames  *int     `toml:"rotation_hold_frames"`
 	RotationBlendFrames *int     `toml:"rotation_blend_frames"`
 	DetectChildProcess  *bool    `toml:"detect_child_process"`
+}
+
+type ConfigAudio struct {
+	Device      *string  `toml:"device"`
+	Sensitivity *float64 `toml:"sensitivity"`
+	Motion      *float64 `toml:"motion"`
 }
 
 type ConfigRotation struct {

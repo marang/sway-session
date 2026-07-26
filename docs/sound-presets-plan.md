@@ -1,8 +1,9 @@
 # Sound-reactive preset plan
 
-Status: Accepted design; the unnamed default rotation, `aurora_sound`, and the
-scrollable Bubble Tea preview foundation are implemented. The remaining sound
-engine work, companions, diagnostics, and expanded preview modes are planned.
+Status: Accepted design; the unnamed default rotation, startup audio
+configuration, backend-neutral capture seam, `aurora_sound`, and the scrollable
+Bubble Tea preview foundation are implemented. The remaining sound engine work,
+companions, diagnostics, and expanded preview modes are planned.
 
 Linear project:
 [Sway Title Animator | P001 | Sound-Reactive Presets](https://linear.app/riotbox/project/sway-title-animator-or-p001-or-sound-reactive-presets-e8a4308a9902)
@@ -55,6 +56,12 @@ presets = ["aurora", "loom", "square"]
   exists.
 - Configuration is validated once at startup. Changes take effect after
   restarting with `--replace`; live reload is out of scope.
+
+The startup fields and backend-neutral capture seam were implemented in
+[LAB-31](https://linear.app/riotbox/issue/LAB-31/add-audio-configuration-and-a-backend-neutral-capture-contract).
+The current analyzer still uses its original mono format; the accepted 48 kHz
+stereo format and expanded shared feature model belong to the next engine
+slice.
 
 Only playback monitor/output sources are supported. Microphone capture is not
 part of this feature. `--doctor` should reject a custom source that it can
@@ -393,7 +400,8 @@ presets that look effectively identical.
 
 1. Establish the backend-neutral capture contract, startup configuration,
    bounded event model, and `--doctor` checks. The `[rotation]` migration and
-   unnamed default behavior are already implemented in LAB-29.
+   unnamed default behavior are implemented in LAB-29; startup audio
+   configuration and the capture seam are implemented in LAB-31.
 2. Implement the fixed-format `parec` lifecycle, smoothing/normalization,
    spectral features, and deterministic audio test harness.
 3. Replace the preview plumbing with Bubble Tea and implement the four planned

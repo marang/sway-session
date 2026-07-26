@@ -173,6 +173,11 @@ rotation_hold_frames = 260
 rotation_blend_frames = 75
 detect_child_process = true
 
+[audio]
+# device = "@DEFAULT_MONITOR@"
+sensitivity = 1.0
+motion = 1.0
+
 [rotation]
 presets = [
   "loom", "aurora", "bloom", "spectrum", "square", "ripples",
@@ -197,6 +202,11 @@ frames = [
 The old `[showcase]` section and `showcase_*` timing options are intentionally
 not aliases. Rename them to `[rotation]`, `rotation_hold_frames`, and
 `rotation_blend_frames` before starting the animator.
+
+`audio.device` can select a specific playback-monitor source. `sensitivity`
+adjusts captured signal gain and `motion` adjusts the global visual response;
+both accept values greater than `0` through `10`. There is no backend setting:
+`parec` is currently the single production capture backend.
 
 Run with a specific config:
 

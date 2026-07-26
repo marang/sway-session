@@ -8,6 +8,11 @@ rotation_hold_frames = 260
 rotation_blend_frames = 75
 detect_child_process = true
 
+[audio]
+# device = "@DEFAULT_MONITOR@"
+sensitivity = 1.0
+motion = 1.0
+
 [rotation]
 presets = [
   "loom",

@@ -45,7 +45,7 @@ func main() {
 		return
 	}
 	if *preview {
-		if err := validateSettings(settings); err != nil {
+		if err := validateRuntimeSettings(); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(2)
 		}
@@ -64,7 +64,7 @@ func main() {
 		}
 	}
 	animationPreset = *preset
-	if err := validateSettings(settings); err != nil {
+	if err := validateRuntimeSettings(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}

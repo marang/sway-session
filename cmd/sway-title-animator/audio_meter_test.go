@@ -7,10 +7,28 @@ import (
 	"errors"
 	"io"
 	"math"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 )
+
+type fakeAudioCaptureBackend struct {
+	availableErr error
+	capture      func(context.Context, func(io.Reader) error) error
+}
+
+func (backend fakeAudioCaptureBackend) Name() string {
+	return "fake"
+}
+
+func (backend fakeAudioCaptureBackend) Available() error {
+	return backend.availableErr
+}
+
+func (backend fakeAudioCaptureBackend) Capture(ctx context.Context, consume func(io.Reader) error) error {
+	return backend.capture(ctx, consume)
+}
 
 func TestAudioBandBinsAreOrderedAndDoNotOverlap(t *testing.T) {
 	const (
@@ -53,6 +71,109 @@ func TestAudioCaptureLoopReportsFailureAndStopsOnCancellation(t *testing.T) {
 	})
 	if attempts != 2 || reports != 1 {
 		t.Fatalf("expected one reported retry before cancellation, attempts=%d reports=%d", attempts, reports)
+	}
+}
+
+func TestDefaultAudioBackendUsesConfiguredDevice(t *testing.T) {
+	original := audioSettings
+	t.Cleanup(func() {
+		audioSettings = original
+	})
+	device := "  alsa_output.test.monitor  "
+	applyConfig(Config{Audio: ConfigAudio{Device: &device}})
+
+	backend, ok := defaultAudioCaptureBackend().(parecCaptureBackend)
+	if !ok {
+		t.Fatal("expected parec to remain the production capture backend")
+	}
+	if backend.device != "alsa_output.test.monitor" {
+		t.Fatalf("expected configured device, got %q", backend.device)
+	}
+	if !slices.Contains(backend.arguments(), "--device=alsa_output.test.monitor") {
+		t.Fatalf("expected configured device in parec arguments: %v", backend.arguments())
+	}
+}
+
+func TestAudioMonitorReportsUnavailableBackendOnceWithoutCapture(t *testing.T) {
+	original := audioSettings
+	audioSettings.Sensitivity = 1
+	t.Cleanup(func() {
+		audioSettings = original
+	})
+
+	captures := 0
+	backend := fakeAudioCaptureBackend{
+		availableErr: errors.New("missing"),
+		capture: func(context.Context, func(io.Reader) error) error {
+			captures++
+			return nil
+		},
+	}
+	var diagnostics bytes.Buffer
+	stop := startAudioMonitor(backend, &audioMeter{}, &diagnostics)
+	stop()
+	stop()
+
+	if captures != 0 {
+		t.Fatalf("unavailable backend must not capture, attempts=%d", captures)
+	}
+	if count := strings.Count(diagnostics.String(), "is unavailable"); count != 1 {
+		t.Fatalf("expected one unavailable diagnostic, got %q", diagnostics.String())
+	}
+}
+
+func TestAudioMonitorCancelsInjectedBackend(t *testing.T) {
+	original := audioSettings
+	audioSettings.Sensitivity = 1
+	t.Cleanup(func() {
+		audioSettings = original
+	})
+
+	started := make(chan struct{})
+	canceled := make(chan struct{})
+	backend := fakeAudioCaptureBackend{
+		capture: func(ctx context.Context, _ func(io.Reader) error) error {
+			close(started)
+			<-ctx.Done()
+			close(canceled)
+			return ctx.Err()
+		},
+	}
+	stop := startAudioMonitor(backend, &audioMeter{}, io.Discard)
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("fake backend did not start")
+	}
+	stop()
+	select {
+	case <-canceled:
+	case <-time.After(time.Second):
+		t.Fatal("fake backend did not observe cancellation")
+	}
+}
+
+func TestAudioMeterReportsInjectedCaptureFailureOnce(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	attempts := 0
+	backend := fakeAudioCaptureBackend{
+		capture: func(context.Context, func(io.Reader) error) error {
+			attempts++
+			if attempts == 2 {
+				cancel()
+			}
+			return errors.New("capture failed")
+		},
+	}
+	var diagnostics bytes.Buffer
+	var meter audioMeter
+	meter.run(ctx, backend, &diagnostics, time.Millisecond)
+
+	if attempts != 2 {
+		t.Fatalf("expected two capture attempts, got %d", attempts)
+	}
+	if count := strings.Count(diagnostics.String(), "capture unavailable"); count != 1 {
+		t.Fatalf("expected one capture diagnostic, got %q", diagnostics.String())
 	}
 }
 
@@ -111,6 +232,28 @@ func TestAudioMeterAttacksQuicklyAndReleasesSmoothly(t *testing.T) {
 	}
 }
 
+func TestAudioSensitivityScalesAnalyzedEnergy(t *testing.T) {
+	samples := sineSamples(880, 0.04)
+	now := time.Now()
+	var normal audioMeter
+	normal.setSensitivity(1)
+	normal.update(samples, now)
+	var boosted audioMeter
+	boosted.setSensitivity(2)
+	boosted.update(samples, now)
+
+	normalSnapshot := normal.snapshot()
+	boostedSnapshot := boosted.snapshot()
+	if boostedSnapshot.Level <= normalSnapshot.Level {
+		t.Fatalf("expected sensitivity to raise level, normal=%.3f boosted=%.3f",
+			normalSnapshot.Level, boostedSnapshot.Level)
+	}
+	if boostedSnapshot.Bands[strongestAudioBand(normalSnapshot.Bands)] <=
+		normalSnapshot.Bands[strongestAudioBand(normalSnapshot.Bands)] {
+		t.Fatal("expected sensitivity to raise band energy")
+	}
+}
+
 func TestAuroraSoundUsesQuietFallbackAndAudioBands(t *testing.T) {
 	originalSeed := animationSeed
 	animationSeed = 0x5eed
@@ -155,6 +298,20 @@ func TestAuroraSoundNeedlesRepresentPeakStrength(t *testing.T) {
 	extremeFrame := auroraSoundArtWithSnapshot(40, 1, extremePeak)
 	if !strings.ContainsRune(extremeFrame, '┃') {
 		t.Fatalf("expected heavy needles for extreme peaks, got %q", extremeFrame)
+	}
+}
+
+func TestAudioMotionScalesVisualSnapshot(t *testing.T) {
+	snapshot := audioSnapshot{Active: true, Level: 0.4}
+	snapshot.Bands[5] = 0.45
+
+	quiet := scaleAudioSnapshot(snapshot, 0.5)
+	strong := scaleAudioSnapshot(snapshot, 2)
+	if quiet.Level >= snapshot.Level || quiet.Bands[5] >= snapshot.Bands[5] {
+		t.Fatalf("expected reduced motion response, got %+v", quiet)
+	}
+	if strong.Level <= snapshot.Level || strong.Bands[5] <= snapshot.Bands[5] {
+		t.Fatalf("expected increased motion response, got %+v", strong)
 	}
 }
 

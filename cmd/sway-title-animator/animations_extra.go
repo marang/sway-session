@@ -176,7 +176,11 @@ func revealSquareSegments(segments []squareSegment, revealed int, leftToRight bo
 }
 
 func auroraSoundArt(width int, phase int) string {
-	return auroraSoundArtWithSnapshot(width, phase, currentAudioSnapshot())
+	return auroraSoundArtWithSnapshot(
+		width,
+		phase,
+		scaleAudioSnapshot(currentAudioSnapshot(), audioSettings.Motion),
+	)
 }
 
 const (
@@ -214,6 +218,14 @@ func auroraSoundArtWithSnapshot(width int, _ int, audio audioSnapshot) string {
 		}
 	}
 	return string(chars)
+}
+
+func scaleAudioSnapshot(snapshot audioSnapshot, scale float64) audioSnapshot {
+	snapshot.Level = math.Min(1, snapshot.Level*scale)
+	for index := range snapshot.Bands {
+		snapshot.Bands[index] = math.Min(1, snapshot.Bands[index]*scale)
+	}
+	return snapshot
 }
 
 func interpolatedAudioBand(bands [audioBandCount]float64, position float64) float64 {

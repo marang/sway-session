@@ -495,9 +495,11 @@ func TestBuiltInPresetsMaintainDistinctVisualLanguages(t *testing.T) {
 		"loom|loom_sound":                   true,
 		"radar|radar_sound":                 true,
 		"ripples|ripples_sound":             true,
+		"ribbon|ribbon_sound":               true,
 		"shutter|shutter_sound":             true,
 		"square|square_sound":               true,
 		"spectrum|spectrum_sound":           true,
+		"spline|spline_sound":               true,
 		"wave|wave_sound":                   true,
 	}
 	strictPairs := map[string]bool{

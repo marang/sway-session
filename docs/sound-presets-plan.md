@@ -342,7 +342,7 @@ presets that look effectively identical.
 - Stereo balance selects breaker direction.
 - Silence retains a small continuous tide.
 
-### `spline_sound`
+### `spline_sound` — implemented
 
 - Divide the spectrum into the spline's control-point regions.
 - Band energy displaces individual control points, producing a continuous
@@ -390,7 +390,7 @@ presets that look effectively identical.
 - Stereo balance biases displacement direction.
 - Silence becomes an almost clean line, preserving contrast with `ribbon`.
 
-### `ribbon_sound`
+### `ribbon_sound` — implemented
 
 - Frequency bands modulate brightness along the existing woven ribbon.
 - Bass changes ribbon width, mids change curvature, and treble adds traveling
@@ -429,7 +429,7 @@ presets that look effectively identical.
    - `comet_sound` and `bloom_sound` — implemented in LAB-38;
    - `constellation_sound` and `circuit_sound` — implemented in LAB-42;
    - `braid_sound` and `loom_sound` — implemented in LAB-39;
-   - `spline_sound` and `ribbon_sound`; and
+   - `spline_sound` and `ribbon_sound` — implemented in LAB-41; and
    - `smileys_sound` and `glitch_sound`.
 4. After all sound companions are implemented, expand the Bubble Tea preview
    with the four planned preview modes, manual viewport, status hint, and

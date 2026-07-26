@@ -40,6 +40,7 @@ glitch         ───╍╪▒▓╳──┄──
 braid          ╱╱╱╳╲╲╲╳╱╱╱╳╲╲╲
 braid_sound    ╱╱╳╲╲╲╱✦╱╳╲╲
 ribbon         ·░▒▓██▓▒░··░▒▓█▓▒░·
+ribbon_sound   ░▒▓█▓▒░·░▒▓✦▓▒░
 shutter        ███▶░│     │░◀███
 shutter_sound  ▒▓█›      ┆      ‹█▓▒
 comet          ░░▒▒▓▓✶☄▓▒░░··░▒✦
@@ -48,6 +49,7 @@ smileys        ｡･ʕ•ᴥ•ʔっ･ﾟ
 wave           ▁▃▅▇█◜╲▅▃▁
 wave_sound     ▁▂▃╲◜╱▇≈•▃▂▁
 spline         ⢀⣠⠤⠒⠉⠢⣀  ✦
+spline_sound   ⠒⠒⠤⠤⣀⣀⠤◇⠒
 ```
 
 Each launch gets a fresh motion seed. Presets keep their visual identity, but

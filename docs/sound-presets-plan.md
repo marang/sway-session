@@ -275,7 +275,7 @@ presets that look effectively identical.
 - Stereo balance places new echoes left or right of center.
 - Silence keeps one slow sweep rather than freezing the preset.
 
-### `constellation_sound`
+### `constellation_sound` — implemented
 
 - Map frequency bands to fixed horizontal star regions.
 - Energy controls star brightness (`·`, `•`, `✧`, `✦`) without randomly moving
@@ -285,7 +285,7 @@ presets that look effectively identical.
 - Stereo balance selects the side on which transient stars appear.
 - Silence leaves a sparse, slowly drifting constellation.
 
-### `circuit_sound`
+### `circuit_sound` — implemented
 
 - Bass launches current pulses into the circuit.
 - Frequency bands choose which branches light up; mids lengthen active routes.
@@ -427,7 +427,7 @@ presets that look effectively identical.
    - `square_sound` and `ripples_sound` — implemented in LAB-36;
    - `radar_sound` and `shutter_sound` — implemented in LAB-37;
    - `comet_sound` and `bloom_sound` — implemented in LAB-38;
-   - `constellation_sound` and `circuit_sound`;
+   - `constellation_sound` and `circuit_sound` — implemented in LAB-42;
    - `braid_sound` and `loom_sound`;
    - `spline_sound` and `ribbon_sound`; and
    - `smileys_sound` and `glitch_sound`.

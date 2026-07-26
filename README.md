@@ -32,7 +32,9 @@ ripples_sound      ╴─═●═─╶
 radar          ╶◜╴──┄──═●═──┄──╋──┄──
 radar_sound    ┄──═◜═──┄──◆──┄──╋
 constellation       ·   ✦      •    ✧
+constellation_sound ·  •    ✦       ·
 circuit        ─╍──╪──═●═──╍──╼╾───
+circuit_sound  ───╾╪╼───═●═────
 glitch         ───╍╪▒▓╳──┄──
 braid          ╱╱╱╳╲╲╲╳╱╱╱╳╲╲╲
 ribbon         ·░▒▓██▓▒░··░▒▓█▓▒░·

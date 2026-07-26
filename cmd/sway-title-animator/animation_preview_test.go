@@ -486,15 +486,17 @@ func TestBuiltInPresetsMaintainDistinctVisualLanguages(t *testing.T) {
 	}
 
 	allowedSimilarity := map[string]bool{
-		"aurora|aurora_sound":     true,
-		"bloom|bloom_sound":       true,
-		"comet|comet_sound":       true,
-		"radar|radar_sound":       true,
-		"ripples|ripples_sound":   true,
-		"shutter|shutter_sound":   true,
-		"square|square_sound":     true,
-		"spectrum|spectrum_sound": true,
-		"wave|wave_sound":         true,
+		"aurora|aurora_sound":               true,
+		"bloom|bloom_sound":                 true,
+		"comet|comet_sound":                 true,
+		"constellation|constellation_sound": true,
+		"circuit|circuit_sound":             true,
+		"radar|radar_sound":                 true,
+		"ripples|ripples_sound":             true,
+		"shutter|shutter_sound":             true,
+		"square|square_sound":               true,
+		"spectrum|spectrum_sound":           true,
+		"wave|wave_sound":                   true,
 	}
 	strictPairs := map[string]bool{
 		"braid|square":   true,

@@ -311,7 +311,7 @@ presets that look effectively identical.
 - Stereo balance selects shuttle direction.
 - Silence returns to a loose, readable textile pattern.
 
-### `comet_sound`
+### `comet_sound` — implemented
 
 - A bass onset launches a comet instead of using arbitrary launch timing.
 - Overall level controls tail length and density.
@@ -371,7 +371,7 @@ presets that look effectively identical.
 - Silence allows existing ripples to decay completely before a subtle idle
   pulse.
 
-### `bloom_sound`
+### `bloom_sound` — implemented
 
 - Strong onsets open a bloom from bud to flower.
 - Bass controls the stem/anchor weight; mids control petal span.
@@ -426,7 +426,7 @@ presets that look effectively identical.
    - `spectrum_sound` and `wave_sound` — implemented in LAB-46;
    - `square_sound` and `ripples_sound` — implemented in LAB-36;
    - `radar_sound` and `shutter_sound` — implemented in LAB-37;
-   - `comet_sound` and `bloom_sound`;
+   - `comet_sound` and `bloom_sound` — implemented in LAB-38;
    - `constellation_sound` and `circuit_sound`;
    - `braid_sound` and `loom_sound`;
    - `spline_sound` and `ribbon_sound`; and

@@ -22,6 +22,7 @@ aurora         ▁▂▃▄▅▆▇█▇▆▅▄▃▂▁
 aurora_sound   ▁▁▂▃▇╿▅▂▁▆┃▃▁
 loom           ░▒≈⌁≋░▒▓✦▓▒░≋⌁≈▒░
 bloom          ──⌁──❧─⌁──✦
+bloom_sound    ──⌁──✦──⌁──
 spectrum       ·─━▆⟨▇█▇▆━┃━▆▇█▇⟩▆━─·
 spectrum_sound ⟨·─━▆▇┃▇▆━─·┃·─━▆▇┃▇▆━─·⟩
 square         ⎺⎺⎤⎽⎽⎽⎽⎽⎡⎺⎺⎺⎺⎤⎽⎽⎡
@@ -38,6 +39,7 @@ ribbon         ·░▒▓██▓▒░··░▒▓█▓▒░·
 shutter        ███▶░│     │░◀███
 shutter_sound  ▒▓█›      ┆      ‹█▓▒
 comet          ░░▒▒▓▓✶☄▓▒░░··░▒✦
+comet_sound    ···░▒▓☄      ∙
 smileys        ｡･ʕ•ᴥ•ʔっ･ﾟ
 wave           ▁▃▅▇█◜╲▅▃▁
 wave_sound     ▁▂▃╲◜╱▇≈•▃▂▁

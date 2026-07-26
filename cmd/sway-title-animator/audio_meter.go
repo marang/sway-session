@@ -14,34 +14,62 @@ import (
 )
 
 const (
-	audioBandCount     = 32
-	audioBlockSize     = 2048
-	audioHopSize       = 1024
-	audioSampleRate    = 48_000
-	audioChannelCount  = 2
-	audioAttack        = 100 * time.Millisecond
-	audioRelease       = 320 * time.Millisecond
-	audioWarmup        = 400 * time.Millisecond
-	audioWarmupBlend   = 200 * time.Millisecond
-	audioNormalizeUp   = 2 * time.Second
-	audioNormalizeDown = 8 * time.Second
-	audioStaleAfter    = 300 * time.Millisecond
-	audioRetryDelay    = 1500 * time.Millisecond
+	audioBandCount      = 32
+	audioBlockSize      = 2048
+	audioHopSize        = 1024
+	audioSampleRate     = 48_000
+	audioChannelCount   = 2
+	audioAttack         = 100 * time.Millisecond
+	audioRelease        = 320 * time.Millisecond
+	audioWarmup         = 400 * time.Millisecond
+	audioWarmupBlend    = 200 * time.Millisecond
+	audioNormalizeUp    = 2 * time.Second
+	audioNormalizeDown  = 8 * time.Second
+	audioPeakDecay      = 650 * time.Millisecond
+	audioEventLifetime  = 1500 * time.Millisecond
+	audioOnsetCooldown  = 140 * time.Millisecond
+	audioRegionCooldown = 180 * time.Millisecond
+	audioEventCapacity  = 8
+	audioFluxThreshold  = 0.08
+	audioBassThreshold  = 0.16
+	audioHighThreshold  = 0.16
+	audioStaleAfter     = 300 * time.Millisecond
+	audioRetryDelay     = 1500 * time.Millisecond
 )
 
+type audioRegion uint8
+
+const (
+	audioRegionGeneral audioRegion = iota
+	audioRegionBass
+	audioRegionHigh
+)
+
+type audioOnset struct {
+	ID       uint64
+	Age      time.Duration
+	Strength float64
+	Region   audioRegion
+	Position float64
+}
+
 type audioSnapshot struct {
-	Bands      [audioBandCount]float64
-	Level      float64
-	Bass       float64
-	LowMid     float64
-	HighMid    float64
-	Treble     float64
-	Centroid   float64
-	LeftLevel  float64
-	RightLevel float64
-	Balance    float64
-	Active     bool
-	Revision   uint64
+	Bands        [audioBandCount]float64
+	Level        float64
+	Bass         float64
+	LowMid       float64
+	HighMid      float64
+	Treble       float64
+	Centroid     float64
+	LeftLevel    float64
+	RightLevel   float64
+	Balance      float64
+	SpectralFlux float64
+	Peak         float64
+	Onsets       [audioEventCapacity]audioOnset
+	OnsetCount   int
+	Active       bool
+	Revision     uint64
 }
 
 type audioAnalysis struct {
@@ -57,6 +85,14 @@ type audioAnalysis struct {
 	Balance    float64
 }
 
+type audioOnsetState struct {
+	id         uint64
+	occurredAt time.Time
+	strength   float64
+	region     audioRegion
+	position   float64
+}
+
 type audioMeter struct {
 	mu                sync.RWMutex
 	bands             [audioBandCount]float64
@@ -69,6 +105,15 @@ type audioMeter struct {
 	leftLevel         float64
 	rightLevel        float64
 	balance           float64
+	spectralFlux      float64
+	peak              float64
+	previousBands     [audioBandCount]float64
+	hasPreviousBands  bool
+	onsets            []audioOnsetState
+	nextOnsetID       uint64
+	lastGeneralOnset  time.Time
+	lastBassOnset     time.Time
+	lastHighOnset     time.Time
 	sensitivity       float64
 	normalizationRef  float64
 	captureStarted    time.Time
@@ -284,6 +329,12 @@ func (meter *audioMeter) updateStereo(left []int16, right []int16, now time.Time
 	target.RightLevel = math.Min(1, target.RightLevel*sensitivity)
 	gain := meter.normalizationGain()
 	scaleAudioEnergy(&target, gain)
+	flux, bassRise, highRise := meter.spectrumChanges(target.Bands)
+	meter.pruneOnsets(now)
+	warmed := now.Sub(meter.captureStarted) >= audioWarmup+audioWarmupBlend
+	if warmed && target.Level > 0.025 {
+		meter.detectOnsets(now, flux, bassRise, highRise, target.Balance)
+	}
 	warmupScale := math.Max(0, math.Min(1,
 		float64(now.Sub(meter.captureStarted)-audioWarmup)/float64(audioWarmupBlend),
 	))
@@ -300,6 +351,9 @@ func (meter *audioMeter) updateStereo(left []int16, right []int16, now time.Time
 	meter.leftLevel = smoothAudioValue(meter.leftLevel, target.LeftLevel, elapsed)
 	meter.rightLevel = smoothAudioValue(meter.rightLevel, target.RightLevel, elapsed)
 	meter.balance = smoothSignedAudioValue(meter.balance, target.Balance, elapsed)
+	meter.spectralFlux = smoothAudioValue(meter.spectralFlux, flux*warmupScale, elapsed)
+	meter.peak *= math.Exp(-float64(elapsed) / float64(audioPeakDecay))
+	meter.peak = math.Max(meter.peak, target.Level)
 	meter.lastUpdate = now
 	fingerprint := meter.fingerprint()
 	if fingerprint != meter.visualFingerprint {
@@ -325,20 +379,37 @@ func (meter *audioMeter) snapshotAt(now time.Time) audioSnapshot {
 	if meter.lastUpdate.IsZero() || now.Sub(meter.lastUpdate) > audioStaleAfter {
 		return audioSnapshot{Revision: meter.revision}
 	}
-	return audioSnapshot{
-		Bands:      meter.bands,
-		Level:      meter.level,
-		Bass:       meter.bass,
-		LowMid:     meter.lowMid,
-		HighMid:    meter.highMid,
-		Treble:     meter.treble,
-		Centroid:   meter.centroid,
-		LeftLevel:  meter.leftLevel,
-		RightLevel: meter.rightLevel,
-		Balance:    meter.balance,
-		Active:     meter.level > 0.025,
-		Revision:   meter.revision,
+	snapshot := audioSnapshot{
+		Bands:        meter.bands,
+		Level:        meter.level,
+		Bass:         meter.bass,
+		LowMid:       meter.lowMid,
+		HighMid:      meter.highMid,
+		Treble:       meter.treble,
+		Centroid:     meter.centroid,
+		LeftLevel:    meter.leftLevel,
+		RightLevel:   meter.rightLevel,
+		Balance:      meter.balance,
+		SpectralFlux: meter.spectralFlux,
+		Peak:         meter.peak,
+		Active:       meter.level > 0.025,
+		Revision:     meter.revision,
 	}
+	for _, onset := range meter.onsets {
+		age := max(time.Duration(0), now.Sub(onset.occurredAt))
+		if age >= audioEventLifetime || snapshot.OnsetCount == audioEventCapacity {
+			continue
+		}
+		snapshot.Onsets[snapshot.OnsetCount] = audioOnset{
+			ID:       onset.id,
+			Age:      age,
+			Strength: onset.strength,
+			Region:   onset.region,
+			Position: onset.position,
+		}
+		snapshot.OnsetCount++
+	}
+	return snapshot
 }
 
 func (meter *audioMeter) clear() {
@@ -354,6 +425,14 @@ func (meter *audioMeter) clear() {
 	meter.leftLevel = 0
 	meter.rightLevel = 0
 	meter.balance = 0
+	meter.spectralFlux = 0
+	meter.peak = 0
+	clear(meter.previousBands[:])
+	meter.hasPreviousBands = false
+	meter.onsets = meter.onsets[:0]
+	meter.lastGeneralOnset = time.Time{}
+	meter.lastBassOnset = time.Time{}
+	meter.lastHighOnset = time.Time{}
 	meter.normalizationRef = 0
 	meter.captureStarted = time.Time{}
 	meter.lastUpdate = time.Time{}
@@ -361,6 +440,96 @@ func (meter *audioMeter) clear() {
 		meter.visualFingerprint = 0
 		meter.revision++
 	}
+}
+
+func (meter *audioMeter) spectrumChanges(bands [audioBandCount]float64) (float64, float64, float64) {
+	if !meter.hasPreviousBands {
+		meter.previousBands = bands
+		meter.hasPreviousBands = true
+		return 0, 0, 0
+	}
+
+	positiveSum := 0.0
+	bassRise := 0.0
+	highRise := 0.0
+	for band, value := range bands {
+		rise := math.Max(0, value-meter.previousBands[band])
+		positiveSum += rise
+		frequency := audioBandCenter(band)
+		switch {
+		case frequency < 250:
+			bassRise = math.Max(bassRise, rise)
+		case frequency >= 4000:
+			highRise = math.Max(highRise, rise)
+		}
+	}
+	meter.previousBands = bands
+	return math.Min(1, positiveSum/4), bassRise, highRise
+}
+
+func (meter *audioMeter) detectOnsets(
+	now time.Time,
+	flux float64,
+	bassRise float64,
+	highRise float64,
+	position float64,
+) {
+	if flux >= audioFluxThreshold && cooldownElapsed(now, meter.lastGeneralOnset, audioOnsetCooldown) {
+		meter.addOnset(now, onsetStrength(flux, audioFluxThreshold), audioRegionGeneral, position)
+		meter.lastGeneralOnset = now
+	}
+	if bassRise >= audioBassThreshold && cooldownElapsed(now, meter.lastBassOnset, audioRegionCooldown) {
+		meter.addOnset(now, onsetStrength(bassRise, audioBassThreshold), audioRegionBass, position)
+		meter.lastBassOnset = now
+	}
+	if highRise >= audioHighThreshold && cooldownElapsed(now, meter.lastHighOnset, audioRegionCooldown) {
+		meter.addOnset(now, onsetStrength(highRise, audioHighThreshold), audioRegionHigh, position)
+		meter.lastHighOnset = now
+	}
+}
+
+func cooldownElapsed(now time.Time, previous time.Time, cooldown time.Duration) bool {
+	return previous.IsZero() || now.Sub(previous) >= cooldown
+}
+
+func onsetStrength(value float64, threshold float64) float64 {
+	progress := (value - threshold) / (1 - threshold)
+	return math.Max(0.25, math.Min(1, 0.25+progress*0.75))
+}
+
+func (meter *audioMeter) addOnset(
+	now time.Time,
+	strength float64,
+	region audioRegion,
+	position float64,
+) {
+	meter.nextOnsetID++
+	onset := audioOnsetState{
+		id:         meter.nextOnsetID,
+		occurredAt: now,
+		strength:   strength,
+		region:     region,
+		position:   math.Max(-1, math.Min(1, position)),
+	}
+	if len(meter.onsets) == audioEventCapacity {
+		copy(meter.onsets, meter.onsets[1:])
+		meter.onsets[len(meter.onsets)-1] = onset
+		return
+	}
+	meter.onsets = append(meter.onsets, onset)
+}
+
+func (meter *audioMeter) pruneOnsets(now time.Time) {
+	firstLive := 0
+	for firstLive < len(meter.onsets) &&
+		now.Sub(meter.onsets[firstLive].occurredAt) >= audioEventLifetime {
+		firstLive++
+	}
+	if firstLive == 0 {
+		return
+	}
+	copy(meter.onsets, meter.onsets[firstLive:])
+	meter.onsets = meter.onsets[:len(meter.onsets)-firstLive]
 }
 
 func (meter *audioMeter) updateNormalization(level float64, elapsed time.Duration) {
@@ -511,15 +680,10 @@ func audioBandRanges() [audioBandCount][2]int {
 }
 
 func aggregateBandEnergy(bands [audioBandCount]float64, lowFrequency float64, highFrequency float64) float64 {
-	const (
-		minFrequency = 55.0
-		maxFrequency = 11_000.0
-	)
 	total := 0.0
 	count := 0
 	for band, energy := range bands {
-		position := (float64(band) + 0.5) / audioBandCount
-		frequency := minFrequency * math.Pow(maxFrequency/minFrequency, position)
+		frequency := audioBandCenter(band)
 		if frequency >= lowFrequency && frequency < highFrequency {
 			total += energy
 			count++
@@ -529,6 +693,15 @@ func aggregateBandEnergy(bands [audioBandCount]float64, lowFrequency float64, hi
 		return 0
 	}
 	return total / float64(count)
+}
+
+func audioBandCenter(band int) float64 {
+	const (
+		minFrequency = 55.0
+		maxFrequency = 11_000.0
+	)
+	position := (float64(band) + 0.5) / audioBandCount
+	return minFrequency * math.Pow(maxFrequency/minFrequency, position)
 }
 
 func smoothAudioValue(current float64, target float64, elapsed time.Duration) float64 {
@@ -562,7 +735,10 @@ func (meter *audioMeter) fingerprint() uint64 {
 		meter.centroid > 1.0/256 ||
 		meter.leftLevel > 1.0/256 ||
 		meter.rightLevel > 1.0/256 ||
-		math.Abs(meter.balance) > 1.0/256
+		math.Abs(meter.balance) > 1.0/256 ||
+		meter.spectralFlux > 1.0/256 ||
+		meter.peak > 1.0/256 ||
+		len(meter.onsets) > 0
 	if !visible {
 		for _, value := range meter.bands {
 			if value > 1.0/256 {
@@ -597,10 +773,20 @@ func (meter *audioMeter) fingerprint() uint64 {
 		meter.centroid,
 		meter.leftLevel,
 		meter.rightLevel,
+		meter.spectralFlux,
+		meter.peak,
 	} {
 		add(value, false)
 	}
 	add(meter.balance, true)
+	for _, onset := range meter.onsets {
+		hash ^= onset.id
+		hash *= 1099511628211
+		hash ^= uint64(onset.region) + 1
+		hash *= 1099511628211
+		add(onset.strength, false)
+		add(onset.position, true)
+	}
 	if meter.level > 0.025 {
 		hash ^= 1
 		hash *= 1099511628211

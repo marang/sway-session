@@ -228,8 +228,13 @@ func scaleAudioSnapshot(snapshot audioSnapshot, scale float64) audioSnapshot {
 	snapshot.Treble = math.Min(1, snapshot.Treble*scale)
 	snapshot.LeftLevel = math.Min(1, snapshot.LeftLevel*scale)
 	snapshot.RightLevel = math.Min(1, snapshot.RightLevel*scale)
+	snapshot.SpectralFlux = math.Min(1, snapshot.SpectralFlux*scale)
+	snapshot.Peak = math.Min(1, snapshot.Peak*scale)
 	for index := range snapshot.Bands {
 		snapshot.Bands[index] = math.Min(1, snapshot.Bands[index]*scale)
+	}
+	for index := range min(snapshot.OnsetCount, len(snapshot.Onsets)) {
+		snapshot.Onsets[index].Strength = math.Min(1, snapshot.Onsets[index].Strength*scale)
 	}
 	return snapshot
 }

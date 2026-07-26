@@ -210,7 +210,9 @@ both accept values greater than `0` through `10`. There is no backend setting:
 48 kHz stereo PCM; the shared analyzer retains left/right balance while
 providing 32 frequency bands and aggregate bass-to-treble features. Gentle
 automatic gain normalization adapts across sources, while a short reconnect
-warm-up prevents startup spikes.
+warm-up prevents startup spikes. Shared transient features include spectral
+flux, elapsed-time peak hold, and bounded general, bass, and high-frequency onset
+events for the planned sound companions.
 
 Run with a specific config:
 

@@ -2,9 +2,10 @@
 
 Status: Accepted design; the unnamed default rotation, startup audio
 configuration, backend-neutral capture seam, 48 kHz stereo continuous feature
-analysis, normalization/reconnect warm-up, `aurora_sound`, and the scrollable
-Bubble Tea preview foundation are implemented. Onset events, the remaining
-companions, diagnostics, and expanded preview modes are planned.
+analysis, normalization/reconnect warm-up, bounded onset events,
+`aurora_sound`, and the scrollable Bubble Tea preview foundation are
+implemented. The remaining companions, diagnostics, and expanded preview
+modes are planned.
 
 Linear project:
 [Sway Title Animator | P001 | Sound-Reactive Presets](https://linear.app/riotbox/project/sway-title-animator-or-p001-or-sound-reactive-presets-e8a4308a9902)
@@ -64,8 +65,8 @@ The 48 kHz stereo stream and continuous shared features were implemented in
 [LAB-33](https://linear.app/riotbox/issue/LAB-33/upgrade-the-shared-analyzer-to-48-khz-stereo-features).
 Normalization and reconnect warm-up were implemented in
 [LAB-43](https://linear.app/riotbox/issue/LAB-43/add-audio-normalization-and-reconnect-warm-up).
-Onset classes/history, spectral flux, and peak hold remain the next engine
-slice.
+Onset classes/history, spectral flux, and peak hold were implemented in
+[LAB-44](https://linear.app/riotbox/issue/LAB-44/add-onset-detection-peak-hold-and-bounded-audio-events).
 
 Only playback monitor/output sources are supported. Microphone capture is not
 part of this feature. `--doctor` should reject a custom source that it can
@@ -137,6 +138,14 @@ The shared state keeps a bounded recent-onset history of about eight entries.
 Each entry contains event identity, age, strength, frequency region, and stereo
 position. Renderers consume this immutable snapshot and remain deterministic
 and stateless.
+
+The implemented detector measures positive changes in the normalized 32-band
+spectrum and exposes general, bass, and high-frequency events with independent
+cooldowns. Detection starts only after the complete reconnect warm-up and is
+suppressed during silence. The immutable snapshot retains the newest eight
+events for up to 1.5 seconds with monotonic process-lifetime IDs; reconnects
+clear detector history without reusing IDs. Peak hold decays by elapsed time,
+not frame count.
 
 ## Runtime states and diagnostics
 
@@ -410,7 +419,7 @@ presets that look effectively identical.
    spectral features, and deterministic audio test harness. The 48 kHz stereo
    format, continuous features, time-based smoothing, and stereo fixtures are
    implemented in LAB-33; normalization and reconnect warm-up are implemented
-   in LAB-43; event features remain.
+   in LAB-43; event features are implemented in LAB-44.
 3. Replace the preview plumbing with Bubble Tea and implement the four planned
    preview modes, manual viewport, status hint, and grouped preset listing.
 4. Deliver sound companions in reviewable PRs of no more than two related

@@ -365,6 +365,194 @@ func TestAudioNormalizationAdaptsSlowerThanVisualRelease(t *testing.T) {
 	}
 }
 
+func TestAudioSpectralFluxUsesOnlyPositiveBandChanges(t *testing.T) {
+	var meter audioMeter
+	var baseline [audioBandCount]float64
+	bassBand := audioBandForFrequency(120)
+	highBand := audioBandForFrequency(6000)
+	baseline[bassBand] = 0.2
+	baseline[highBand] = 0.6
+	if flux, bass, high := meter.spectrumChanges(baseline); flux != 0 || bass != 0 || high != 0 {
+		t.Fatalf("first spectrum must establish the baseline, got flux=%.3f bass=%.3f high=%.3f",
+			flux, bass, high)
+	}
+
+	changed := baseline
+	changed[bassBand] = 0.7
+	changed[highBand] = 0.1
+	flux, bass, high := meter.spectrumChanges(changed)
+	if math.Abs(flux-0.125) > 0.0001 || math.Abs(bass-0.5) > 0.0001 || high != 0 {
+		t.Fatalf("expected only the bass rise to contribute, got flux=%.3f bass=%.3f high=%.3f",
+			flux, bass, high)
+	}
+
+	if flux, bass, high := meter.spectrumChanges([audioBandCount]float64{}); flux != 0 || bass != 0 || high != 0 {
+		t.Fatalf("falling energy must not produce flux, got flux=%.3f bass=%.3f high=%.3f",
+			flux, bass, high)
+	}
+}
+
+func TestAudioOnsetsAreSuppressedUntilWarmupCompletes(t *testing.T) {
+	start := time.Now()
+	silence := make([]int16, audioBlockSize)
+	tone := sineSamples(120, 0.5)
+	var meter audioMeter
+
+	meter.update(silence, start)
+	meter.update(tone, start.Add(audioWarmup/2))
+	if snapshot := meter.snapshotAt(start.Add(audioWarmup / 2)); snapshot.OnsetCount != 0 {
+		t.Fatalf("warm-up must suppress onset events: %+v", snapshot)
+	}
+
+	ready := start.Add(audioWarmup + audioWarmupBlend)
+	meter.update(silence, ready)
+	meter.update(tone, ready.Add(20*time.Millisecond))
+	if snapshot := meter.snapshotAt(ready.Add(20 * time.Millisecond)); snapshot.OnsetCount == 0 {
+		t.Fatalf("expected a post-warm-up onset from an abrupt tone: %+v", snapshot)
+	}
+}
+
+func TestAudioImpulseCreatesOnsetsAndAdvancesVisualRevision(t *testing.T) {
+	start := time.Now()
+	var meter audioMeter
+	meter.captureStarted = start.Add(-audioWarmup - audioWarmupBlend)
+	meter.update(make([]int16, audioBlockSize), start)
+	before := meter.snapshotAt(start)
+
+	at := start.Add(20 * time.Millisecond)
+	meter.update(impulseSamples(0.8), at)
+	after := meter.snapshotAt(at)
+	if after.OnsetCount == 0 || after.SpectralFlux <= 0 || after.Peak <= 0 {
+		t.Fatalf("expected an impulse to create shared transient features: %+v", after)
+	}
+	if after.Revision <= before.Revision {
+		t.Fatalf("new transient state must advance the visual revision: before=%d after=%d",
+			before.Revision, after.Revision)
+	}
+
+	meter.update(make([]int16, audioBlockSize), at.Add(130*time.Millisecond))
+	if decayed := meter.snapshotAt(at.Add(130 * time.Millisecond)); decayed.Revision <= after.Revision {
+		t.Fatalf("material transient decay must advance the visual revision: before=%d after=%d",
+			after.Revision, decayed.Revision)
+	}
+}
+
+func TestAudioOnsetClassesUseIndependentCooldowns(t *testing.T) {
+	var meter audioMeter
+	now := time.Now()
+	meter.detectOnsets(now, 0.8, 0.7, 0.6, 0.75)
+	if len(meter.onsets) != 3 {
+		t.Fatalf("expected general, bass, and high events, got %+v", meter.onsets)
+	}
+	for index, region := range []audioRegion{audioRegionGeneral, audioRegionBass, audioRegionHigh} {
+		onset := meter.onsets[index]
+		if onset.region != region || onset.id != uint64(index+1) || onset.position != 0.75 {
+			t.Fatalf("unexpected onset %d: %+v", index, onset)
+		}
+	}
+
+	meter.detectOnsets(now.Add(audioOnsetCooldown), 0.8, 0.7, 0.6, -0.5)
+	if len(meter.onsets) != 4 || meter.onsets[3].region != audioRegionGeneral {
+		t.Fatalf("general cooldown should elapse before region cooldowns: %+v", meter.onsets)
+	}
+	meter.detectOnsets(now.Add(audioRegionCooldown), 0, 0.7, 0.6, -0.5)
+	if len(meter.onsets) != 6 ||
+		meter.onsets[4].region != audioRegionBass ||
+		meter.onsets[5].region != audioRegionHigh {
+		t.Fatalf("expected independent bass and high events after their cooldown: %+v", meter.onsets)
+	}
+}
+
+func TestAudioOnsetHistoryIsBoundedOrderedAndImmutable(t *testing.T) {
+	var meter audioMeter
+	start := time.Now()
+	for index := range audioEventCapacity + 2 {
+		meter.addOnset(
+			start.Add(time.Duration(index)*time.Millisecond),
+			0.4+float64(index)/100,
+			audioRegion(index%3),
+			float64(index)/10,
+		)
+	}
+	meter.lastUpdate = start.Add(20 * time.Millisecond)
+
+	snapshot := meter.snapshotAt(start.Add(20 * time.Millisecond))
+	if snapshot.OnsetCount != audioEventCapacity {
+		t.Fatalf("expected a fixed %d-event history, got %d", audioEventCapacity, snapshot.OnsetCount)
+	}
+	if capacity := cap(meter.onsets); capacity > audioEventCapacity {
+		t.Fatalf("event storage must remain bounded, capacity=%d", capacity)
+	}
+	if snapshot.Onsets[0].ID != 3 || snapshot.Onsets[audioEventCapacity-1].ID != 10 {
+		t.Fatalf("expected oldest events to be discarded in order: %+v", snapshot.Onsets)
+	}
+	if snapshot.Onsets[0].Age != 18*time.Millisecond {
+		t.Fatalf("expected deterministic event age, got %s", snapshot.Onsets[0].Age)
+	}
+
+	snapshot.Onsets[0].Strength = 0
+	again := meter.snapshotAt(start.Add(20 * time.Millisecond))
+	if again.Onsets[0].Strength == 0 {
+		t.Fatal("mutating a snapshot must not mutate the meter history")
+	}
+}
+
+func TestAudioOnsetHistoryExpiresAndCaptureResetClearsDetector(t *testing.T) {
+	var meter audioMeter
+	start := time.Now()
+	meter.addOnset(start, 0.8, audioRegionBass, -0.25)
+	firstID := meter.onsets[0].id
+	meter.lastUpdate = start.Add(audioEventLifetime)
+	if snapshot := meter.snapshotAt(start.Add(audioEventLifetime)); snapshot.OnsetCount != 0 {
+		t.Fatalf("expired events must not be exposed: %+v", snapshot)
+	}
+	meter.pruneOnsets(start.Add(audioEventLifetime))
+	if len(meter.onsets) != 0 {
+		t.Fatalf("expired events must be pruned, got %+v", meter.onsets)
+	}
+
+	meter.spectralFlux = 0.5
+	meter.peak = 0.7
+	meter.hasPreviousBands = true
+	meter.lastBassOnset = start
+	meter.clear()
+	if meter.spectralFlux != 0 || meter.peak != 0 || meter.hasPreviousBands ||
+		len(meter.onsets) != 0 || !meter.lastBassOnset.IsZero() {
+		t.Fatalf(
+			"capture reset left detector state: flux=%.3f peak=%.3f previous=%t onsets=%d cooldown=%s",
+			meter.spectralFlux,
+			meter.peak,
+			meter.hasPreviousBands,
+			len(meter.onsets),
+			meter.lastBassOnset,
+		)
+	}
+	meter.addOnset(start.Add(2*audioEventLifetime), 0.5, audioRegionGeneral, 0)
+	if meter.onsets[0].id <= firstID {
+		t.Fatalf("event IDs must remain monotonic across reconnects: first=%d next=%d",
+			firstID, meter.onsets[0].id)
+	}
+}
+
+func TestAudioPeakHoldDecaysWithElapsedTime(t *testing.T) {
+	now := time.Now()
+	var meter audioMeter
+	meter.captureStarted = now.Add(-audioWarmup - audioWarmupBlend)
+	meter.update(sineSamples(880, 0.4), now)
+	initial := meter.snapshotAt(now).Peak
+	if initial <= 0 {
+		t.Fatal("expected active audio to establish a held peak")
+	}
+
+	elapsed := 130 * time.Millisecond
+	meter.update(make([]int16, audioBlockSize), now.Add(elapsed))
+	decayed := meter.snapshotAt(now.Add(elapsed)).Peak
+	expected := initial * math.Exp(-float64(elapsed)/float64(audioPeakDecay))
+	if math.Abs(decayed-expected) > 0.0001 {
+		t.Fatalf("expected time-based peak decay %.6f, got %.6f", expected, decayed)
+	}
+}
+
 func TestAudioSensitivityScalesAnalyzedEnergy(t *testing.T) {
 	samples := sineSamples(880, 0.04)
 	now := time.Now()
@@ -437,16 +625,35 @@ func TestAuroraSoundNeedlesRepresentPeakStrength(t *testing.T) {
 }
 
 func TestAudioMotionScalesVisualSnapshot(t *testing.T) {
-	snapshot := audioSnapshot{Active: true, Level: 0.4}
+	snapshot := audioSnapshot{
+		Active:       true,
+		Level:        0.4,
+		SpectralFlux: 0.35,
+		Peak:         0.6,
+		OnsetCount:   1,
+	}
 	snapshot.Bands[5] = 0.45
+	snapshot.Onsets[0] = audioOnset{ID: 9, Age: 20 * time.Millisecond, Strength: 0.5}
 
 	quiet := scaleAudioSnapshot(snapshot, 0.5)
 	strong := scaleAudioSnapshot(snapshot, 2)
-	if quiet.Level >= snapshot.Level || quiet.Bands[5] >= snapshot.Bands[5] {
+	if quiet.Level >= snapshot.Level ||
+		quiet.Bands[5] >= snapshot.Bands[5] ||
+		quiet.SpectralFlux >= snapshot.SpectralFlux ||
+		quiet.Peak >= snapshot.Peak ||
+		quiet.Onsets[0].Strength >= snapshot.Onsets[0].Strength {
 		t.Fatalf("expected reduced motion response, got %+v", quiet)
 	}
-	if strong.Level <= snapshot.Level || strong.Bands[5] <= snapshot.Bands[5] {
+	if strong.Level <= snapshot.Level ||
+		strong.Bands[5] <= snapshot.Bands[5] ||
+		strong.SpectralFlux <= snapshot.SpectralFlux ||
+		strong.Peak <= snapshot.Peak ||
+		strong.Onsets[0].Strength <= snapshot.Onsets[0].Strength {
 		t.Fatalf("expected increased motion response, got %+v", strong)
+	}
+	if quiet.Onsets[0].ID != snapshot.Onsets[0].ID ||
+		quiet.Onsets[0].Age != snapshot.Onsets[0].Age {
+		t.Fatal("motion scaling must preserve event identity and age")
 	}
 }
 
@@ -478,6 +685,12 @@ func sineSamples(frequency float64, amplitude float64) []int16 {
 	return samples
 }
 
+func impulseSamples(amplitude float64) []int16 {
+	samples := make([]int16, audioBlockSize)
+	samples[audioBlockSize/2] = int16(math.Min(1, amplitude) * 32767)
+	return samples
+}
+
 func encodeStereoSamples(left []int16, right []int16) []byte {
 	var encoded bytes.Buffer
 	for index := range min(len(left), len(right)) {
@@ -499,4 +712,14 @@ func strongestAudioBand(bands [audioBandCount]float64) int {
 		}
 	}
 	return strongest
+}
+
+func audioBandForFrequency(target float64) int {
+	closest := 0
+	for band := 1; band < audioBandCount; band++ {
+		if math.Abs(audioBandCenter(band)-target) < math.Abs(audioBandCenter(closest)-target) {
+			closest = band
+		}
+	}
+	return closest
 }

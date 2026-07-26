@@ -29,12 +29,14 @@ square_sound   ⎺⎺⎺⎤⎽⎽⎽⎽⎽⎡⎺⎺⎺⎤⎽⎽⎽⎡
 ripples        ·  ╴─═●═─╶
 ripples_sound      ╴─═●═─╶
 radar          ╶◜╴──┄──═●═──┄──╋──┄──
+radar_sound    ┄──═◜═──┄──◆──┄──╋
 constellation       ·   ✦      •    ✧
 circuit        ─╍──╪──═●═──╍──╼╾───
 glitch         ───╍╪▒▓╳──┄──
 braid          ╱╱╱╳╲╲╲╳╱╱╱╳╲╲╲
 ribbon         ·░▒▓██▓▒░··░▒▓█▓▒░·
 shutter        ███▶░│     │░◀███
+shutter_sound  ▒▓█›      ┆      ‹█▓▒
 comet          ░░▒▒▓▓✶☄▓▒░░··░▒✦
 smileys        ｡･ʕ•ᴥ•ʔっ･ﾟ
 wave           ▁▃▅▇█◜╲▅▃▁

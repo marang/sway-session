@@ -178,6 +178,139 @@ func TestSoundPairSilentFormsMoveAndStayBounded(t *testing.T) {
 	}
 }
 
+func TestRadarSoundBassControlsSweepSpeedAndTargetWeight(t *testing.T) {
+	quietBass := audioSnapshot{Active: true, Bass: 0.05, LowMid: 0.3, HighMid: 0.3}
+	loudBass := quietBass
+	loudBass.Bass = 0.95
+
+	slowStart := radarSoundSweepPosition(100, 20, 0.16+quietBass.Bass*1.75)
+	slowEnd := radarSoundSweepPosition(100, 30, 0.16+quietBass.Bass*1.75)
+	fastStart := radarSoundSweepPosition(100, 20, 0.16+loudBass.Bass*1.75)
+	fastEnd := radarSoundSweepPosition(100, 30, 0.16+loudBass.Bass*1.75)
+	if fastEnd-fastStart <= slowEnd-slowStart {
+		t.Fatalf("bass should accelerate sweep: slow %.2f fast %.2f",
+			slowEnd-slowStart, fastEnd-fastStart)
+	}
+
+	quietFrame := radarSoundArtWithSnapshot(101, 20, quietBass)
+	loudFrame := radarSoundArtWithSnapshot(101, 20, loudBass)
+	if strings.Count(loudFrame, "◆")+strings.Count(loudFrame, "●") <=
+		strings.Count(quietFrame, "◆")+strings.Count(quietFrame, "●") {
+		t.Fatalf("bass should strengthen the central target: quiet=%q loud=%q", quietFrame, loudFrame)
+	}
+}
+
+func TestRadarSoundEchoUsesRegionStereoMidsAndLifetime(t *testing.T) {
+	leftBass := audioOnset{
+		Age:      160 * time.Millisecond,
+		Strength: 0.9,
+		Region:   audioRegionBass,
+		Position: -0.8,
+	}
+	rightHigh := leftBass
+	rightHigh.Region = audioRegionHigh
+	rightHigh.Position = 0.8
+	bassPosition, narrowWidth, _, bassLive := radarSoundEcho(100, leftBass, 0.1)
+	highPosition, wideWidth, _, highLive := radarSoundEcho(100, rightHigh, 0.9)
+	if !bassLive || !highLive {
+		t.Fatal("expected fresh radar echoes to be live")
+	}
+	if bassPosition >= 50 || highPosition <= 50 || highPosition-50 <= 50-bassPosition {
+		t.Fatalf("region and stereo placement should separate echoes: bass=%.2f high=%.2f",
+			bassPosition, highPosition)
+	}
+	if wideWidth <= narrowWidth {
+		t.Fatalf("mids should widen detected targets: narrow=%.2f wide=%.2f",
+			narrowWidth, wideWidth)
+	}
+	leftBass.Age = 2 * time.Second
+	if _, _, _, live := radarSoundEcho(100, leftBass, 0.5); live {
+		t.Fatal("expired radar echo should disappear")
+	}
+}
+
+func TestShutterSoundBassOnsetAndLowMidsCloseAperture(t *testing.T) {
+	open := audioSnapshot{Active: true, LowMid: 0.05}
+	sustained := audioSnapshot{Active: true, LowMid: 0.95}
+	_, openRadius, openClosure := shutterSoundGeometry(100, 20, open)
+	_, sustainedRadius, sustainedClosure := shutterSoundGeometry(100, 20, sustained)
+	if sustainedRadius >= openRadius || sustainedClosure <= openClosure {
+		t.Fatalf("low mids should close aperture: open radius=%.2f closure=%.2f sustained radius=%.2f closure=%.2f",
+			openRadius, openClosure, sustainedRadius, sustainedClosure)
+	}
+
+	onset := open
+	onset.OnsetCount = 1
+	onset.Onsets[0] = audioOnset{
+		ID:       1,
+		Age:      40 * time.Millisecond,
+		Strength: 1,
+		Region:   audioRegionBass,
+	}
+	_, struckRadius, struckClosure := shutterSoundGeometry(100, 20, onset)
+	onset.Onsets[0].Age = 800 * time.Millisecond
+	_, releasedRadius, releasedClosure := shutterSoundGeometry(100, 20, onset)
+	if struckRadius >= releasedRadius || struckClosure <= releasedClosure {
+		t.Fatalf("bass onset should close then release: struck radius=%.2f closure=%.2f released radius=%.2f closure=%.2f",
+			struckRadius, struckClosure, releasedRadius, releasedClosure)
+	}
+}
+
+func TestShutterSoundBoundsAsymmetryAndPeakVocabulary(t *testing.T) {
+	left := audioSnapshot{Active: true, LowMid: 0.4, Balance: -1, Peak: 0.3}
+	right := left
+	right.Balance = 1
+	leftCenter, _, _ := shutterSoundGeometry(100, 9, left)
+	rightCenter, _, _ := shutterSoundGeometry(100, 9, right)
+	if leftCenter >= 50 || rightCenter <= 50 {
+		t.Fatalf("balance should shift closure center: left=%.2f right=%.2f", leftCenter, rightCenter)
+	}
+	if rightCenter-leftCenter > 16 {
+		t.Fatalf("stereo asymmetry exceeded bound: left=%.2f right=%.2f", leftCenter, rightCenter)
+	}
+
+	light := shutterSoundArtWithSnapshot(80, 9, left)
+	heavy := left
+	heavy.Peak = 0.95
+	heavyFrame := shutterSoundArtWithSnapshot(80, 9, heavy)
+	if strings.ContainsAny(light, "▶◀┃") {
+		t.Fatalf("low peak should use light mechanics: %q", light)
+	}
+	if !strings.ContainsAny(heavyFrame, "▶◀") || !strings.ContainsRune(heavyFrame, '┃') {
+		t.Fatalf("high peak should strengthen arrows and seam: %q", heavyFrame)
+	}
+	for _, frame := range []string{light, heavyFrame} {
+		if strings.ContainsAny(frame, "╳╪┄╍") {
+			t.Fatalf("shutter_sound must not use glitch fragments: %q", frame)
+		}
+	}
+}
+
+func TestRadarAndShutterSoundSilentFormsMoveAndStayBounded(t *testing.T) {
+	for name, animation := range map[string]func(int, int, audioSnapshot) string{
+		"radar_sound":   radarSoundArtWithSnapshot,
+		"shutter_sound": shutterSoundArtWithSnapshot,
+	} {
+		t.Run(name, func(t *testing.T) {
+			frames := map[string]bool{}
+			for _, width := range []int{0, 1, 7, 8, 80, 220} {
+				for _, phase := range []int{0, 47, 113, 229} {
+					frame := animation(width, phase, audioSnapshot{})
+					if len([]rune(frame)) != artWidth(width) {
+						t.Fatalf("width=%d phase=%d rendered %d runes", width, phase, len([]rune(frame)))
+					}
+					if width == 80 {
+						frames[frame] = true
+					}
+				}
+			}
+			if len(frames) < 2 {
+				t.Fatalf("silent form should retain slow motion, got %v", frames)
+			}
+		})
+	}
+}
+
 func transitions(levels []bool) int {
 	count := 0
 	for index := 1; index < len(levels); index++ {

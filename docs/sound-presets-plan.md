@@ -266,7 +266,7 @@ presets that look effectively identical.
 - Peak hold creates brief `┃` accents; centroid gently shifts the bright center.
 - Silence retains a dim, narrow symmetric pulse.
 
-### `radar_sound`
+### `radar_sound` — implemented
 
 - Bass controls sweep speed and the weight of the central target.
 - Onsets create temporary echoes at positions derived from the strongest
@@ -400,7 +400,7 @@ presets that look effectively identical.
   a screen-wide glitch.
 - Silence retains a dim, slowly floating ribbon.
 
-### `shutter_sound`
+### `shutter_sound` — implemented
 
 - Bass onsets close the aperture briefly and then release it.
 - Sustained low-mid energy controls how far the doors remain closed.
@@ -425,7 +425,7 @@ presets that look effectively identical.
    presets:
    - `spectrum_sound` and `wave_sound` — implemented in LAB-46;
    - `square_sound` and `ripples_sound` — implemented in LAB-36;
-   - `radar_sound` and `shutter_sound`;
+   - `radar_sound` and `shutter_sound` — implemented in LAB-37;
    - `comet_sound` and `bloom_sound`;
    - `constellation_sound` and `circuit_sound`;
    - `braid_sound` and `loom_sound`;

@@ -264,3 +264,210 @@ func newestSoundOnset(audio audioSnapshot, region audioRegion) (audioOnset, bool
 	}
 	return newest, found
 }
+
+func radarSoundArt(width int, phase int) string {
+	return radarSoundArtWithSnapshot(
+		width,
+		phase,
+		scaleAudioSnapshot(currentAudioSnapshot(), audioSettings.Motion),
+	)
+}
+
+func radarSoundArtWithSnapshot(width int, phase int, audio audioSnapshot) string {
+	width = artWidth(width)
+	if width == 0 {
+		return ""
+	}
+
+	levels := make([]float64, width)
+	contacts := make([]float64, width)
+	center := float64(width-1) / 2
+	bass := audio.Bass
+	mids := (audio.LowMid + audio.HighMid) / 2
+	treble := audio.Treble
+	speed := 0.16
+	if audio.Active {
+		speed += bass * 1.75
+	}
+	sweep := radarSoundSweepPosition(width, phase, speed)
+	sweepWidth := 3.2 + bass*5.2
+	for index := range width {
+		distance := wrappedDistance(float64(index), sweep, float64(width))
+		levels[index] = math.Max(0, 1-distance/sweepWidth)
+	}
+
+	targetWidth := 0.65 + mids*3.2
+	targetWeight := 0.38
+	if audio.Active {
+		targetWeight += bass * 0.62
+	}
+	for index := range width {
+		distance := math.Abs(float64(index) - center)
+		if distance <= targetWidth {
+			contacts[index] = math.Max(contacts[index], targetWeight*(1-distance/(targetWidth+0.5)))
+		}
+	}
+
+	for onsetIndex := 0; onsetIndex < min(audio.OnsetCount, len(audio.Onsets)); onsetIndex++ {
+		echoCenter, echoWidth, envelope, ok := radarSoundEcho(width, audio.Onsets[onsetIndex], mids)
+		if !ok {
+			continue
+		}
+		for index := range width {
+			distance := math.Abs(float64(index) - echoCenter)
+			if distance <= echoWidth {
+				contacts[index] = math.Max(
+					contacts[index],
+					envelope*(1-distance/(echoWidth+0.4)),
+				)
+			}
+		}
+	}
+
+	chars := make([]rune, width)
+	sweepIndex := int(math.Round(sweep)) % width
+	for index := range width {
+		switch {
+		case contacts[index] > 0.78:
+			chars[index] = '◆'
+		case contacts[index] > 0.48:
+			chars[index] = '●'
+		case index == sweepIndex:
+			chars[index] = radarSweep[(phase/3)%len(radarSweep)]
+		case audio.Active && treble > 0.20 &&
+			(index+phase*3)%max(7, 19-int(math.Round(treble*10))) == 0:
+			chars[index] = '·'
+		case levels[index] > 0.72:
+			chars[index] = '═'
+		case levels[index] > 0.38:
+			chars[index] = '─'
+		case levels[index] > 0.12:
+			chars[index] = '┄'
+		case index == int(math.Round(center)):
+			chars[index] = '╋'
+		default:
+			chars[index] = ' '
+		}
+	}
+	return string(chars)
+}
+
+func radarSoundSweepPosition(width int, phase int, speed float64) float64 {
+	if width <= 0 {
+		return 0
+	}
+	seedOffset := signedOrganicNoise("radar_sound", 1, 0.37) * float64(width) * 0.14
+	return math.Mod(float64(phase)*speed+seedOffset+float64(width)*100, float64(width))
+}
+
+func radarSoundEcho(width int, onset audioOnset, mids float64) (float64, float64, float64, bool) {
+	const lifetime = 1100 * time.Millisecond
+	if width <= 0 || onset.Age < 0 || onset.Age >= lifetime {
+		return 0, 0, 0, false
+	}
+	progress := float64(onset.Age) / float64(lifetime)
+	stereo := math.Max(-1, math.Min(1, onset.Position))
+	regionReach := 0.58
+	switch onset.Region {
+	case audioRegionBass:
+		regionReach = 0.30
+	case audioRegionHigh:
+		regionReach = 0.86
+	}
+	center := float64(width-1) / 2
+	position := center + stereo*center*regionReach
+	drift := math.Copysign(progress*center*0.10, stereo)
+	if stereo == 0 {
+		drift = progress * center * 0.06
+	}
+	position = math.Max(0, math.Min(float64(width-1), position+drift))
+	echoWidth := 0.65 + mids*3.4
+	if onset.Region == audioRegionBass {
+		echoWidth += 0.8
+	}
+	envelope := onset.Strength * (1 - smoothstep(progress))
+	return position, echoWidth, envelope, true
+}
+
+func shutterSoundArt(width int, phase int) string {
+	return shutterSoundArtWithSnapshot(
+		width,
+		phase,
+		scaleAudioSnapshot(currentAudioSnapshot(), audioSettings.Motion),
+	)
+}
+
+func shutterSoundArtWithSnapshot(width int, phase int, audio audioSnapshot) string {
+	width = artWidth(width)
+	if width == 0 {
+		return ""
+	}
+
+	center, gapRadius, closure := shutterSoundGeometry(width, phase, audio)
+	leftEdge := max(0, int(math.Floor(center-gapRadius)))
+	rightEdge := min(width-1, int(math.Ceil(center+gapRadius)))
+	heavy := audio.Active && audio.Peak >= 0.68
+	leftArrow, rightArrow, seam := '›', '‹', '┆'
+	if heavy {
+		leftArrow, rightArrow, seam = '▶', '◀', '┃'
+	}
+	seamIndex := max(0, min(width-1, int(math.Round(center))))
+	chars := make([]rune, width)
+	for index := range width {
+		switch {
+		case index == leftEdge:
+			chars[index] = leftArrow
+		case index == rightEdge:
+			chars[index] = rightArrow
+		case index == seamIndex:
+			chars[index] = seam
+		case index > leftEdge && index < rightEdge:
+			if audio.Active && audio.Treble > 0.28 &&
+				(index+phase)%max(8, 17-int(math.Round(audio.Treble*7))) == 0 {
+				chars[index] = '│'
+			} else {
+				chars[index] = ' '
+			}
+		default:
+			distanceFromEdge := 0
+			if index < leftEdge {
+				distanceFromEdge = leftEdge - index
+			} else {
+				distanceFromEdge = index - rightEdge
+			}
+			panelLevel := math.Max(0.28, 0.94-float64(distanceFromEdge)/math.Max(3, float64(width)*0.24))
+			panelLevel *= 0.72 + closure*0.28
+			if audio.Active && audio.Treble > 0.5 && distanceFromEdge == 1 {
+				chars[index] = '│'
+			} else {
+				chars[index] = rampPick([]rune("░▒▓█"), panelLevel)
+			}
+		}
+	}
+	return string(chars)
+}
+
+func shutterSoundGeometry(width int, phase int, audio audioSnapshot) (float64, float64, float64) {
+	center := float64(max(0, width-1)) / 2
+	breathClock := float64(phase)*0.035 + signedOrganicNoise("shutter_sound", 1, 0.41)*0.65
+	breath := 0.5 + 0.5*math.Sin(breathClock)
+	openness := 0.76 + breath*0.10
+	closure := 1 - openness
+	if audio.Active {
+		closure = 0.10 + audio.LowMid*0.58
+		if onset, ok := newestSoundOnset(audio, audioRegionBass); ok {
+			const lifetime = 850 * time.Millisecond
+			if onset.Age >= 0 && onset.Age < lifetime {
+				progress := float64(onset.Age) / float64(lifetime)
+				onsetClosure := onset.Strength * (1 - smoothstep(progress))
+				closure = math.Max(closure, onsetClosure)
+			}
+		}
+		closure = math.Max(0.06, math.Min(0.92, closure))
+		center += math.Max(-1, math.Min(1, audio.Balance)) * float64(width) * 0.075
+		center = math.Max(float64(width)*0.12, math.Min(float64(width-1)-float64(width)*0.12, center))
+	}
+	openness = 1 - closure
+	gapRadius := math.Max(1, openness*float64(max(1, width-1))/2)
+	return center, gapRadius, closure
+}

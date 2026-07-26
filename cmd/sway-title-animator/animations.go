@@ -685,6 +685,7 @@ var animationPresets = map[string]animationFunc{
 	"spectrum":       spectrumArt,
 	"spectrum_sound": spectrumSoundArt,
 	"radar":          radarArt,
+	"radar_sound":    radarSoundArt,
 	"constellation":  constellationArt,
 	"circuit":        circuitArt,
 	"braid":          braidArt,
@@ -702,6 +703,7 @@ var animationPresets = map[string]animationFunc{
 	"glitch":         glitchArt,
 	"ribbon":         ribbonArt,
 	"shutter":        shutterArt,
+	"shutter_sound":  shutterSoundArt,
 }
 
 var soundPresetNames = map[string]bool{
@@ -709,6 +711,8 @@ var soundPresetNames = map[string]bool{
 	"spectrum_sound": true,
 	"square_sound":   true,
 	"ripples_sound":  true,
+	"radar_sound":    true,
+	"shutter_sound":  true,
 	"wave_sound":     true,
 }
 

@@ -57,7 +57,7 @@ func TestSquareSoundBuildAndRunnerFollowStereoDirection(t *testing.T) {
 	rightRunner := append([]bool(nil), base...)
 	leftRunner := append([]bool(nil), base...)
 	onset := audioOnset{
-		Age:      300 * time.Millisecond,
+		Age:      650 * time.Millisecond,
 		Strength: 1,
 		Region:   audioRegionGeneral,
 		Position: 0.8,

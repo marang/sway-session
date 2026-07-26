@@ -184,7 +184,7 @@ func TestAudioConsumeBuildsOverlappingAnalysisWindow(t *testing.T) {
 	if err := meter.consume(&limitedReader{reader: encoded, limit: 7}); !errors.Is(err, io.EOF) {
 		t.Fatalf("expected end of finite test stream, got %v", err)
 	}
-	if snapshot := meter.snapshot(); !snapshot.Active || snapshot.Level <= 0.1 {
+	if snapshot := meter.snapshot(); !snapshot.Active || snapshot.Level <= 0.04 {
 		t.Fatalf("expected consumed audio to update the meter, got %+v", snapshot)
 	}
 }
@@ -625,8 +625,8 @@ func TestAuroraSoundNeedlesRepresentPeakStrength(t *testing.T) {
 	normalPeak := audioSnapshot{Active: true, Level: 0.5}
 	extremePeak := audioSnapshot{Active: true, Level: 0.5}
 	for index := range normalPeak.Bands {
-		normalPeak.Bands[index] = 0.86
-		extremePeak.Bands[index] = 0.97
+		normalPeak.Bands[index] = 0.76
+		extremePeak.Bands[index] = 0.90
 	}
 
 	normalFrame := auroraSoundArtWithSnapshot(40, 1, normalPeak)
@@ -724,8 +724,11 @@ func TestWaveSoundUsesAudioFeaturesAndOnsetBreakers(t *testing.T) {
 	if !strings.ContainsAny(frame, "◜◝◞◟╱╲") {
 		t.Fatalf("expected a breaker from the recent onset, got %q", frame)
 	}
-	if !strings.ContainsRune(frame, '•') {
-		t.Fatalf("expected bounded treble spray over high-mid foam, got %q", frame)
+	if !strings.ContainsRune(frame, '≈') {
+		t.Fatalf("expected a stable foam line over the swell, got %q", frame)
+	}
+	if strings.ContainsAny(frame, "▁▂▃▄▅▆▇█┃╿") {
+		t.Fatalf("wave_sound must not fall back to Aurora's vertical bar vocabulary: %q", frame)
 	}
 
 	withoutOnset := audio
@@ -771,7 +774,7 @@ func TestWaveSoundBreakerDirectionFollowsStereoPosition(t *testing.T) {
 		t.Fatalf("negative stereo position must travel left: start=%.2f end=%.2f", leftStart, leftEnd)
 	}
 	if _, _, live := waveSoundBreaker(80, audioOnset{
-		Age:      time.Second,
+		Age:      2 * time.Second,
 		Strength: 1,
 		Region:   audioRegionGeneral,
 	}); live {
@@ -783,13 +786,55 @@ func TestWaveSoundSilenceIsASmallContinuousTide(t *testing.T) {
 	frames := map[string]bool{}
 	for _, phase := range []int{0, 47, 113, 229} {
 		frame := waveSoundArtWithSnapshot(80, phase, audioSnapshot{})
-		if !strings.ContainsAny(frame, "▁▂▃") || !strings.ContainsAny(frame, "◜╲") {
+		if !strings.ContainsAny(frame, "─⌁⌒") || !strings.ContainsAny(frame, "╱╲") {
 			t.Fatalf("expected a recognizable low-energy tide, got %q", frame)
+		}
+		if strings.ContainsAny(frame, "▁▂▃▄▅▆▇█┃╿") {
+			t.Fatalf("silent tide must remain distinct from Aurora bars: %q", frame)
 		}
 		frames[frame] = true
 	}
 	if len(frames) < 2 {
 		t.Fatalf("silent tide must keep slow organic motion, got %v", frames)
+	}
+}
+
+func TestWaveSoundStaysDistinctFromAuroraSoundDuringActiveAudio(t *testing.T) {
+	originalSnapshot := currentAudioSnapshot
+	t.Cleanup(func() {
+		currentAudioSnapshot = originalSnapshot
+	})
+
+	audio := audioSnapshot{
+		CaptureAvailable: true,
+		Active:           true,
+		Level:            0.72,
+		Bass:             0.76,
+		LowMid:           0.58,
+		HighMid:          0.64,
+		Treble:           0.42,
+		Centroid:         0.46,
+		OnsetCount:       1,
+	}
+	for index := range audio.Bands {
+		audio.Bands[index] = 0.32 +
+			0.46*(0.5+0.5*math.Sin(float64(index)*0.47))
+	}
+	audio.Onsets[0] = audioOnset{
+		ID:       7,
+		Age:      540 * time.Millisecond,
+		Strength: 0.86,
+		Region:   audioRegionGeneral,
+		Position: 0.4,
+	}
+	currentAudioSnapshot = func() audioSnapshot {
+		return audio
+	}
+
+	const minimumDistance = 0.55
+	if distance := animationVisualDistance(auroraSoundArt, waveSoundArt); distance < minimumDistance {
+		t.Fatalf("active wave_sound and aurora_sound are too similar: distance %.3f, minimum %.3f",
+			distance, minimumDistance)
 	}
 }
 

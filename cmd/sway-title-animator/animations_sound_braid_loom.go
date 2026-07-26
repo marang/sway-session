@@ -7,7 +7,7 @@ import (
 
 func braidSoundArt(width int, phase int) string {
 	return braidSoundArtWithSnapshot(width, phase,
-		scaleAudioSnapshot(currentAudioSnapshot(), audioSettings.Motion))
+		currentSoundSnapshot())
 }
 
 func braidSoundArtWithSnapshot(width int, phase int, audio audioSnapshot) string {
@@ -19,10 +19,10 @@ func braidSoundArtWithSnapshot(width int, phase int, audio audioSnapshot) string
 	if !audio.Active {
 		bass, mids, treble = 0.18, 0.22, 0
 	}
-	frequency := 0.24 + mids*0.38 - bass*0.06
-	amplitude := 0.68 + bass*0.72
-	clock := float64(phase)*0.045 +
-		signedOrganicNoise("braid_sound", 1, float64(phase)/94)*0.7
+	frequency := 0.24 + mids*0.27 - bass*0.04
+	amplitude := 0.68 + bass*0.52
+	clock := float64(phase)*0.018 +
+		signedOrganicNoise("braid_sound", 1, float64(phase)/188)*0.55
 	chars := make([]rune, width)
 	for index := range width {
 		strand := math.Sin(float64(index)*frequency+clock) * amplitude
@@ -46,7 +46,7 @@ func addBraidSoundCrossing(chars []rune, audio audioSnapshot) {
 	if !ok || onset.Strength < 0.58 || onset.Age < 0 {
 		return
 	}
-	const lifetime = 720 * time.Millisecond
+	const lifetime = 1200 * time.Millisecond
 	if onset.Age >= lifetime || len(chars) == 0 {
 		return
 	}
@@ -78,7 +78,7 @@ func addBraidSoundHighlight(chars []rune, phase int, treble float64, balance flo
 		direction = -1
 	}
 	position := int(math.Mod(
-		float64(phase)*(0.18+treble*0.55)+float64(len(chars))*100,
+		float64(phase)*(0.07+treble*0.20)+float64(len(chars))*100,
 		float64(len(chars)),
 	))
 	if direction < 0 {
@@ -89,7 +89,7 @@ func addBraidSoundHighlight(chars []rune, phase int, treble float64, balance flo
 
 func loomSoundArt(width int, phase int) string {
 	return loomSoundArtWithSnapshot(width, phase,
-		scaleAudioSnapshot(currentAudioSnapshot(), audioSettings.Motion))
+		currentSoundSnapshot())
 }
 
 func loomSoundArtWithSnapshot(width int, phase int, audio audioSnapshot) string {
@@ -101,10 +101,10 @@ func loomSoundArtWithSnapshot(width int, phase int, audio audioSnapshot) string 
 	if !audio.Active {
 		bass, mids, treble = 0.16, 0.18, 0
 	}
-	warpSpacing := max(4, 13-int(math.Round(bass*7)))
-	weftFrequency := 0.13 + mids*0.34
-	clock := float64(phase)*0.035 +
-		signedOrganicNoise("loom_sound", 1, float64(phase)/103)
+	warpSpacing := max(5, 13-int(math.Round(bass*5)))
+	weftFrequency := 0.13 + mids*0.24
+	clock := float64(phase)*0.014 +
+		signedOrganicNoise("loom_sound", 1, float64(phase)/206)*0.65
 	chars := make([]rune, width)
 	for index := range width {
 		weft := 0.5 + 0.5*math.Sin(float64(index)*weftFrequency+clock)
@@ -154,7 +154,7 @@ func addLoomSoundShuttle(chars []rune, audio audioSnapshot) {
 }
 
 func loomSoundShuttle(width int, onset audioOnset, audio audioSnapshot) (int, int, bool) {
-	const lifetime = 920 * time.Millisecond
+	const lifetime = 1600 * time.Millisecond
 	if width <= 0 || onset.Region != audioRegionGeneral ||
 		onset.Age < 0 || onset.Age >= lifetime {
 		return 0, 0, false
@@ -170,12 +170,12 @@ func loomSoundShuttle(width int, onset audioOnset, audio audioSnapshot) (int, in
 }
 
 func addLoomSoundGlints(chars []rune, phase int, treble float64) {
-	if treble < 0.40 {
+	if treble < 0.52 {
 		return
 	}
-	spacing := max(7, 16-int(math.Round(treble*7)))
+	spacing := max(11, 22-int(math.Round(treble*7)))
 	for index := range chars {
-		if (index+phase)%spacing == 0 && chars[index] != '✦' {
+		if (index+phase/6)%spacing == 0 && chars[index] != '✦' {
 			chars[index] = '·'
 		}
 	}

@@ -7,7 +7,7 @@ import (
 
 func smileysSoundArt(width int, phase int) string {
 	return smileysSoundArtWithSnapshot(width, phase,
-		scaleAudioSnapshot(currentAudioSnapshot(), audioSettings.Motion))
+		currentSoundSnapshot())
 }
 
 func smileysSoundArtWithSnapshot(width int, phase int, audio audioSnapshot) string {
@@ -22,10 +22,12 @@ func smileysSoundArtWithSnapshot(width int, phase int, audio audioSnapshot) stri
 	level, bass, mids, treble := audio.Level, audio.Bass,
 		(audio.LowMid+audio.HighMid)/2, audio.Treble
 	count := 1
-	speed := 0.035
+	speed := 0.022
 	if audio.Active {
-		count = 1 + int(math.Round(level*2))
-		speed += level * 0.22
+		if level > 0.68 {
+			count = 2
+		}
+		speed += level * 0.075
 	}
 	reaction := smileysSoundReaction(audio)
 	for faceIndex := range count {
@@ -51,7 +53,7 @@ func smileysSoundArtWithSnapshot(width int, phase int, audio audioSnapshot) stri
 				chars[index] = glyph
 			}
 		}
-		if treble > 0.38 {
+		if treble > 0.58 {
 			accent := position - 2
 			if faceIndex%2 == 1 {
 				accent = position + len(face) + 1
@@ -86,12 +88,12 @@ func smileysSoundFace(bass float64, mids float64, reaction bool) []rune {
 func smileysSoundReaction(audio audioSnapshot) bool {
 	onset, ok := newestSoundOnset(audio, audioRegionGeneral)
 	return ok && onset.Strength >= 0.72 && onset.Age >= 0 &&
-		onset.Age < 460*time.Millisecond
+		onset.Age < 700*time.Millisecond
 }
 
 func glitchSoundArt(width int, phase int) string {
 	return glitchSoundArtWithSnapshot(width, phase,
-		scaleAudioSnapshot(currentAudioSnapshot(), audioSettings.Motion))
+		currentSoundSnapshot())
 }
 
 func glitchSoundArtWithSnapshot(width int, phase int, audio audioSnapshot) string {
@@ -106,7 +108,7 @@ func glitchSoundArtWithSnapshot(width int, phase int, audio audioSnapshot) strin
 	if !audio.Active {
 		defect := int(math.Mod(
 			organicNoise("glitch_sound", 1, 0.43)*float64(width)+
-				float64(phase)*0.06,
+				float64(phase)*0.025,
 			float64(width),
 		))
 		chars[defect] = '╍'
@@ -114,7 +116,7 @@ func glitchSoundArtWithSnapshot(width int, phase int, audio audioSnapshot) strin
 	}
 
 	if onset, ok := newestSoundOnset(audio, audioRegionGeneral); ok &&
-		onset.Strength > 0.92 && onset.Age >= 0 && onset.Age < 130*time.Millisecond {
+		onset.Strength > 0.94 && onset.Age >= 0 && onset.Age < 180*time.Millisecond {
 		for index := range chars {
 			if index%11 == 0 {
 				chars[index] = '╪'
@@ -125,15 +127,16 @@ func glitchSoundArtWithSnapshot(width int, phase int, audio audioSnapshot) strin
 		return string(chars)
 	}
 
-	density := math.Max(0, math.Min(1, audio.SpectralFlux))
-	spacing := max(3, 19-int(math.Round(density*14)))
+	density := math.Max(0, math.Min(1, audio.SpectralFlux*0.72))
+	spacing := max(8, 23-int(math.Round(density*12)))
+	motionPhase := phase / 5
 	for index := range chars {
-		if (index+phase)%spacing == 0 {
+		if (index+motionPhase)%spacing == 0 {
 			chars[index] = '┄'
 		}
-		if audio.Treble > 0.30 &&
-			(index*3+phase)%max(5, 17-int(math.Round(audio.Treble*9))) == 0 {
-			chars[index] = []rune{'╴', '╶', '░'}[(index+phase)%3]
+		if audio.Treble > 0.48 &&
+			(index*3+motionPhase)%max(11, 23-int(math.Round(audio.Treble*8))) == 0 {
+			chars[index] = []rune{'╴', '╶', '░'}[(index+motionPhase)%3]
 		}
 	}
 	addGlitchSoundDisplacement(chars, audio)
@@ -159,7 +162,7 @@ func addGlitchSoundDisplacement(chars []rune, audio audioSnapshot) {
 }
 
 func glitchSoundBlock(width int, onset audioOnset) (int, int, bool) {
-	const lifetime = 620 * time.Millisecond
+	const lifetime = 1100 * time.Millisecond
 	if width <= 0 || onset.Region != audioRegionBass ||
 		onset.Age < 0 || onset.Age >= lifetime {
 		return 0, 0, false
@@ -169,6 +172,6 @@ func glitchSoundBlock(width int, onset audioOnset) (int, int, bool) {
 	progress := float64(onset.Age) / float64(lifetime)
 	center += int(math.Copysign(progress*float64(width)*0.10, stereo))
 	center = max(0, min(width-1, center))
-	radius := 1 + int(math.Round(onset.Strength*math.Min(7, float64(width)*0.08)))
+	radius := 1 + int(math.Round(onset.Strength*math.Min(5, float64(width)*0.06)))
 	return center, radius, true
 }

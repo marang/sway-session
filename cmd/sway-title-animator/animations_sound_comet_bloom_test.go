@@ -70,20 +70,20 @@ func TestCometSoundSilenceUsesOnlySlowAmbientParticles(t *testing.T) {
 func TestBloomSoundOnsetOpensAndDecaysWhileSustainHolds(t *testing.T) {
 	trigger := audioSnapshot{Active: true, Level: 0.1, OnsetCount: 1}
 	trigger.Onsets[0] = audioOnset{
-		ID: 7, Age: 300 * time.Millisecond, Strength: 1,
+		ID: 7, Age: 650 * time.Millisecond, Strength: 1,
 		Region: audioRegionGeneral,
 	}
 	open, onset := bloomSoundOpenness(trigger)
 	if open < 0.8 || onset.ID != 7 {
 		t.Fatalf("strong onset should open bloom: openness=%.2f onset=%+v", open, onset)
 	}
-	trigger.Onsets[0].Age = 1450 * time.Millisecond
+	trigger.Onsets[0].Age = 2200 * time.Millisecond
 	closing, _ := bloomSoundOpenness(trigger)
 	if closing >= open {
 		t.Fatalf("bloom should close as onset decays: open=%.2f closing=%.2f", open, closing)
 	}
 	sustained, _ := bloomSoundOpenness(audioSnapshot{Active: true, Level: 0.95})
-	if sustained < 0.65 {
+	if sustained < 0.45 {
 		t.Fatalf("sustained audio should hold petals open: %.2f", sustained)
 	}
 }

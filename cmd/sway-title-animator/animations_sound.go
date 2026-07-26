@@ -9,7 +9,7 @@ func squareSoundArt(width int, phase int) string {
 	return squareSoundArtWithSnapshot(
 		width,
 		phase,
-		scaleAudioSnapshot(currentAudioSnapshot(), audioSettings.Motion),
+		currentSoundSnapshot(),
 	)
 }
 
@@ -25,10 +25,10 @@ func squareSoundArtWithSnapshot(width int, phase int, audio audioSnapshot) strin
 	}
 	segments := renderSquareLevels(levels)
 	if audio.Active {
-		const buildFrames = 36
-		position := phase % 104
+		const buildFrames = 52
+		position := phase % 156
 		if position < 0 {
-			position += 104
+			position += 156
 		}
 		revealed := width
 		if position < buildFrames {
@@ -48,7 +48,7 @@ func squareSoundLevels(width int, phase int, audio audioSnapshot) []bool {
 		bass = 0.82
 		level = 0.34
 	}
-	drift := signedOrganicNoise("square_sound", 1, float64(phase)/88)
+	drift := signedOrganicNoise("square_sound", 1, float64(phase)/156)
 	baseLength := 4 + int(math.Round(bass*13+drift*2.4))
 	baseLength = max(3, baseLength)
 	duty := math.Max(0.22, math.Min(0.78, 0.30+level*0.48))
@@ -66,8 +66,8 @@ func squareSoundLevels(width int, phase int, audio audioSnapshot) []bool {
 		variation := int(math.Round(signedOrganicNoise(
 			"square_sound",
 			uint64(10+run%7),
-			float64(phase)/113+float64(run)*0.17,
-		) * 2))
+			float64(phase)/181+float64(run)*0.17,
+		) * 1.4))
 		runLength = max(2, runLength+variation)
 		for range runLength {
 			if cursor >= width {
@@ -92,8 +92,8 @@ func applySquareSoundRunner(levels []bool, onset audioOnset) {
 
 func squareSoundRunner(width int, onset audioOnset) (squareRunner, bool) {
 	const (
-		minimumDuration = 480 * time.Millisecond
-		durationRange   = 520 * time.Millisecond
+		minimumDuration = 900 * time.Millisecond
+		durationRange   = 650 * time.Millisecond
 	)
 	duration := minimumDuration + time.Duration((1-onset.Strength)*float64(durationRange))
 	if onset.Age < 0 || onset.Age >= duration || width < 6 {
@@ -136,7 +136,7 @@ func ripplesSoundArt(width int, phase int) string {
 	return ripplesSoundArtWithSnapshot(
 		width,
 		phase,
-		scaleAudioSnapshot(currentAudioSnapshot(), audioSettings.Motion),
+		currentSoundSnapshot(),
 	)
 }
 
@@ -148,7 +148,8 @@ func ripplesSoundArtWithSnapshot(width int, phase int, audio audioSnapshot) stri
 
 	levels := make([]float64, width)
 	live := false
-	for onsetIndex := 0; onsetIndex < min(audio.OnsetCount, len(audio.Onsets)); onsetIndex++ {
+	firstOnset := max(0, min(audio.OnsetCount, len(audio.Onsets))-2)
+	for onsetIndex := firstOnset; onsetIndex < min(audio.OnsetCount, len(audio.Onsets)); onsetIndex++ {
 		onset := audio.Onsets[onsetIndex]
 		center, radius, thickness, envelope, ok := soundRipple(width, onset)
 		if !ok {
@@ -176,17 +177,17 @@ func soundRipple(width int, onset audioOnset) (float64, float64, float64, float6
 	if width <= 0 || onset.Age < 0 {
 		return 0, 0, 0, 0, false
 	}
-	lifetime := 1050 * time.Millisecond
+	lifetime := 1550 * time.Millisecond
 	speed := 0.58
 	thickness := 1.8
 	switch onset.Region {
 	case audioRegionBass:
-		lifetime = 1450 * time.Millisecond
-		speed = 0.42
+		lifetime = 2100 * time.Millisecond
+		speed = 0.34
 		thickness = 3.2
 	case audioRegionHigh:
-		lifetime = 760 * time.Millisecond
-		speed = 0.78
+		lifetime = 1200 * time.Millisecond
+		speed = 0.58
 		thickness = 1.05
 	}
 	if onset.Age >= lifetime {
@@ -218,9 +219,11 @@ func addSoundRippleIdle(levels []float64, phase int) {
 		return
 	}
 	breath := 0.5 + 0.5*math.Sin(
-		float64(phase)*0.045+signedOrganicNoise("ripples_sound", 1, float64(phase)/97),
+		float64(phase)*0.022+signedOrganicNoise("ripples_sound", 1, float64(phase)/173),
 	)
 	center := float64(len(levels)-1) / 2
+	center += signedOrganicNoise("ripples_sound", 2, 0.41) *
+		math.Min(3, float64(len(levels))/12)
 	radius := 1.5 + breath*math.Min(5, float64(len(levels))/8)
 	for index := range levels {
 		distance := math.Abs(float64(index) - center)
@@ -269,7 +272,7 @@ func radarSoundArt(width int, phase int) string {
 	return radarSoundArtWithSnapshot(
 		width,
 		phase,
-		scaleAudioSnapshot(currentAudioSnapshot(), audioSettings.Motion),
+		currentSoundSnapshot(),
 	)
 }
 
@@ -285,9 +288,9 @@ func radarSoundArtWithSnapshot(width int, phase int, audio audioSnapshot) string
 	bass := audio.Bass
 	mids := (audio.LowMid + audio.HighMid) / 2
 	treble := audio.Treble
-	speed := 0.16
+	speed := 0.10
 	if audio.Active {
-		speed += bass * 1.75
+		speed += bass * 0.62
 	}
 	sweep := radarSoundSweepPosition(width, phase, speed)
 	sweepWidth := 3.2 + bass*5.2
@@ -308,7 +311,8 @@ func radarSoundArtWithSnapshot(width int, phase int, audio audioSnapshot) string
 		}
 	}
 
-	for onsetIndex := 0; onsetIndex < min(audio.OnsetCount, len(audio.Onsets)); onsetIndex++ {
+	firstOnset := max(0, min(audio.OnsetCount, len(audio.Onsets))-2)
+	for onsetIndex := firstOnset; onsetIndex < min(audio.OnsetCount, len(audio.Onsets)); onsetIndex++ {
 		echoCenter, echoWidth, envelope, ok := radarSoundEcho(width, audio.Onsets[onsetIndex], mids)
 		if !ok {
 			continue
@@ -334,8 +338,8 @@ func radarSoundArtWithSnapshot(width int, phase int, audio audioSnapshot) string
 			chars[index] = '●'
 		case index == sweepIndex:
 			chars[index] = radarSweep[(phase/3)%len(radarSweep)]
-		case audio.Active && treble > 0.20 &&
-			(index+phase*3)%max(7, 19-int(math.Round(treble*10))) == 0:
+		case audio.Active && treble > 0.32 &&
+			(index+phase/4)%max(11, 25-int(math.Round(treble*8))) == 0:
 			chars[index] = '·'
 		case levels[index] > 0.72:
 			chars[index] = '═'
@@ -345,6 +349,8 @@ func radarSoundArtWithSnapshot(width int, phase int, audio audioSnapshot) string
 			chars[index] = '┄'
 		case index == int(math.Round(center)):
 			chars[index] = '╋'
+		case !audio.Active && index%6 == 0:
+			chars[index] = '·'
 		default:
 			chars[index] = ' '
 		}
@@ -361,7 +367,7 @@ func radarSoundSweepPosition(width int, phase int, speed float64) float64 {
 }
 
 func radarSoundEcho(width int, onset audioOnset, mids float64) (float64, float64, float64, bool) {
-	const lifetime = 1100 * time.Millisecond
+	const lifetime = 1650 * time.Millisecond
 	if width <= 0 || onset.Age < 0 || onset.Age >= lifetime {
 		return 0, 0, 0, false
 	}
@@ -393,7 +399,7 @@ func shutterSoundArt(width int, phase int) string {
 	return shutterSoundArtWithSnapshot(
 		width,
 		phase,
-		scaleAudioSnapshot(currentAudioSnapshot(), audioSettings.Motion),
+		currentSoundSnapshot(),
 	)
 }
 
@@ -422,8 +428,8 @@ func shutterSoundArtWithSnapshot(width int, phase int, audio audioSnapshot) stri
 		case index == seamIndex:
 			chars[index] = seam
 		case index > leftEdge && index < rightEdge:
-			if audio.Active && audio.Treble > 0.28 &&
-				(index+phase)%max(8, 17-int(math.Round(audio.Treble*7))) == 0 {
+			if audio.Active && audio.Treble > 0.38 &&
+				(index+phase/5)%max(12, 23-int(math.Round(audio.Treble*6))) == 0 {
 				chars[index] = '│'
 			} else {
 				chars[index] = ' '
@@ -449,14 +455,14 @@ func shutterSoundArtWithSnapshot(width int, phase int, audio audioSnapshot) stri
 
 func shutterSoundGeometry(width int, phase int, audio audioSnapshot) (float64, float64, float64) {
 	center := float64(max(0, width-1)) / 2
-	breathClock := float64(phase)*0.035 + signedOrganicNoise("shutter_sound", 1, 0.41)*0.65
+	breathClock := float64(phase)*0.018 + signedOrganicNoise("shutter_sound", 1, 0.41)*0.65
 	breath := 0.5 + 0.5*math.Sin(breathClock)
 	openness := 0.76 + breath*0.10
 	closure := 1 - openness
 	if audio.Active {
-		closure = 0.10 + audio.LowMid*0.58
+		closure = 0.10 + audio.LowMid*0.44
 		if onset, ok := newestSoundOnset(audio, audioRegionBass); ok {
-			const lifetime = 850 * time.Millisecond
+			const lifetime = 1350 * time.Millisecond
 			if onset.Age >= 0 && onset.Age < lifetime {
 				progress := float64(onset.Age) / float64(lifetime)
 				onsetClosure := onset.Strength * (1 - smoothstep(progress))
@@ -464,7 +470,7 @@ func shutterSoundGeometry(width int, phase int, audio audioSnapshot) (float64, f
 			}
 		}
 		closure = math.Max(0.06, math.Min(0.92, closure))
-		center += math.Max(-1, math.Min(1, audio.Balance)) * float64(width) * 0.075
+		center += math.Max(-1, math.Min(1, audio.Balance)) * float64(width) * 0.045
 		center = math.Max(float64(width)*0.12, math.Min(float64(width-1)-float64(width)*0.12, center))
 	}
 	openness = 1 - closure

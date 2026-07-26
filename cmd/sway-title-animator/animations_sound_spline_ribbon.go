@@ -7,7 +7,7 @@ import (
 
 func splineSoundArt(width int, phase int) string {
 	return splineSoundArtWithSnapshot(width, phase,
-		scaleAudioSnapshot(currentAudioSnapshot(), audioSettings.Motion))
+		currentSoundSnapshot())
 }
 
 func splineSoundArtWithSnapshot(width int, phase int, audio audioSnapshot) string {
@@ -16,21 +16,23 @@ func splineSoundArtWithSnapshot(width int, phase int, audio audioSnapshot) strin
 		return ""
 	}
 	chars := make([]rune, width)
-	clock := float64(phase)*0.025 +
-		signedOrganicNoise("spline_sound", 1, float64(phase)/111)*0.35
+	clock := float64(phase)*0.012 +
+		signedOrganicNoise("spline_sound", 1, float64(phase)/222)*0.28
+	seedLift := signedOrganicNoise("spline_sound", 2, 0.31) * 0.34
 	for index := range width {
 		position := float64(index) / float64(max(1, width-1))
 		energy := 0.18
 		if audio.Active {
 			energy = interpolatedAudioBand(audio.Bands, position*float64(audioBandCount-1))
 		}
-		y := 1.5 + math.Sin(position*math.Pi*2+clock)*0.28 + (energy-0.5)*2.2
+		y := 1.5 + seedLift +
+			math.Sin(position*math.Pi*2+clock)*0.24 + (energy-0.5)*1.70
 		chars[index] = splineSoundCurveGlyph(y)
 	}
 	tracer := splineSoundTracer(width, phase, audio)
 	strong := false
 	if onset, ok := newestSoundOnset(audio, audioRegionGeneral); ok {
-		strong = onset.Strength > 0.62 && onset.Age >= 0 && onset.Age < 620*time.Millisecond
+		strong = onset.Strength > 0.68 && onset.Age >= 0 && onset.Age < 900*time.Millisecond
 	}
 	if strong {
 		chars[tracer] = '◆'
@@ -64,13 +66,13 @@ func splineSoundTracer(width int, phase int, audio audioSnapshot) int {
 			direction = -1
 		}
 	}
-	position := centroid*float64(width-1) + direction*float64(phase)*0.10
+	position := centroid*float64(width-1) + direction*float64(phase)*0.035
 	return int(math.Mod(position+float64(width)*100, float64(width)))
 }
 
 func ribbonSoundArt(width int, phase int) string {
 	return ribbonSoundArtWithSnapshot(width, phase,
-		scaleAudioSnapshot(currentAudioSnapshot(), audioSettings.Motion))
+		currentSoundSnapshot())
 }
 
 func ribbonSoundArtWithSnapshot(width int, phase int, audio audioSnapshot) string {
@@ -87,10 +89,10 @@ func ribbonSoundArtWithSnapshot(width int, phase int, audio audioSnapshot) strin
 	if audio.Balance < 0 {
 		direction = -1
 	}
-	speed := 0.025 + centroid*0.12
+	speed := 0.012 + centroid*0.040
 	clock := direction*float64(phase)*speed +
-		signedOrganicNoise("ribbon_sound", 1, float64(phase)/109)*0.45
-	frequency := 0.10 + mids*0.18
+		signedOrganicNoise("ribbon_sound", 1, float64(phase)/218)*1.55
+	frequency := 0.10 + mids*0.13
 	ramp := []rune("·░▒▓█")
 	chars := make([]rune, width)
 	twistCenter, twistEnvelope, twistLive := ribbonSoundTwist(width, audio)
@@ -108,8 +110,8 @@ func ribbonSoundArtWithSnapshot(width int, phase int, audio audioSnapshot) strin
 			twist := math.Exp(-math.Pow(distance/3.4, 2)) * twistEnvelope
 			level = level*(1-twist) + (1-level)*twist
 		}
-		if treble > 0.38 &&
-			(index+phase)%max(6, 14-int(math.Round(treble*7))) == 0 {
+		if treble > 0.55 &&
+			(index+phase/6)%max(11, 20-int(math.Round(treble*6))) == 0 {
 			chars[index] = '✦'
 		} else {
 			chars[index] = rampPick(ramp, math.Max(0, math.Min(1, level)))
@@ -123,7 +125,7 @@ func ribbonSoundTwist(width int, audio audioSnapshot) (float64, float64, bool) {
 	if !ok || onset.Strength < 0.60 || width <= 0 || onset.Age < 0 {
 		return 0, 0, false
 	}
-	const lifetime = 980 * time.Millisecond
+	const lifetime = 1700 * time.Millisecond
 	if onset.Age >= lifetime {
 		return 0, 0, false
 	}

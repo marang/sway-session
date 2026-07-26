@@ -9,7 +9,7 @@ func constellationSoundArt(width int, phase int) string {
 	return constellationSoundArtWithSnapshot(
 		width,
 		phase,
-		scaleAudioSnapshot(currentAudioSnapshot(), audioSettings.Motion),
+		currentSoundSnapshot(),
 	)
 }
 
@@ -20,7 +20,7 @@ func constellationSoundArtWithSnapshot(width int, phase int, audio audioSnapshot
 	}
 	chars := make([]rune, width)
 	drift := int(math.Round(signedOrganicNoise(
-		"constellation_sound", 1, float64(phase)/96,
+		"constellation_sound", 1, float64(phase)/192,
 	) * 2))
 	for index := range width {
 		source := index - drift
@@ -63,17 +63,17 @@ func constellationSoundStar(energy float64, density float64) rune {
 
 func addConstellationSupernova(chars []rune, audio audioSnapshot) {
 	onset, ok := newestSoundOnset(audio, audioRegionGeneral)
-	if !ok || onset.Strength < 0.62 || onset.Age < 0 {
+	if !ok || onset.Strength < 0.70 || onset.Age < 0 {
 		return
 	}
-	const lifetime = 720 * time.Millisecond
+	const lifetime = 1200 * time.Millisecond
 	if onset.Age >= lifetime || len(chars) == 0 {
 		return
 	}
 	progress := float64(onset.Age) / float64(lifetime)
 	stereo := math.Max(-1, math.Min(1, onset.Position))
 	center := int(math.Round((0.5 + stereo*0.38) * float64(len(chars)-1)))
-	radius := 1 + int(math.Round(onset.Strength*(1-progress)*3))
+	radius := 1 + int(math.Round(onset.Strength*(1-progress)*2))
 	for offset := -radius; offset <= radius; offset++ {
 		index := center + offset
 		if index < 0 || index >= len(chars) {
@@ -91,7 +91,7 @@ func addConstellationSupernova(chars []rune, audio audioSnapshot) {
 }
 
 func addConstellationShootingStar(chars []rune, phase int, audio audioSnapshot) {
-	if !audio.Active || audio.SpectralFlux < 0.16 || len(chars) < 5 {
+	if !audio.Active || audio.SpectralFlux < 0.24 || len(chars) < 5 {
 		return
 	}
 	direction := 1
@@ -99,7 +99,7 @@ func addConstellationShootingStar(chars []rune, phase int, audio audioSnapshot) 
 		direction = -1
 	}
 	position := int(math.Mod(
-		float64(phase)*(0.35+audio.SpectralFlux)+float64(len(chars))*100,
+		float64(phase)*(0.12+audio.SpectralFlux*0.20)+float64(len(chars))*100,
 		float64(len(chars)),
 	))
 	for distance, glyph := range []rune{'✧', '─', '╴'} {
@@ -114,7 +114,7 @@ func circuitSoundArt(width int, phase int) string {
 	return circuitSoundArtWithSnapshot(
 		width,
 		phase,
-		scaleAudioSnapshot(currentAudioSnapshot(), audioSettings.Motion),
+		currentSoundSnapshot(),
 	)
 }
 
@@ -145,11 +145,11 @@ func circuitSoundArtWithSnapshot(width int, phase int, audio audioSnapshot) stri
 				position*float64(audioBandCount-1),
 			)
 			switch {
-			case energy > 0.78 && index%17 == 8:
+			case energy > 0.82 && index%17 == 8:
 				chars[index] = '●'
-			case energy > 0.58:
+			case energy > 0.64:
 				chars[index] = '═'
-			case energy > 0.32 && chars[index] == '─':
+			case energy > 0.38 && chars[index] == '─':
 				chars[index] = '╍'
 			}
 		}
@@ -187,7 +187,7 @@ func addCircuitSoundCurrent(chars []rune, audio audioSnapshot) {
 }
 
 func circuitSoundCurrent(width int, onset audioOnset, audio audioSnapshot) (int, int, float64, bool) {
-	const lifetime = 1050 * time.Millisecond
+	const lifetime = 1800 * time.Millisecond
 	if width <= 0 || onset.Region != audioRegionBass ||
 		onset.Age < 0 || onset.Age >= lifetime {
 		return 0, 0, 0, false
@@ -208,11 +208,11 @@ func circuitSoundCurrent(width int, onset audioOnset, audio audioSnapshot) (int,
 }
 
 func addCircuitSoundSparks(chars []rune, phase int, audio audioSnapshot) {
-	if audio.Treble < 0.42 {
+	if audio.Treble < 0.55 {
 		return
 	}
 	for index := 8; index < len(chars); index += 17 {
-		if (index+phase)%max(3, 8-int(math.Round(audio.Treble*4))) == 0 {
+		if (index+phase/6)%max(7, 13-int(math.Round(audio.Treble*4))) == 0 {
 			chars[index] = '✦'
 		}
 	}
@@ -223,7 +223,7 @@ func addCircuitDiagnostic(chars []rune, phase int) {
 		return
 	}
 	seedOffset := organicNoise("circuit_sound", 1, 0.39) * float64(len(chars))
-	position := int(math.Mod(seedOffset+float64(phase)*0.08, float64(len(chars))))
+	position := int(math.Mod(seedOffset+float64(phase)*0.04, float64(len(chars))))
 	chars[position] = '●'
 	if position > 0 {
 		chars[position-1] = '═'

@@ -1,12 +1,10 @@
 # Sound-reactive preset plan
 
-Status: Accepted design; the unnamed default rotation, startup audio
+Status: Implemented design. The unnamed default rotation, startup audio
 configuration, backend-neutral capture seam, 48 kHz stereo continuous feature
-analysis, normalization/reconnect warm-up, bounded onset events,
-`aurora_sound`, `spectrum_sound`, `wave_sound`, `square_sound`,
-`ripples_sound`, and the scrollable Bubble Tea preview foundation are
-implemented. The remaining companions, diagnostics, and expanded preview
-modes are planned.
+analysis, normalization/reconnect warm-up, bounded onset events, all 17 sound
+companions, and the scrollable Bubble Tea preview foundation are implemented.
+Diagnostics and expanded preview modes remain planned.
 
 Linear project:
 [Sway Title Animator | P001 | Sound-Reactive Presets](https://linear.app/riotbox/project/sway-title-animator-or-p001-or-sound-reactive-presets-e8a4308a9902)
@@ -17,10 +15,10 @@ Add an opt-in `<preset>_sound` companion for every visual preset. Each companion
 must retain the base preset's visual language. Audio changes its motion and
 events instead of replacing it with a generic equalizer.
 
-The target balance during active audio is approximately 75% audio influence and
-25% slow organic motion. Audio-reactive events replace competing random special
-events while sound is active. Rare preset-specific idle events may remain
-during silence.
+The target balance during active audio is approximately 60% broad, smoothed
+audio influence and 40% slow organic motion. Audio-reactive events replace
+competing random special events while sound is active. Rare preset-specific
+idle events may remain during silence.
 
 Sound companions are never added to the default rotation automatically. Users
 opt in by naming them in `[rotation].presets`.
@@ -44,7 +42,7 @@ The initial audio configuration remains deliberately small:
 [audio]
 # device = "@DEFAULT_MONITOR@"
 sensitivity = 1.0
-motion = 1.0
+motion = 0.75
 
 [rotation]
 presets = ["aurora", "loom", "square"]
@@ -121,11 +119,20 @@ Do not add BPM or beat-grid tracking in the first version. Presets react to the
 appropriate onset class instead.
 
 Use gentle automatic gain normalization that preserves musical dynamics rather
-than forcing every passage to the same loudness. Initial timing targets are:
+than forcing every passage to the same loudness. The real-music polish pass in
+[LAB-47](https://linear.app/riotbox/issue/LAB-47/calm-and-differentiate-all-sound-reactive-presets)
+established the visual timing contract:
 
-- attack: 80–120 ms;
-- release: 250–400 ms; and
+- attack: about 190 ms;
+- release: about 720 ms;
 - normalization: substantially slower than envelope release.
+
+Before rendering, adjacent frequency bands are combined into broad regions and
+the response range is compressed. At most the newest meaningful general, bass,
+and high-frequency onset remain visible simultaneously. General onsets use an
+approximately 360 ms cooldown and region-specific events about 520 ms. These
+limits are part of the visual motion contract: presets should emphasize phrases
+and accents, not every analyzer hop.
 
 On startup or reconnect, collect roughly 300–500 ms of warm-up history while
 showing the calm idle form, then blend into the audio response. A strong first
@@ -144,7 +151,8 @@ The implemented detector measures positive changes in the normalized 32-band
 spectrum and exposes general, bass, and high-frequency events with independent
 cooldowns. Detection starts only after the complete reconnect warm-up and is
 suppressed during silence. The immutable snapshot retains the newest eight
-events for up to 1.5 seconds with monotonic process-lifetime IDs; reconnects
+events for up to 2.5 seconds with monotonic process-lifetime IDs; visual
+conditioning exposes only the newest meaningful event per class. Reconnects
 clear detector history without reusing IDs. Peak hold decays by elapsed time,
 not frame count.
 
@@ -156,8 +164,8 @@ Every sound preset has three distinct states:
    actionable warning per process lifetime.
 2. **Capture with silence:** render a calm, recognizable preset-specific idle
    form without random twitching.
-3. **Active audio:** attack quickly, decay smoothly, and retain slow organic
-   motion without competing random special events.
+3. **Active audio:** attack deliberately, decay smoothly, and retain slow
+   organic motion without competing random special events.
 
 Silence is not a capture failure and must never produce repeated warnings.
 
@@ -435,8 +443,9 @@ presets that look effectively identical.
    with the four planned preview modes, manual viewport, status hint, and
    grouped preset listing. Interactive browser work remains tracked in LAB-28.
 5. Profile and tune the complete set without changing the accepted behavioral
-   contract — completed in LAB-34. Sound companions remain explicit
-   `[rotation]` opt-ins.
+   contract. Initial integration profiling completed in LAB-34; the real-music
+   calm-motion and visual-separation pass completed in LAB-47. Sound companions
+   remain explicit `[rotation]` opt-ins.
 
 ## Verification strategy
 

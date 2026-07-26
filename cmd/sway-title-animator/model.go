@@ -12,7 +12,7 @@ const (
 	defaultRotationBlend    = 75
 	defaultAudioDevice      = "@DEFAULT_MONITOR@"
 	defaultAudioSensitivity = 1.0
-	defaultAudioMotion      = 1.0
+	defaultAudioMotion      = 0.75
 	titleReassertInterval   = 2 * time.Second
 	rotationSelection       = ""
 )
@@ -30,7 +30,7 @@ detect_child_process = true
 [audio]
 # device = "@DEFAULT_MONITOR@"
 sensitivity = 1.0
-motion = 1.0
+motion = 0.75
 
 [rotation]
 presets = [

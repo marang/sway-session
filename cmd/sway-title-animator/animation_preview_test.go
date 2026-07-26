@@ -159,13 +159,18 @@ func TestAnimationSeedChangesRepresentativeGalleryFrames(t *testing.T) {
 	}
 	animationSeed = 222
 	changed := 0
+	unchanged := make([]string, 0)
 	for name, animation := range animationPresets {
 		if animation(96, 173) != first[name] {
 			changed++
+		} else {
+			unchanged = append(unchanged, name)
 		}
 	}
 	if changed < len(animationPresets)-2 {
-		t.Fatalf("expected nearly every preset to respond to the run seed, changed=%d total=%d", changed, len(animationPresets))
+		sort.Strings(unchanged)
+		t.Fatalf("expected nearly every preset to respond to the run seed, changed=%d total=%d unchanged=%v",
+			changed, len(animationPresets), unchanged)
 	}
 }
 

@@ -210,7 +210,7 @@ detect_child_process = true
 [audio]
 # device = "@DEFAULT_MONITOR@"
 sensitivity = 1.0
-motion = 1.0
+motion = 0.75
 
 [rotation]
 presets = [
@@ -244,9 +244,11 @@ both accept values greater than `0` through `10`. There is no backend setting:
 48 kHz stereo PCM; the shared analyzer retains left/right balance while
 providing 32 frequency bands and aggregate bass-to-treble features. Gentle
 automatic gain normalization adapts across sources, while a short reconnect
-warm-up prevents startup spikes. Shared transient features include spectral
-flux, elapsed-time peak hold, and bounded general, bass, and high-frequency onset
-events for the planned sound companions.
+warm-up prevents startup spikes. The visual response combines slower
+attack/release envelopes, broad neighboring frequency regions, and at most one
+current transient per event class so real music produces deliberate motion
+instead of frame-by-frame jitter. `wave_sound` uses a continuous horizontal
+swell and breaker line; Aurora keeps the vertical bar vocabulary.
 
 Run with a specific config:
 

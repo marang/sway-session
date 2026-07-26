@@ -9,7 +9,7 @@ func cometSoundArt(width int, phase int) string {
 	return cometSoundArtWithSnapshot(
 		width,
 		phase,
-		scaleAudioSnapshot(currentAudioSnapshot(), audioSettings.Motion),
+		currentSoundSnapshot(),
 	)
 }
 
@@ -31,7 +31,7 @@ func cometSoundArtWithSnapshot(width int, phase int, audio audioSnapshot) string
 	}
 
 	headIndex := max(0, min(width-1, int(math.Round(head))))
-	tailLength := 3 + int(math.Round(audio.Level*float64(width)*0.30))
+	tailLength := 3 + int(math.Round(audio.Level*float64(width)*0.22))
 	tailLength = max(3, min(width-1, tailLength))
 	for distance := tailLength; distance >= 1; distance-- {
 		index := headIndex - direction*distance
@@ -41,7 +41,7 @@ func cometSoundArtWithSnapshot(width int, phase int, audio audioSnapshot) string
 		density := envelope * (1 - float64(distance)/float64(tailLength+1))
 		switch {
 		case audio.Treble > 0.35 &&
-			(index+phase+int(onset.ID))%max(3, 8-int(math.Round(audio.Treble*4))) == 0:
+			(index+phase/5+int(onset.ID))%max(5, 11-int(math.Round(audio.Treble*4))) == 0:
 			chars[index] = '✦'
 		case density > 0.70:
 			chars[index] = '▓'
@@ -62,8 +62,8 @@ func cometSoundFlight(width int, onset audioOnset, centroid float64) (float64, i
 		return 0, 0, 0, false
 	}
 	centroid = math.Max(0, math.Min(1, centroid))
-	lifetime := 1650*time.Millisecond -
-		time.Duration(centroid*float64(950*time.Millisecond))
+	lifetime := 2400*time.Millisecond -
+		time.Duration(centroid*float64(800*time.Millisecond))
 	if onset.Age >= lifetime {
 		return 0, 0, 0, false
 	}
@@ -84,13 +84,13 @@ func addCometSoundParticles(chars []rune, phase int, active bool) {
 	if len(chars) == 0 {
 		return
 	}
-	count := max(3, len(chars)/20)
+	count := max(4, len(chars)/14)
 	if active {
-		count = max(2, len(chars)/30)
+		count = max(3, len(chars)/24)
 	}
 	for particle := range count {
 		origin := organicNoise("comet_sound", uint64(10+particle), 0.29) * float64(len(chars))
-		speed := 0.018 + organicNoise("comet_sound", uint64(30+particle), 0.73)*0.028
+		speed := 0.007 + organicNoise("comet_sound", uint64(30+particle), 0.73)*0.012
 		position := math.Mod(origin+float64(phase)*speed, float64(len(chars)))
 		index := max(0, min(len(chars)-1, int(position)))
 		if particle%5 == 0 {
@@ -107,7 +107,7 @@ func bloomSoundArt(width int, phase int) string {
 	return bloomSoundArtWithSnapshot(
 		width,
 		phase,
-		scaleAudioSnapshot(currentAudioSnapshot(), audioSettings.Motion),
+		currentSoundSnapshot(),
 	)
 }
 
@@ -119,14 +119,17 @@ func bloomSoundArtWithSnapshot(width int, phase int, audio audioSnapshot) string
 
 	openness, onset := bloomSoundOpenness(audio)
 	if !audio.Active && onset.ID == 0 {
-		breathClock := float64(phase)*0.04 +
+		breathClock := float64(phase)*0.018 +
 			signedOrganicNoise("bloom_sound", 1, 0.47)*0.8
-		openness = 0.08 + (0.5+0.5*math.Sin(breathClock))*0.20
+		openness = 0.14 + (0.5+0.5*math.Sin(breathClock))*0.28
 	}
 	center := float64(width-1) / 2
 	bend := 0.0
 	if audio.Active {
 		bend = math.Max(-1, math.Min(1, audio.Balance)) * math.Min(3, float64(width)*0.05)
+	} else {
+		center += signedOrganicNoise("bloom_sound", 2, 0.39) *
+			math.Min(3, float64(width)*0.04)
 	}
 	anchor := max(0, min(width-1, int(math.Round(center))))
 	petalCenter := max(0, min(width-1, int(math.Round(center+bend*openness))))
@@ -181,20 +184,20 @@ func bloomSoundOpenness(audio audioSnapshot) (float64, audioOnset) {
 	openness := 0.08
 	var trigger audioOnset
 	if audio.Active {
-		openness = math.Max(openness, audio.Level*0.72)
+		openness = math.Max(openness, audio.Level*0.52)
 	}
 	onset, ok := newestSoundOnset(audio, audioRegionGeneral)
 	if !ok || onset.Strength < 0.52 || onset.Age < 0 {
 		return openness, trigger
 	}
-	const lifetime = 1500 * time.Millisecond
+	const lifetime = 2400 * time.Millisecond
 	if onset.Age >= lifetime {
 		return openness, trigger
 	}
 	progress := float64(onset.Age) / float64(lifetime)
-	eventOpen := smoothstep(math.Min(1, progress/0.18))
-	if progress > 0.58 {
-		eventOpen *= 1 - smoothstep((progress-0.58)/0.42)
+	eventOpen := smoothstep(math.Min(1, progress/0.24))
+	if progress > 0.62 {
+		eventOpen *= 1 - smoothstep((progress-0.62)/0.38)
 	}
 	eventOpen *= onset.Strength
 	return math.Max(openness, eventOpen), onset
@@ -212,7 +215,7 @@ func addBloomSoundPollen(
 		onset.Age < 260*time.Millisecond || onset.Age >= 1200*time.Millisecond {
 		return
 	}
-	count := 1 + int(math.Round(audio.Treble*3))
+	count := 1 + int(math.Round(audio.Treble))
 	for particle := range count {
 		side := -1
 		if (particle+int(onset.ID))%2 == 0 {
@@ -223,8 +226,7 @@ func addBloomSoundPollen(
 		if side > 0 {
 			index = right + distance
 		}
-		if index >= 0 && index < len(chars) &&
-			(index+phase+particle)%2 == 0 {
+		if index >= 0 && index < len(chars) {
 			chars[index] = '·'
 		}
 	}

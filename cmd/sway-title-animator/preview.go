@@ -91,7 +91,7 @@ func previewLines(names []string, layout previewLayout, phase int) []string {
 	motion := motionPhase(phase)
 	for index, name := range names {
 		label := name + strings.Repeat(" ", layout.labelColumns-terminalColumns(name))
-		art := animationPresets[name](layout.artColumns, motion)
+		art := animationFuncFor(name)(layout.artColumns, motion)
 		art = truncateTerminalColumns(art, layout.artColumns)
 		lines = append(lines, label+"  "+art)
 		if index < len(names)-1 {
@@ -243,6 +243,7 @@ func runPreview(output *os.File, fps float64) error {
 
 func sameAudioVisual(first audioSnapshot, second audioSnapshot) bool {
 	return first.Revision == second.Revision &&
+		first.CaptureAvailable == second.CaptureAvailable &&
 		first.Active == second.Active
 }
 

@@ -435,7 +435,8 @@ presets that look effectively identical.
    with the four planned preview modes, manual viewport, status hint, and
    grouped preset listing. Interactive browser work remains tracked in LAB-28.
 5. Profile and tune the complete set without changing the accepted behavioral
-   contract. Sound companions remain explicit `[rotation]` opt-ins.
+   contract — completed in LAB-34. Sound companions remain explicit
+   `[rotation]` opt-ins.
 
 ## Verification strategy
 

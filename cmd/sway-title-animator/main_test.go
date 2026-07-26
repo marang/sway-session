@@ -6,6 +6,7 @@ import (
 	"net"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -134,6 +135,33 @@ func TestEmptyPresetSelectsRotationWithoutRegisteringPseudoPreset(t *testing.T) 
 	}
 	if _, exists := animationPresets["showcase"]; exists {
 		t.Fatal("rotation must not be registered as the showcase pseudo-preset")
+	}
+}
+
+func TestSoundPresetFallsBackOnlyWhenCaptureIsUnavailable(t *testing.T) {
+	originalSnapshot := currentAudioSnapshot
+	t.Cleanup(func() {
+		currentAudioSnapshot = originalSnapshot
+	})
+
+	currentAudioSnapshot = func() audioSnapshot {
+		return audioSnapshot{}
+	}
+	width, phase := 60, 31
+	if got, want := animationFuncFor("aurora_sound")(width, phase),
+		auroraArt(width, phase); got != want {
+		t.Fatalf("unavailable capture should render base preset: got=%q want=%q", got, want)
+	}
+
+	currentAudioSnapshot = func() audioSnapshot {
+		return audioSnapshot{CaptureAvailable: true}
+	}
+	got := animationFuncFor("aurora_sound")(width, phase)
+	if got != strings.Repeat("▁", width) {
+		t.Fatalf("captured silence should render sound-specific idle: %q", got)
+	}
+	if got == auroraArt(width, phase) {
+		t.Fatal("captured silence must not be confused with unavailable capture")
 	}
 }
 

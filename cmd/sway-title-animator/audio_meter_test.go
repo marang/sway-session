@@ -321,7 +321,8 @@ func TestAudioWarmupStaysCalmThenBlendsIn(t *testing.T) {
 	start := time.Now()
 	var meter audioMeter
 	meter.update(tone, start)
-	if snapshot := meter.snapshotAt(start); snapshot.Active || snapshot.Level != 0 {
+	if snapshot := meter.snapshotAt(start); snapshot.Active || snapshot.Level != 0 ||
+		!snapshot.CaptureAvailable {
 		t.Fatalf("warm-up must expose a calm snapshot: %+v", snapshot)
 	}
 
@@ -335,6 +336,20 @@ func TestAudioWarmupStaysCalmThenBlendsIn(t *testing.T) {
 	meter.update(tone, end)
 	if full := meter.snapshotAt(end); full.Level <= mid.Level || !full.Active {
 		t.Fatalf("expected completed warm-up response, mid=%+v full=%+v", mid, full)
+	}
+}
+
+func TestAudioSnapshotDistinguishesSilenceFromUnavailableCapture(t *testing.T) {
+	now := time.Now()
+	var meter audioMeter
+	meter.update(make([]int16, audioBlockSize), now)
+	silent := meter.snapshotAt(now)
+	if !silent.CaptureAvailable || silent.Active {
+		t.Fatalf("captured silence should remain available but inactive: %+v", silent)
+	}
+	stale := meter.snapshotAt(now.Add(audioStaleAfter + time.Millisecond))
+	if stale.CaptureAvailable || stale.Active {
+		t.Fatalf("stale capture should be unavailable: %+v", stale)
 	}
 }
 

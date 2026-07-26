@@ -2,6 +2,7 @@ package main
 
 import (
 	"math"
+	"strings"
 )
 
 func artWidth(width int) int {
@@ -766,12 +767,12 @@ func rotationArt(width int, phase int) string {
 	motion := motionPhase(phase)
 
 	if offset < settings.RotationHoldFrames {
-		return animationPresets[preset](width, motion)
+		return animationFuncFor(preset)(width, motion)
 	}
 
 	nextPreset := rotationPresets[(presetIndex+1)%len(rotationPresets)]
-	from := animationPresets[preset](width, motion)
-	to := animationPresets[nextPreset](width, motion)
+	from := animationFuncFor(preset)(width, motion)
+	to := animationFuncFor(nextPreset)(width, motion)
 	progress := float64(offset-settings.RotationHoldFrames) / float64(settings.RotationBlendFrames)
 	return blendArt(from, to, width, phase, smoothstep(progress))
 }
@@ -863,6 +864,11 @@ func motionPhase(phase int) int {
 }
 
 func animationFuncFor(name string) animationFunc {
+	if isSoundPreset(name) && !currentAudioSnapshot().CaptureAvailable {
+		if base, ok := animationPresets[strings.TrimSuffix(name, "_sound")]; ok {
+			return base
+		}
+	}
 	return animationPresets[name]
 }
 

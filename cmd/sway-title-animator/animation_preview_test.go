@@ -821,4 +821,9 @@ func TestAudioRevisionControlsPreviewRedraw(t *testing.T) {
 	if sameAudioVisual(first, second) {
 		t.Fatal("stale/active state changes must trigger a redraw")
 	}
+	second.Active = first.Active
+	second.CaptureAvailable = true
+	if sameAudioVisual(first, second) {
+		t.Fatal("capture availability changes must trigger a redraw")
+	}
 }

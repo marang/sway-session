@@ -61,9 +61,10 @@ of repeating a short fixed performance.
 `aurora_sound` keeps Aurora's bar language but maps the bars to
 frequency bands from the current default audio output. It reads
 `@DEFAULT_MONITOR@` through `parec`, reacts at the full configured FPS, and
-falls back to a straight `▁` bottom line when no sound or monitor is available.
-Strong peaks use `╿`; extreme peaks use `┃`. It is opt-in and is not part of
-the default rotation.
+uses a straight `▁` bottom line while capture is available but silent. If
+capture is unavailable, every sound companion renders its normal base preset
+after the single actionable warning. Strong peaks use `╿`; extreme peaks use
+`┃`. Sound companions are opt-in and are not part of the default rotation.
 
 `spectrum_sound` keeps Spectrum's mirrored instrument display, arranging bass
 toward the outside and treble near the center. `wave_sound` maps bass and mids
@@ -87,8 +88,8 @@ through `pipewire-pulse`. Verify the dependency with:
 command -v parec
 ```
 
-The design and rollout plan for sound companions of every remaining animation
-is documented in [docs/sound-presets-plan.md](docs/sound-presets-plan.md).
+The completed design and rollout record for all sound companions is documented
+in [docs/sound-presets-plan.md](docs/sound-presets-plan.md).
 
 The `square` preset uses Unicode terminal-graphics scan lines rather than
 Braille pixels. Its trace holds still while it is drawn from left to right or

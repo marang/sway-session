@@ -53,22 +53,23 @@ type audioOnset struct {
 }
 
 type audioSnapshot struct {
-	Bands        [audioBandCount]float64
-	Level        float64
-	Bass         float64
-	LowMid       float64
-	HighMid      float64
-	Treble       float64
-	Centroid     float64
-	LeftLevel    float64
-	RightLevel   float64
-	Balance      float64
-	SpectralFlux float64
-	Peak         float64
-	Onsets       [audioEventCapacity]audioOnset
-	OnsetCount   int
-	Active       bool
-	Revision     uint64
+	Bands            [audioBandCount]float64
+	Level            float64
+	Bass             float64
+	LowMid           float64
+	HighMid          float64
+	Treble           float64
+	Centroid         float64
+	LeftLevel        float64
+	RightLevel       float64
+	Balance          float64
+	SpectralFlux     float64
+	Peak             float64
+	Onsets           [audioEventCapacity]audioOnset
+	OnsetCount       int
+	CaptureAvailable bool
+	Active           bool
+	Revision         uint64
 }
 
 type audioAnalysis struct {
@@ -379,20 +380,21 @@ func (meter *audioMeter) snapshotAt(now time.Time) audioSnapshot {
 		return audioSnapshot{Revision: meter.revision}
 	}
 	snapshot := audioSnapshot{
-		Bands:        meter.bands,
-		Level:        meter.level,
-		Bass:         meter.bass,
-		LowMid:       meter.lowMid,
-		HighMid:      meter.highMid,
-		Treble:       meter.treble,
-		Centroid:     meter.centroid,
-		LeftLevel:    meter.leftLevel,
-		RightLevel:   meter.rightLevel,
-		Balance:      meter.balance,
-		SpectralFlux: meter.spectralFlux,
-		Peak:         meter.peak,
-		Active:       meter.level > 0.025,
-		Revision:     meter.revision,
+		Bands:            meter.bands,
+		Level:            meter.level,
+		Bass:             meter.bass,
+		LowMid:           meter.lowMid,
+		HighMid:          meter.highMid,
+		Treble:           meter.treble,
+		Centroid:         meter.centroid,
+		LeftLevel:        meter.leftLevel,
+		RightLevel:       meter.rightLevel,
+		Balance:          meter.balance,
+		SpectralFlux:     meter.spectralFlux,
+		Peak:             meter.peak,
+		CaptureAvailable: true,
+		Active:           meter.level > 0.025,
+		Revision:         meter.revision,
 	}
 	for _, onset := range meter.onsets {
 		age := max(time.Duration(0), now.Sub(onset.occurredAt))

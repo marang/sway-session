@@ -321,7 +321,7 @@ presets that look effectively identical.
 - Treble creates short tail sparkles without spawning additional full comets.
 - Silence leaves occasional very slow ambient particles.
 
-### `smileys_sound`
+### `smileys_sound` — implemented
 
 - Bass makes faces bounce by changing their local vertical/weight vocabulary,
   not their terminal row.
@@ -380,7 +380,7 @@ presets that look effectively identical.
 - Stereo balance gently bends the bloom rather than moving it wholesale.
 - Silence closes the bloom gradually to a small bud.
 
-### `glitch_sound`
+### `glitch_sound` — implemented
 
 - Spectral flux controls glitch density; stable sustained tones remain mostly
   stable.
@@ -430,7 +430,7 @@ presets that look effectively identical.
    - `constellation_sound` and `circuit_sound` — implemented in LAB-42;
    - `braid_sound` and `loom_sound` — implemented in LAB-39;
    - `spline_sound` and `ribbon_sound` — implemented in LAB-41; and
-   - `smileys_sound` and `glitch_sound`.
+   - `smileys_sound` and `glitch_sound` — implemented in LAB-40.
 4. After all sound companions are implemented, expand the Bubble Tea preview
    with the four planned preview modes, manual viewport, status hint, and
    grouped preset listing. Interactive browser work remains tracked in LAB-28.

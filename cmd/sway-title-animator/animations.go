@@ -697,6 +697,7 @@ var animationPresets = map[string]animationFunc{
 	"comet":               cometArt,
 	"comet_sound":         cometSoundArt,
 	"smileys":             smileysArt,
+	"smileys_sound":       smileysSoundArt,
 	"wave":                waveArt,
 	"wave_sound":          waveSoundArt,
 	"spline":              splineArt,
@@ -708,6 +709,7 @@ var animationPresets = map[string]animationFunc{
 	"bloom":               bloomArt,
 	"bloom_sound":         bloomSoundArt,
 	"glitch":              glitchArt,
+	"glitch_sound":        glitchSoundArt,
 	"ribbon":              ribbonArt,
 	"ribbon_sound":        ribbonSoundArt,
 	"shutter":             shutterArt,
@@ -722,6 +724,7 @@ var soundPresetNames = map[string]bool{
 	"constellation_sound": true,
 	"circuit_sound":       true,
 	"loom_sound":          true,
+	"glitch_sound":        true,
 	"ribbon_sound":        true,
 	"spline_sound":        true,
 	"spectrum_sound":      true,
@@ -729,6 +732,7 @@ var soundPresetNames = map[string]bool{
 	"ripples_sound":       true,
 	"radar_sound":         true,
 	"shutter_sound":       true,
+	"smileys_sound":       true,
 	"wave_sound":          true,
 }
 

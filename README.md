@@ -37,6 +37,7 @@ constellation_sound ·  •    ✦       ·
 circuit        ─╍──╪──═●═──╍──╼╾───
 circuit_sound  ───╾╪╼───═●═────
 glitch         ───╍╪▒▓╳──┄──
+glitch_sound   ─────┄──░▒▓╳────
 braid          ╱╱╱╳╲╲╲╳╱╱╱╳╲╲╲
 braid_sound    ╱╱╳╲╲╲╱✦╱╳╲╲
 ribbon         ·░▒▓██▓▒░··░▒▓█▓▒░·
@@ -46,6 +47,7 @@ shutter_sound  ▒▓█›      ┆      ‹█▓▒
 comet          ░░▒▒▓▓✶☄▓▒░░··░▒✦
 comet_sound    ···░▒▓☄      ∙
 smileys        ｡･ʕ•ᴥ•ʔっ･ﾟ
+smileys_sound  ✦ ʕ◉ω◉ʔ
 wave           ▁▃▅▇█◜╲▅▃▁
 wave_sound     ▁▂▃╲◜╱▇≈•▃▂▁
 spline         ⢀⣠⠤⠒⠉⠢⣀  ✦

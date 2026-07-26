@@ -624,6 +624,154 @@ func TestAuroraSoundNeedlesRepresentPeakStrength(t *testing.T) {
 	}
 }
 
+func TestSpectrumSoundMapsBassOutsideAndTrebleInside(t *testing.T) {
+	bass := audioSnapshot{Active: true, Level: 0.4}
+	treble := audioSnapshot{Active: true, Level: 0.4}
+	for band := range bass.Bands {
+		switch {
+		case audioBandCenter(band) < 250:
+			bass.Bands[band] = 1
+		case audioBandCenter(band) >= 4000:
+			treble.Bands[band] = 1
+		}
+	}
+
+	bassRunes := []rune(spectrumSoundArtWithSnapshot(41, 17, bass))
+	trebleRunes := []rune(spectrumSoundArtWithSnapshot(41, 17, treble))
+	if !strings.ContainsRune("▅▆▇█", bassRunes[1]) ||
+		!strings.ContainsRune("·─━", bassRunes[19]) {
+		t.Fatalf("expected bass energy outside the mirrored display, got %q", string(bassRunes))
+	}
+	if !strings.ContainsRune("▅▆▇█", trebleRunes[19]) ||
+		!strings.ContainsRune("·─━", trebleRunes[1]) {
+		t.Fatalf("expected treble energy near the center, got %q", string(trebleRunes))
+	}
+	if bassRunes[1] != bassRunes[39] || trebleRunes[19] != trebleRunes[21] {
+		t.Fatal("spectrum_sound must preserve mirrored pairs")
+	}
+}
+
+func TestSpectrumSoundPeakAndSilenceRemainRecognizable(t *testing.T) {
+	quietFrames := map[string]bool{}
+	for _, phase := range []int{0, 47, 113, 229} {
+		frame := spectrumSoundArtWithSnapshot(41, phase, audioSnapshot{})
+		runes := []rune(frame)
+		if runes[0] != '⟨' || runes[len(runes)-1] != '⟩' || runes[len(runes)/2] != '┃' {
+			t.Fatalf("expected a bracketed symmetric idle pulse, got %q", frame)
+		}
+		for index := 1; index < len(runes)/2; index++ {
+			if runes[index] != runes[len(runes)-1-index] {
+				t.Fatalf("idle spectrum lost symmetry at %d: %q", index, frame)
+			}
+		}
+		quietFrames[frame] = true
+	}
+	if len(quietFrames) < 2 {
+		t.Fatalf("expected a slowly breathing silent pulse, got %v", quietFrames)
+	}
+
+	peak := audioSnapshot{Active: true, Level: 0.4, Peak: 0.8, Centroid: 0.75}
+	for index := range peak.Bands {
+		peak.Bands[index] = 0.4
+	}
+	frame := []rune(spectrumSoundArtWithSnapshot(41, 23, peak))
+	focusRadius := 1 + int(math.Round((1-peak.Centroid)*18))
+	left, right := spectrumPairPositions(41, 20, focusRadius)
+	if frame[left] != '┃' || frame[right] != '┃' {
+		t.Fatalf("expected peak-hold accents at the centroid focus, got %q", string(frame))
+	}
+}
+
+func TestWaveSoundUsesAudioFeaturesAndOnsetBreakers(t *testing.T) {
+	audio := audioSnapshot{
+		Active:     true,
+		Level:      0.65,
+		Bass:       0.8,
+		LowMid:     0.55,
+		HighMid:    1,
+		Treble:     1,
+		OnsetCount: 1,
+	}
+	audio.Onsets[0] = audioOnset{
+		ID:       7,
+		Age:      150 * time.Millisecond,
+		Strength: 1,
+		Region:   audioRegionGeneral,
+		Position: 0.8,
+	}
+	frame := waveSoundArtWithSnapshot(80, 31, audio)
+	if !strings.ContainsAny(frame, "◜◝◞◟╱╲") {
+		t.Fatalf("expected a breaker from the recent onset, got %q", frame)
+	}
+	if !strings.ContainsRune(frame, '•') {
+		t.Fatalf("expected bounded treble spray over high-mid foam, got %q", frame)
+	}
+
+	withoutOnset := audio
+	withoutOnset.OnsetCount = 0
+	withoutOnset.Onsets = [audioEventCapacity]audioOnset{}
+	if calm := waveSoundArtWithSnapshot(80, 31, withoutOnset); calm == frame {
+		t.Fatal("recent onset must change the wave without renderer-owned state")
+	}
+	if repeated := waveSoundArtWithSnapshot(80, 31, audio); repeated != frame {
+		t.Fatal("fixed phase and audio snapshot must render deterministically")
+	}
+}
+
+func TestWaveSoundBreakerDirectionFollowsStereoPosition(t *testing.T) {
+	rightward := audioOnset{
+		ID:       1,
+		Strength: 1,
+		Region:   audioRegionGeneral,
+		Position: 0.8,
+	}
+	leftward := rightward
+	leftward.Position = -0.8
+
+	rightward.Age = 150 * time.Millisecond
+	rightStart, _, ok := waveSoundBreaker(80, rightward)
+	if !ok {
+		t.Fatal("expected a live rightward breaker")
+	}
+	rightward.Age = 600 * time.Millisecond
+	rightEnd, _, _ := waveSoundBreaker(80, rightward)
+	if rightEnd <= rightStart {
+		t.Fatalf("positive stereo position must travel right: start=%.2f end=%.2f", rightStart, rightEnd)
+	}
+
+	leftward.Age = 150 * time.Millisecond
+	leftStart, _, ok := waveSoundBreaker(80, leftward)
+	if !ok {
+		t.Fatal("expected a live leftward breaker")
+	}
+	leftward.Age = 600 * time.Millisecond
+	leftEnd, _, _ := waveSoundBreaker(80, leftward)
+	if leftEnd >= leftStart {
+		t.Fatalf("negative stereo position must travel left: start=%.2f end=%.2f", leftStart, leftEnd)
+	}
+	if _, _, live := waveSoundBreaker(80, audioOnset{
+		Age:      time.Second,
+		Strength: 1,
+		Region:   audioRegionGeneral,
+	}); live {
+		t.Fatal("expired breaker motion must not survive in the renderer")
+	}
+}
+
+func TestWaveSoundSilenceIsASmallContinuousTide(t *testing.T) {
+	frames := map[string]bool{}
+	for _, phase := range []int{0, 47, 113, 229} {
+		frame := waveSoundArtWithSnapshot(80, phase, audioSnapshot{})
+		if !strings.ContainsAny(frame, "▁▂▃") || !strings.ContainsAny(frame, "◜╲") {
+			t.Fatalf("expected a recognizable low-energy tide, got %q", frame)
+		}
+		frames[frame] = true
+	}
+	if len(frames) < 2 {
+		t.Fatalf("silent tide must keep slow organic motion, got %v", frames)
+	}
+}
+
 func TestAudioMotionScalesVisualSnapshot(t *testing.T) {
 	snapshot := audioSnapshot{
 		Active:       true,
@@ -663,14 +811,21 @@ func TestAudioPresetActivationIsScoped(t *testing.T) {
 		rotationPresets = originalRotation
 	})
 
-	if !presetUsesAudio("aurora_sound") || presetUsesAudio("aurora") {
-		t.Fatal("expected only aurora_sound to request audio directly")
+	for _, name := range []string{"aurora_sound", "spectrum_sound", "wave_sound"} {
+		if !presetUsesAudio(name) {
+			t.Fatalf("expected %s to request audio directly", name)
+		}
 	}
-	rotationPresets = []string{"aurora", "aurora_sound"}
+	for _, name := range []string{"aurora", "spectrum", "wave"} {
+		if presetUsesAudio(name) {
+			t.Fatalf("base preset %s must not request audio", name)
+		}
+	}
+	rotationPresets = []string{"aurora", "wave_sound"}
 	if !presetUsesAudio(rotationSelection) {
-		t.Fatal("expected a rotation containing aurora_sound to request audio")
+		t.Fatal("expected a rotation containing a sound companion to request audio")
 	}
-	if !presetListUsesAudio([]string{"aurora", "aurora_sound"}) ||
+	if !presetListUsesAudio([]string{"aurora", "spectrum_sound"}) ||
 		presetListUsesAudio([]string{"aurora", "square"}) {
 		t.Fatal("unexpected preview audio activation")
 	}

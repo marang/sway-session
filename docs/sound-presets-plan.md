@@ -3,9 +3,9 @@
 Status: Accepted design; the unnamed default rotation, startup audio
 configuration, backend-neutral capture seam, 48 kHz stereo continuous feature
 analysis, normalization/reconnect warm-up, bounded onset events,
-`aurora_sound`, and the scrollable Bubble Tea preview foundation are
-implemented. The remaining companions, diagnostics, and expanded preview
-modes are planned.
+`aurora_sound`, `spectrum_sound`, `wave_sound`, and the scrollable Bubble Tea
+preview foundation are implemented. The remaining companions, diagnostics,
+and expanded preview modes are planned.
 
 Linear project:
 [Sway Title Animator | P001 | Sound-Reactive Presets](https://linear.app/riotbox/project/sway-title-animator-or-p001-or-sound-reactive-presets-e8a4308a9902)
@@ -257,7 +257,7 @@ presets that look effectively identical.
 - Strong band peaks become `╿`; extreme peaks become `┃`.
 - Silence becomes a continuous `▁` baseline.
 
-### `spectrum_sound`
+### `spectrum_sound` — implemented
 
 - Preserve the mirrored spectrum and its enclosing brackets.
 - Map bass to the outer bars, mids toward the inner bars, and treble to the
@@ -332,7 +332,7 @@ presets that look effectively identical.
 - Stereo balance biases where new faces enter.
 - Silence keeps one relaxed face drifting slowly.
 
-### `wave_sound`
+### `wave_sound` — implemented
 
 - Bass controls swell height and wavelength.
 - Low mids shape the body of the wave; high mids generate foam.
@@ -420,11 +420,9 @@ presets that look effectively identical.
    format, continuous features, time-based smoothing, and stereo fixtures are
    implemented in LAB-33; normalization and reconnect warm-up are implemented
    in LAB-43; event features are implemented in LAB-44.
-3. Replace the preview plumbing with Bubble Tea and implement the four planned
-   preview modes, manual viewport, status hint, and grouped preset listing.
-4. Deliver sound companions in reviewable PRs of no more than two related
+3. Deliver sound companions in reviewable PRs of no more than two related
    presets:
-   - `spectrum_sound` and `wave_sound`;
+   - `spectrum_sound` and `wave_sound` — implemented in LAB-46;
    - `square_sound` and `ripples_sound`;
    - `radar_sound` and `shutter_sound`;
    - `comet_sound` and `bloom_sound`;
@@ -432,6 +430,9 @@ presets that look effectively identical.
    - `braid_sound` and `loom_sound`;
    - `spline_sound` and `ribbon_sound`; and
    - `smileys_sound` and `glitch_sound`.
+4. After all sound companions are implemented, expand the Bubble Tea preview
+   with the four planned preview modes, manual viewport, status hint, and
+   grouped preset listing. Interactive browser work remains tracked in LAB-28.
 5. Profile and tune the complete set without changing the accepted behavioral
    contract. Sound companions remain explicit `[rotation]` opt-ins.
 

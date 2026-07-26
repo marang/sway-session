@@ -8,7 +8,6 @@ import (
 	"math"
 	"os"
 	"os/exec"
-	"slices"
 	"sync"
 	"time"
 )
@@ -832,15 +831,20 @@ func fft(realValues []float64, imaginaryValues []float64) {
 }
 
 func presetUsesAudio(name string) bool {
-	if name == "aurora_sound" {
+	if isSoundPreset(name) {
 		return true
 	}
 	if name != rotationSelection {
 		return false
 	}
-	return slices.Contains(rotationPresets, "aurora_sound")
+	return presetListUsesAudio(rotationPresets)
 }
 
 func presetListUsesAudio(names []string) bool {
-	return slices.Contains(names, "aurora_sound")
+	for _, name := range names {
+		if isSoundPreset(name) {
+			return true
+		}
+	}
+	return false
 }

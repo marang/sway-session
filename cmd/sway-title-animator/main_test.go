@@ -322,9 +322,11 @@ func TestAnimationFrameKeyKeepsAudioPresetAtFullFPS(t *testing.T) {
 		animationPreset = originalPreset
 	})
 
-	animationPreset = "aurora_sound"
-	if frames := framesUntilNextAnimationKey(1); frames != 1 {
-		t.Fatalf("expected sound-reactive frames to run at full fps, got %d", frames)
+	for _, name := range []string{"aurora_sound", "spectrum_sound", "wave_sound"} {
+		animationPreset = name
+		if frames := framesUntilNextAnimationKey(1); frames != 1 {
+			t.Fatalf("expected %s frames to run at full fps, got %d", name, frames)
+		}
 	}
 }
 

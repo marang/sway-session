@@ -4,6 +4,7 @@ import (
 	"math"
 	"slices"
 	"strings"
+	"time"
 )
 
 type squareSegment uint8
@@ -218,6 +219,221 @@ func auroraSoundArtWithSnapshot(width int, _ int, audio audioSnapshot) string {
 		}
 	}
 	return string(chars)
+}
+
+func spectrumSoundArt(width int, phase int) string {
+	return spectrumSoundArtWithSnapshot(
+		width,
+		phase,
+		scaleAudioSnapshot(currentAudioSnapshot(), audioSettings.Motion),
+	)
+}
+
+func spectrumSoundArtWithSnapshot(width int, phase int, audio audioSnapshot) string {
+	width = artWidth(width)
+	if width == 0 {
+		return ""
+	}
+	if width < 8 {
+		return spectrumSoundSmallArt(width, phase, audio)
+	}
+
+	chars := make([]rune, width)
+	for index := range chars {
+		chars[index] = '·'
+	}
+	chars[0] = '⟨'
+	chars[width-1] = '⟩'
+	center := width / 2
+	centerLeft := center
+	if width%2 == 0 {
+		centerLeft--
+	}
+	for index := centerLeft; index <= center; index++ {
+		chars[index] = '┃'
+	}
+
+	maxRadius := max(1, min(centerLeft-1, width-center-2))
+	if !audio.Active {
+		idlePhase := float64(phase)*0.055 +
+			signedOrganicNoise("spectrum_sound", 2, float64(phase)/83)*1.1
+		breath := 0.5 + 0.5*math.Sin(idlePhase)
+		pulseRadius := 1 + int(math.Round(breath*float64(min(3, maxRadius-1))))
+		for radius := 1; radius <= maxRadius; radius++ {
+			left, right := spectrumPairPositions(width, center, radius)
+			if radius == pulseRadius {
+				chars[left], chars[right] = '━', '━'
+			} else if math.Abs(float64(radius-pulseRadius)) <= 1 {
+				chars[left], chars[right] = '─', '─'
+			}
+		}
+		return string(chars)
+	}
+
+	focusRadius := 1 + int(math.Round((1-audio.Centroid)*float64(max(1, maxRadius-1))))
+	organicPhase := float64(phase)*0.025 + signedOrganicNoise("spectrum_sound", 1, float64(phase)/91)*0.5
+	for radius := 1; radius <= maxRadius; radius++ {
+		left, right := spectrumPairPositions(width, center, radius)
+		radialPosition := float64(radius-1) / float64(max(1, maxRadius-1))
+		bandPosition := (1 - radialPosition) * float64(audioBandCount-1)
+		energy := interpolatedAudioBand(audio.Bands, bandPosition)
+		organic := 0.5 + 0.5*math.Sin(float64(radius)*0.31+organicPhase)
+		focus := math.Exp(-math.Pow(float64(radius-focusRadius)/math.Max(1.5, float64(maxRadius)*0.08), 2))
+		level := energy*0.75 + audio.Level*0.10 + organic*0.08 + focus*audio.Peak*0.07
+		level = math.Max(0, math.Min(1, level))
+
+		glyph := rampPick(spectrumBars, level)
+		switch {
+		case level < 0.16:
+			glyph = '·'
+		case level < 0.30:
+			glyph = '─'
+		case level < 0.48:
+			glyph = '━'
+		}
+		chars[left], chars[right] = glyph, glyph
+	}
+	if audio.Peak >= 0.58 {
+		left, right := spectrumPairPositions(width, center, min(maxRadius, focusRadius))
+		chars[left], chars[right] = '┃', '┃'
+	}
+	return string(chars)
+}
+
+func spectrumSoundSmallArt(width int, phase int, audio audioSnapshot) string {
+	chars := make([]rune, width)
+	level := audio.Level
+	if !audio.Active {
+		level = 0.18 + 0.08*(0.5+0.5*math.Sin(float64(phase)*0.055))
+	}
+	for index := range chars {
+		chars[index] = rampPick(spectrumBars, level)
+	}
+	center := width / 2
+	chars[center] = '┃'
+	if width%2 == 0 {
+		chars[center-1] = '┃'
+	}
+	if width >= 3 {
+		chars[0], chars[width-1] = '⟨', '⟩'
+	}
+	return string(chars)
+}
+
+func spectrumPairPositions(width int, center int, radius int) (int, int) {
+	left := center - radius
+	right := center + radius
+	if width%2 == 0 {
+		left--
+	}
+	return left, right
+}
+
+func waveSoundArt(width int, phase int) string {
+	return waveSoundArtWithSnapshot(
+		width,
+		phase,
+		scaleAudioSnapshot(currentAudioSnapshot(), audioSettings.Motion),
+	)
+}
+
+func waveSoundArtWithSnapshot(width int, phase int, audio audioSnapshot) string {
+	width = artWidth(width)
+	if width == 0 {
+		return ""
+	}
+
+	chars := make([]rune, width)
+	slowPhase := float64(phase)*0.045 + signedOrganicNoise("wave_sound", 1, float64(phase)/97)*0.45
+	if !audio.Active {
+		for index := range chars {
+			tide := 0.5 + 0.5*math.Sin(float64(index)*0.16-slowPhase)
+			switch {
+			case tide > 0.94:
+				chars[index] = '◜'
+			case tide > 0.78:
+				chars[index] = '╲'
+			case tide > 0.58:
+				chars[index] = '▃'
+			case tide > 0.34:
+				chars[index] = '▂'
+			default:
+				chars[index] = '▁'
+			}
+		}
+		return string(chars)
+	}
+
+	waveNumber := 0.17 - audio.Bass*0.085
+	swellHeight := 0.18 + audio.Bass*0.46
+	body := 0.08 + audio.LowMid*0.24
+	foamAmount := audio.HighMid
+	sprayAmount := audio.Treble
+	for index := range chars {
+		x := float64(index)
+		swell := 0.5 + 0.5*math.Sin(x*waveNumber-slowPhase*(0.7+audio.Bass*0.5))
+		backwash := 0.5 + 0.5*math.Sin(x*waveNumber*0.43+slowPhase*0.38+1.7)
+		level := 0.06 + swell*swellHeight + backwash*body
+
+		breaker := 0.0
+		for onsetIndex := 0; onsetIndex < min(audio.OnsetCount, len(audio.Onsets)); onsetIndex++ {
+			onset := audio.Onsets[onsetIndex]
+			center, envelope, ok := waveSoundBreaker(width, onset)
+			if !ok {
+				continue
+			}
+			spread := 2.8 + onset.Strength*4.2
+			breaker = math.Max(
+				breaker,
+				envelope*math.Exp(-math.Pow((x-center)/spread, 2)),
+			)
+		}
+
+		foam := foamAmount * math.Max(0, math.Sin(x*waveNumber-slowPhase+0.65))
+		spray := sprayAmount * math.Max(0, math.Sin(x*0.71+slowPhase*1.8))
+		switch {
+		case breaker > 0.78:
+			chars[index] = []rune("◜◝◞◟")[(phase/3+index)%4]
+		case breaker > 0.46:
+			if (index+phase)%2 == 0 {
+				chars[index] = '╱'
+			} else {
+				chars[index] = '╲'
+			}
+		case spray > 0.72 && foam > 0.32:
+			chars[index] = '•'
+		case foam > 0.55 && level > 0.42:
+			chars[index] = '≈'
+		default:
+			chars[index] = rampPick(spectrumBars, math.Min(1, level+breaker*0.38))
+		}
+	}
+	return string(chars)
+}
+
+func waveSoundBreaker(width int, onset audioOnset) (float64, float64, bool) {
+	if width <= 0 || onset.Region != audioRegionGeneral || onset.Age < 0 {
+		return 0, 0, false
+	}
+	const lifetime = 950 * time.Millisecond
+	if onset.Age >= lifetime {
+		return 0, 0, false
+	}
+	progress := float64(onset.Age) / float64(lifetime)
+	direction := onset.Position
+	if math.Abs(direction) < 0.05 {
+		if onset.ID%2 == 0 {
+			direction = -1
+		} else {
+			direction = 1
+		}
+	}
+	center := progress * float64(max(0, width-1))
+	if direction < 0 {
+		center = float64(width-1) - center
+	}
+	envelope := onset.Strength * (1 - smoothstep(progress))
+	return center, envelope, true
 }
 
 func scaleAudioSnapshot(snapshot audioSnapshot, scale float64) audioSnapshot {

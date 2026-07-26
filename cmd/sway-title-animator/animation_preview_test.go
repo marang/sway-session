@@ -90,6 +90,25 @@ func TestDefaultRotationOrderIncludesNewPresets(t *testing.T) {
 	}
 }
 
+func TestSoundPresetRegistryMatchesRegisteredCompanions(t *testing.T) {
+	for name := range soundPresetNames {
+		if !strings.HasSuffix(name, "_sound") {
+			t.Fatalf("sound preset %q must use the _sound suffix", name)
+		}
+		if _, ok := animationPresets[name]; !ok {
+			t.Fatalf("sound preset %q is not registered", name)
+		}
+		if slices.Contains(rotationPresets, name) {
+			t.Fatalf("sound preset %q must remain opt-in", name)
+		}
+	}
+	for name := range animationPresets {
+		if strings.HasSuffix(name, "_sound") && !isSoundPreset(name) {
+			t.Fatalf("registered sound companion %q is missing from the audio registry", name)
+		}
+	}
+}
+
 func TestAllBuiltInAnimationsAreBoundedAndMove(t *testing.T) {
 	originalSeed := animationSeed
 	animationSeed = 0x123456789abcdef
@@ -467,7 +486,9 @@ func TestBuiltInPresetsMaintainDistinctVisualLanguages(t *testing.T) {
 	}
 
 	allowedSimilarity := map[string]bool{
-		"aurora|aurora_sound": true,
+		"aurora|aurora_sound":     true,
+		"spectrum|spectrum_sound": true,
+		"wave|wave_sound":         true,
 	}
 	strictPairs := map[string]bool{
 		"braid|square":   true,

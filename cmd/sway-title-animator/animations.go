@@ -680,24 +680,36 @@ func splineArt(width int, phase int) string {
 type animationFunc func(width int, phase int) string
 
 var animationPresets = map[string]animationFunc{
-	"aurora":        auroraArt,
-	"aurora_sound":  auroraSoundArt,
-	"spectrum":      spectrumArt,
-	"radar":         radarArt,
-	"constellation": constellationArt,
-	"circuit":       circuitArt,
-	"braid":         braidArt,
-	"loom":          loomArt,
-	"comet":         cometArt,
-	"smileys":       smileysArt,
-	"wave":          waveArt,
-	"spline":        splineArt,
-	"square":        squareArt,
-	"ripples":       ripplesArt,
-	"bloom":         bloomArt,
-	"glitch":        glitchArt,
-	"ribbon":        ribbonArt,
-	"shutter":       shutterArt,
+	"aurora":         auroraArt,
+	"aurora_sound":   auroraSoundArt,
+	"spectrum":       spectrumArt,
+	"spectrum_sound": spectrumSoundArt,
+	"radar":          radarArt,
+	"constellation":  constellationArt,
+	"circuit":        circuitArt,
+	"braid":          braidArt,
+	"loom":           loomArt,
+	"comet":          cometArt,
+	"smileys":        smileysArt,
+	"wave":           waveArt,
+	"wave_sound":     waveSoundArt,
+	"spline":         splineArt,
+	"square":         squareArt,
+	"ripples":        ripplesArt,
+	"bloom":          bloomArt,
+	"glitch":         glitchArt,
+	"ribbon":         ribbonArt,
+	"shutter":        shutterArt,
+}
+
+var soundPresetNames = map[string]bool{
+	"aurora_sound":   true,
+	"spectrum_sound": true,
+	"wave_sound":     true,
+}
+
+func isSoundPreset(name string) bool {
+	return soundPresetNames[name]
 }
 
 var rotationPresets = []string{
@@ -745,7 +757,7 @@ func activityArt(width int, phase int) string {
 
 func animationFrameKey(phase int) int {
 	if animationPreset != rotationSelection {
-		if animationPreset == "aurora_sound" {
+		if isSoundPreset(animationPreset) {
 			return phase
 		}
 		return motionPhase(phase)
@@ -754,9 +766,9 @@ func animationFrameKey(phase int) int {
 	presetIndex := (phase / cycleFrames) % len(rotationPresets)
 	offset := phase % cycleFrames
 	preset := rotationPresets[presetIndex]
-	if preset == "aurora_sound" ||
+	if isSoundPreset(preset) ||
 		(offset >= settings.RotationHoldFrames &&
-			rotationPresets[(presetIndex+1)%len(rotationPresets)] == "aurora_sound") {
+			isSoundPreset(rotationPresets[(presetIndex+1)%len(rotationPresets)])) {
 		return 20_000_000 + phase
 	}
 	if offset < settings.RotationHoldFrames {

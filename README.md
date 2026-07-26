@@ -23,6 +23,7 @@ aurora_sound   ▁▁▂▃▇╿▅▂▁▆┃▃▁
 loom           ░▒≈⌁≋░▒▓✦▓▒░≋⌁≈▒░
 bloom          ──⌁──❧─⌁──✦
 spectrum       ·─━▆⟨▇█▇▆━┃━▆▇█▇⟩▆━─·
+spectrum_sound ⟨·─━▆▇┃▇▆━─·┃·─━▆▇┃▇▆━─·⟩
 square         ⎺⎺⎤⎽⎽⎽⎽⎽⎡⎺⎺⎺⎺⎤⎽⎽⎡
 ripples        ·  ╴─═●═─╶
 radar          ╶◜╴──┄──═●═──┄──╋──┄──
@@ -35,6 +36,7 @@ shutter        ███▶░│     │░◀███
 comet          ░░▒▒▓▓✶☄▓▒░░··░▒✦
 smileys        ｡･ʕ•ᴥ•ʔっ･ﾟ
 wave           ▁▃▅▇█◜╲▅▃▁
+wave_sound     ▁▂▃╲◜╱▇≈•▃▂▁
 spline         ⢀⣠⠤⠒⠉⠢⣀  ✦
 ```
 
@@ -48,6 +50,13 @@ frequency bands from the current default audio output. It reads
 falls back to a straight `▁` bottom line when no sound or monitor is available.
 Strong peaks use `╿`; extreme peaks use `┃`. It is opt-in and is not part of
 the default rotation.
+
+`spectrum_sound` keeps Spectrum's mirrored instrument display, arranging bass
+toward the outside and treble near the center. `wave_sound` maps bass and mids
+to the swell and body of the wave, adds bounded treble spray, and sends a
+breaker across the trace when an onset arrives. Their silent forms continue as
+a narrow symmetric pulse and a small tide. Like all sound companions, both are
+opt-in and stay out of the default rotation.
 
 Sound-reactive presets require the `parec` command. Install the PulseAudio
 command-line utilities for your distribution (`libpulse` on Arch Linux,
@@ -126,9 +135,11 @@ Run a single preset:
 ```sh
 sway-title-animator --replace --preset aurora --fps 25
 sway-title-animator --replace --preset aurora_sound --fps 25
+sway-title-animator --replace --preset spectrum_sound --fps 25
 sway-title-animator --replace --preset radar --fps 25
 sway-title-animator --replace --preset comet --fps 25
 sway-title-animator --replace --preset wave --fps 25
+sway-title-animator --replace --preset wave_sound --fps 25
 sway-title-animator --replace --preset spline --fps 25
 sway-title-animator --replace --preset smileys --fps 25
 sway-title-animator --replace --preset square --fps 25

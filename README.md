@@ -208,7 +208,9 @@ adjusts captured signal gain and `motion` adjusts the global visual response;
 both accept values greater than `0` through `10`. There is no backend setting:
 `parec` is currently the single production capture backend. Capture uses
 48 kHz stereo PCM; the shared analyzer retains left/right balance while
-providing 32 frequency bands and aggregate bass-to-treble features.
+providing 32 frequency bands and aggregate bass-to-treble features. Gentle
+automatic gain normalization adapts across sources, while a short reconnect
+warm-up prevents startup spikes.
 
 Run with a specific config:
 

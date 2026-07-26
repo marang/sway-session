@@ -14,15 +14,19 @@ import (
 )
 
 const (
-	audioBandCount    = 32
-	audioBlockSize    = 2048
-	audioHopSize      = 1024
-	audioSampleRate   = 48_000
-	audioChannelCount = 2
-	audioAttack       = 100 * time.Millisecond
-	audioRelease      = 320 * time.Millisecond
-	audioStaleAfter   = 300 * time.Millisecond
-	audioRetryDelay   = 1500 * time.Millisecond
+	audioBandCount     = 32
+	audioBlockSize     = 2048
+	audioHopSize       = 1024
+	audioSampleRate    = 48_000
+	audioChannelCount  = 2
+	audioAttack        = 100 * time.Millisecond
+	audioRelease       = 320 * time.Millisecond
+	audioWarmup        = 400 * time.Millisecond
+	audioWarmupBlend   = 200 * time.Millisecond
+	audioNormalizeUp   = 2 * time.Second
+	audioNormalizeDown = 8 * time.Second
+	audioStaleAfter    = 300 * time.Millisecond
+	audioRetryDelay    = 1500 * time.Millisecond
 )
 
 type audioSnapshot struct {
@@ -66,6 +70,8 @@ type audioMeter struct {
 	rightLevel        float64
 	balance           float64
 	sensitivity       float64
+	normalizationRef  float64
+	captureStarted    time.Time
 	lastUpdate        time.Time
 	revision          uint64
 	visualFingerprint uint64
@@ -258,6 +264,14 @@ func (meter *audioMeter) updateStereo(left []int16, right []int16, now time.Time
 	if sensitivity <= 0 {
 		sensitivity = defaultAudioSensitivity
 	}
+	elapsed := time.Second * audioHopSize / audioSampleRate
+	if !meter.lastUpdate.IsZero() && now.After(meter.lastUpdate) {
+		elapsed = now.Sub(meter.lastUpdate)
+	}
+	if meter.captureStarted.IsZero() {
+		meter.captureStarted = now
+	}
+	meter.updateNormalization(target.Level, elapsed)
 	for index, value := range target.Bands {
 		target.Bands[index] = math.Min(1, value*sensitivity)
 	}
@@ -268,11 +282,12 @@ func (meter *audioMeter) updateStereo(left []int16, right []int16, now time.Time
 	target.Treble = math.Min(1, target.Treble*sensitivity)
 	target.LeftLevel = math.Min(1, target.LeftLevel*sensitivity)
 	target.RightLevel = math.Min(1, target.RightLevel*sensitivity)
-
-	elapsed := time.Second * audioHopSize / audioSampleRate
-	if !meter.lastUpdate.IsZero() && now.After(meter.lastUpdate) {
-		elapsed = now.Sub(meter.lastUpdate)
-	}
+	gain := meter.normalizationGain()
+	scaleAudioEnergy(&target, gain)
+	warmupScale := math.Max(0, math.Min(1,
+		float64(now.Sub(meter.captureStarted)-audioWarmup)/float64(audioWarmupBlend),
+	))
+	scaleAudioAnalysis(&target, warmupScale)
 	for index, value := range target.Bands {
 		meter.bands[index] = smoothAudioValue(meter.bands[index], value, elapsed)
 	}
@@ -300,10 +315,14 @@ func (meter *audioMeter) setSensitivity(sensitivity float64) {
 }
 
 func (meter *audioMeter) snapshot() audioSnapshot {
+	return meter.snapshotAt(time.Now())
+}
+
+func (meter *audioMeter) snapshotAt(now time.Time) audioSnapshot {
 	meter.mu.RLock()
 	defer meter.mu.RUnlock()
 
-	if meter.lastUpdate.IsZero() || time.Since(meter.lastUpdate) > audioStaleAfter {
+	if meter.lastUpdate.IsZero() || now.Sub(meter.lastUpdate) > audioStaleAfter {
 		return audioSnapshot{Revision: meter.revision}
 	}
 	return audioSnapshot{
@@ -335,11 +354,55 @@ func (meter *audioMeter) clear() {
 	meter.leftLevel = 0
 	meter.rightLevel = 0
 	meter.balance = 0
+	meter.normalizationRef = 0
+	meter.captureStarted = time.Time{}
 	meter.lastUpdate = time.Time{}
 	if meter.visualFingerprint != 0 {
 		meter.visualFingerprint = 0
 		meter.revision++
 	}
+}
+
+func (meter *audioMeter) updateNormalization(level float64, elapsed time.Duration) {
+	if level < 0.005 {
+		return
+	}
+	if meter.normalizationRef == 0 {
+		meter.normalizationRef = level
+		return
+	}
+	tau := audioNormalizeDown
+	if level > meter.normalizationRef {
+		tau = audioNormalizeUp
+	}
+	factor := 1 - math.Exp(-float64(max(elapsed, time.Millisecond))/float64(tau))
+	meter.normalizationRef += (level - meter.normalizationRef) * factor
+}
+
+func (meter *audioMeter) normalizationGain() float64 {
+	if meter.normalizationRef <= 0 {
+		return 1
+	}
+	return math.Max(0.5, math.Min(4, 0.55/meter.normalizationRef))
+}
+
+func scaleAudioAnalysis(analysis *audioAnalysis, scale float64) {
+	scaleAudioEnergy(analysis, scale)
+	analysis.Centroid *= scale
+	analysis.Balance *= scale
+}
+
+func scaleAudioEnergy(analysis *audioAnalysis, scale float64) {
+	for index := range analysis.Bands {
+		analysis.Bands[index] = math.Min(1, analysis.Bands[index]*scale)
+	}
+	analysis.Level = math.Min(1, analysis.Level*scale)
+	analysis.Bass = math.Min(1, analysis.Bass*scale)
+	analysis.LowMid = math.Min(1, analysis.LowMid*scale)
+	analysis.HighMid = math.Min(1, analysis.HighMid*scale)
+	analysis.Treble = math.Min(1, analysis.Treble*scale)
+	analysis.LeftLevel = math.Min(1, analysis.LeftLevel*scale)
+	analysis.RightLevel = math.Min(1, analysis.RightLevel*scale)
 }
 
 func analyzeAudioBlock(samples []int16) ([audioBandCount]float64, float64) {

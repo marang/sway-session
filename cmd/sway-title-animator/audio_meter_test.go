@@ -180,6 +180,7 @@ func TestAudioConsumeBuildsOverlappingAnalysisWindow(t *testing.T) {
 	encoded := bytes.NewReader(encodeStereoSamples(samples, samples))
 
 	var meter audioMeter
+	skipAudioWarmup(&meter)
 	if err := meter.consume(&limitedReader{reader: encoded, limit: 7}); !errors.Is(err, io.EOF) {
 		t.Fatalf("expected end of finite test stream, got %v", err)
 	}
@@ -254,6 +255,7 @@ func TestAnalyzeStereoAudioExposesRegionsAndBalance(t *testing.T) {
 func TestAudioMeterAttacksQuicklyAndReleasesSmoothly(t *testing.T) {
 	var meter audioMeter
 	now := time.Now()
+	meter.captureStarted = now.Add(-audioWarmup - audioWarmupBlend)
 	meter.update(sineSamples(880, 0.4), now)
 	active := meter.snapshot()
 	if !active.Active || active.Level <= 0.05 || active.Revision != 1 {
@@ -280,6 +282,8 @@ func TestAudioSmoothingDependsOnElapsedTimeNotUpdateCount(t *testing.T) {
 	start := time.Now()
 	var frequent audioMeter
 	var sparse audioMeter
+	frequent.captureStarted = start.Add(-audioWarmup - audioWarmupBlend)
+	sparse.captureStarted = start.Add(-audioWarmup - audioWarmupBlend)
 	frequent.update(silence, start)
 	sparse.update(silence, start)
 
@@ -297,6 +301,7 @@ func TestAudioRevisionChangesOnlyForMaterialVisualState(t *testing.T) {
 	silence := make([]int16, audioBlockSize)
 	now := time.Now()
 	var meter audioMeter
+	meter.captureStarted = now.Add(-audioWarmup - audioWarmupBlend)
 	meter.update(silence, now)
 	first := meter.snapshot().Revision
 	meter.update(silence, now.Add(20*time.Millisecond))
@@ -311,13 +316,64 @@ func TestAudioRevisionChangesOnlyForMaterialVisualState(t *testing.T) {
 	}
 }
 
+func TestAudioWarmupStaysCalmThenBlendsIn(t *testing.T) {
+	tone := sineSamples(440, 0.3)
+	start := time.Now()
+	var meter audioMeter
+	meter.update(tone, start)
+	if snapshot := meter.snapshotAt(start); snapshot.Active || snapshot.Level != 0 {
+		t.Fatalf("warm-up must expose a calm snapshot: %+v", snapshot)
+	}
+
+	midpoint := start.Add(audioWarmup + audioWarmupBlend/2)
+	meter.update(tone, midpoint)
+	mid := meter.snapshotAt(midpoint)
+	if mid.Level <= 0 {
+		t.Fatalf("warm-up blend should begin gradually: %+v", mid)
+	}
+	end := start.Add(audioWarmup + audioWarmupBlend)
+	meter.update(tone, end)
+	if full := meter.snapshotAt(end); full.Level <= mid.Level || !full.Active {
+		t.Fatalf("expected completed warm-up response, mid=%+v full=%+v", mid, full)
+	}
+}
+
+func TestAudioNormalizationIsBoundedAndResetsWithCapture(t *testing.T) {
+	var meter audioMeter
+	meter.normalizationRef = 0.01
+	if gain := meter.normalizationGain(); gain != 4 {
+		t.Fatalf("expected bounded maximum gain, got %.3f", gain)
+	}
+	meter.normalizationRef = 2
+	if gain := meter.normalizationGain(); gain != 0.5 {
+		t.Fatalf("expected bounded minimum gain, got %.3f", gain)
+	}
+	meter.captureStarted = time.Now()
+	meter.clear()
+	if meter.normalizationRef != 0 || !meter.captureStarted.IsZero() {
+		t.Fatalf("capture reset must clear normalization and warm-up state")
+	}
+}
+
+func TestAudioNormalizationAdaptsSlowerThanVisualRelease(t *testing.T) {
+	var meter audioMeter
+	meter.normalizationRef = 0.8
+	elapsed := audioRelease
+	meter.updateNormalization(0.2, elapsed)
+	if meter.normalizationRef <= 0.7 {
+		t.Fatalf("normalization adapted too quickly: %.3f", meter.normalizationRef)
+	}
+}
+
 func TestAudioSensitivityScalesAnalyzedEnergy(t *testing.T) {
 	samples := sineSamples(880, 0.04)
 	now := time.Now()
 	var normal audioMeter
+	normal.captureStarted = now.Add(-audioWarmup - audioWarmupBlend)
 	normal.setSensitivity(1)
 	normal.update(samples, now)
 	var boosted audioMeter
+	boosted.captureStarted = now.Add(-audioWarmup - audioWarmupBlend)
 	boosted.setSensitivity(2)
 	boosted.update(samples, now)
 
@@ -429,6 +485,10 @@ func encodeStereoSamples(left []int16, right []int16) []byte {
 		_ = binary.Write(&encoded, binary.LittleEndian, right[index])
 	}
 	return encoded.Bytes()
+}
+
+func skipAudioWarmup(meter *audioMeter) {
+	meter.captureStarted = time.Now().Add(-audioWarmup - audioWarmupBlend)
 }
 
 func strongestAudioBand(bands [audioBandCount]float64) int {

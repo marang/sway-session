@@ -19,7 +19,7 @@ Built-in animation presets:
 
 ```text
 aurora         ▁▂▃▄▅▆▇█▇▆▅▄▃▂▁
-aurora_sound   ▁▁▂▃▇╿▅▂▁▆┃▃▁
+aurora_sound   ▇▆▅▄▃▂▁▁▂▃▅▇█
 loom           ░▒≈⌁≋░▒▓✦▓▒░≋⌁≈▒░
 loom_sound     ▒⌁≋≈▒░▒⌁≋≈▒░
 bloom          ──⌁──❧─⌁──✦
@@ -29,27 +29,27 @@ spectrum_sound ⟨·─━▆▇┃▇▆━─·┃·─━▆▇┃▇▆━�
 square         ⎺⎺⎤⎽⎽⎽⎽⎽⎡⎺⎺⎺⎺⎤⎽⎽⎡
 square_sound   ⎺⎺⎺⎤⎽⎽⎽⎽⎽⎡⎺⎺⎺⎤⎽⎽⎽⎡
 ripples        ·  ╴─═●═─╶
-ripples_sound      ╴─═●═─╶
+ripples_sound      ╴─═◉═─╶
 radar          ╶◜╴──┄──═●═──┄──╋──┄──
-radar_sound    ┄──═◜═──┄──◆──┄──╋
+radar_sound    ╋──┄──═◜═──┄◆──╋──┄
 constellation       ·   ✦      •    ✧
-constellation_sound ·  •    ✦       ·
+constellation_sound · ●•  ✦   ●   • ·
 circuit        ─╍──╪──═●═──╍──╼╾───
 circuit_sound  ───╾╪╼───═●═────
 glitch         ───╍╪▒▓╳──┄──
 glitch_sound   ─────┄──░▒▓╳────
 braid          ╱╱╱╳╲╲╲╳╱╱╱╳╲╲╲
 braid_sound    ╱╱╳╲╲╲╱✦╱╳╲╲
-ribbon         ·░▒▓██▓▒░··░▒▓█▓▒░·
-ribbon_sound   ░▒▓█▓▒░·░▒▓✦▓▒░
-shutter        ███▶░│     │░◀███
-shutter_sound  ▒▓█›      ┆      ‹█▓▒
+ribbon         ·░▒▓◐▓▒░··◑▒▓█◒▒░·
+ribbon_sound   ░▒▓█◐▒░·░◑▓✦▓◒░
+shutter        ▓▷▒│░▶  ·┆·  ◀░│▒◁▓
+shutter_sound  ▒▷▓▶ · │ ┃ │ · ◀▓◁▒
 comet          ░░▒▒▓▓✶☄▓▒░░··░▒✦
-comet_sound    ···░▒▓☄      ∙
+comet_sound    ·●•░▒▓☄  •   ●∙
 smileys        ｡･ʕ•ᴥ•ʔっ･ﾟ
-smileys_sound  ✦ ʕ◉ω◉ʔ
+smileys_sound  · • ● ʕ◉ω◉ʔ
 wave           ▁▃▅▇█◜╲▅▃▁
-wave_sound     ▁▂▃╲◜╱▇≈•▃▂▁
+wave_sound     ▁▂▃╲◜╱▇≋•▃▂▁
 spline         ⢀⣠⠤⠒⠉⠢⣀  ✦
 spline_sound   ⠒⠒⠤⠤⣀⣀⠤◇⠒
 ```
@@ -58,26 +58,32 @@ Each launch gets a fresh motion seed. Presets keep their visual identity, but
 their timing, density, drift, and occasional events evolve organically instead
 of repeating a short fixed performance.
 
-`aurora_sound` keeps Aurora's bar language but maps the bars to
-frequency bands from the current default audio output. It reads
+`aurora_sound` lays its frequency field out from bass on the left to highs on
+the right and expands energy across Aurora's full eight-step bar-height range.
+Beats lift a localized cluster; even extreme peaks remain normal tallest
+Aurora bars (`█`). It reads
 `@DEFAULT_MONITOR@` through `parec`, reacts at the full configured FPS, and
 renders the normal Aurora while capture is available but silent. If capture is
 unavailable, every sound companion also renders its normal base preset
-after the single actionable warning. Strong peaks use `╿`; extreme peaks use
-`┃`. Sound companions are opt-in and are not part of the default rotation.
+after the single actionable warning. Sound companions are opt-in and are not
+part of the default rotation.
 
 `spectrum_sound` keeps Spectrum's mirrored instrument display, arranging bass
-toward the outside and treble near the center. `wave_sound` maps bass and mids
-to the swell and body of the wave, adds bounded treble spray, and sends a
-breaker across the trace when an onset arrives. During silence they render
-their complete base animations. Like all sound companions, both are opt-in and
-stay out of the default rotation.
+toward the outside and treble near the center. `wave_sound` retains Wave's
+complete swell, backwash, crest, and curl choreography while bass and mids lift
+the existing wave, treble adds bounded spray, and an onset briefly raises and
+broadens a local part of the existing swell. During silence they render their
+complete base animations. Like all
+sound companions, both are opt-in and stay out of the default rotation.
 
 `square_sound` preserves Square's connected scan line while bass changes its
-plateau lengths, level changes duty cycle, and onsets send an overwrite runner
-in the stereo-selected direction. `ripples_sound` turns bounded onset history
-into broad bass rings or narrow high-frequency rings. During silence they
-render their complete base animations.
+plateau lengths and level changes duty cycle. Each beat appends exactly the next
+connected high or low plateau—starting with one new character—while the
+direction stays stable until the whole waveform is complete. `ripples_sound`
+keeps the distributed organic base rings and adds broad bass rings or narrow
+high-frequency rings from bounded onset history. Active onset rings use
+`◎`/`◉` target cores to remain distinct from other sparse organic presets.
+During silence they render their complete base animations.
 
 Sound-reactive presets require the `parec` command. Install the PulseAudio
 command-line utilities for your distribution (`libpulse` on Arch Linux,
@@ -250,7 +256,7 @@ warm-up prevents startup spikes. The visual response combines slower
 attack/release envelopes, broad neighboring frequency regions, and at most one
 current transient per event class so real music produces deliberate motion
 instead of frame-by-frame jitter. `wave_sound` uses a continuous horizontal
-swell and breaker line; Aurora keeps the vertical bar vocabulary.
+swell with local beat-driven lifts; Aurora keeps the vertical bar vocabulary.
 
 Run with a specific config:
 

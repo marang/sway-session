@@ -64,6 +64,12 @@ long-running behavior.
 - Sound variants use the `<base>_sound` name, keep the base preset's visual
   language, use the base preset when capture is unavailable, and provide a calm
   complete base animation when capture is available but silent.
+- Active sound variants must preserve the base preset's temporal choreography
+  between beats. Audio may reshape, thicken, brighten, or add bounded events,
+  but must not replace a moving base cycle with a mostly static instrument.
+- Shared visual smoothing must not discard analyzer-approved onset events.
+  Validate beat cadence and band range against numeric live-monitor metadata in
+  addition to synthetic snapshots; never store captured audio.
 - Do not add sound variants to the default rotation; users opt in explicitly.
 
 ## Audio

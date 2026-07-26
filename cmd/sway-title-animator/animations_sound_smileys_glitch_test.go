@@ -38,6 +38,24 @@ func TestSmileysSoundBalanceDoesNotJitterAndSilencePreservesBase(t *testing.T) {
 	}
 }
 
+func TestSmileysSoundDotsPulseOnBeat(t *testing.T) {
+	calm := audioSnapshot{Active: true, Level: 0.25}
+	beat := calm
+	beat.OnsetCount = 1
+	beat.Onsets[0] = audioOnset{
+		ID: 1, Age: 40 * time.Millisecond, Strength: 1, Region: audioRegionGeneral,
+	}
+	calmFrame := smileysSoundArtWithSnapshot(140, 40, calm)
+	beatFrame := smileysSoundArtWithSnapshot(140, 40, beat)
+	if strings.Count(beatFrame, "●") <= strings.Count(calmFrame, "●") {
+		t.Fatalf("beat should pulse distributed points: calm=%q beat=%q",
+			calmFrame, beatFrame)
+	}
+	if soundBeatPulse(beat) <= 0.8 {
+		t.Fatal("fresh strong beat should produce a strong point pulse")
+	}
+}
+
 func TestGlitchSoundFluxBassTrebleAndTear(t *testing.T) {
 	stable := glitchSoundArtWithSnapshot(100, 20, audioSnapshot{Active: true})
 	flux := glitchSoundArtWithSnapshot(100, 20, audioSnapshot{
@@ -72,6 +90,30 @@ func TestGlitchSoundSilencePreservesCompleteBaseMotion(t *testing.T) {
 	}
 	if strings.ContainsRune(first, '█') {
 		t.Fatalf("silent glitch must remain distinct from ribbon: %q", first)
+	}
+}
+
+func TestGlitchSoundGeneralBeatPulseGrowsInPlace(t *testing.T) {
+	onset := audioOnset{
+		ID: 8, Age: 100 * time.Millisecond, Strength: 1,
+		Region: audioRegionGeneral, Position: 0.6,
+	}
+	startCenter, startRadius, startIntensity, ok := glitchSoundBeatPulse(100, onset)
+	if !ok {
+		t.Fatal("expected fresh general beat pulse")
+	}
+	onset.Age = 540 * time.Millisecond
+	endCenter, endRadius, endIntensity, ok := glitchSoundBeatPulse(100, onset)
+	if !ok {
+		t.Fatal("expected growing general beat pulse")
+	}
+	if startCenter != endCenter || endRadius <= startRadius {
+		t.Fatalf("pulse must grow in place: center %d->%d radius %d->%d",
+			startCenter, endCenter, startRadius, endRadius)
+	}
+	if startIntensity <= 0 || endIntensity <= 0 {
+		t.Fatalf("live pulse intensity must remain visible: %.2f -> %.2f",
+			startIntensity, endIntensity)
 	}
 }
 

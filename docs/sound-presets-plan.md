@@ -130,9 +130,13 @@ established the visual timing contract:
 - normalization: substantially slower than envelope release.
 
 Before rendering, immediately adjacent frequency bands are combined into broad
-regions and the already time-smoothed energy uses a response-preserving curve.
+regions. Band energy receives a separate response-preserving lift from overall
+level so real monitor values retain enough range to reach the preset glyph
+ramps instead of collapsing into their lowest two steps.
 At most the newest meaningful general, bass, and high-frequency onset remain
-visible simultaneously. General onsets use an
+visible simultaneously. Every analyzer-approved onset remains eligible at the
+visual layer; visual smoothing must not silently discard quieter detected
+beats. General onsets use an
 approximately 360 ms cooldown and region-specific events about 520 ms. These
 limits are part of the visual motion contract: presets should emphasize phrases
 and accents, not every analyzer hop.
@@ -264,10 +268,12 @@ presets that look effectively identical.
 
 ### `aurora_sound` — implemented reference
 
-- Frequency bands directly determine grouped Aurora bar heights.
-- Overall level supplies the common lift while a slow breath prevents a rigid
-  equalizer appearance.
-- Strong band peaks become `╿`; extreme peaks become `┃`.
+- Lay out the frequency field spatially with bass on the left and highs on the
+  right, spanning Aurora's complete eight-step bar-height range.
+- A detected beat briefly lifts a local cluster at its stereo position, making
+  the beat readable without freezing the frequency field.
+- Peaks stay within Aurora's normal bars; an extreme peak reaches `█` rather
+  than introducing a separate needle glyph.
 - Silence renders the unchanged base Aurora.
 
 ### `spectrum_sound` — implemented
@@ -280,9 +286,12 @@ presets that look effectively identical.
 
 ### `radar_sound` — implemented
 
-- The sweep keeps a constant tempo; bass controls its width and target weight.
-- Onsets create temporary echoes at positions derived from the strongest
-  frequency band.
+- Preserve Radar's primary sweep, two secondary currents, scanline, grid marks,
+  and organic contacts.
+- Bass broadens the existing primary sweep and increases target weight without
+  replacing the base radar display.
+- Onsets create temporary echoes positioned by their frequency region and
+  stereo location.
 - Treble adds short fine-grained blips; mids widen detected targets.
 - Stereo balance places new echoes left or right of center.
 - Silence renders the unchanged base radar.
@@ -291,6 +300,8 @@ presets that look effectively identical.
 
 - Preserve the drifting star field, shimmer, lanes, and moving clusters.
 - Frequency regions brighten stars already present in the base choreography.
+- Each beat briefly increases the density and weight of distributed points
+  (`·` → `•` → `●`) across the star field.
 - Strong onsets trigger one short supernova; spectral flux produces small
   shooting stars.
 - Stereo balance selects the side on which transient stars appear.
@@ -325,7 +336,10 @@ presets that look effectively identical.
 
 ### `comet_sound` — implemented
 
-- A bass onset launches a comet instead of using arbitrary launch timing.
+- The complete organic base comet choreography continues under active audio.
+- Each beat briefly pulses distributed trail particles (`·` → `•` → `●`)
+  without adding or removing comet heads.
+- A bass onset launches one additional emphasized comet.
 - Overall level controls tail length and density.
 - Spectral centroid controls velocity: darker audio moves more heavily, brighter
   audio more quickly.
@@ -339,6 +353,8 @@ presets that look effectively identical.
   its complete traversal.
 - Level controls a slowly changing field of sparse accompaniment; bass favors
   weight marks and treble sparkle accents.
+- Each beat briefly increases the density and weight of the distributed points
+  (`·` → `•` → `●`) before they settle softly.
 - Strong onsets briefly add one reaction figure, with bounded lifetime.
 - Level and stereo never change travel speed, mirror the parade, or make faces
   appear and disappear mid-flight.
@@ -346,19 +362,24 @@ presets that look effectively identical.
 
 ### `wave_sound` — implemented
 
-- Preserve a continuous swell, backwash, moving crest, and curl cycle in the
-  Wave glyph language.
-- Bass changes swell height and wavelength; high mids create foam.
+- Preserve the complete base swell, backwash, moving crest, and curl cycle in
+  the Wave glyph language.
+- Bass and mids lift existing wave segments; high mids create foam.
 - Treble produces sparse spray accents.
-- Strong onsets create a breaker that travels across the existing wave.
-- Stereo balance selects breaker direction.
+- Strong onsets raise and broaden a local region of the existing swell, then
+  let it settle in place instead of introducing a side-travelling object.
+- Stereo balance places that local surge within the inner part of the wave.
 - Silence renders the unchanged base wave.
 
 ### `spline_sound` — implemented
 
-- Divide the spectrum into the spline's control-point regions.
-- Band energy displaces individual control points, producing a continuous
-  audio-shaped curve rather than independent bars.
+- Keep the complete multi-segment Braille base spline and its organic control
+  point motion.
+- Band energy shifts and thickens sections of the existing curve into larger
+  vertical excursions distributed across the complete width instead of merely
+  changing a few isolated dots.
+- A general onset briefly raises the global excursion amplitude, so the whole
+  spline visibly breathes with a beat while retaining its connected path.
 - Centroid moves the tracer; strong onsets briefly increase its brightness.
 - Stereo balance biases the tracer direction.
 - Silence renders the unchanged base spline.
@@ -368,25 +389,33 @@ presets that look effectively identical.
 - Bass controls plateau length and therefore apparent frequency.
 - Overall level changes the high/low duty cycle while preserving connected scan
   lines.
-- Onsets launch the existing overwrite runner; onset strength controls its
-  length and speed.
-- Stereo balance selects the initial build or runner direction.
+- Each onset appends exactly one connected high or low plateau. A fresh beat
+  begins with one new character and completes only that plateau, avoiding a
+  full-width flash.
+- Build direction remains stable until the complete waveform has been drawn,
+  then a new build cycle may select the other direction.
 - Silence renders the unchanged base square.
 
 ### `ripples_sound` — implemented
 
-- Each detected onset creates a new ripple at a position selected by frequency
-  region and stereo balance.
+- Preserve the complete distributed organic base-ripple choreography under
+  active audio.
+- Each detected onset creates a new ripple at a deterministic organic position
+  across the title; stereo provides only a modest bias, so rings do not all
+  enter from one side.
 - Onset strength controls initial radius and glyph weight.
+- Active sound marks the strongest ring cores with `◉`, keeping the preset
+  visibly distinct from other sparse organic animations.
 - Bass makes broad slow ripples; treble makes narrow fast ones.
-- Overall level controls how many simultaneous ripples may survive.
+- The two newest entries in the bounded onset history may add simultaneous
+  sound-driven rings.
 - Silence renders the unchanged base ripples.
 
 ### `bloom_sound` — implemented
 
-- Keep a continuously breathing bloom form.
-- Level and mids control opening and petal span; bass strengthens its stem.
-- Strong onsets open it locally and treble adds sparse pollen.
+- Keep every base growth, flower, decay, and drifting seed event.
+- Bass strengthens existing stems and mids enrich existing tips.
+- Strong onsets add one local flower and treble adds sparse pollen.
 - Silence renders the unchanged base bloom.
 
 ### `glitch_sound` — implemented
@@ -395,6 +424,8 @@ presets that look effectively identical.
 - Spectral flux increases local defect density; stable sustained tones remain
   close to the base choreography.
 - Bass transients create short horizontal displacement blocks.
+- General beats create one bounded glitcher that grows in place and throbs in
+  `░▒▓╳` before fading.
 - Treble controls fine noise and broken-line accents.
 - Full-width tears are forbidden; onsets remain local and bounded.
 - Stereo balance biases local displacement direction.
@@ -402,21 +433,24 @@ presets that look effectively identical.
 
 ### `ribbon_sound` — implemented
 
+- The base ribbon exposes its changing face with woven shade runs and rounded
+  fold glyphs (`◐`, `◑`, `◒`) instead of reading as one flat gradient.
 - Frequency bands modulate brightness along the existing woven ribbon.
-- Bass changes ribbon width, mids change curvature, and treble adds traveling
-  highlights.
-- The phase clock and direction stay stable; audio controls fold width,
-  curvature, brightness, highlights, and local onset twists.
-- Strong onsets create one twist that propagates through the ribbon rather than
-  a screen-wide glitch.
+- Bass and mids deepen existing folds while treble adds bounded highlights.
+- The phase clock and direction stay stable. Strong onsets send one coherent
+  brightness pulse through folds distributed across the ribbon; no edge-driven
+  twist or screen-wide glitch is introduced.
 - Silence renders the unchanged base ribbon.
 
 ### `shutter_sound` — implemented
 
+- The base shutter uses multiple staggered iris-blade edges, a focus reticle,
+  and a slow scan point instead of two flat panels.
 - Bass onsets close the aperture briefly and then release it.
 - Sustained low-mid energy gently changes the aperture range without replacing
   or freezing its complete open/close cycle.
-- Treble adds thin edge highlights; it must not introduce glitch fragments.
+- Treble adds highlights to existing blade faces; it must not introduce glitch
+  fragments.
 - Peak strength controls the weight of the inward arrows and center seam.
 - Stereo affects short impulses only; it never shifts the aperture center.
 - Silence renders the unchanged base shutter.

@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"math"
 	"slices"
+	"time"
 )
 
 const soundBandBlurRadius = 1
@@ -25,14 +26,14 @@ func calmSoundSnapshot(snapshot audioSnapshot) audioSnapshot {
 			total += rawBands[source] * localWeight
 			weight += localWeight
 		}
-		snapshot.Bands[index] = calmSoundEnergy(total / weight)
+		snapshot.Bands[index] = calmSoundBandEnergy(total / weight)
 	}
 
 	snapshot.Level = calmSoundEnergy(snapshot.Level)
-	snapshot.Bass = calmSoundEnergy(snapshot.Bass)
-	snapshot.LowMid = calmSoundEnergy(snapshot.LowMid)
-	snapshot.HighMid = calmSoundEnergy(snapshot.HighMid)
-	snapshot.Treble = calmSoundEnergy(snapshot.Treble)
+	snapshot.Bass = calmSoundBandEnergy(snapshot.Bass)
+	snapshot.LowMid = calmSoundBandEnergy(snapshot.LowMid)
+	snapshot.HighMid = calmSoundBandEnergy(snapshot.HighMid)
+	snapshot.Treble = calmSoundBandEnergy(snapshot.Treble)
 	snapshot.LeftLevel = calmSoundEnergy(snapshot.LeftLevel)
 	snapshot.RightLevel = calmSoundEnergy(snapshot.RightLevel)
 	snapshot.SpectralFlux = calmSoundTransient(snapshot.SpectralFlux)
@@ -52,9 +53,27 @@ func calmSoundEnergy(value float64) float64 {
 	return math.Pow(value, 0.82)
 }
 
+func calmSoundBandEnergy(value float64) float64 {
+	value = math.Max(0, math.Min(1, value))
+	return math.Min(1, math.Pow(value, 0.82)*2)
+}
+
 func calmSoundTransient(value float64) float64 {
 	value = math.Max(0, math.Min(1, value))
 	return math.Pow(value, 0.72)
+}
+
+func soundBeatPulse(audio audioSnapshot) float64 {
+	onset, ok := newestSoundOnset(audio, audioRegionGeneral)
+	if !ok || onset.Age < 0 {
+		return 0
+	}
+	const lifetime = 520 * time.Millisecond
+	if onset.Age >= lifetime {
+		return 0
+	}
+	progress := float64(onset.Age) / float64(lifetime)
+	return onset.Strength * (1 - smoothstep(progress))
 }
 
 func calmSoundOnsets(snapshot audioSnapshot) ([audioEventCapacity]audioOnset, int) {
@@ -63,12 +82,12 @@ func calmSoundOnsets(snapshot audioSnapshot) ([audioEventCapacity]audioOnset, in
 	for index := 0; index < min(snapshot.OnsetCount, len(snapshot.Onsets)); index++ {
 		onset := snapshot.Onsets[index]
 		region := int(onset.Region)
-		if region < 0 || region >= len(newest) || onset.Strength < 0.38 {
+		if region < 0 || region >= len(newest) || onset.Strength <= 0 {
 			continue
 		}
 		if !found[region] || onset.ID > newest[region].ID {
 			onset.Strength = math.Min(0.95,
-				0.20+calmSoundTransient(onset.Strength)*0.80)
+				0.45+calmSoundTransient(onset.Strength)*0.50)
 			newest[region] = onset
 			found[region] = true
 		}

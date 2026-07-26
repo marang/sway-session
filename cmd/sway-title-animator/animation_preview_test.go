@@ -539,9 +539,129 @@ func TestBuiltInPresetsMaintainDistinctVisualLanguages(t *testing.T) {
 	}
 }
 
+func TestActiveSoundPresetsMaintainDistinctVisualLanguages(t *testing.T) {
+	originalSeed := animationSeed
+	t.Cleanup(func() {
+		animationSeed = originalSeed
+	})
+
+	steady := steadySoundTestSnapshot()
+	eventful := steady
+	eventful.OnsetCount = 3
+	eventful.Onsets[0] = audioOnset{
+		ID: 1, Sequence: 1, Age: 180 * time.Millisecond, Strength: 0.9,
+		Region: audioRegionGeneral, Position: 0.35,
+	}
+	eventful.Onsets[1] = audioOnset{
+		ID: 2, Sequence: 1, Age: 220 * time.Millisecond, Strength: 0.86,
+		Region: audioRegionBass, Position: -0.4,
+	}
+	eventful.Onsets[2] = audioOnset{
+		ID: 3, Sequence: 1, Age: 140 * time.Millisecond, Strength: 0.82,
+		Region: audioRegionHigh, Position: 0.2,
+	}
+
+	renderers := soundSnapshotRenderers()
+	names := make([]string, 0, len(animationPresets))
+	for name := range animationPresets {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	const minimumDistance = 0.10
+	phases := []int{0, 11, 29, 53, 89, 137, 211, 307}
+	snapshots := []audioSnapshot{steady, eventful}
+	seeds := []uint64{0x5eed, 0x1ab53}
+	widths := []int{48, 80, 120}
+	sampleCount := float64(len(snapshots) * len(seeds) * len(widths))
+	signatures := make(map[string][]float64, len(names))
+	for _, name := range names {
+		signature := make([]float64, 19)
+		for _, audio := range snapshots {
+			for _, seed := range seeds {
+				animationSeed = seed
+				for _, width := range widths {
+					animation := activeSimilarityAnimation(name, audio, renderers)
+					sample := animationVisualSignatureForSamples(
+						animation,
+						width,
+						phases,
+					)
+					for index, value := range sample {
+						signature[index] += value / sampleCount
+					}
+				}
+			}
+		}
+		signatures[name] = signature
+	}
+
+	for firstIndex, first := range names {
+		for _, second := range names[firstIndex+1:] {
+			if !isSoundPreset(first) && !isSoundPreset(second) {
+				continue
+			}
+			if strings.TrimSuffix(first, "_sound") ==
+				strings.TrimSuffix(second, "_sound") {
+				continue
+			}
+
+			distance := visualSignatureDistance(
+				signatures[first],
+				signatures[second],
+			)
+			if distance < minimumDistance {
+				t.Errorf(
+					"%s and %s are too similar with active audio: aggregate distance %.3f, minimum %.3f",
+					first,
+					second,
+					distance,
+					minimumDistance,
+				)
+			}
+		}
+	}
+}
+
+func visualSignatureDistance(first []float64, second []float64) float64 {
+	sum := 0.0
+	for index := range min(len(first), len(second)) {
+		difference := first[index] - second[index]
+		sum += difference * difference
+	}
+	return math.Sqrt(sum)
+}
+
+func activeSimilarityAnimation(
+	name string,
+	audio audioSnapshot,
+	renderers map[string]func(int, int, audioSnapshot) string,
+) animationFunc {
+	if renderer, ok := renderers[name]; ok {
+		return func(width int, phase int) string {
+			return renderer(width, phase, audio)
+		}
+	}
+	return animationPresets[name]
+}
+
 func animationVisualDistance(first animationFunc, second animationFunc) float64 {
-	firstSignature := animationVisualSignature(first)
-	secondSignature := animationVisualSignature(second)
+	return animationVisualDistanceForSamples(
+		first,
+		second,
+		80,
+		[]int{0, 11, 29, 53, 89, 137, 211, 307},
+	)
+}
+
+func animationVisualDistanceForSamples(
+	first animationFunc,
+	second animationFunc,
+	width int,
+	phases []int,
+) float64 {
+	firstSignature := animationVisualSignatureForSamples(first, width, phases)
+	secondSignature := animationVisualSignatureForSamples(second, width, phases)
 	sum := 0.0
 	for index := range firstSignature {
 		difference := firstSignature[index] - secondSignature[index]
@@ -550,12 +670,12 @@ func animationVisualDistance(first animationFunc, second animationFunc) float64 
 	return math.Sqrt(sum)
 }
 
-func animationVisualSignature(animation animationFunc) []float64 {
-	const (
-		width      = 80
-		classCount = 16
-	)
-	phases := []int{0, 11, 29, 53, 89, 137, 211, 307}
+func animationVisualSignatureForSamples(
+	animation animationFunc,
+	width int,
+	phases []int,
+) []float64 {
+	const classCount = 16
 	signature := make([]float64, classCount+3)
 	for _, phase := range phases {
 		frame := fitRunes(animation(width, phase), width)
@@ -609,6 +729,8 @@ func animationGlyphClass(glyph rune) int {
 		return 8
 	case '✦', '✧', '✶', '✷', '◆', '◇', '●', '☄', '❧':
 		return 9
+	case '◎', '◉':
+		return 15
 	}
 	if glyph >= 0x2800 && glyph <= 0x28ff {
 		mask := uint8(glyph - 0x2800)

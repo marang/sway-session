@@ -3,6 +3,7 @@ package main
 import (
 	"math"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -183,10 +184,7 @@ func auroraSoundArt(width int, phase int) string {
 	)
 }
 
-const (
-	auroraSoundNeedleThreshold     = 0.58
-	auroraSoundHardNeedleThreshold = 0.86
-)
+const auroraSoundOnsetLifetime = 420 * time.Millisecond
 
 func auroraSoundArtWithSnapshot(width int, phase int, audio audioSnapshot) string {
 	width = artWidth(width)
@@ -198,29 +196,41 @@ func auroraSoundArtWithSnapshot(width int, phase int, audio audioSnapshot) strin
 	}
 
 	chars := make([]rune, width)
-	breathe := 0.94 + 0.06*math.Sin(float64(phase)*0.018)
+	onset, hasOnset := newestSoundOnset(audio, audioRegionGeneral)
+	onsetEnvelope := 0.0
+	onsetCenter := 0.0
+	if hasOnset && onset.Age >= 0 && onset.Age < auroraSoundOnsetLifetime {
+		progress := float64(onset.Age) / float64(auroraSoundOnsetLifetime)
+		onsetEnvelope = onset.Strength * (1 - smoothstep(progress))
+		onsetCenter = (math.Max(-1, math.Min(1, onset.Position)) + 1) *
+			0.5 * float64(width-1)
+	}
+
 	for index := range width {
-		groupCenter := (index/3)*3 + 1
-		groupCenter = min(width-1, groupCenter)
 		position := 0.0
 		if width > 1 {
-			position = float64(groupCenter) / float64(width-1)
+			position = float64(index) / float64(width-1)
 		}
 		bandPosition := math.Pow(position, 0.72) * float64(audioBandCount-1)
 		energy := interpolatedAudioBand(audio.Bands, bandPosition)
-		level := (energy*0.84 + audio.Level*0.16) * breathe
-		level = math.Max(0, math.Min(1, level))
-
-		switch {
-		case energy >= auroraSoundHardNeedleThreshold ||
-			(energy >= 0.68 && audio.Peak >= 0.72):
-			chars[index] = '┃'
-		case energy >= auroraSoundNeedleThreshold:
-			chars[index] = '╿'
-		default:
-			chars[index] = rampPick(auroraBars, level)
+		motion := signedOrganicNoise(
+			"aurora_sound",
+			uint64(100+index/3),
+			float64(phase)/22+position*0.7,
+		)
+		level := energy*0.92 + audio.Level*0.08 +
+			motion*(0.045+energy*0.09)
+		if onsetEnvelope > 0 {
+			distance := math.Abs(float64(index) - onsetCenter)
+			spread := math.Max(2.0, float64(width)*0.045)
+			localLift := math.Exp(-math.Pow(distance/spread, 2)) *
+				onsetEnvelope * 0.20
+			level += localLift
 		}
+		level = math.Max(0, math.Min(1, level))
+		chars[index] = rampPick(auroraBars, level)
 	}
+
 	return string(chars)
 }
 
@@ -347,105 +357,72 @@ func waveSoundArtWithSnapshot(width int, phase int, audio audioSnapshot) string 
 	if width == 0 {
 		return ""
 	}
-	chars := make([]rune, width)
-	slowPhase := float64(phase)*0.020 +
-		signedOrganicNoise("wave_sound", 1, float64(phase)/193)*1.4 +
-		signedOrganicNoise("wave_sound", 2, 0.37)*math.Pi
+	chars := fitRunes(waveArt(width, phase), width)
 	if !audio.Active {
-		return string(fitRunes(waveArt(width, phase), width))
+		return string(chars)
 	}
 
-	waveNumber := 0.105 - audio.Bass*0.040
-	swellHeight := 0.24 + audio.Bass*0.46
-	body := 0.10 + audio.LowMid*0.26
-	foamAmount := audio.HighMid
-	sprayAmount := audio.Treble
-	breakerOnset, hasBreaker := newestSoundOnset(audio, audioRegionGeneral)
-	breakerCenter, breakerEnvelope, breakerLive := waveSoundBreaker(width, breakerOnset)
-	hasBreaker = hasBreaker && breakerLive
+	waveRamp := []rune("▁▂▃▅▇█")
+	surgeOnset, hasSurge := newestSoundOnset(audio, audioRegionGeneral)
+	surgeCenter, surgeSpread, surgeEnvelope, surgeLive := waveSoundSurge(width, surgeOnset)
+	hasSurge = hasSurge && surgeLive
 	for index := range chars {
 		x := float64(index)
-		angle := x*waveNumber - slowPhase*0.82
-		backwashAngle := x*waveNumber*0.43 + slowPhase*0.25 + 1.7
-		swell := 0.5 + 0.5*math.Sin(angle)
-		backwash := 0.5 + 0.5*math.Sin(backwashAngle)
-		level := math.Min(1, 0.06+swell*swellHeight+backwash*body)
-		slope := math.Cos(angle)*waveNumber*swellHeight +
-			math.Cos(backwashAngle)*waveNumber*0.43*body
-
-		breaker := 0.0
-		if hasBreaker {
-			spread := 4.8 + breakerOnset.Strength*5.2
-			breaker = breakerEnvelope *
-				math.Exp(-math.Pow((x-breakerCenter)/spread, 2))
+		position := float64(index) / float64(max(1, width-1))
+		band := interpolatedAudioBand(
+			audio.Bands,
+			position*float64(audioBandCount-1),
+		)
+		if rampIndex := slices.Index(waveRamp, chars[index]); rampIndex >= 0 {
+			lift := audio.Bass*0.34 + audio.LowMid*0.18 + band*0.48
+			if hasSurge {
+				lift += surgeEnvelope *
+					math.Exp(-math.Pow((x-surgeCenter)/surgeSpread, 2))
+			}
+			rampIndex = min(len(waveRamp)-1, rampIndex+int(math.Round(lift*2)))
+			chars[index] = waveRamp[rampIndex]
 		}
-		foam := foamAmount * math.Max(0, math.Sin(angle+0.65))
-		spray := sprayAmount * math.Max(0, math.Sin(x*0.43+slowPhase*0.65))
-		chars[index] = waveSoundGlyph(level, slope, foam, breaker, index, phase)
-		if spray > 0.78 && foam > 0.38 && (index+phase/5)%11 == 0 {
+		if audio.HighMid > 0.34 &&
+			strings.ContainsRune("▇█◜◝◞◟", chars[index]) &&
+			(index+phase/7)%max(5, 11-int(math.Round(audio.HighMid*6))) == 0 {
+			chars[index] = '≈'
+		}
+		if audio.Treble > 0.30 && chars[index] != ' ' &&
+			(index+phase/9)%max(11, 23-int(math.Round(audio.Treble*10))) == 0 {
 			chars[index] = '·'
 		}
+		if hasSurge {
+			surge := surgeEnvelope *
+				math.Exp(-math.Pow((x-surgeCenter)/surgeSpread, 2))
+			if chars[index] == ' ' && surge > 0.28 {
+				chars[index] = rampPick(waveRamp, (surge-0.28)*0.82)
+			} else if surge > 0.68 && strings.ContainsRune("▇█", chars[index]) &&
+				(index+phase/11)%5 == 0 {
+				chars[index] = '≈'
+			}
+		}
+	}
+	if hasSurge && surgeEnvelope > 0.50 {
+		centerIndex := max(0, min(width-1, int(math.Round(surgeCenter))))
+		chars[centerIndex] = '≋'
 	}
 	return string(chars)
 }
 
-func waveSoundGlyph(
-	level float64,
-	slope float64,
-	foam float64,
-	breaker float64,
-	index int,
-	phase int,
-) rune {
-	switch {
-	case breaker > 0.72:
-		return []rune("◜⌒◝")[(index+phase/7)%3]
-	case breaker > 0.42:
-		if slope >= 0 {
-			return '╱'
-		}
-		return '╲'
-	case math.Abs(slope) > 0.055:
-		if slope > 0 {
-			return '╱'
-		}
-		return '╲'
-	case foam > 0.42:
-		return '≈'
-	case level > 0.72:
-		return '◜'
-	case level > 0.52:
-		return '⌒'
-	case level > 0.30:
-		return '⌁'
-	default:
-		return '─'
-	}
-}
-
-func waveSoundBreaker(width int, onset audioOnset) (float64, float64, bool) {
+func waveSoundSurge(width int, onset audioOnset) (float64, float64, float64, bool) {
 	if width <= 0 || onset.Region != audioRegionGeneral || onset.Age < 0 {
-		return 0, 0, false
+		return 0, 0, 0, false
 	}
-	const lifetime = 1800 * time.Millisecond
+	const lifetime = 720 * time.Millisecond
 	if onset.Age >= lifetime {
-		return 0, 0, false
+		return 0, 0, 0, false
 	}
-	progress := smoothstep(float64(onset.Age) / float64(lifetime))
-	direction := onset.Position
-	if math.Abs(direction) < 0.05 {
-		if onset.ID%2 == 0 {
-			direction = -1
-		} else {
-			direction = 1
-		}
-	}
-	center := progress * float64(max(0, width-1))
-	if direction < 0 {
-		center = float64(width-1) - center
-	}
+	progress := float64(onset.Age) / float64(lifetime)
+	stereo := math.Max(-1, math.Min(1, onset.Position))
+	center := (0.5 + stereo*0.34) * float64(max(0, width-1))
+	spread := math.Max(3.0, float64(width)*0.045) * (1 + progress*0.55)
 	envelope := onset.Strength * (1 - smoothstep(progress))
-	return center, envelope, true
+	return center, spread, envelope, true
 }
 
 func scaleAudioSnapshot(snapshot audioSnapshot, scale float64) audioSnapshot {
@@ -484,12 +461,12 @@ func ripplesArt(width int, phase int) string {
 		return shortFrame(width, phase, []string{" · ", "╴●╶", "─ ·", "   "})
 	}
 
-	chars := make([]rune, width)
-	levels := make([]float64, width)
-	for index := range chars {
-		chars[index] = ' '
-	}
+	levels := ripplesBaseLevels(width, phase)
+	return ripplesLevelsArt(levels, phase)
+}
 
+func ripplesBaseLevels(width int, phase int) []float64 {
+	levels := make([]float64, width)
 	events := organicEvents("ripples", 1, float64(phase), 24, 26, 42)
 	events = append(events, organicEvents("ripples", 2, float64(phase), 39, 30, 52)...)
 	for _, event := range events {
@@ -507,7 +484,14 @@ func ripplesArt(width int, phase int) string {
 			levels[index] = math.Max(levels[index], ring)
 		}
 	}
+	return levels
+}
 
+func ripplesLevelsArt(levels []float64, phase int) string {
+	chars := make([]rune, len(levels))
+	for index := range chars {
+		chars[index] = ' '
+	}
 	for index, level := range levels {
 		switch {
 		case level > 0.88:
@@ -596,17 +580,35 @@ func ribbonArt(width int, phase int) string {
 	}
 
 	chars := make([]rune, width)
-	timeBase := float64(phase)*0.083 + signedOrganicNoise("ribbon", 1, float64(phase)/67)*1.5
-	frequency := 0.14 + organicNoise("ribbon", 2, float64(phase)/91)*0.07
+	timeBase := float64(phase)*0.068 +
+		signedOrganicNoise("ribbon", 1, float64(phase)/67)*1.35
+	frequency := 0.105 + organicNoise("ribbon", 2, float64(phase)/91)*0.055
 	sheens := organicEvents("ribbon", 3, float64(phase), 43, 16, 28)
 	ramp := []rune("·░▒▓█")
 	for index := range chars {
 		x := float64(index)
-		fold := math.Sin(x*frequency+timeBase) + 0.36*math.Sin(x*frequency*0.43-timeBase*0.72)
+		warp := signedOrganicNoise(
+			"ribbon",
+			uint64(10+index%9),
+			float64(phase)/83+float64(index)*0.012,
+		) * 0.55
+		foldAngle := x*frequency + timeBase + warp
+		fold := math.Sin(foldAngle) +
+			0.42*math.Sin(x*frequency*0.47-timeBase*0.61)
 		crossFold := math.Sin(x*frequency*1.83 - timeBase*0.41 +
 			signedOrganicNoise("ribbon", 4, float64(phase)/79)*0.8)
-		level := 0.12 + 0.58*(fold+1.36)/2.72 + 0.18*(crossFold+1)/2
+		level := 0.08 + 0.66*(fold+1.42)/2.84 + 0.20*(crossFold+1)/2
+		facing := math.Abs(math.Sin(foldAngle))
 		glyph := rampPick(ramp, level)
+		if facing < 0.105 {
+			if math.Cos(foldAngle) >= 0 {
+				glyph = '◐'
+			} else {
+				glyph = '◑'
+			}
+		} else if facing < 0.20 {
+			glyph = '◒'
+		}
 		for _, event := range sheens {
 			center := eventRandom("ribbon", 3, event.Index, 4) * float64(width-1)
 			if math.Abs(x-center) < 0.7 && event.Envelope > 0.48 {
@@ -629,7 +631,6 @@ func shutterArt(width int, phase int) string {
 		return shortFrame(width, phase, []string{"███", "▶▓◀", "▶░◀", "▶ ◀", " │ "})
 	}
 
-	chars := make([]rune, width)
 	center := float64(width-1) / 2
 	aperture := 0.10 + organicNoise("shutter", 1, float64(phase)/24)*0.72
 	for _, event := range organicEvents("shutter", 2, float64(phase), 39, 12, 24) {
@@ -639,28 +640,80 @@ func shutterArt(width int, phase int) string {
 			aperture = math.Min(aperture, 1-event.Envelope*0.94)
 		}
 	}
+	center += signedOrganicNoise("shutter", 5, float64(phase)/118) *
+		math.Min(4, float64(width)*0.035)
 	gapRadius := aperture * center
-	leftEdge := int(math.Floor(center - gapRadius))
-	rightEdge := int(math.Ceil(center + gapRadius))
+	return shutterFrame(width, phase, center, gapRadius, 1-aperture, 0, 0)
+}
+
+func shutterFrame(
+	width int,
+	phase int,
+	center float64,
+	gapRadius float64,
+	closure float64,
+	treble float64,
+	peak float64,
+) string {
+	chars := make([]rune, width)
+	leftEdge := max(0, int(math.Floor(center-gapRadius)))
+	rightEdge := min(width-1, int(math.Ceil(center+gapRadius)))
+	seamIndex := max(0, min(width-1, int(math.Round(center))))
+	scanOffset := math.Sin(float64(phase)*0.041) * gapRadius * 0.62
+	scanIndex := max(leftEdge+1, min(rightEdge-1, int(math.Round(center+scanOffset))))
+	bladeSpan := max(4, width/17)
+	heavy := peak >= 0.68
+	edgeLeft, edgeRight, bladeLeft, bladeRight := '›', '‹', '▷', '◁'
+	seam := '┆'
+	if heavy {
+		edgeLeft, edgeRight, bladeLeft, bladeRight = '▶', '◀', '▶', '◀'
+		seam = '┃'
+	}
+
 	for index := range chars {
-		distance := math.Abs(float64(index) - center)
 		switch {
 		case index == leftEdge:
-			chars[index] = '▶'
+			chars[index] = edgeLeft
 		case index == rightEdge:
-			chars[index] = '◀'
-		case distance < gapRadius:
-			if (index+phase/5)%9 == 0 {
+			chars[index] = edgeRight
+		case index == seamIndex:
+			chars[index] = seam
+		case index > leftEdge && index < rightEdge:
+			focusDistance := math.Abs(math.Abs(float64(index)-center) - gapRadius*0.46)
+			switch {
+			case index == scanIndex:
 				chars[index] = '│'
-			} else {
+			case focusDistance < 0.55:
+				chars[index] = '·'
+			default:
 				chars[index] = ' '
 			}
 		default:
-			panelDepth := math.Min(1, (distance-gapRadius)/math.Max(2, center*0.34))
-			if (index+phase/7)%7 == 0 {
+			distanceFromEdge := leftEdge - index
+			leftPanel := true
+			if index > rightEdge {
+				distanceFromEdge = index - rightEdge
+				leftPanel = false
+			}
+			bladePosition := distanceFromEdge % bladeSpan
+			switch {
+			case bladePosition == 0:
+				if leftPanel {
+					chars[index] = bladeLeft
+				} else {
+					chars[index] = bladeRight
+				}
+			case bladePosition == bladeSpan/2:
 				chars[index] = '│'
-			} else {
-				chars[index] = rampPick([]rune("░▒▓█"), 1-panelDepth*0.68)
+			case treble > 0.48 &&
+				(index+phase/6)%max(7, 18-int(math.Round(treble*8))) == 0:
+				chars[index] = '✦'
+			default:
+				bladeWave := 0.5 + 0.5*math.Cos(
+					float64(bladePosition)/float64(bladeSpan)*2*math.Pi,
+				)
+				level := 0.22 + closure*0.34 + bladeWave*0.42
+				chars[index] = rampPick([]rune("░▒▓█"), level)
 			}
 		}
 	}

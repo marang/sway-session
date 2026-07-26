@@ -62,13 +62,47 @@ func TestCalmSoundSnapshotKeepsOnlyNewestOnsetPerRegion(t *testing.T) {
 	if calm.OnsetCount != 3 {
 		t.Fatalf("expected one meaningful onset per region, got %+v", calm.Onsets)
 	}
-	for index, id := range []uint64{2, 3, 4} {
+	for index, id := range []uint64{3, 4, 5} {
 		if calm.Onsets[index].ID != id {
 			t.Fatalf("unexpected onset selection: %+v", calm.Onsets)
 		}
 		if calm.Onsets[index].Strength > 0.95 {
 			t.Fatalf("visual onset strength must remain bounded: %+v", calm.Onsets[index])
 		}
+	}
+}
+
+func TestCalmSoundSnapshotKeepsDetectorThresholdBeatsVisible(t *testing.T) {
+	snapshot := audioSnapshot{Active: true, OnsetCount: 1}
+	snapshot.Onsets[0] = audioOnset{
+		ID: 1, Age: 40 * time.Millisecond, Strength: 0.25,
+		Region: audioRegionGeneral,
+	}
+
+	calm := calmSoundSnapshot(snapshot)
+	if calm.OnsetCount != 1 || calm.Onsets[0].ID != 1 {
+		t.Fatalf("detector-approved beat was discarded: %+v", calm.Onsets)
+	}
+	if calm.Onsets[0].Strength < 0.60 {
+		t.Fatalf("detector-approved beat is too weak to drive preset events: %+v",
+			calm.Onsets[0])
+	}
+}
+
+func TestCalmSoundSnapshotRestoresUsefulLiveBandRange(t *testing.T) {
+	snapshot := audioSnapshot{Active: true}
+	for index := range snapshot.Bands {
+		snapshot.Bands[index] = 0.15 + float64(index%4)*0.05
+	}
+	snapshot.Bass = 0.15
+	snapshot.LowMid = 0.20
+	snapshot.HighMid = 0.25
+	snapshot.Treble = 0.30
+
+	calm := calmSoundSnapshot(snapshot)
+	if calm.Bass < 0.40 || calm.Treble < 0.70 {
+		t.Fatalf("live-sized band energy stayed trapped in the lowest glyph steps: %+v",
+			calm)
 	}
 }
 

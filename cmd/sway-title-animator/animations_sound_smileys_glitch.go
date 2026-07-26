@@ -20,6 +20,7 @@ func smileysSoundArtWithSnapshot(width int, phase int, audio audioSnapshot) stri
 		return string(chars)
 	}
 	mids := (audio.LowMid + audio.HighMid) / 2
+	beatPulse := soundBeatPulse(audio)
 	for index := range chars {
 		if chars[index] != ' ' {
 			continue
@@ -27,8 +28,12 @@ func smileysSoundArtWithSnapshot(width int, phase int, audio audioSnapshot) stri
 		pulse := organicNoise(
 			"smileys_sound", uint64(100+index), float64(phase)/24,
 		)
-		if pulse > 0.92-audio.Level*0.30 {
+		if pulse > 0.92-audio.Level*0.24-beatPulse*0.34 {
 			switch {
+			case beatPulse > 0.68:
+				chars[index] = '●'
+			case beatPulse > 0.30:
+				chars[index] = '•'
 			case audio.Treble > 0.48:
 				chars[index] = '✦'
 			case audio.Bass > mids:
@@ -85,6 +90,7 @@ func glitchSoundArtWithSnapshot(width int, phase int, audio audioSnapshot) strin
 	}
 	addGlitchSoundWindow(chars, phase, density)
 	addGlitchSoundDisplacement(chars, audio)
+	addGlitchSoundBeatPulse(chars, audio)
 	return string(chars)
 }
 
@@ -136,4 +142,51 @@ func glitchSoundBlock(width int, onset audioOnset) (int, int, bool) {
 	center = max(0, min(width-1, center))
 	radius := 1 + int(math.Round(onset.Strength*math.Min(5, float64(width)*0.06)))
 	return center, radius, true
+}
+
+func addGlitchSoundBeatPulse(chars []rune, audio audioSnapshot) {
+	onset, ok := newestSoundOnset(audio, audioRegionGeneral)
+	if !ok {
+		return
+	}
+	center, radius, intensity, live := glitchSoundBeatPulse(len(chars), onset)
+	if !live {
+		return
+	}
+	glyphs := []rune{'░', '▒', '▓', '╳'}
+	for offset := -radius; offset <= radius; offset++ {
+		index := center + offset
+		if index < 0 || index >= len(chars) {
+			continue
+		}
+		distance := float64(abs(offset)) / float64(max(1, radius))
+		local := intensity * (1 - distance*0.55)
+		if eventRandom(
+			"glitch_sound_beat",
+			1,
+			int64(onset.ID),
+			uint64(offset+radius+1),
+		) > local {
+			continue
+		}
+		glyphIndex := min(len(glyphs)-1, int(local*float64(len(glyphs))))
+		chars[index] = glyphs[glyphIndex]
+	}
+	chars[center] = '╳'
+}
+
+func glitchSoundBeatPulse(width int, onset audioOnset) (int, int, float64, bool) {
+	const lifetime = 920 * time.Millisecond
+	if width <= 0 || onset.Region != audioRegionGeneral ||
+		onset.Age < 0 || onset.Age >= lifetime {
+		return 0, 0, 0, false
+	}
+	progress := float64(onset.Age) / float64(lifetime)
+	stereo := math.Max(-1, math.Min(1, onset.Position))
+	center := int(math.Round((0.5 + stereo*0.34) * float64(width-1)))
+	maxRadius := max(2, min(12, int(math.Round(float64(width)*0.11))))
+	radius := 1 + int(math.Round(smoothstep(progress)*float64(maxRadius-1)))
+	envelope := onset.Strength * (1 - smoothstep(progress))
+	throb := 0.58 + 0.42*math.Pow(math.Sin(progress*math.Pi*3), 2)
+	return center, radius, envelope * throb, true
 }

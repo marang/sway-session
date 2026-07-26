@@ -55,6 +55,23 @@ func TestBraidSoundHighlightFollowsStereo(t *testing.T) {
 	}
 }
 
+func TestBraidNeverCollapsesIntoAStaticRowOfCrossings(t *testing.T) {
+	originalSeed := animationSeed
+	t.Cleanup(func() {
+		animationSeed = originalSeed
+	})
+
+	for seed := uint64(1); seed <= 64; seed++ {
+		animationSeed = seed
+		for _, phase := range []int{0, 30, 90, 180, 270} {
+			frame := braidArt(120, phase)
+			if !strings.ContainsAny(frame, "╱╲") {
+				t.Fatalf("seed=%d phase=%d collapsed braid: %q", seed, phase, frame)
+			}
+		}
+	}
+}
+
 func TestLoomSoundWarpWeftShuttleAndGlints(t *testing.T) {
 	loose := loomSoundArtWithSnapshot(120, 20, audioSnapshot{
 		Active: true, Bass: 0.1, LowMid: 0.1, HighMid: 0.1,

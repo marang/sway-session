@@ -13,13 +13,37 @@ func TestCometSoundLaunchesOnlyFromBassOnsets(t *testing.T) {
 		Region: audioRegionGeneral, Position: 1,
 	}
 	withoutBass := cometSoundArtWithSnapshot(80, 20, audio)
-	if strings.ContainsRune(withoutBass, '☄') {
-		t.Fatalf("general onset must not launch a comet: %q", withoutBass)
+	noOnset := audio
+	noOnset.OnsetCount = 0
+	noOnset.Onsets = [audioEventCapacity]audioOnset{}
+	if baseline := cometSoundArtWithSnapshot(80, 20, noOnset); strings.Count(withoutBass, "☄") != strings.Count(baseline, "☄") {
+		t.Fatalf("general onset may pulse points but must not launch another comet:\nbaseline=%q\ngeneral=%q",
+			baseline, withoutBass)
 	}
 	audio.Onsets[0].Region = audioRegionBass
 	withBass := cometSoundArtWithSnapshot(80, 20, audio)
 	if !strings.ContainsRune(withBass, '☄') || !strings.ContainsAny(withBass, "░▒▓") {
 		t.Fatalf("bass onset should launch a comet with a tail: %q", withBass)
+	}
+}
+
+func TestCometSoundPointsPulseOnBeat(t *testing.T) {
+	calm := audioSnapshot{Active: true, Level: 0.25}
+	beat := calm
+	beat.OnsetCount = 1
+	beat.Onsets[0] = audioOnset{
+		ID: 13, Age: 40 * time.Millisecond, Strength: 1,
+		Region: audioRegionGeneral,
+	}
+	calmFrame := cometSoundArtWithSnapshot(140, 40, calm)
+	beatFrame := cometSoundArtWithSnapshot(140, 40, beat)
+	if strings.Count(beatFrame, "●") <= strings.Count(calmFrame, "●") {
+		t.Fatalf("beat should pulse distributed comet particles: calm=%q beat=%q",
+			calmFrame, beatFrame)
+	}
+	if strings.Count(beatFrame, "☄") != strings.Count(calmFrame, "☄") {
+		t.Fatalf("point pulse must not add or remove comet heads: calm=%q beat=%q",
+			calmFrame, beatFrame)
 	}
 }
 
@@ -69,6 +93,12 @@ func TestCometSoundSilenceUsesCompleteBaseAnimation(t *testing.T) {
 }
 
 func TestBloomSoundMidsBassBalanceAndPollenPreserveForm(t *testing.T) {
+	originalSeed := animationSeed
+	animationSeed = 0x5eed
+	t.Cleanup(func() {
+		animationSeed = originalSeed
+	})
+
 	base := audioSnapshot{
 		Active: true, Level: 0.8, Bass: 0.2, LowMid: 0.1, HighMid: 0.1,
 		Treble: 1, Balance: -1, OnsetCount: 1,
@@ -83,8 +113,8 @@ func TestBloomSoundMidsBassBalanceAndPollenPreserveForm(t *testing.T) {
 	wideAudio.HighMid = 1
 	wideAudio.Bass = 1
 	wide := bloomSoundArtWithSnapshot(100, 20, wideAudio)
-	if strings.Count(wide, "⌁") <= strings.Count(narrow, "⌁") {
-		t.Fatalf("mids should emphasize existing petal tips: narrow=%q wide=%q", narrow, wide)
+	if strings.Count(wide, "❧") <= strings.Count(narrow, "❧") {
+		t.Fatalf("mids should strengthen existing petal tips: narrow=%q wide=%q", narrow, wide)
 	}
 	if !strings.ContainsRune(wide, '━') {
 		t.Fatalf("bass should strengthen the stem: %q", wide)

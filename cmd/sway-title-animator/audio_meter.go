@@ -46,6 +46,7 @@ const (
 
 type audioOnset struct {
 	ID       uint64
+	Sequence uint64
 	Age      time.Duration
 	Strength float64
 	Region   audioRegion
@@ -87,6 +88,7 @@ type audioAnalysis struct {
 
 type audioOnsetState struct {
 	id         uint64
+	sequence   uint64
 	occurredAt time.Time
 	strength   float64
 	region     audioRegion
@@ -111,6 +113,7 @@ type audioMeter struct {
 	hasPreviousBands  bool
 	onsets            []audioOnsetState
 	nextOnsetID       uint64
+	regionOnsetCounts [3]uint64
 	lastGeneralOnset  time.Time
 	lastBassOnset     time.Time
 	lastHighOnset     time.Time
@@ -403,6 +406,7 @@ func (meter *audioMeter) snapshotAt(now time.Time) audioSnapshot {
 		}
 		snapshot.Onsets[snapshot.OnsetCount] = audioOnset{
 			ID:       onset.id,
+			Sequence: onset.sequence,
 			Age:      age,
 			Strength: onset.strength,
 			Region:   onset.region,
@@ -431,6 +435,7 @@ func (meter *audioMeter) clear() {
 	clear(meter.previousBands[:])
 	meter.hasPreviousBands = false
 	meter.onsets = meter.onsets[:0]
+	clear(meter.regionOnsetCounts[:])
 	meter.lastGeneralOnset = time.Time{}
 	meter.lastBassOnset = time.Time{}
 	meter.lastHighOnset = time.Time{}
@@ -505,8 +510,15 @@ func (meter *audioMeter) addOnset(
 	position float64,
 ) {
 	meter.nextOnsetID++
+	regionIndex := int(region)
+	sequence := uint64(0)
+	if regionIndex >= 0 && regionIndex < len(meter.regionOnsetCounts) {
+		meter.regionOnsetCounts[regionIndex]++
+		sequence = meter.regionOnsetCounts[regionIndex]
+	}
 	onset := audioOnsetState{
 		id:         meter.nextOnsetID,
+		sequence:   sequence,
 		occurredAt: now,
 		strength:   strength,
 		region:     region,

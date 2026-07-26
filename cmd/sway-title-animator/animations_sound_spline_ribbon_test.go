@@ -1,6 +1,7 @@
 package main
 
 import (
+	"math/bits"
 	"strings"
 	"testing"
 	"time"
@@ -13,15 +14,25 @@ func TestSplineSoundBandsDisplaceContinuousCurve(t *testing.T) {
 	}
 	lowFrame := splineSoundArtWithSnapshot(100, 20, low)
 	highFrame := splineSoundArtWithSnapshot(100, 20, high)
-	if strings.Count(highFrame, "⣀") <= strings.Count(lowFrame, "⣀") {
-		t.Fatalf("band energy should displace curve: low=%q high=%q", lowFrame, highFrame)
-	}
-	for _, frame := range []string{lowFrame, highFrame} {
-		for _, glyph := range frame {
-			if !strings.ContainsRune("⠉⠒⠤⣀◇◆", glyph) {
-				t.Fatalf("spline lost continuous vocabulary: %q", frame)
-			}
+	lowDots, highDots := 0, 0
+	for _, glyph := range lowFrame {
+		if glyph >= 0x2800 && glyph <= 0x28ff {
+			lowDots += bits.OnesCount(uint(glyph - 0x2800))
 		}
+	}
+	for _, glyph := range highFrame {
+		if glyph >= 0x2800 && glyph <= 0x28ff {
+			highDots += bits.OnesCount(uint(glyph - 0x2800))
+		}
+	}
+	if highDots <= lowDots || lowFrame == highFrame {
+		t.Fatalf("band energy should thicken the preserved spline: low=%q high=%q",
+			lowFrame, highFrame)
+	}
+	if !strings.ContainsAny(lowFrame, "◇◆✦✧") ||
+		!strings.ContainsAny(highFrame, "◇◆✦✧") {
+		t.Fatalf("spline lost its tracer choreography: low=%q high=%q",
+			lowFrame, highFrame)
 	}
 }
 
@@ -68,19 +79,41 @@ func TestRibbonSoundBandsBassMidsTrebleAndDirection(t *testing.T) {
 	}
 }
 
-func TestRibbonSoundTwistPropagatesWithoutGlitchVocabulary(t *testing.T) {
+func TestRibbonSoundBeatPulseReshapesDistributedFolds(t *testing.T) {
 	audio := audioSnapshot{Active: true, Level: 0.8, OnsetCount: 1}
 	audio.Onsets[0] = audioOnset{
 		ID: 4, Age: 280 * time.Millisecond, Strength: 1,
 		Region: audioRegionGeneral, Position: 1,
 	}
-	center, _, live := ribbonSoundTwist(100, audio)
-	if !live || center <= 0 || center >= 50 {
-		t.Fatalf("twist should propagate from selected edge: %.2f", center)
+	if pulse := ribbonSoundPulse(audio); pulse <= 0.45 {
+		t.Fatalf("expected a visible beat pulse, got %.2f", pulse)
 	}
 	frame := ribbonSoundArtWithSnapshot(100, 20, audio)
-	if strings.ContainsAny(frame, "╳╪┄╍") {
-		t.Fatalf("ribbon twist must not become a glitch tear: %q", frame)
+	if strings.ContainsAny(frame, "╳╪┄╍╱╲") {
+		t.Fatalf("ribbon pulse must not become a glitch tear: %q", frame)
+	}
+	withoutOnset := audio
+	withoutOnset.OnsetCount = 0
+	withoutOnset.Onsets = [audioEventCapacity]audioOnset{}
+	calm := []rune(ribbonSoundArtWithSnapshot(100, 20, withoutOnset))
+	pulsed := []rune(frame)
+	changedQuarters := 0
+	for quarter := range 4 {
+		start := quarter * 25
+		changed := false
+		for index := start; index < start+25; index++ {
+			if calm[index] != pulsed[index] {
+				changed = true
+				break
+			}
+		}
+		if changed {
+			changedQuarters++
+		}
+	}
+	if changedQuarters < 3 {
+		t.Fatalf("beat should reshape folds across the ribbon, changed quarters=%d",
+			changedQuarters)
 	}
 }
 

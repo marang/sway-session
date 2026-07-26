@@ -46,9 +46,37 @@ func constellationSoundArtWithSnapshot(width int, phase int, audio audioSnapshot
 		}
 	}
 
+	addConstellationSoundPointPulse(chars, phase, soundBeatPulse(audio))
 	addConstellationSupernova(chars, audio)
 	addConstellationShootingStar(chars, phase, audio)
 	return string(chars)
+}
+
+func addConstellationSoundPointPulse(chars []rune, phase int, beatPulse float64) {
+	if beatPulse <= 0 {
+		return
+	}
+	for index := range chars {
+		pulse := organicNoise(
+			"constellation_sound_beat",
+			uint64(100+index),
+			float64(phase)/24,
+		)
+		switch {
+		case strings.ContainsRune("·•✧✦✶", chars[index]) &&
+			beatPulse > 0.68 && pulse > 0.28:
+			chars[index] = '●'
+		case strings.ContainsRune("·✧", chars[index]) &&
+			beatPulse > 0.30 && pulse > 0.42:
+			chars[index] = '•'
+		case chars[index] == ' ' && pulse > 0.94-beatPulse*0.18:
+			if beatPulse > 0.68 {
+				chars[index] = '●'
+			} else {
+				chars[index] = '•'
+			}
+		}
+	}
 }
 
 func addConstellationSupernova(chars []rune, audio audioSnapshot) {

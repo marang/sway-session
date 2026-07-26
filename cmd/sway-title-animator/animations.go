@@ -695,7 +695,9 @@ var animationPresets = map[string]animationFunc{
 	"wave_sound":     waveSoundArt,
 	"spline":         splineArt,
 	"square":         squareArt,
+	"square_sound":   squareSoundArt,
 	"ripples":        ripplesArt,
+	"ripples_sound":  ripplesSoundArt,
 	"bloom":          bloomArt,
 	"glitch":         glitchArt,
 	"ribbon":         ribbonArt,
@@ -705,6 +707,8 @@ var animationPresets = map[string]animationFunc{
 var soundPresetNames = map[string]bool{
 	"aurora_sound":   true,
 	"spectrum_sound": true,
+	"square_sound":   true,
+	"ripples_sound":  true,
 	"wave_sound":     true,
 }
 

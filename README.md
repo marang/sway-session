@@ -25,7 +25,9 @@ bloom          ──⌁──❧─⌁──✦
 spectrum       ·─━▆⟨▇█▇▆━┃━▆▇█▇⟩▆━─·
 spectrum_sound ⟨·─━▆▇┃▇▆━─·┃·─━▆▇┃▇▆━─·⟩
 square         ⎺⎺⎤⎽⎽⎽⎽⎽⎡⎺⎺⎺⎺⎤⎽⎽⎡
+square_sound   ⎺⎺⎺⎤⎽⎽⎽⎽⎽⎡⎺⎺⎺⎤⎽⎽⎽⎡
 ripples        ·  ╴─═●═─╶
+ripples_sound      ╴─═●═─╶
 radar          ╶◜╴──┄──═●═──┄──╋──┄──
 constellation       ·   ✦      •    ✧
 circuit        ─╍──╪──═●═──╍──╼╾───
@@ -57,6 +59,12 @@ to the swell and body of the wave, adds bounded treble spray, and sends a
 breaker across the trace when an onset arrives. Their silent forms continue as
 a narrow symmetric pulse and a small tide. Like all sound companions, both are
 opt-in and stay out of the default rotation.
+
+`square_sound` preserves Square's connected scan line while bass changes its
+plateau lengths, level changes duty cycle, and onsets send an overwrite runner
+in the stereo-selected direction. `ripples_sound` turns bounded onset history
+into broad bass rings or narrow high-frequency rings. Their silent forms remain
+a slow low-frequency trace and a subtle breathing ripple.
 
 Sound-reactive presets require the `parec` command. Install the PulseAudio
 command-line utilities for your distribution (`libpulse` on Arch Linux,
@@ -143,7 +151,9 @@ sway-title-animator --replace --preset wave_sound --fps 25
 sway-title-animator --replace --preset spline --fps 25
 sway-title-animator --replace --preset smileys --fps 25
 sway-title-animator --replace --preset square --fps 25
+sway-title-animator --replace --preset square_sound --fps 25
 sway-title-animator --replace --preset ripples --fps 25
+sway-title-animator --replace --preset ripples_sound --fps 25
 sway-title-animator --replace --preset bloom --fps 25
 sway-title-animator --replace --preset glitch --fps 25
 sway-title-animator --replace --preset ribbon --fps 25

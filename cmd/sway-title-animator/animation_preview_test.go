@@ -487,6 +487,8 @@ func TestBuiltInPresetsMaintainDistinctVisualLanguages(t *testing.T) {
 
 	allowedSimilarity := map[string]bool{
 		"aurora|aurora_sound":     true,
+		"ripples|ripples_sound":   true,
+		"square|square_sound":     true,
 		"spectrum|spectrum_sound": true,
 		"wave|wave_sound":         true,
 	}

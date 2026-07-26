@@ -3,9 +3,10 @@
 Status: Accepted design; the unnamed default rotation, startup audio
 configuration, backend-neutral capture seam, 48 kHz stereo continuous feature
 analysis, normalization/reconnect warm-up, bounded onset events,
-`aurora_sound`, `spectrum_sound`, `wave_sound`, and the scrollable Bubble Tea
-preview foundation are implemented. The remaining companions, diagnostics,
-and expanded preview modes are planned.
+`aurora_sound`, `spectrum_sound`, `wave_sound`, `square_sound`,
+`ripples_sound`, and the scrollable Bubble Tea preview foundation are
+implemented. The remaining companions, diagnostics, and expanded preview
+modes are planned.
 
 Linear project:
 [Sway Title Animator | P001 | Sound-Reactive Presets](https://linear.app/riotbox/project/sway-title-animator-or-p001-or-sound-reactive-presets-e8a4308a9902)
@@ -350,7 +351,7 @@ presets that look effectively identical.
 - Stereo balance biases the tracer direction.
 - Silence settles toward a shallow, slowly breathing curve.
 
-### `square_sound`
+### `square_sound` — implemented
 
 - Bass controls plateau length and therefore apparent frequency.
 - Overall level changes the high/low duty cycle while preserving connected scan
@@ -360,7 +361,7 @@ presets that look effectively identical.
 - Stereo balance selects the initial build or runner direction.
 - Silence draws a low-frequency trace with rare, slow runners.
 
-### `ripples_sound`
+### `ripples_sound` — implemented
 
 - Each detected onset creates a new ripple at a position selected by frequency
   region and stereo balance.
@@ -423,7 +424,7 @@ presets that look effectively identical.
 3. Deliver sound companions in reviewable PRs of no more than two related
    presets:
    - `spectrum_sound` and `wave_sound` — implemented in LAB-46;
-   - `square_sound` and `ripples_sound`;
+   - `square_sound` and `ripples_sound` — implemented in LAB-36;
    - `radar_sound` and `shutter_sound`;
    - `comet_sound` and `bloom_sound`;
    - `constellation_sound` and `circuit_sound`;

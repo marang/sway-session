@@ -652,6 +652,12 @@ func TestSpectrumSoundMapsBassOutsideAndTrebleInside(t *testing.T) {
 }
 
 func TestSpectrumSoundPeakAndSilenceRemainRecognizable(t *testing.T) {
+	originalSeed := animationSeed
+	animationSeed = 0x5eed
+	t.Cleanup(func() {
+		animationSeed = originalSeed
+	})
+
 	quietFrames := map[string]bool{}
 	for _, phase := range []int{0, 47, 113, 229} {
 		frame := spectrumSoundArtWithSnapshot(41, phase, audioSnapshot{})
@@ -811,7 +817,7 @@ func TestAudioPresetActivationIsScoped(t *testing.T) {
 		rotationPresets = originalRotation
 	})
 
-	for _, name := range []string{"aurora_sound", "spectrum_sound", "wave_sound"} {
+	for name := range soundPresetNames {
 		if !presetUsesAudio(name) {
 			t.Fatalf("expected %s to request audio directly", name)
 		}
@@ -821,11 +827,11 @@ func TestAudioPresetActivationIsScoped(t *testing.T) {
 			t.Fatalf("base preset %s must not request audio", name)
 		}
 	}
-	rotationPresets = []string{"aurora", "wave_sound"}
+	rotationPresets = []string{"aurora", "ripples_sound"}
 	if !presetUsesAudio(rotationSelection) {
 		t.Fatal("expected a rotation containing a sound companion to request audio")
 	}
-	if !presetListUsesAudio([]string{"aurora", "spectrum_sound"}) ||
+	if !presetListUsesAudio([]string{"aurora", "square_sound"}) ||
 		presetListUsesAudio([]string{"aurora", "square"}) {
 		t.Fatal("unexpected preview audio activation")
 	}

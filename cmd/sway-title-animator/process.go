@@ -115,14 +115,6 @@ func processCommandName(pid int) string {
 	return processLabel(fields, string(comm))
 }
 
-func procChildren(pid int, ppidChildren map[int][]int) []int {
-	children, err := procChildrenFile(pid)
-	if err == nil && len(children) > 0 {
-		return children
-	}
-	return ppidChildren[pid]
-}
-
 func procChildrenFile(pid int) ([]int, error) {
 	data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "task", strconv.Itoa(pid), "children"))
 	if err != nil {

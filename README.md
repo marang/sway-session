@@ -19,15 +19,68 @@ Built-in animation presets:
 
 ```text
 aurora         ▁▂▃▄▅▆▇█▇▆▅▄▃▂▁
+aurora_sound   ▁▁▂▃▇╿▅▂▁▆┃▃▁
 loom           ░▒≈⌁≋░▒▓✦▓▒░≋⌁≈▒░
+bloom          ──⌁──❧─⌁──✦
 spectrum       ·─━▆⟨▇█▇▆━┃━▆▇█▇⟩▆━─·
+square         ⎺⎺⎤⎽⎽⎽⎽⎽⎡⎺⎺⎺⎺⎤⎽⎽⎡
+ripples        ·  ╴─═●═─╶
 radar          ╶◜╴──┄──═●═──┄──╋──┄──
 constellation       ·   ✦      •    ✧
 circuit        ─╍──╪──═●═──╍──╼╾───
+glitch         ───╍╪▒▓╳──┄──
 braid          ╱╱╱╳╲╲╲╳╱╱╱╳╲╲╲
+ribbon         ·░▒▓██▓▒░··░▒▓█▓▒░·
+shutter        ███▶░│     │░◀███
 comet          ░░▒▒▓▓✶☄▓▒░░··░▒✦
+smileys        ｡･ʕ•ᴥ•ʔっ･ﾟ
+wave           ▁▃▅▇█◜╲▅▃▁
+spline         ⢀⣠⠤⠒⠉⠢⣀  ✦
 showcase       rotates through all configured presets
 ```
+
+Each launch gets a fresh motion seed. Presets keep their visual identity, but
+their timing, density, drift, and occasional events evolve organically instead
+of repeating a short fixed performance.
+
+`aurora_sound` keeps Aurora's bar language but maps the bars to
+frequency bands from the current default audio output. It reads
+`@DEFAULT_MONITOR@` through `parec`, reacts at the full configured FPS, and
+falls back to a straight `▁` bottom line when no sound or monitor is available.
+Strong peaks use `╿`; extreme peaks use `┃`. It is opt-in and is not part of
+the default showcase.
+
+Sound-reactive presets require the `parec` command. Install the PulseAudio
+command-line utilities for your distribution (`libpulse` on Arch Linux,
+`pulseaudio-utils` on Debian/Ubuntu). PipeWire users can use the same command
+through `pipewire-pulse`. Verify the dependency with:
+
+```sh
+command -v parec
+```
+
+The design and rollout plan for sound companions of every remaining animation
+is documented in [docs/sound-presets-plan.md](docs/sound-presets-plan.md).
+
+The `square` preset uses Unicode terminal-graphics scan lines rather than
+Braille pixels. Its trace holds still while it is drawn from left to right or
+right to left, and every plateau gets its own length. Occasionally, a short
+pulse travels right across the completed trace and temporarily overwrites it.
+Matched scan-line and bracket glyphs keep every edge connected.
+
+## Terminal Preview
+
+Preview every registered animation at the same time without connecting to
+Sway:
+
+```sh
+sway-title-animator --preview
+```
+
+The Bubble Tea preview uses one labeled line per preset with a blank spacer
+between animations. If the terminal is not tall enough, scroll manually with
+the arrow keys, `Page Up`/`Page Down`, or `Home`/`End`; it never auto-scrolls.
+Press `q` or `Ctrl-C` to exit and restore the previous terminal contents.
 
 ## Install
 
@@ -73,11 +126,18 @@ Run a single preset:
 
 ```sh
 sway-title-animator --replace --preset aurora --fps 25
+sway-title-animator --replace --preset aurora_sound --fps 25
 sway-title-animator --replace --preset radar --fps 25
 sway-title-animator --replace --preset comet --fps 25
 sway-title-animator --replace --preset wave --fps 25
 sway-title-animator --replace --preset spline --fps 25
 sway-title-animator --replace --preset smileys --fps 25
+sway-title-animator --replace --preset square --fps 25
+sway-title-animator --replace --preset ripples --fps 25
+sway-title-animator --replace --preset bloom --fps 25
+sway-title-animator --replace --preset glitch --fps 25
+sway-title-animator --replace --preset ribbon --fps 25
+sway-title-animator --replace --preset shutter --fps 25
 ```
 
 Use `showcase` to rotate through all configured presets:
@@ -113,14 +173,18 @@ motion = 0.22
 detect_child_process = true
 
 [showcase]
-presets = ["loom", "aurora", "spectrum", "radar", "comet", "wave", "spline", "smileys"]
+presets = [
+  "loom", "aurora", "bloom", "spectrum", "square", "ripples",
+  "radar", "constellation", "circuit", "glitch", "braid", "comet",
+  "smileys", "wave", "spline",
+]
 
 [icons]
 alacritty = "▣"
 firefox = "🌐"
 riotbox = "♪"
 
-[animation.ribbon]
+[animation.marquee]
 fill = true
 frames = [
   "··░░▒▒▓▓▒▒░░··  ",
@@ -143,3 +207,14 @@ child process in the label, for example `Alacritty › nvim`.
 Sway titlebars are text-only. This tool cannot draw bitmap icons or create
 separate left/right layout regions inside a titlebar. It uses Unicode glyphs and
 Sway's `title_format`, so the result depends on your font.
+
+## Development
+
+Run the same verification gate used by CI:
+
+```sh
+make verify
+```
+
+Planning, Linear routing, branches, pull requests, review, and cleanup follow
+[the repository workflow](docs/workflow_conventions.md).

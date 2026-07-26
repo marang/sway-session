@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"syscall"
@@ -12,6 +13,7 @@ const (
 	ipcRunCommand = 0
 	ipcSubscribe  = 2
 	ipcGetTree    = 4
+	maxIPCPayload = 64 * 1024 * 1024
 )
 
 type IPC struct {
@@ -39,6 +41,7 @@ func (ipc *IPC) ensure() error {
 }
 
 func (ipc *IPC) Request(messageType uint32, payload string) ([]byte, uint32, error) {
+	var lastErr error
 	for attempt := 0; attempt < 2; attempt++ {
 		if err := ipc.ensure(); err != nil {
 			return nil, 0, err
@@ -47,9 +50,10 @@ func (ipc *IPC) Request(messageType uint32, payload string) ([]byte, uint32, err
 		if err == nil {
 			return body, responseType, nil
 		}
+		lastErr = err
 		ipc.Close()
 	}
-	return nil, 0, errors.New("ipc request failed after reconnect")
+	return nil, 0, fmt.Errorf("ipc request failed after reconnect: %w", lastErr)
 }
 
 func (ipc *IPC) requestOnce(messageType uint32, payload string) ([]byte, uint32, error) {
@@ -109,6 +113,9 @@ func readIPCMessage(reader io.Reader) ([]byte, uint32, error) {
 	}
 	length := binary.LittleEndian.Uint32(header[6:10])
 	messageType := binary.LittleEndian.Uint32(header[10:14])
+	if length > maxIPCPayload {
+		return nil, 0, fmt.Errorf("ipc payload is too large: %d bytes exceeds %d", length, maxIPCPayload)
+	}
 	body := make([]byte, length)
 	if _, err := io.ReadFull(reader, body); err != nil {
 		return nil, 0, err

@@ -1,15 +1,22 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"net"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"syscall"
 	"testing"
 	"time"
 )
+
+func TestReadIPCMessageRejectsOversizedPayload(t *testing.T) {
+	header := ipcHeader(100, maxIPCPayload+1)
+	if _, _, err := readIPCMessage(bytes.NewReader(header)); err == nil {
+		t.Fatal("expected oversized IPC payload to be rejected before allocation")
+	}
+}
 
 func TestIPCDialUnixSocketRoundTrip(t *testing.T) {
 	socket := filepath.Join(t.TempDir(), "sway.sock")
@@ -76,7 +83,7 @@ func (err *testError) Error() string {
 }
 
 func TestChildProcessLabelFindsDescendant(t *testing.T) {
-	cmd := exec.Command("sleep", "2")
+	cmd := exec.Command("sh", "-c", "sleep 2 & wait")
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start sleep: %v", err)
 	}
@@ -86,7 +93,7 @@ func TestChildProcessLabelFindsDescendant(t *testing.T) {
 	})
 
 	for range 20 {
-		if label := childProcessLabel(os.Getpid()); label == "sleep" {
+		if label := childProcessLabel(cmd.Process.Pid); label == "sleep" {
 			return
 		}
 		time.Sleep(25 * time.Millisecond)
@@ -289,6 +296,18 @@ func TestFramesUntilNextAnimationKeySkipsStillMotionFrames(t *testing.T) {
 	}
 }
 
+func TestAnimationFrameKeyKeepsAudioPresetAtFullFPS(t *testing.T) {
+	originalPreset := animationPreset
+	t.Cleanup(func() {
+		animationPreset = originalPreset
+	})
+
+	animationPreset = "aurora_sound"
+	if frames := framesUntilNextAnimationKey(1); frames != 1 {
+		t.Fatalf("expected sound-reactive frames to run at full fps, got %d", frames)
+	}
+}
+
 func TestFramesUntilNextAnimationKeyKeepsShowcaseBlendAtFullFPS(t *testing.T) {
 	originalPreset := animationPreset
 	originalHold := settings.ShowcaseHoldFrames
@@ -309,7 +328,7 @@ func TestFramesUntilNextAnimationKeyKeepsShowcaseBlendAtFullFPS(t *testing.T) {
 }
 
 func TestNewAnimationPresetsRenderMotion(t *testing.T) {
-	for _, name := range []string{"smileys", "wave", "spline"} {
+	for _, name := range []string{"smileys", "wave", "spline", "square", "ripples", "bloom", "glitch", "ribbon", "shutter"} {
 		t.Run(name, func(t *testing.T) {
 			fn := animationPresets[name]
 			first := fn(80, 1)
@@ -329,10 +348,11 @@ func TestApplyFocusedFrameReassertsCachedFrame(t *testing.T) {
 	var setValue string
 	setCount := 0
 	animator := NewTitleAnimator(nil)
-	animator.titleSetter = func(conID int64, value string) {
+	animator.titleSetter = func(conID int64, value string) error {
 		setID = conID
 		setValue = value
 		setCount++
+		return nil
 	}
 	animator.focusedID = 42
 	animator.focusedBase = "base"
@@ -345,5 +365,53 @@ func TestApplyFocusedFrameReassertsCachedFrame(t *testing.T) {
 
 	if setCount != 1 || setID != 42 || setValue != "base" {
 		t.Fatalf("expected cached frame to be reasserted once, got count=%d id=%d value=%q", setCount, setID, setValue)
+	}
+}
+
+func TestApplyFocusedFrameDoesNotCacheFailedWrite(t *testing.T) {
+	animator := NewTitleAnimator(nil)
+	animator.errorReporter = func(error) {}
+	animator.titleSetter = func(int64, string) error {
+		return errors.New("socket unavailable")
+	}
+	animator.focusedID = 42
+	animator.focusedBase = "base"
+	animator.focusedAnimationKey = -1
+	animator.focusedCacheIsActive = true
+
+	animator.ApplyFocusedFrame(1)
+
+	if _, ok := animator.lastFormats[42]; ok {
+		t.Fatal("failed title write must not be cached as successful")
+	}
+}
+
+func TestConfiguredIconRulesPreferSpecificMatchesDeterministically(t *testing.T) {
+	icons := map[string]string{
+		"term":      "generic",
+		"Alacritty": "specific",
+		"terminal":  "terminal",
+	}
+	first := configuredIconRules(icons)
+	second := configuredIconRules(icons)
+	if len(first) != 3 || len(second) != 3 {
+		t.Fatalf("expected three configured rules, got %v and %v", first, second)
+	}
+	for index := range first {
+		if first[index] != second[index] {
+			t.Fatalf("expected deterministic rule order, got %v and %v", first, second)
+		}
+	}
+	if first[0].needle != "alacritty" || first[1].needle != "terminal" || first[2].needle != "term" {
+		t.Fatalf("expected longest and then lexical matching priority, got %v", first)
+	}
+}
+
+func TestTextColumnsMatchesTerminalWidthRules(t *testing.T) {
+	if got := textColumns("e\u0301"); got != 1 {
+		t.Fatalf("expected combining sequence width 1, got %d", got)
+	}
+	if got := textColumns("🌐"); got != 2 {
+		t.Fatalf("expected emoji width 2, got %d", got)
 	}
 }

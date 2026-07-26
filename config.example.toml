@@ -12,10 +12,14 @@ detect_child_process = true
 presets = [
   "loom",
   "aurora",
+  "bloom",
   "spectrum",
+  "square",
+  "ripples",
   "radar",
   "constellation",
   "circuit",
+  "glitch",
   "braid",
   "comet",
   "smileys",
@@ -41,25 +45,3 @@ comet_trail = "·░▒▓"
 alacritty = "▣"
 firefox = "🌐"
 riotbox = "♪"
-
-[animation.ribbon]
-fill = true
-frames = [
-  "··░░▒▒▓▓▒▒░░··  ",
-  "·░░▒▒▓▓▒▒░░··  ·",
-  "░░▒▒▓▓▒▒░░··  ··",
-  "░▒▒▓▓▒▒░░··  ··░",
-  "▒▒▓▓▒▒░░··  ··░░",
-  "▒▓▓▒▒░░··  ··░░▒",
-  "▓▓▒▒░░··  ··░░▒▒",
-  "▓▒▒░░··  ··░░▒▒▓",
-]
-
-[animation.shutter]
-fill = true
-frames = [
-  "░░▒▒▓▓██▓▓▒▒░░··",
-  "·░░▒▒▓▓██▓▓▒▒░░·",
-  "··░░▒▒▓▓██▓▓▒▒░░",
-  "░··░░▒▒▓▓██▓▓▒▒░",
-]

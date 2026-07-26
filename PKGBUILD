@@ -6,6 +6,7 @@ arch=('x86_64' 'aarch64')
 url="https://github.com/marang/sway-title-animator"
 license=('MIT')
 depends=('sway')
+optdepends=('libpulse: sound-reactive animation presets via parec')
 makedepends=('go')
 source=("sway-title-animator-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
 sha256sums=('SKIP')

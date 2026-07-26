@@ -49,6 +49,8 @@ nfpms:
     bindir: /usr/bin
     dependencies:
       - sway
+    recommends:
+      - pulseaudio-utils
     contents:
       - src: ./README.md
         dst: /usr/share/doc/sway-title-animator/README.md

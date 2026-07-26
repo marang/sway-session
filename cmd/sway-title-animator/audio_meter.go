@@ -8,6 +8,7 @@ import (
 	"math"
 	"os"
 	"os/exec"
+	"slices"
 	"sync"
 	"time"
 )
@@ -303,19 +304,9 @@ func presetUsesAudio(name string) bool {
 	if name != "showcase" {
 		return false
 	}
-	for _, preset := range showcasePresets {
-		if preset == "aurora_sound" {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(showcasePresets, "aurora_sound")
 }
 
 func presetListUsesAudio(names []string) bool {
-	for _, name := range names {
-		if name == "aurora_sound" {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(names, "aurora_sound")
 }

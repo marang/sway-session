@@ -48,7 +48,7 @@ func runtimeFile() (string, error) {
 }
 
 func acquireInstanceLock(path string, replace bool) (*instanceLock, error) {
-	for attempt := 0; attempt < 3; attempt++ {
+	for range 3 {
 		lock, retry, err := acquireInstanceLockOnce(path, replace)
 		if err != nil {
 			return nil, err

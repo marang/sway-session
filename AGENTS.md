@@ -15,7 +15,8 @@ make verify
 
 This checks formatting, unit tests, race tests, `go vet`, `staticcheck`, the
 `CGO_ENABLED=0` build, and whitespace errors. Use `make fmt` to format Go files.
-Use `goimports` or `gofmt` on changed Go files. The module requires Go 1.24.
+Use `goimports` or `gofmt` on changed Go files. The module requires Go 1.26;
+the preferred security-patched toolchain is Go 1.26.5 as declared in `go.mod`.
 
 ## Workflow
 

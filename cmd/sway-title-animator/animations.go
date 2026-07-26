@@ -475,7 +475,7 @@ func smileysArt(width int, phase int) string {
 	}
 
 	streamCount := max(1, min(4, width/30))
-	for faceIndex := 0; faceIndex < streamCount; faceIndex++ {
+	for faceIndex := range streamCount {
 		stream := uint64(faceIndex + 1)
 		phaseOffset := float64(phase + faceIndex*23)
 		for _, event := range organicEvents("smileys", stream, phaseOffset, 61+float64(faceIndex*13), 42, 76) {
@@ -609,7 +609,7 @@ func splineArt(width int, phase int) string {
 	pixelWidth := width * 2
 	segments := max(2, min(5, width/18))
 	segmentWidth := max(10, pixelWidth/segments)
-	for segment := 0; segment < segments; segment++ {
+	for segment := range segments {
 		left := segment * segmentWidth
 		right := min(pixelWidth-1, (segment+1)*segmentWidth)
 		if segment == segments-1 {

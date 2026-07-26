@@ -328,16 +328,25 @@ func TestFramesUntilNextAnimationKeyKeepsShowcaseBlendAtFullFPS(t *testing.T) {
 }
 
 func TestNewAnimationPresetsRenderMotion(t *testing.T) {
+	originalSeed := animationSeed
+	animationSeed = 0x5eed
+	t.Cleanup(func() {
+		animationSeed = originalSeed
+	})
+
 	for _, name := range []string{"smileys", "wave", "spline", "square", "ripples", "bloom", "glitch", "ribbon", "shutter"} {
 		t.Run(name, func(t *testing.T) {
 			fn := animationPresets[name]
-			first := fn(80, 1)
-			later := fn(80, 12)
-			if first == "" {
-				t.Fatalf("expected nonempty frame")
+			frames := map[string]bool{}
+			for _, phase := range []int{1, 12, 53, 137} {
+				frame := fn(80, phase)
+				if frame == "" {
+					t.Fatalf("expected nonempty frame at phase %d", phase)
+				}
+				frames[frame] = true
 			}
-			if first == later {
-				t.Fatalf("expected preset to move, got identical frames %q", first)
+			if len(frames) < 2 {
+				t.Fatalf("expected preset to move, got identical sampled frames")
 			}
 		})
 	}

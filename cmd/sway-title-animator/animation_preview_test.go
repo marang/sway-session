@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 )
 
 type failingEntropyReader struct{}
@@ -320,7 +320,7 @@ func TestSquareRunnerOccasionallyMovesRightAndOverwritesTrace(t *testing.T) {
 	activeCycles := 0
 	inactiveCycles := 0
 	verifiedMovement := false
-	for cycle := int64(0); cycle < 32; cycle++ {
+	for cycle := range int64(32) {
 		earlyPosition := squareRunnerStartFrame + 2
 		earlyRunner, active := squareRunnerState(width, cycle, earlyPosition)
 		if !active {
@@ -721,7 +721,7 @@ func TestPreviewModelRenderingAndNonTTYFailure(t *testing.T) {
 
 	model := newPreviewModel([]string{"demo"}, 25)
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 30, Height: 3})
-	rendered := updated.(previewModel).View()
+	rendered := updated.(previewModel).View().Content
 	if !strings.Contains(rendered, "demo  xxxxxxxx") || !strings.Contains(rendered, "PgUp/PgDn") {
 		t.Fatalf("unexpected Bubble Tea preview %q", rendered)
 	}
@@ -752,20 +752,20 @@ func TestPreviewModelScrollsAndQuits(t *testing.T) {
 	model := newPreviewModel(names, 25)
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 40, Height: 4})
 	model = updated.(previewModel)
-	if model.viewport.YOffset != 0 {
-		t.Fatalf("expected preview at top, offset=%d", model.viewport.YOffset)
+	if model.viewport.YOffset() != 0 {
+		t.Fatalf("expected preview at top, offset=%d", model.viewport.YOffset())
 	}
-	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnd})
+	updated, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyEnd})
 	model = updated.(previewModel)
-	if model.viewport.YOffset == 0 || !model.viewport.AtBottom() {
-		t.Fatalf("expected End to scroll to bottom, offset=%d", model.viewport.YOffset)
+	if model.viewport.YOffset() == 0 || !model.viewport.AtBottom() {
+		t.Fatalf("expected End to scroll to bottom, offset=%d", model.viewport.YOffset())
 	}
-	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyHome})
+	updated, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyHome})
 	model = updated.(previewModel)
-	if model.viewport.YOffset != 0 || !model.viewport.AtTop() {
-		t.Fatalf("expected Home to scroll to top, offset=%d", model.viewport.YOffset)
+	if model.viewport.YOffset() != 0 || !model.viewport.AtTop() {
+		t.Fatalf("expected Home to scroll to top, offset=%d", model.viewport.YOffset())
 	}
-	_, command := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	_, command := model.Update(tea.KeyPressMsg{Text: "q", Code: 'q'})
 	if command == nil {
 		t.Fatal("expected q to quit")
 	}

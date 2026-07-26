@@ -42,7 +42,7 @@ func (ipc *IPC) ensure() error {
 
 func (ipc *IPC) Request(messageType uint32, payload string) ([]byte, uint32, error) {
 	var lastErr error
-	for attempt := 0; attempt < 2; attempt++ {
+	for range 2 {
 		if err := ipc.ensure(); err != nil {
 			return nil, 0, err
 		}

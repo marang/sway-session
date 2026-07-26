@@ -121,7 +121,7 @@ func procChildrenFile(pid int) ([]int, error) {
 		return nil, err
 	}
 	children := []int{}
-	for _, field := range strings.Fields(string(data)) {
+	for field := range strings.FieldsSeq(string(data)) {
 		childPID, err := strconv.Atoi(field)
 		if err == nil && childPID > 0 {
 			children = append(children, childPID)

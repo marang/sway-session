@@ -9,8 +9,8 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
 	"golang.org/x/term"
 )
 
@@ -104,7 +104,7 @@ func previewLines(names []string, layout previewLayout, phase int) []string {
 func newPreviewModel(names []string, fps float64) previewModel {
 	model := previewModel{
 		names:      names,
-		viewport:   viewport.New(0, 0),
+		viewport:   viewport.New(),
 		fps:        fps,
 		lastMotion: motionPhase(0),
 		lastAudio:  currentAudioSnapshot(),
@@ -121,7 +121,7 @@ func (model previewModel) Init() tea.Cmd {
 
 func (model previewModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	switch message := message.(type) {
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		switch message.String() {
 		case "q", "ctrl+c":
 			return model, tea.Quit
@@ -175,8 +175,8 @@ func (model *previewModel) resize(width int, height int) {
 		return
 	}
 	model.layout = layout
-	model.viewport.Width = width
-	model.viewport.Height = height - 1
+	model.viewport.SetWidth(width)
+	model.viewport.SetHeight(height - 1)
 	model.refreshContent()
 }
 
@@ -187,19 +187,23 @@ func (model *previewModel) refreshContent() {
 	model.viewport.SetContent(strings.Join(previewLines(model.names, model.layout, model.phase), "\n"))
 }
 
-func (model previewModel) View() string {
+func (model previewModel) View() tea.View {
+	var content string
 	if !model.ready {
-		return "Preparing animation preview…"
+		content = "Preparing animation preview…"
+	} else if model.layoutError != nil {
+		content = model.layoutError.Error()
+	} else {
+		position := fmt.Sprintf("%3.0f%%", model.viewport.ScrollPercent()*100)
+		help := truncateTerminalColumns(
+			fmt.Sprintf("↑/↓ scroll  PgUp/PgDn page  Home/End jump  q quit  %s", position),
+			model.layout.width,
+		)
+		content = model.viewport.View() + "\n" + help
 	}
-	if model.layoutError != nil {
-		return model.layoutError.Error()
-	}
-	position := fmt.Sprintf("%3.0f%%", model.viewport.ScrollPercent()*100)
-	help := truncateTerminalColumns(
-		fmt.Sprintf("↑/↓ scroll  PgUp/PgDn page  Home/End jump  q quit  %s", position),
-		model.layout.width,
-	)
-	return model.viewport.View() + "\n" + help
+	view := tea.NewView(content)
+	view.AltScreen = true
+	return view
 }
 
 func previewTick(fps float64) tea.Cmd {
@@ -228,7 +232,6 @@ func runPreview(output *os.File, fps float64) error {
 
 	program := tea.NewProgram(
 		newPreviewModel(names, fps),
-		tea.WithAltScreen(),
 		tea.WithInput(os.Stdin),
 		tea.WithOutput(output),
 	)

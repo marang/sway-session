@@ -210,6 +210,9 @@ Sway's `title_format`, so the result depends on your font.
 
 ## Development
 
+Development requires Go 1.26. The module selects Go 1.26.5 as its preferred
+security-patched toolchain.
+
 Run the same verification gate used by CI:
 
 ```sh

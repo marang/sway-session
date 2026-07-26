@@ -39,8 +39,8 @@ type previewModel struct {
 func previewPresetNames() []string {
 	names := make([]string, 0, len(animationPresets))
 	seen := map[string]bool{}
-	for _, name := range showcasePresets {
-		if name == "showcase" || seen[name] {
+	for _, name := range rotationPresets {
+		if seen[name] {
 			continue
 		}
 		if _, ok := animationPresets[name]; !ok {
@@ -52,7 +52,7 @@ func previewPresetNames() []string {
 
 	remaining := make([]string, 0, len(animationPresets)-len(names))
 	for name := range animationPresets {
-		if name != "showcase" && !seen[name] {
+		if !seen[name] {
 			remaining = append(remaining, name)
 		}
 	}

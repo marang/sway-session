@@ -700,7 +700,7 @@ var animationPresets = map[string]animationFunc{
 	"shutter":       shutterArt,
 }
 
-var showcasePresets = []string{
+var rotationPresets = []string{
 	"loom",
 	"aurora",
 	"bloom",
@@ -718,48 +718,48 @@ var showcasePresets = []string{
 	"spline",
 }
 
-func showcaseArt(width int, phase int) string {
-	cycleFrames := settings.ShowcaseHoldFrames + settings.ShowcaseBlendFrames
-	presetIndex := (phase / cycleFrames) % len(showcasePresets)
+func rotationArt(width int, phase int) string {
+	cycleFrames := settings.RotationHoldFrames + settings.RotationBlendFrames
+	presetIndex := (phase / cycleFrames) % len(rotationPresets)
 	offset := phase % cycleFrames
-	preset := showcasePresets[presetIndex]
+	preset := rotationPresets[presetIndex]
 	motion := motionPhase(phase)
 
-	if offset < settings.ShowcaseHoldFrames {
+	if offset < settings.RotationHoldFrames {
 		return animationPresets[preset](width, motion)
 	}
 
-	nextPreset := showcasePresets[(presetIndex+1)%len(showcasePresets)]
+	nextPreset := rotationPresets[(presetIndex+1)%len(rotationPresets)]
 	from := animationPresets[preset](width, motion)
 	to := animationPresets[nextPreset](width, motion)
-	progress := float64(offset-settings.ShowcaseHoldFrames) / float64(settings.ShowcaseBlendFrames)
+	progress := float64(offset-settings.RotationHoldFrames) / float64(settings.RotationBlendFrames)
 	return blendArt(from, to, width, phase, smoothstep(progress))
 }
 
 func activityArt(width int, phase int) string {
-	if animationPreset == "showcase" {
-		return showcaseArt(width, phase)
+	if animationPreset == rotationSelection {
+		return rotationArt(width, phase)
 	}
 	return animationFuncFor(animationPreset)(width, motionPhase(phase))
 }
 
 func animationFrameKey(phase int) int {
-	if animationPreset != "showcase" {
+	if animationPreset != rotationSelection {
 		if animationPreset == "aurora_sound" {
 			return phase
 		}
 		return motionPhase(phase)
 	}
-	cycleFrames := settings.ShowcaseHoldFrames + settings.ShowcaseBlendFrames
-	presetIndex := (phase / cycleFrames) % len(showcasePresets)
+	cycleFrames := settings.RotationHoldFrames + settings.RotationBlendFrames
+	presetIndex := (phase / cycleFrames) % len(rotationPresets)
 	offset := phase % cycleFrames
-	preset := showcasePresets[presetIndex]
+	preset := rotationPresets[presetIndex]
 	if preset == "aurora_sound" ||
-		(offset >= settings.ShowcaseHoldFrames &&
-			showcasePresets[(presetIndex+1)%len(showcasePresets)] == "aurora_sound") {
+		(offset >= settings.RotationHoldFrames &&
+			rotationPresets[(presetIndex+1)%len(rotationPresets)] == "aurora_sound") {
 		return 20_000_000 + phase
 	}
-	if offset < settings.ShowcaseHoldFrames {
+	if offset < settings.RotationHoldFrames {
 		return presetIndex*1_000_000 + motionPhase(phase)
 	}
 	return 10_000_000 + phase
@@ -823,9 +823,6 @@ func motionPhase(phase int) int {
 }
 
 func animationFuncFor(name string) animationFunc {
-	if name == "showcase" {
-		return showcaseArt
-	}
 	return animationPresets[name]
 }
 

@@ -67,7 +67,7 @@ func TestOrganicNoiseIsSeededDeterministicAndBounded(t *testing.T) {
 	}
 }
 
-func TestDefaultShowcaseOrderIncludesNewPresets(t *testing.T) {
+func TestDefaultRotationOrderIncludesNewPresets(t *testing.T) {
 	want := []string{
 		"loom",
 		"aurora",
@@ -85,8 +85,8 @@ func TestDefaultShowcaseOrderIncludesNewPresets(t *testing.T) {
 		"wave",
 		"spline",
 	}
-	if !slices.Equal(showcasePresets, want) {
-		t.Fatalf("expected default showcase %v, got %v", want, showcasePresets)
+	if !slices.Equal(rotationPresets, want) {
+		t.Fatalf("expected default rotation %v, got %v", want, rotationPresets)
 	}
 }
 
@@ -610,19 +610,19 @@ func frameContainsBraille(frame string) bool {
 	return false
 }
 
-func TestPreviewPresetNamesUseShowcaseThenSortedRemainder(t *testing.T) {
+func TestPreviewPresetNamesUseRotationThenSortedRemainder(t *testing.T) {
 	originalPresets := animationPresets
-	originalShowcase := showcasePresets
+	originalRotation := rotationPresets
 	animationPresets = map[string]animationFunc{
 		"aurora": func(int, int) string { return "a" },
 		"bloom":  func(int, int) string { return "b" },
 		"alpha":  func(int, int) string { return "c" },
 		"zebra":  func(int, int) string { return "d" },
 	}
-	showcasePresets = []string{"bloom", "aurora", "bloom", "missing", "showcase"}
+	rotationPresets = []string{"bloom", "aurora", "bloom", "missing"}
 	t.Cleanup(func() {
 		animationPresets = originalPresets
-		showcasePresets = originalShowcase
+		rotationPresets = originalRotation
 	})
 
 	got := previewPresetNames()
@@ -709,14 +709,14 @@ func TestTerminalColumnsHandleBrailleWideAndCombiningRunes(t *testing.T) {
 
 func TestPreviewModelRenderingAndNonTTYFailure(t *testing.T) {
 	originalPresets := animationPresets
-	originalShowcase := showcasePresets
+	originalRotation := rotationPresets
 	animationPresets = map[string]animationFunc{
 		"demo": func(width int, phase int) string { return strings.Repeat("x", width) },
 	}
-	showcasePresets = []string{"demo"}
+	rotationPresets = []string{"demo"}
 	t.Cleanup(func() {
 		animationPresets = originalPresets
-		showcasePresets = originalShowcase
+		rotationPresets = originalRotation
 	})
 
 	model := newPreviewModel([]string{"demo"}, 25)

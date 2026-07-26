@@ -36,7 +36,6 @@ comet          ░░▒▒▓▓✶☄▓▒░░··░▒✦
 smileys        ｡･ʕ•ᴥ•ʔっ･ﾟ
 wave           ▁▃▅▇█◜╲▅▃▁
 spline         ⢀⣠⠤⠒⠉⠢⣀  ✦
-showcase       rotates through all configured presets
 ```
 
 Each launch gets a fresh motion seed. Presets keep their visual identity, but
@@ -48,7 +47,7 @@ frequency bands from the current default audio output. It reads
 `@DEFAULT_MONITOR@` through `parec`, reacts at the full configured FPS, and
 falls back to a straight `▁` bottom line when no sound or monitor is available.
 Strong peaks use `╿`; extreme peaks use `┃`. It is opt-in and is not part of
-the default showcase.
+the default rotation.
 
 Sound-reactive presets require the `parec` command. Install the PulseAudio
 command-line utilities for your distribution (`libpulse` on Arch Linux,
@@ -105,7 +104,7 @@ Make sure `~/.local/bin` is in your `PATH`.
 Add this to your Sway config:
 
 ```conf
-exec_always --no-startup-id sway-title-animator --replace --preset showcase --fps 25
+exec_always --no-startup-id sway-title-animator --replace --fps 25
 ```
 
 Then reload Sway:
@@ -140,10 +139,10 @@ sway-title-animator --replace --preset ribbon --fps 25
 sway-title-animator --replace --preset shutter --fps 25
 ```
 
-Use `showcase` to rotate through all configured presets:
+Omit `--preset` to rotate through the configured presets:
 
 ```sh
-sway-title-animator --replace --preset showcase --fps 25
+sway-title-animator --replace --fps 25
 ```
 
 ## Configuration
@@ -163,16 +162,18 @@ sway-title-animator --init-config
 This creates `~/.config/sway-title-animator/config.toml` if it does not exist.
 It will not overwrite an existing config.
 
-The config can change timing, glyphs, app icons, showcase order, and simple
+The config can change timing, glyphs, app icons, rotation order, and simple
 frame-based animations.
 
 ```toml
 [settings]
 fps = 25
 motion = 0.22
+rotation_hold_frames = 260
+rotation_blend_frames = 75
 detect_child_process = true
 
-[showcase]
+[rotation]
 presets = [
   "loom", "aurora", "bloom", "spectrum", "square", "ripples",
   "radar", "constellation", "circuit", "glitch", "braid", "comet",
@@ -192,6 +193,10 @@ frames = [
   "░░▒▒▓▓▒▒░░··  ··",
 ]
 ```
+
+The old `[showcase]` section and `showcase_*` timing options are intentionally
+not aliases. Rename them to `[rotation]`, `rotation_hold_frames`, and
+`rotation_blend_frames` before starting the animator.
 
 Run with a specific config:
 

@@ -11,7 +11,7 @@ import (
 
 func main() {
 	replace := flag.Bool("replace", false, "replace an existing tab title daemon")
-	preset := flag.String("preset", envDefault("SWAY_TAB_ANIMATION", animationPreset), "animation preset")
+	preset := flag.String("preset", envDefault("SWAY_TAB_ANIMATION", animationPreset), "animation preset (default: configured rotation)")
 	fps := flag.Float64("fps", 0, "animation frames per second")
 	configPath := flag.String("config", envDefault("SWAY_TITLE_ANIMATOR_CONFIG", defaultConfigPath()), "TOML config path")
 	initConfigFlag := flag.Bool("init-config", false, "write an example config if it does not exist")
@@ -55,7 +55,7 @@ func main() {
 		}
 		return
 	}
-	if *preset != "showcase" {
+	if *preset != rotationSelection {
 		if _, ok := animationPresets[*preset]; !ok {
 			fmt.Fprintf(os.Stderr, "Unknown animation preset: %s\n", *preset)
 			fmt.Fprintf(os.Stderr, "Available:\n")

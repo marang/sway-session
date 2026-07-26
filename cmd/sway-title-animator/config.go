@@ -22,6 +22,9 @@ func loadConfig(path string) error {
 		}
 		return err
 	}
+	if err := rejectObsoleteShowcaseConfig(data); err != nil {
+		return err
+	}
 	var config Config
 	if err := toml.Unmarshal(data, &config); err != nil {
 		return err
@@ -61,11 +64,11 @@ func applyConfig(config Config) {
 	if config.Settings.TitleReserveColumns != nil {
 		settings.TitleReserveColumns = *config.Settings.TitleReserveColumns
 	}
-	if config.Settings.ShowcaseHoldFrames != nil {
-		settings.ShowcaseHoldFrames = *config.Settings.ShowcaseHoldFrames
+	if config.Settings.RotationHoldFrames != nil {
+		settings.RotationHoldFrames = *config.Settings.RotationHoldFrames
 	}
-	if config.Settings.ShowcaseBlendFrames != nil {
-		settings.ShowcaseBlendFrames = *config.Settings.ShowcaseBlendFrames
+	if config.Settings.RotationBlendFrames != nil {
+		settings.RotationBlendFrames = *config.Settings.RotationBlendFrames
 	}
 	if config.Settings.DetectChildProcess != nil {
 		settings.DetectChildProcess = *config.Settings.DetectChildProcess
@@ -81,9 +84,30 @@ func applyConfig(config Config) {
 		}
 		animationPresets[name] = frameAnimationArt(animation)
 	}
-	if len(config.Showcase.Presets) > 0 {
-		showcasePresets = filterKnownPresets(config.Showcase.Presets)
+	if len(config.Rotation.Presets) > 0 {
+		rotationPresets = filterKnownPresets(config.Rotation.Presets)
 	}
+}
+
+func rejectObsoleteShowcaseConfig(data []byte) error {
+	var raw map[string]any
+	if err := toml.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	if _, exists := raw["showcase"]; exists {
+		return errors.New("obsolete [showcase] config section; rename it to [rotation]")
+	}
+	rawSettings, ok := raw["settings"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	for _, name := range []string{"showcase_hold_frames", "showcase_blend_frames"} {
+		if _, exists := rawSettings[name]; exists {
+			replacement := strings.Replace(name, "showcase_", "rotation_", 1)
+			return fmt.Errorf("obsolete settings.%s option; rename it to settings.%s", name, replacement)
+		}
+	}
+	return nil
 }
 
 func configuredIconRules(icons map[string]string) []iconRule {
@@ -119,8 +143,8 @@ func validateSettings(settings Settings) error {
 	if settings.TitleReserveColumns < 0 {
 		return errors.New("title reserve columns must be greater than or equal to 0")
 	}
-	if settings.ShowcaseHoldFrames < 1 || settings.ShowcaseBlendFrames < 1 {
-		return errors.New("showcase hold/blend frames must be greater than 0")
+	if settings.RotationHoldFrames < 1 || settings.RotationBlendFrames < 1 {
+		return errors.New("rotation hold/blend frames must be greater than 0")
 	}
 	return nil
 }
@@ -148,15 +172,12 @@ func applyGlyphConfig(glyphs ConfigGlyphs) {
 func filterKnownPresets(names []string) []string {
 	filtered := []string{}
 	for _, name := range names {
-		if name == "showcase" {
-			continue
-		}
 		if _, ok := animationPresets[name]; ok {
 			filtered = append(filtered, name)
 		}
 	}
 	if len(filtered) == 0 {
-		return showcasePresets
+		return rotationPresets
 	}
 	return filtered
 }

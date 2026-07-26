@@ -117,6 +117,26 @@ func TestAnimationFrameKeyCoalescesStillMotionFrames(t *testing.T) {
 	}
 }
 
+func TestEmptyPresetSelectsRotationWithoutRegisteringPseudoPreset(t *testing.T) {
+	originalPreset := animationPreset
+	originalRotation := rotationPresets
+	animationPreset = rotationSelection
+	rotationPresets = []string{"aurora"}
+	t.Cleanup(func() {
+		animationPreset = originalPreset
+		rotationPresets = originalRotation
+	})
+
+	width := 40
+	phase := 17
+	if got, want := activityArt(width, phase), animationPresets["aurora"](width, motionPhase(phase)); got != want {
+		t.Fatalf("expected empty preset to render configured rotation entry")
+	}
+	if _, exists := animationPresets["showcase"]; exists {
+		t.Fatal("rotation must not be registered as the showcase pseudo-preset")
+	}
+}
+
 func TestValidateSettingsRejectsLayoutBreakingValues(t *testing.T) {
 	valid := Settings{
 		FPS:                 25,
@@ -124,8 +144,8 @@ func TestValidateSettingsRejectsLayoutBreakingValues(t *testing.T) {
 		ApproxCharWidth:     8.5,
 		MaxArtColumns:       220,
 		TitleReserveColumns: 18,
-		ShowcaseHoldFrames:  260,
-		ShowcaseBlendFrames: 75,
+		RotationHoldFrames:  260,
+		RotationBlendFrames: 75,
 	}
 	tests := []struct {
 		name   string
@@ -137,8 +157,8 @@ func TestValidateSettingsRejectsLayoutBreakingValues(t *testing.T) {
 		{"char width zero", func(settings *Settings) { settings.ApproxCharWidth = 0 }},
 		{"negative art columns", func(settings *Settings) { settings.MaxArtColumns = -1 }},
 		{"negative title reserve", func(settings *Settings) { settings.TitleReserveColumns = -1 }},
-		{"showcase hold zero", func(settings *Settings) { settings.ShowcaseHoldFrames = 0 }},
-		{"showcase blend zero", func(settings *Settings) { settings.ShowcaseBlendFrames = 0 }},
+		{"rotation hold zero", func(settings *Settings) { settings.RotationHoldFrames = 0 }},
+		{"rotation blend zero", func(settings *Settings) { settings.RotationBlendFrames = 0 }},
 	}
 
 	if err := validateSettings(valid); err != nil {
@@ -264,19 +284,19 @@ func TestProcessLabelIgnoresTruncatedKernelName(t *testing.T) {
 	}
 }
 
-func TestAnimationFrameKeyKeepsShowcaseBlendFramesDistinct(t *testing.T) {
+func TestAnimationFrameKeyKeepsRotationBlendFramesDistinct(t *testing.T) {
 	originalPreset := animationPreset
-	originalHold := settings.ShowcaseHoldFrames
-	originalBlend := settings.ShowcaseBlendFrames
+	originalHold := settings.RotationHoldFrames
+	originalBlend := settings.RotationBlendFrames
 	t.Cleanup(func() {
 		animationPreset = originalPreset
-		settings.ShowcaseHoldFrames = originalHold
-		settings.ShowcaseBlendFrames = originalBlend
+		settings.RotationHoldFrames = originalHold
+		settings.RotationBlendFrames = originalBlend
 	})
 
-	animationPreset = "showcase"
-	settings.ShowcaseHoldFrames = 2
-	settings.ShowcaseBlendFrames = 3
+	animationPreset = rotationSelection
+	settings.RotationHoldFrames = 2
+	settings.RotationBlendFrames = 3
 
 	if first, second := animationFrameKey(2), animationFrameKey(3); first == second {
 		t.Fatalf("expected blend frames to stay distinct, got %d and %d", first, second)
@@ -308,19 +328,19 @@ func TestAnimationFrameKeyKeepsAudioPresetAtFullFPS(t *testing.T) {
 	}
 }
 
-func TestFramesUntilNextAnimationKeyKeepsShowcaseBlendAtFullFPS(t *testing.T) {
+func TestFramesUntilNextAnimationKeyKeepsRotationBlendAtFullFPS(t *testing.T) {
 	originalPreset := animationPreset
-	originalHold := settings.ShowcaseHoldFrames
-	originalBlend := settings.ShowcaseBlendFrames
+	originalHold := settings.RotationHoldFrames
+	originalBlend := settings.RotationBlendFrames
 	t.Cleanup(func() {
 		animationPreset = originalPreset
-		settings.ShowcaseHoldFrames = originalHold
-		settings.ShowcaseBlendFrames = originalBlend
+		settings.RotationHoldFrames = originalHold
+		settings.RotationBlendFrames = originalBlend
 	})
 
-	animationPreset = "showcase"
-	settings.ShowcaseHoldFrames = 2
-	settings.ShowcaseBlendFrames = 3
+	animationPreset = rotationSelection
+	settings.RotationHoldFrames = 2
+	settings.RotationBlendFrames = 3
 
 	if frames := framesUntilNextAnimationKey(2); frames != 1 {
 		t.Fatalf("expected blend frames to run at full fps, got %d", frames)

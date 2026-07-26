@@ -301,10 +301,10 @@ func presetUsesAudio(name string) bool {
 	if name == "aurora_sound" {
 		return true
 	}
-	if name != "showcase" {
+	if name != rotationSelection {
 		return false
 	}
-	return slices.Contains(showcasePresets, "aurora_sound")
+	return slices.Contains(rotationPresets, "aurora_sound")
 }
 
 func presetListUsesAudio(names []string) bool {

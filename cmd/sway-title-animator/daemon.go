@@ -142,11 +142,10 @@ func resetTimer(timer *time.Timer, duration time.Duration) time.Time {
 }
 
 func listPresets() {
-	names := make([]string, 0, len(animationPresets)+1)
+	names := make([]string, 0, len(animationPresets))
 	for name := range animationPresets {
 		names = append(names, name)
 	}
-	names = append(names, "showcase")
 	sort.Strings(names)
 	for _, name := range names {
 		fmt.Println(name)

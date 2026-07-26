@@ -159,17 +159,17 @@ func TestAuroraSoundNeedlesRepresentPeakStrength(t *testing.T) {
 }
 
 func TestAudioPresetActivationIsScoped(t *testing.T) {
-	originalShowcase := showcasePresets
+	originalRotation := rotationPresets
 	t.Cleanup(func() {
-		showcasePresets = originalShowcase
+		rotationPresets = originalRotation
 	})
 
 	if !presetUsesAudio("aurora_sound") || presetUsesAudio("aurora") {
 		t.Fatal("expected only aurora_sound to request audio directly")
 	}
-	showcasePresets = []string{"aurora", "aurora_sound"}
-	if !presetUsesAudio("showcase") {
-		t.Fatal("expected a showcase containing aurora_sound to request audio")
+	rotationPresets = []string{"aurora", "aurora_sound"}
+	if !presetUsesAudio(rotationSelection) {
+		t.Fatal("expected a rotation containing aurora_sound to request audio")
 	}
 	if !presetListUsesAudio([]string{"aurora", "aurora_sound"}) ||
 		presetListUsesAudio([]string{"aurora", "square"}) {

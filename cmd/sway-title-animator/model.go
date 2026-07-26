@@ -8,9 +8,10 @@ const (
 	defaultApproxCharWidth = 8.5
 	defaultMaxArtColumns   = 220
 	defaultTitleReserve    = 18
-	defaultShowcaseHold    = 260
-	defaultShowcaseBlend   = 75
+	defaultRotationHold    = 260
+	defaultRotationBlend   = 75
 	titleReassertInterval  = 2 * time.Second
+	rotationSelection      = ""
 )
 
 const defaultConfigContents = `[settings]
@@ -19,11 +20,11 @@ motion = 0.22
 approx_char_width = 8.5
 max_art_columns = 220
 title_reserve_columns = 18
-showcase_hold_frames = 260
-showcase_blend_frames = 75
+rotation_hold_frames = 260
+rotation_blend_frames = 75
 detect_child_process = true
 
-[showcase]
+[rotation]
 presets = [
   "loom",
   "aurora",
@@ -68,15 +69,15 @@ type iconRule struct {
 }
 
 var (
-	animationPreset = "showcase"
+	animationPreset = rotationSelection
 	settings        = Settings{
 		FPS:                 defaultFPS,
 		Motion:              defaultMotion,
 		ApproxCharWidth:     defaultApproxCharWidth,
 		MaxArtColumns:       defaultMaxArtColumns,
 		TitleReserveColumns: defaultTitleReserve,
-		ShowcaseHoldFrames:  defaultShowcaseHold,
-		ShowcaseBlendFrames: defaultShowcaseBlend,
+		RotationHoldFrames:  defaultRotationHold,
+		RotationBlendFrames: defaultRotationBlend,
 		DetectChildProcess:  true,
 	}
 
@@ -142,14 +143,14 @@ type Settings struct {
 	ApproxCharWidth     float64
 	MaxArtColumns       int
 	TitleReserveColumns int
-	ShowcaseHoldFrames  int
-	ShowcaseBlendFrames int
+	RotationHoldFrames  int
+	RotationBlendFrames int
 	DetectChildProcess  bool
 }
 
 type Config struct {
 	Settings  ConfigSettings            `toml:"settings"`
-	Showcase  ConfigShowcase            `toml:"showcase"`
+	Rotation  ConfigRotation            `toml:"rotation"`
 	Glyphs    ConfigGlyphs              `toml:"glyphs"`
 	Icons     map[string]string         `toml:"icons"`
 	Animation map[string]FrameAnimation `toml:"animation"`
@@ -161,12 +162,12 @@ type ConfigSettings struct {
 	ApproxCharWidth     *float64 `toml:"approx_char_width"`
 	MaxArtColumns       *int     `toml:"max_art_columns"`
 	TitleReserveColumns *int     `toml:"title_reserve_columns"`
-	ShowcaseHoldFrames  *int     `toml:"showcase_hold_frames"`
-	ShowcaseBlendFrames *int     `toml:"showcase_blend_frames"`
+	RotationHoldFrames  *int     `toml:"rotation_hold_frames"`
+	RotationBlendFrames *int     `toml:"rotation_blend_frames"`
 	DetectChildProcess  *bool    `toml:"detect_child_process"`
 }
 
-type ConfigShowcase struct {
+type ConfigRotation struct {
 	Presets []string `toml:"presets"`
 }
 

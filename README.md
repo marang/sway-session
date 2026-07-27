@@ -42,8 +42,8 @@ braid          ╱╱╱╳╲╲╲╳╱╱╱╳╲╲╲
 braid_sound    ╱╱╳╲╲╲╱✦╱╳╲╲
 ribbon         ·░▒▓◐▓▒░··◑▒▓█◒▒░·
 ribbon_sound   ░▒▓█◐▒░·░◑▓✦▓◒░
-shutter        ▓▷▒│░▶  ·┆·  ◀░│▒◁▓
-shutter_sound  ▒▷▓▶ · │ ┃ │ · ◀▓◁▒
+domino         ━·━·━·╲·▮·▮·▮·▮
+domino_sound   ━·━✦╱·━·▣·━·╲✦▮·▮
 comet          ░░▒▒▓▓✶☄▓▒░░··░▒✦
 comet_sound    ·●•░▒▓☄  •   ●∙
 smileys        ｡･ʕ•ᴥ•ʔっ･ﾟ
@@ -84,6 +84,12 @@ keeps the distributed organic base rings and adds broad bass rings or narrow
 high-frequency rings from bounded onset history. Active onset rings use
 `◎`/`◉` target cores to remain distinct from other sparse organic presets.
 During silence they render their complete base animations.
+
+`domino` stages a complete chain reaction: upright stones tip, fall, rest, and
+stand back up with organically varying spacing, direction, and speed.
+`domino_sound` keeps that choreography moving continuously. Beats start local
+outward cascades, bass controls their reach, mids control propagation, and
+treble adds restrained collision sparks. Silence keeps the calm base chain.
 
 Sound-reactive presets require the `parec` command. Install the PulseAudio
 command-line utilities for your distribution (`libpulse` on Arch Linux,
@@ -178,7 +184,8 @@ sway-title-animator --replace --preset ripples_sound --fps 25
 sway-title-animator --replace --preset bloom --fps 25
 sway-title-animator --replace --preset glitch --fps 25
 sway-title-animator --replace --preset ribbon --fps 25
-sway-title-animator --replace --preset shutter --fps 25
+sway-title-animator --replace --preset domino --fps 25
+sway-title-animator --replace --preset domino_sound --fps 25
 ```
 
 Omit `--preset` to rotate through the configured presets:

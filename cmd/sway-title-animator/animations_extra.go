@@ -622,104 +622,6 @@ func ribbonArt(width int, phase int) string {
 	return string(chars)
 }
 
-func shutterArt(width int, phase int) string {
-	width = artWidth(width)
-	if width == 0 {
-		return ""
-	}
-	if width < 8 {
-		return shortFrame(width, phase, []string{"███", "▶▓◀", "▶░◀", "▶ ◀", " │ "})
-	}
-
-	center := float64(width-1) / 2
-	aperture := 0.10 + organicNoise("shutter", 1, float64(phase)/24)*0.72
-	for _, event := range organicEvents("shutter", 2, float64(phase), 39, 12, 24) {
-		if eventRandom("shutter", 2, event.Index, 2) > 0.5 {
-			aperture = math.Max(aperture, event.Envelope*0.92)
-		} else {
-			aperture = math.Min(aperture, 1-event.Envelope*0.94)
-		}
-	}
-	center += signedOrganicNoise("shutter", 5, float64(phase)/118) *
-		math.Min(4, float64(width)*0.035)
-	gapRadius := aperture * center
-	return shutterFrame(width, phase, center, gapRadius, 1-aperture, 0, 0)
-}
-
-func shutterFrame(
-	width int,
-	phase int,
-	center float64,
-	gapRadius float64,
-	closure float64,
-	treble float64,
-	peak float64,
-) string {
-	chars := make([]rune, width)
-	leftEdge := max(0, int(math.Floor(center-gapRadius)))
-	rightEdge := min(width-1, int(math.Ceil(center+gapRadius)))
-	seamIndex := max(0, min(width-1, int(math.Round(center))))
-	scanOffset := math.Sin(float64(phase)*0.041) * gapRadius * 0.62
-	scanIndex := max(leftEdge+1, min(rightEdge-1, int(math.Round(center+scanOffset))))
-	bladeSpan := max(4, width/17)
-	heavy := peak >= 0.68
-	edgeLeft, edgeRight, bladeLeft, bladeRight := '›', '‹', '▷', '◁'
-	seam := '┆'
-	if heavy {
-		edgeLeft, edgeRight, bladeLeft, bladeRight = '▶', '◀', '▶', '◀'
-		seam = '┃'
-	}
-
-	for index := range chars {
-		switch {
-		case index == leftEdge:
-			chars[index] = edgeLeft
-		case index == rightEdge:
-			chars[index] = edgeRight
-		case index == seamIndex:
-			chars[index] = seam
-		case index > leftEdge && index < rightEdge:
-			focusDistance := math.Abs(math.Abs(float64(index)-center) - gapRadius*0.46)
-			switch {
-			case index == scanIndex:
-				chars[index] = '│'
-			case focusDistance < 0.55:
-				chars[index] = '·'
-			default:
-				chars[index] = ' '
-			}
-		default:
-			distanceFromEdge := leftEdge - index
-			leftPanel := true
-			if index > rightEdge {
-				distanceFromEdge = index - rightEdge
-				leftPanel = false
-			}
-			bladePosition := distanceFromEdge % bladeSpan
-			switch {
-			case bladePosition == 0:
-				if leftPanel {
-					chars[index] = bladeLeft
-				} else {
-					chars[index] = bladeRight
-				}
-			case bladePosition == bladeSpan/2:
-				chars[index] = '│'
-			case treble > 0.48 &&
-				(index+phase/6)%max(7, 18-int(math.Round(treble*8))) == 0:
-				chars[index] = '✦'
-			default:
-				bladeWave := 0.5 + 0.5*math.Cos(
-					float64(bladePosition)/float64(bladeSpan)*2*math.Pi,
-				)
-				level := 0.22 + closure*0.34 + bladeWave*0.42
-				chars[index] = rampPick([]rune("░▒▓█"), level)
-			}
-		}
-	}
-	return string(chars)
-}
-
 func isLegacyBundledFrameAnimation(name string, animation FrameAnimation) bool {
 	if !animation.Fill {
 		return false
@@ -738,6 +640,9 @@ func isLegacyBundledFrameAnimation(name string, animation FrameAnimation) bool {
 			"▓▒▒░░··  ··░░▒▒▓",
 		}
 	case "shutter":
+		// Ignore the bundled frames from pre-domino configs so upgrading does
+		// not silently resurrect the retired built-in preset. Custom frames
+		// with this name remain user-controlled.
 		legacyFrames = []string{
 			"░░▒▒▓▓██▓▓▒▒░░··",
 			"·░░▒▒▓▓██▓▓▒▒░░·",

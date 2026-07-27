@@ -734,8 +734,8 @@ var animationPresets = map[string]animationFunc{
 	"glitch_sound":        glitchSoundArt,
 	"ribbon":              ribbonArt,
 	"ribbon_sound":        ribbonSoundArt,
-	"shutter":             shutterArt,
-	"shutter_sound":       shutterSoundArt,
+	"domino":              dominoArt,
+	"domino_sound":        dominoSoundArt,
 }
 
 var soundPresetNames = map[string]bool{
@@ -748,12 +748,12 @@ var soundPresetNames = map[string]bool{
 	"loom_sound":          true,
 	"glitch_sound":        true,
 	"ribbon_sound":        true,
+	"domino_sound":        true,
 	"spline_sound":        true,
 	"spectrum_sound":      true,
 	"square_sound":        true,
 	"ripples_sound":       true,
 	"radar_sound":         true,
-	"shutter_sound":       true,
 	"smileys_sound":       true,
 	"wave_sound":          true,
 }
@@ -778,6 +778,7 @@ var rotationPresets = []string{
 	"smileys",
 	"wave",
 	"spline",
+	"domino",
 }
 
 func rotationArt(width int, phase int) string {

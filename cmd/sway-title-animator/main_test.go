@@ -387,7 +387,7 @@ func TestNewAnimationPresetsRenderMotion(t *testing.T) {
 		animationSeed = originalSeed
 	})
 
-	for _, name := range []string{"smileys", "wave", "spline", "square", "ripples", "bloom", "glitch", "ribbon", "shutter"} {
+	for _, name := range []string{"smileys", "wave", "spline", "square", "ripples", "bloom", "glitch", "ribbon", "domino"} {
 		t.Run(name, func(t *testing.T) {
 			fn := animationPresets[name]
 			frames := map[string]bool{}

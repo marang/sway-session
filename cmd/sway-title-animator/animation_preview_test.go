@@ -84,6 +84,7 @@ func TestDefaultRotationOrderIncludesNewPresets(t *testing.T) {
 		"smileys",
 		"wave",
 		"spline",
+		"domino",
 	}
 	if !slices.Equal(rotationPresets, want) {
 		t.Fatalf("expected default rotation %v, got %v", want, rotationPresets)
@@ -383,7 +384,7 @@ func TestSquareRunnerOccasionallyMovesRightAndOverwritesTrace(t *testing.T) {
 	}
 }
 
-func TestRibbonAndShutterHaveDistinctSilhouettes(t *testing.T) {
+func TestDominoHasDistinctChainReactionSilhouette(t *testing.T) {
 	originalSeed := animationSeed
 	animationSeed = 0x5eed
 	t.Cleanup(func() {
@@ -392,8 +393,8 @@ func TestRibbonAndShutterHaveDistinctSilhouettes(t *testing.T) {
 
 	for _, phase := range []int{0, 19, 47, 103, 211} {
 		ribbon := ribbonArt(80, phase)
-		shutter := shutterArt(80, phase)
-		if ribbon == shutter {
+		domino := dominoArt(80, phase)
+		if ribbon == domino {
 			t.Fatalf("phase %d rendered identical frames %q", phase, ribbon)
 		}
 		if !strings.ContainsAny(ribbon, "·░▒▓█✦") {
@@ -402,13 +403,13 @@ func TestRibbonAndShutterHaveDistinctSilhouettes(t *testing.T) {
 		if strings.ContainsAny(ribbon, "╱╲━═─╍┄") {
 			t.Fatalf("phase %d ribbon drifted back into glitch line vocabulary: %q", phase, ribbon)
 		}
-		if !strings.ContainsAny(shutter, "▶◀█▓▒░│") {
-			t.Fatalf("phase %d shutter lost aperture vocabulary: %q", phase, shutter)
+		if !strings.ContainsAny(domino, "▮━╱╲") {
+			t.Fatalf("phase %d domino lost chain-reaction vocabulary: %q", phase, domino)
 		}
 	}
 }
 
-func TestLegacyBundledFramesYieldToBuiltInRibbonAndShutter(t *testing.T) {
+func TestLegacyBundledRibbonFramesYieldToBuiltInRenderer(t *testing.T) {
 	legacyRibbon := FrameAnimation{
 		Fill: true,
 		Frames: []string{
@@ -422,20 +423,8 @@ func TestLegacyBundledFramesYieldToBuiltInRibbonAndShutter(t *testing.T) {
 			"▓▒▒░░··  ··░░▒▒▓",
 		},
 	}
-	legacyShutter := FrameAnimation{
-		Fill: true,
-		Frames: []string{
-			"░░▒▒▓▓██▓▓▒▒░░··",
-			"·░░▒▒▓▓██▓▓▒▒░░·",
-			"··░░▒▒▓▓██▓▓▒▒░░",
-			"░··░░▒▒▓▓██▓▓▒▒░",
-		},
-	}
 	if !isLegacyBundledFrameAnimation("ribbon", legacyRibbon) {
 		t.Fatal("expected original ribbon frames to be recognized")
-	}
-	if !isLegacyBundledFrameAnimation("shutter", legacyShutter) {
-		t.Fatal("expected original shutter frames to be recognized")
 	}
 
 	customized := legacyRibbon
@@ -446,27 +435,8 @@ func TestLegacyBundledFramesYieldToBuiltInRibbonAndShutter(t *testing.T) {
 	}
 }
 
-func TestBuiltInPresetsMaintainDistinctVisualLanguages(t *testing.T) {
-	originalSeed := animationSeed
-	animationSeed = 0x5eed
-	t.Cleanup(func() {
-		animationSeed = originalSeed
-	})
-
-	legacyRibbon := frameAnimationArt(FrameAnimation{
-		Fill: true,
-		Frames: []string{
-			"··░░▒▒▓▓▒▒░░··  ",
-			"·░░▒▒▓▓▒▒░░··  ·",
-			"░░▒▒▓▓▒▒░░··  ··",
-			"░▒▒▓▓▒▒░░··  ··░",
-			"▒▒▓▓▒▒░░··  ··░░",
-			"▒▓▓▒▒░░··  ··░░▒",
-			"▓▓▒▒░░··  ··░░▒▒",
-			"▓▒▒░░··  ··░░▒▒▓",
-		},
-	})
-	legacyShutter := frameAnimationArt(FrameAnimation{
+func TestRetiredBundledApertureFramesDoNotReturnThroughOldConfigs(t *testing.T) {
+	legacy := FrameAnimation{
 		Fill: true,
 		Frames: []string{
 			"░░▒▒▓▓██▓▓▒▒░░··",
@@ -474,15 +444,30 @@ func TestBuiltInPresetsMaintainDistinctVisualLanguages(t *testing.T) {
 			"··░░▒▒▓▓██▓▓▒▒░░",
 			"░··░░▒▒▓▓██▓▓▒▒░",
 		},
+	}
+	if !isLegacyBundledFrameAnimation("shutter", legacy) {
+		t.Fatal("old bundled aperture frames would be re-registered during config loading")
+	}
+
+	customized := legacy
+	customized.Frames = slices.Clone(legacy.Frames)
+	customized.Frames[0] = "custom"
+	if isLegacyBundledFrameAnimation("shutter", customized) {
+		t.Fatal("custom user animation should remain user-controlled")
+	}
+}
+
+func TestBuiltInPresetsMaintainDistinctVisualLanguages(t *testing.T) {
+	originalSeed := animationSeed
+	animationSeed = 0x5eed
+	t.Cleanup(func() {
+		animationSeed = originalSeed
 	})
 
 	const (
 		universalMinimumDistance = 0.10
 		strictMinimumDistance    = 0.55
 	)
-	if distance := animationVisualDistance(legacyRibbon, legacyShutter); distance >= strictMinimumDistance {
-		t.Fatalf("similarity guard no longer catches the legacy ribbon/shutter collision: distance %.3f", distance)
-	}
 
 	allowedSimilarity := map[string]bool{
 		"aurora|aurora_sound":               true,
@@ -491,12 +476,12 @@ func TestBuiltInPresetsMaintainDistinctVisualLanguages(t *testing.T) {
 		"comet|comet_sound":                 true,
 		"constellation|constellation_sound": true,
 		"circuit|circuit_sound":             true,
+		"domino|domino_sound":               true,
 		"loom|loom_sound":                   true,
 		"glitch|glitch_sound":               true,
 		"radar|radar_sound":                 true,
 		"ripples|ripples_sound":             true,
 		"ribbon|ribbon_sound":               true,
-		"shutter|shutter_sound":             true,
 		"smileys|smileys_sound":             true,
 		"square|square_sound":               true,
 		"spectrum|spectrum_sound":           true,
@@ -504,14 +489,14 @@ func TestBuiltInPresetsMaintainDistinctVisualLanguages(t *testing.T) {
 		"wave|wave_sound":                   true,
 	}
 	strictPairs := map[string]bool{
-		"braid|square":   true,
-		"glitch|ribbon":  true,
-		"glitch|shutter": true,
-		"glitch|square":  true,
-		"ribbon|shutter": true,
-		"ribbon|square":  true,
-		"shutter|square": true,
-		"spline|square":  true,
+		"braid|square":  true,
+		"domino|glitch": true,
+		"domino|ribbon": true,
+		"domino|square": true,
+		"glitch|ribbon": true,
+		"glitch|square": true,
+		"ribbon|square": true,
+		"spline|square": true,
 	}
 	names := make([]string, 0, len(animationPresets))
 	for name := range animationPresets {

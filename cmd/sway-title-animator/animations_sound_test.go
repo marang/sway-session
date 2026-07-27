@@ -278,65 +278,9 @@ func TestRadarSoundEchoUsesRegionStereoMidsAndLifetime(t *testing.T) {
 	}
 }
 
-func TestShutterSoundBassOnsetAndLowMidsCloseAperture(t *testing.T) {
-	open := audioSnapshot{Active: true, LowMid: 0.05}
-	sustained := audioSnapshot{Active: true, LowMid: 0.95}
-	_, openRadius, openClosure := shutterSoundGeometry(100, 20, open)
-	_, sustainedRadius, sustainedClosure := shutterSoundGeometry(100, 20, sustained)
-	if sustainedRadius >= openRadius || sustainedClosure <= openClosure {
-		t.Fatalf("low mids should close aperture: open radius=%.2f closure=%.2f sustained radius=%.2f closure=%.2f",
-			openRadius, openClosure, sustainedRadius, sustainedClosure)
-	}
-
-	onset := open
-	onset.OnsetCount = 1
-	onset.Onsets[0] = audioOnset{
-		ID:       1,
-		Age:      40 * time.Millisecond,
-		Strength: 1,
-		Region:   audioRegionBass,
-	}
-	_, struckRadius, struckClosure := shutterSoundGeometry(100, 20, onset)
-	onset.Onsets[0].Age = 800 * time.Millisecond
-	_, releasedRadius, releasedClosure := shutterSoundGeometry(100, 20, onset)
-	if struckRadius >= releasedRadius || struckClosure <= releasedClosure {
-		t.Fatalf("bass onset should close then release: struck radius=%.2f closure=%.2f released radius=%.2f closure=%.2f",
-			struckRadius, struckClosure, releasedRadius, releasedClosure)
-	}
-}
-
-func TestShutterSoundBoundsAsymmetryAndPeakVocabulary(t *testing.T) {
-	left := audioSnapshot{Active: true, LowMid: 0.4, Balance: -1, Peak: 0.3}
-	right := left
-	right.Balance = 1
-	leftCenter, _, _ := shutterSoundGeometry(100, 9, left)
-	rightCenter, _, _ := shutterSoundGeometry(100, 9, right)
-	if leftCenter != rightCenter {
-		t.Fatalf("stereo must not make the aperture center twitch: left=%.2f right=%.2f",
-			leftCenter, rightCenter)
-	}
-
-	light := shutterSoundArtWithSnapshot(80, 9, left)
-	heavy := left
-	heavy.Peak = 0.95
-	heavyFrame := shutterSoundArtWithSnapshot(80, 9, heavy)
-	if strings.ContainsAny(light, "▶◀┃") {
-		t.Fatalf("low peak should use light mechanics: %q", light)
-	}
-	if !strings.ContainsAny(heavyFrame, "▶◀") || !strings.ContainsRune(heavyFrame, '┃') {
-		t.Fatalf("high peak should strengthen arrows and seam: %q", heavyFrame)
-	}
-	for _, frame := range []string{light, heavyFrame} {
-		if strings.ContainsAny(frame, "╳╪┄╍") {
-			t.Fatalf("shutter_sound must not use glitch fragments: %q", frame)
-		}
-	}
-}
-
-func TestRadarAndShutterSoundSilentFormsMoveAndStayBounded(t *testing.T) {
+func TestRadarSoundSilentFormMovesAndStaysBounded(t *testing.T) {
 	for name, animation := range map[string]func(int, int, audioSnapshot) string{
-		"radar_sound":   radarSoundArtWithSnapshot,
-		"shutter_sound": shutterSoundArtWithSnapshot,
+		"radar_sound": radarSoundArtWithSnapshot,
 	} {
 		t.Run(name, func(t *testing.T) {
 			frames := map[string]bool{}

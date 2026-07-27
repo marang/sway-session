@@ -442,18 +442,17 @@ presets that look effectively identical.
   twist or screen-wide glitch is introduced.
 - Silence renders the unchanged base ribbon.
 
-### `shutter_sound` — implemented
+### `domino_sound` — implemented
 
-- The base shutter uses multiple staggered iris-blade edges, a focus reticle,
-  and a slow scan point instead of two flat panels.
-- Bass onsets close the aperture briefly and then release it.
-- Sustained low-mid energy gently changes the aperture range without replacing
-  or freezing its complete open/close cycle.
-- Treble adds highlights to existing blade faces; it must not introduce glitch
-  fragments.
-- Peak strength controls the weight of the inward arrows and center seam.
-- Stereo affects short impulses only; it never shifts the aperture center.
-- Silence renders the unchanged base shutter.
+- The base domino stages complete standing, tipping, fallen, resting, and
+  recovery phases with seeded variation in spacing, direction, and tempo.
+- Musical onsets start local chain reactions that propagate outward without
+  replacing or freezing the base choreography.
+- Bass controls cascade reach and low mids control propagation speed.
+- Treble adds only restrained collision sparks at the moving fall fronts.
+- Multiple recent onsets may overlap, but each cascade remains bounded and
+  decays back into the unchanged base animation.
+- Silence renders the complete calm base domino.
 
 ## Delivery sequence
 
@@ -470,12 +469,13 @@ presets that look effectively identical.
    presets:
    - `spectrum_sound` and `wave_sound` — implemented in LAB-46;
    - `square_sound` and `ripples_sound` — implemented in LAB-36;
-   - `radar_sound` and `shutter_sound` — implemented in LAB-37;
+   - `radar_sound` — implemented in LAB-37;
    - `comet_sound` and `bloom_sound` — implemented in LAB-38;
    - `constellation_sound` and `circuit_sound` — implemented in LAB-42;
    - `braid_sound` and `loom_sound` — implemented in LAB-39;
-   - `spline_sound` and `ribbon_sound` — implemented in LAB-41; and
-   - `smileys_sound` and `glitch_sound` — implemented in LAB-40.
+   - `spline_sound` and `ribbon_sound` — implemented in LAB-41;
+   - `smileys_sound` and `glitch_sound` — implemented in LAB-40; and
+   - `domino_sound` replaced the retired aperture preset in LAB-60.
 4. After all sound companions are implemented, expand the Bubble Tea preview
    with the four planned preview modes, manual viewport, status hint, and
    grouped preset listing. Interactive browser work remains tracked in LAB-28.

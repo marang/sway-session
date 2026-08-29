@@ -1,86 +1,11 @@
 package main
 
 import (
-	"bytes"
 	"errors"
-	"net"
 	"os/exec"
-	"path/filepath"
-	"syscall"
 	"testing"
 	"time"
 )
-
-func TestReadIPCMessageRejectsOversizedPayload(t *testing.T) {
-	header := ipcHeader(100, maxIPCPayload+1)
-	if _, _, err := readIPCMessage(bytes.NewReader(header)); err == nil {
-		t.Fatal("expected oversized IPC payload to be rejected before allocation")
-	}
-}
-
-func TestIPCDialUnixSocketRoundTrip(t *testing.T) {
-	socket := filepath.Join(t.TempDir(), "sway.sock")
-	listener, err := net.Listen("unix", socket)
-	if err != nil {
-		if errors.Is(err, syscall.EPERM) {
-			t.Skipf("unix sockets are not permitted in this sandbox: %v", err)
-		}
-		t.Fatalf("listen unix socket: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = listener.Close()
-	})
-
-	serverDone := make(chan error, 1)
-	go func() {
-		conn, err := listener.Accept()
-		if err != nil {
-			serverDone <- err
-			return
-		}
-		defer conn.Close()
-
-		body, messageType, err := readIPCMessage(conn)
-		if err != nil {
-			serverDone <- err
-			return
-		}
-		if messageType != 99 || string(body) != "hello" {
-			serverDone <- &testError{message: "unexpected request"}
-			return
-		}
-		if err := writeFull(conn, ipcHeader(100, len([]byte("ok")))); err != nil {
-			serverDone <- err
-			return
-		}
-		if err := writeFull(conn, []byte("ok")); err != nil {
-			serverDone <- err
-			return
-		}
-		serverDone <- nil
-	}()
-
-	ipc := &IPC{socket: socket}
-	t.Cleanup(ipc.Close)
-	body, messageType, err := ipc.Request(99, "hello")
-	if err != nil {
-		t.Fatalf("ipc request: %v", err)
-	}
-	if messageType != 100 || string(body) != "ok" {
-		t.Fatalf("unexpected response type=%d body=%q", messageType, body)
-	}
-	if err := <-serverDone; err != nil {
-		t.Fatalf("server: %v", err)
-	}
-}
-
-type testError struct {
-	message string
-}
-
-func (err *testError) Error() string {
-	return err.message
-}
 
 func TestChildProcessLabelFindsDescendant(t *testing.T) {
 	cmd := exec.Command("sh", "-c", "sleep 2 & wait")

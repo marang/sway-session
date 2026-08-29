@@ -23,6 +23,22 @@ builds:
     goarch:
       - amd64
       - arm64
+  - id: sway-session
+    main: ./cmd/sway-session
+    binary: sway-session
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+      - -buildvcs=false
+    ldflags:
+      - -s -w -buildid=
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
 
 archives:
   - id: bundles
@@ -33,6 +49,11 @@ archives:
       - README.md
       - config.example.toml
       - contrib/sway/45-title-animator.conf
+      - contrib/herdr/config.toml
+      - contrib/codex/hooks.json
+      - contrib/codex/hooks-system.json
+      - contrib/apparmor/codex-home-guard
+      - scripts/verify-codex-boundary.sh
 
 checksum:
   name_template: checksums.txt
@@ -40,7 +61,7 @@ checksum:
 nfpms:
   - id: linux-packages
     package_name: sway-title-animator
-    ids: [sway-title-animator]
+    ids: [sway-title-animator, sway-session]
     formats: [deb, rpm]
     maintainer: "sway-title-animator Authors"
     description: "Animated Unicode titlebars for Sway"
@@ -60,6 +81,16 @@ nfpms:
         dst: /usr/share/doc/sway-title-animator/config.example.toml
       - src: ./contrib/sway/45-title-animator.conf
         dst: /usr/share/doc/sway-title-animator/45-title-animator.conf
+      - src: ./contrib/herdr/config.toml
+        dst: /usr/share/doc/sway-title-animator/contrib/herdr/config.toml
+      - src: ./contrib/codex/hooks-system.json
+        dst: /usr/share/doc/sway-title-animator/contrib/codex/hooks.json
+      - src: ./contrib/apparmor/codex-home-guard
+        dst: /usr/share/doc/sway-title-animator/contrib/apparmor/codex-home-guard
+      - src: ./scripts/verify-codex-boundary.sh
+        dst: /usr/share/doc/sway-title-animator/scripts/verify-codex-boundary.sh
+        file_info:
+          mode: 0755
 
 release:
   github:

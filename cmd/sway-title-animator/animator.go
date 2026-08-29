@@ -8,10 +8,12 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/marang/sway-title-animator/internal/swayipc"
 )
 
 type TitleAnimator struct {
-	ipc                  *IPC
+	ipc                  *swayipc.Client
 	titleSetter          func(int64, string) error
 	lastFormats          map[int64]string
 	lastFormatSetAt      map[int64]time.Time
@@ -30,7 +32,7 @@ type TitleAnimator struct {
 	errorReporter        func(error)
 }
 
-func NewTitleAnimator(ipc *IPC) *TitleAnimator {
+func NewTitleAnimator(ipc *swayipc.Client) *TitleAnimator {
 	return &TitleAnimator{
 		ipc:             ipc,
 		lastFormats:     map[int64]string{},
@@ -43,14 +45,20 @@ func NewTitleAnimator(ipc *IPC) *TitleAnimator {
 	}
 }
 
-func (animator *TitleAnimator) RefreshTree(phase int) {
-	body, _, err := animator.ipc.Request(ipcGetTree, "")
+func (animator *TitleAnimator) RefreshTree(phase int) (*Node, error) {
+	if animator == nil || animator.ipc == nil {
+		return nil, errors.New("title animator has no Sway IPC client")
+	}
+	message, err := animator.ipc.Request(swayipc.GetTree, nil)
 	if err != nil {
-		return
+		return nil, err
+	}
+	if message.Type != swayipc.GetTree {
+		return nil, fmt.Errorf("unexpected Sway tree response type %d", message.Type)
 	}
 	var root Node
-	if err := json.Unmarshal(body, &root); err != nil {
-		return
+	if err := json.Unmarshal(message.Payload, &root); err != nil {
+		return nil, fmt.Errorf("decode Sway tree: %w", err)
 	}
 
 	all := []nodeWithParent{}
@@ -92,6 +100,7 @@ func (animator *TitleAnimator) RefreshTree(phase int) {
 	for _, item := range windows {
 		animator.ApplyNode(item.node, item.parent, phase)
 	}
+	return &root, nil
 }
 
 func (animator *TitleAnimator) WindowLabel(node *Node) string {
@@ -234,29 +243,11 @@ func (animator *TitleAnimator) SetTitleFormat(conID int64, value string) error {
 		return animator.titleSetter(conID, value)
 	}
 	command := fmt.Sprintf("[con_id=%d] title_format %s", conID, quoteSwayString(value))
-	body, _, err := animator.ipc.Request(ipcRunCommand, command)
+	message, err := animator.ipc.Request(swayipc.RunCommand, []byte(command))
 	if err != nil {
 		return err
 	}
-	var results []struct {
-		Success bool   `json:"success"`
-		Error   string `json:"error"`
-	}
-	if err := json.Unmarshal(body, &results); err != nil {
-		return fmt.Errorf("decode sway command response: %w", err)
-	}
-	if len(results) == 0 {
-		return errors.New("sway command returned no result")
-	}
-	for _, result := range results {
-		if !result.Success {
-			if result.Error == "" {
-				result.Error = "unknown sway command error"
-			}
-			return errors.New(result.Error)
-		}
-	}
-	return nil
+	return swayipc.CheckRunCommandResponse(message)
 }
 
 func (animator *TitleAnimator) shouldSetTitleFormat(conID int64, value string) bool {

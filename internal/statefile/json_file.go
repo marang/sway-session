@@ -1,0 +1,574 @@
+// Package statefile provides private, bounded, atomic JSON state files.
+package statefile
+
+import (
+	"bytes"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"syscall"
+
+	"golang.org/x/sys/unix"
+)
+
+const (
+	DirectoryMode   = 0o700
+	RegularFileMode = 0o600
+	MaxFileSize     = 16 * 1024 * 1024
+
+	temporaryNameAttempts = 128
+	safeResolveFlags      = unix.RESOLVE_BENEATH | unix.RESOLVE_NO_MAGICLINKS | unix.RESOLVE_NO_SYMLINKS
+)
+
+// JSONFile is one validated state document in a private state directory.
+type JSONFile[T any] struct {
+	directory       string
+	name            string
+	validate        func(*T) error
+	syncAfterRename func(*os.File) error
+}
+
+// CommitOutcomeUnknownError reports a replacement that is already visible in
+// the current filesystem namespace but whose durability could not be
+// confirmed. Callers must reload and reconcile before retrying the mutation or
+// performing dependent external side effects.
+type CommitOutcomeUnknownError struct {
+	Cause error
+}
+
+func (err *CommitOutcomeUnknownError) Error() string {
+	return fmt.Sprintf("state commit is visible but durability is unknown: %v", err.Cause)
+}
+
+func (err *CommitOutcomeUnknownError) Unwrap() error {
+	return err.Cause
+}
+
+// NewJSONFile describes a state file. Paths and permissions are checked when
+// LoadInto, Save, or Update accesses it.
+func NewJSONFile[T any](directory string, name string, validate func(*T) error) JSONFile[T] {
+	return JSONFile[T]{
+		directory:       directory,
+		name:            name,
+		validate:        validate,
+		syncAfterRename: syncFile,
+	}
+}
+
+// OpenPrivateDirectory opens a symlink-free owner-only directory and can
+// create missing components. The returned descriptor remains attached to the
+// verified directory if a pathname component is replaced concurrently.
+func OpenPrivateDirectory(path string, create bool) (*os.File, error) {
+	if path == "" || !filepath.IsAbs(path) || filepath.Clean(path) != path {
+		return nil, errors.New("private directory must be a clean absolute path")
+	}
+	return openStateDirectory(path, create)
+}
+
+// LoadInto replaces target only after a complete strict decode and validation.
+// On any error, target remains the caller's in-memory last known-good value.
+func (file JSONFile[T]) LoadInto(target *T) error {
+	if target == nil {
+		return errors.New("state target is nil")
+	}
+	if err := file.validatePath(); err != nil {
+		return err
+	}
+	directory, err := openStateDirectory(file.directory, false)
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	if err := lockDirectory(directory, unix.LOCK_SH); err != nil {
+		return err
+	}
+	defer unlockDirectory(directory)
+	return file.loadIntoAt(directory, target)
+}
+
+// LoadSnapshotInto reads one validated old-or-new view of an atomically
+// replaced document without joining the directory lock. Use it only when a
+// stale snapshot is safe and the caller must not wait behind a long external
+// transaction. The descriptor-relative regular-file checks are unchanged.
+func (file JSONFile[T]) LoadSnapshotInto(target *T) error {
+	if target == nil {
+		return errors.New("state target is nil")
+	}
+	if err := file.validatePath(); err != nil {
+		return err
+	}
+	directory, err := openStateDirectory(file.directory, false)
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	return file.loadIntoAt(directory, target)
+}
+
+// Save validates and encodes a complete candidate before atomically replacing
+// the existing file. Use Update for a read-modify-write operation that must not
+// lose changes made by another process.
+func (file JSONFile[T]) Save(value T) error {
+	if err := file.validatePath(); err != nil {
+		return err
+	}
+	data, err := file.encode(value)
+	if err != nil {
+		return err
+	}
+	directory, err := openStateDirectory(file.directory, true)
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	if err := lockDirectory(directory, unix.LOCK_EX); err != nil {
+		return err
+	}
+	defer unlockDirectory(directory)
+	return file.saveAt(directory, data)
+}
+
+// Update serializes a complete load-modify-save transaction with other users
+// of this state directory. When the file does not exist, mutate receives
+// initial. Existing malformed or invalid state fails closed before mutation.
+// If the replacement becomes visible but its durability cannot be confirmed,
+// Update returns the candidate with CommitOutcomeUnknownError so callers can
+// reload and reconcile instead of assuming that the mutation was rolled back.
+func (file JSONFile[T]) Update(initial T, mutate func(*T) error) (T, error) {
+	if mutate == nil {
+		return initial, errors.New("state mutation is nil")
+	}
+	if err := file.validatePath(); err != nil {
+		return initial, err
+	}
+	directory, err := openStateDirectory(file.directory, true)
+	if err != nil {
+		return initial, err
+	}
+	defer directory.Close()
+	if err := lockDirectory(directory, unix.LOCK_EX); err != nil {
+		return initial, err
+	}
+	defer unlockDirectory(directory)
+
+	candidate := initial
+	if err := file.loadIntoAt(directory, &candidate); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return initial, err
+	}
+	if err := mutate(&candidate); err != nil {
+		return initial, fmt.Errorf("mutate %s: %w", file.name, err)
+	}
+	data, err := file.encode(candidate)
+	if err != nil {
+		return initial, err
+	}
+	if err := file.saveAt(directory, data); err != nil {
+		var unknown *CommitOutcomeUnknownError
+		if errors.As(err, &unknown) {
+			return candidate, err
+		}
+		return initial, err
+	}
+	return candidate, nil
+}
+
+// InspectLocked loads the current document, or initial when it does not yet
+// exist, and invokes inspect while holding the state-directory exclusive lock.
+// It is intended for read-before-external-action workflows whose observation
+// and side effects must not race a concurrent Update using the same directory.
+// InspectLocked never writes the document itself.
+func (file JSONFile[T]) InspectLocked(initial T, inspect func(T) error) error {
+	if inspect == nil {
+		return errors.New("state inspection is nil")
+	}
+	if err := file.validatePath(); err != nil {
+		return err
+	}
+	directory, err := openStateDirectory(file.directory, true)
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	if err := lockDirectory(directory, unix.LOCK_EX); err != nil {
+		return err
+	}
+	defer unlockDirectory(directory)
+
+	candidate := initial
+	if err := file.loadIntoAt(directory, &candidate); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if file.validate != nil {
+		if err := file.validate(&candidate); err != nil {
+			return fmt.Errorf("validate %s: %w", file.name, err)
+		}
+	}
+	return inspect(candidate)
+}
+
+func (file JSONFile[T]) loadIntoAt(directory *os.File, target *T) error {
+	data, err := readPrivateRegularFileAt(directory, file.name)
+	if err != nil {
+		return err
+	}
+	var candidate T
+	if err := decodeStrict(data, &candidate); err != nil {
+		return fmt.Errorf("decode %s: %w", file.name, err)
+	}
+	if file.validate != nil {
+		if err := file.validate(&candidate); err != nil {
+			return fmt.Errorf("validate %s: %w", file.name, err)
+		}
+	}
+	*target = candidate
+	return nil
+}
+
+func (file JSONFile[T]) encode(value T) ([]byte, error) {
+	if file.validate != nil {
+		if err := file.validate(&value); err != nil {
+			return nil, fmt.Errorf("validate %s: %w", file.name, err)
+		}
+	}
+	data, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("encode %s: %w", file.name, err)
+	}
+	data = append(data, '\n')
+	if len(data) > MaxFileSize {
+		return nil, fmt.Errorf("state file %s is too large: %d bytes exceeds %d", file.name, len(data), MaxFileSize)
+	}
+	return data, nil
+}
+
+func (file JSONFile[T]) saveAt(directory *os.File, data []byte) error {
+	previous, previousExists, err := inspectTargetAt(directory, file.name)
+	if err != nil {
+		return err
+	}
+	temporary, temporaryName, err := createTemporaryFileAt(directory, file.name)
+	if err != nil {
+		return err
+	}
+	keepTemporary := true
+	defer func() {
+		if keepTemporary {
+			_ = unix.Unlinkat(int(directory.Fd()), temporaryName, 0)
+		}
+	}()
+
+	if err := temporary.Chmod(RegularFileMode); err != nil {
+		_ = temporary.Close()
+		return fmt.Errorf("set temporary state permissions: %w", err)
+	}
+	if _, err := io.Copy(temporary, bytes.NewReader(data)); err != nil {
+		_ = temporary.Close()
+		return fmt.Errorf("write temporary state file: %w", err)
+	}
+	if err := temporary.Sync(); err != nil {
+		_ = temporary.Close()
+		return fmt.Errorf("sync temporary state file: %w", err)
+	}
+	if err := temporary.Close(); err != nil {
+		return fmt.Errorf("close temporary state file: %w", err)
+	}
+	if err := verifyUnchangedTargetAt(directory, file.name, previous, previousExists); err != nil {
+		return err
+	}
+	if err := unix.Renameat(int(directory.Fd()), temporaryName, int(directory.Fd()), file.name); err != nil {
+		return fmt.Errorf("replace state file: %w", err)
+	}
+	keepTemporary = false
+	syncAfterRename := file.syncAfterRename
+	if syncAfterRename == nil {
+		syncAfterRename = syncFile
+	}
+	if err := syncAfterRename(directory); err != nil {
+		return &CommitOutcomeUnknownError{Cause: fmt.Errorf("sync state directory: %w", err)}
+	}
+	return nil
+}
+
+func syncFile(file *os.File) error {
+	return file.Sync()
+}
+
+func (file JSONFile[T]) validatePath() error {
+	if file.directory == "" || !filepath.IsAbs(file.directory) {
+		return errors.New("state directory must be an absolute path")
+	}
+	if filepath.Clean(file.directory) != file.directory {
+		return errors.New("state directory must be a clean absolute path")
+	}
+	if file.name == "" || file.name == "." || file.name == ".." || filepath.Base(file.name) != file.name {
+		return errors.New("state filename must be one base name")
+	}
+	return nil
+}
+
+func openStateDirectory(path string, create bool) (*os.File, error) {
+	return openStateDirectoryWith(path, create, directoryOperations{
+		mkdirAt: unix.Mkdirat,
+		sync:    syncFile,
+	})
+}
+
+type directoryOperations struct {
+	mkdirAt func(int, string, uint32) error
+	sync    func(*os.File) error
+}
+
+func openStateDirectoryWith(path string, create bool, operations directoryOperations) (*os.File, error) {
+	rootFD, err := unix.Open(string(os.PathSeparator), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, fmt.Errorf("open filesystem root: %w", err)
+	}
+	current := os.NewFile(uintptr(rootFD), string(os.PathSeparator))
+	if current == nil {
+		_ = unix.Close(rootFD)
+		return nil, errors.New("open filesystem root: invalid file descriptor")
+	}
+
+	components := strings.Split(strings.TrimPrefix(path, string(os.PathSeparator)), string(os.PathSeparator))
+	for _, component := range components {
+		if component == "" {
+			continue
+		}
+		syncParent := false
+		nextFD, openErr := openAt2(int(current.Fd()), component, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+		if errors.Is(openErr, unix.ENOENT) && create {
+			mkdirErr := operations.mkdirAt(int(current.Fd()), component, uint32(DirectoryMode))
+			if mkdirErr != nil && !errors.Is(mkdirErr, unix.EEXIST) {
+				_ = current.Close()
+				return nil, fmt.Errorf("create state directory component %s: %w", component, mkdirErr)
+			}
+			// Another process can create the component between openat2 and
+			// mkdirat. Every process that observed ENOENT must sync the parent
+			// before reporting success; the creator may not have done so yet.
+			syncParent = true
+			nextFD, openErr = openAt2(int(current.Fd()), component, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+		}
+		if openErr != nil {
+			_ = current.Close()
+			return nil, fmt.Errorf("open state directory component %s: %w", component, openErr)
+		}
+		if syncParent {
+			if syncErr := operations.sync(current); syncErr != nil {
+				_ = unix.Close(nextFD)
+				_ = current.Close()
+				return nil, fmt.Errorf("sync parent of state directory component %s: %w", component, syncErr)
+			}
+		}
+		next := os.NewFile(uintptr(nextFD), component)
+		if next == nil {
+			_ = unix.Close(nextFD)
+			_ = current.Close()
+			return nil, fmt.Errorf("open state directory component %s: invalid file descriptor", component)
+		}
+		_ = current.Close()
+		current = next
+	}
+
+	info, err := current.Stat()
+	if err != nil {
+		_ = current.Close()
+		return nil, fmt.Errorf("inspect state directory: %w", err)
+	}
+	if !info.IsDir() {
+		_ = current.Close()
+		return nil, errors.New("state directory must be a real directory")
+	}
+	if err := checkOwner(info); err != nil {
+		_ = current.Close()
+		return nil, fmt.Errorf("state directory: %w", err)
+	}
+	if err := checkMode(info, DirectoryMode); err != nil {
+		_ = current.Close()
+		return nil, fmt.Errorf("state directory: %w", err)
+	}
+	return current, nil
+}
+
+func openAt2(directoryFD int, name string, flags int, mode uint64) (int, error) {
+	if name == "" || name == "." || name == ".." || filepath.Base(name) != name {
+		return -1, unix.EINVAL
+	}
+	fd, err := unix.Openat2(directoryFD, name, &unix.OpenHow{
+		Flags:   uint64(flags),
+		Mode:    mode,
+		Resolve: safeResolveFlags,
+	})
+	if errors.Is(err, unix.ENOSYS) {
+		return unix.Openat(directoryFD, name, flags|unix.O_NOFOLLOW, uint32(mode))
+	}
+	return fd, err
+}
+
+func readPrivateRegularFileAt(directory *os.File, name string) ([]byte, error) {
+	fd, err := openAt2(int(directory.Fd()), name, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, fmt.Errorf("open state file: %w", err)
+	}
+	opened := os.NewFile(uintptr(fd), name)
+	if opened == nil {
+		_ = unix.Close(fd)
+		return nil, errors.New("open state file: invalid file descriptor")
+	}
+	defer opened.Close()
+	info, err := opened.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("inspect state file: %w", err)
+	}
+	if err := checkRegularFile(info); err != nil {
+		return nil, err
+	}
+	data, err := io.ReadAll(io.LimitReader(opened, MaxFileSize+1))
+	if err != nil {
+		return nil, fmt.Errorf("read state file: %w", err)
+	}
+	if len(data) > MaxFileSize {
+		return nil, fmt.Errorf("state file is too large: exceeds %d bytes", MaxFileSize)
+	}
+	return data, nil
+}
+
+func inspectTargetAt(directory *os.File, name string) (os.FileInfo, bool, error) {
+	fd, err := openAt2(int(directory.Fd()), name, unix.O_PATH|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if errors.Is(err, unix.ENOENT) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("inspect state file: %w", err)
+	}
+	opened := os.NewFile(uintptr(fd), name)
+	if opened == nil {
+		_ = unix.Close(fd)
+		return nil, false, errors.New("inspect state file: invalid file descriptor")
+	}
+	defer opened.Close()
+	info, err := opened.Stat()
+	if err != nil {
+		return nil, false, fmt.Errorf("inspect state file: %w", err)
+	}
+	if err := checkRegularFile(info); err != nil {
+		return nil, false, err
+	}
+	return info, true, nil
+}
+
+func verifyUnchangedTargetAt(directory *os.File, name string, previous os.FileInfo, previousExists bool) error {
+	current, exists, err := inspectTargetAt(directory, name)
+	if err != nil {
+		return err
+	}
+	if exists != previousExists {
+		return errors.New("state file changed during atomic write")
+	}
+	if exists && !os.SameFile(previous, current) {
+		return errors.New("state file was replaced during atomic write")
+	}
+	return nil
+}
+
+func createTemporaryFileAt(directory *os.File, targetName string) (*os.File, string, error) {
+	for range temporaryNameAttempts {
+		var entropy [12]byte
+		if _, err := rand.Read(entropy[:]); err != nil {
+			return nil, "", fmt.Errorf("generate temporary state filename: %w", err)
+		}
+		name := "." + targetName + ".tmp-" + hex.EncodeToString(entropy[:])
+		fd, err := openAt2(
+			int(directory.Fd()),
+			name,
+			unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC|unix.O_NOFOLLOW,
+			uint64(RegularFileMode),
+		)
+		if errors.Is(err, unix.EEXIST) {
+			continue
+		}
+		if err != nil {
+			return nil, "", fmt.Errorf("create temporary state file: %w", err)
+		}
+		temporary := os.NewFile(uintptr(fd), name)
+		if temporary == nil {
+			_ = unix.Close(fd)
+			_ = unix.Unlinkat(int(directory.Fd()), name, 0)
+			return nil, "", errors.New("create temporary state file: invalid file descriptor")
+		}
+		return temporary, name, nil
+	}
+	return nil, "", errors.New("create temporary state file: too many filename collisions")
+}
+
+func lockDirectory(directory *os.File, operation int) error {
+	if err := unix.Flock(int(directory.Fd()), operation); err != nil {
+		return fmt.Errorf("lock state directory: %w", err)
+	}
+	return nil
+}
+
+func unlockDirectory(directory *os.File) {
+	_ = unix.Flock(int(directory.Fd()), unix.LOCK_UN)
+}
+
+func checkRegularFile(info os.FileInfo) error {
+	if !info.Mode().IsRegular() {
+		return errors.New("state file must be a regular file")
+	}
+	if err := checkOwner(info); err != nil {
+		return fmt.Errorf("state file: %w", err)
+	}
+	if err := checkMode(info, RegularFileMode); err != nil {
+		return fmt.Errorf("state file: %w", err)
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return errors.New("state file ownership metadata is unavailable")
+	}
+	if stat.Nlink != 1 {
+		return errors.New("state file must have exactly one hard link")
+	}
+	return nil
+}
+
+func checkOwner(info os.FileInfo) error {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return errors.New("ownership metadata is unavailable")
+	}
+	if stat.Uid != uint32(os.Geteuid()) {
+		return fmt.Errorf("must be owned by uid %d", os.Geteuid())
+	}
+	return nil
+}
+
+func checkMode(info os.FileInfo, expected os.FileMode) error {
+	const special = os.ModeSetuid | os.ModeSetgid | os.ModeSticky
+	actual := info.Mode() & (os.ModePerm | special)
+	if actual != expected {
+		return fmt.Errorf("must have mode %04o, got %04o", expected, actual)
+	}
+	return nil
+}
+
+func decodeStrict(data []byte, target any) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("multiple JSON values")
+		}
+		return err
+	}
+	return nil
+}

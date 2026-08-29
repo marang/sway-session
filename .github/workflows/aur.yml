@@ -5,14 +5,20 @@ on:
     tags:
       - "v*"
 
+permissions:
+  contents: read
+
+concurrency:
+  group: aur-release
+  cancel-in-progress: false
+
 jobs:
-  aur:
+  build:
+    name: Build and verify package
     runs-on: ubuntu-latest
     container: archlinux:latest
 
     env:
-      PKGNAME: sway-title-animator
-      AUR_REPO: sway-title-animator
       VERSION: ${{ github.ref_name }}
 
     steps:
@@ -23,19 +29,40 @@ jobs:
 
       - name: Checkout source repo
         uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify tag commit is on main
+        run: |
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo 'Refusing to publish a tag whose commit is not on main.' >&2
+            exit 1
+          fi
 
       - name: Strip leading v from tag
         id: v
         run: echo "version=${VERSION#v}" >> "$GITHUB_OUTPUT"
 
-      - name: Bump PKGBUILD (pkgver & sha256sums)
+      - name: Bump PKGBUILD version and checksum
+        env:
+          RELEASE_VERSION: ${{ steps.v.outputs.version }}
         run: |
-          ver="${{ steps.v.outputs.version }}"
+          ver="$RELEASE_VERSION"
           sed -i "s/^pkgver=.*/pkgver=${ver}/" PKGBUILD
+          sed -i "s/^pkgrel=.*/pkgrel=1/" PKGBUILD
 
           tarball="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/v${ver}.tar.gz"
           sum=$(curl -fsSL "$tarball" | sha256sum | cut -d' ' -f1)
           sed -i "s/^sha256sums=.*/sha256sums=('${sum}')/" PKGBUILD
+
+          grep -Fx "pkgver=${ver}" PKGBUILD
+          grep -Fx 'pkgrel=1' PKGBUILD
+          grep -Fx "sha256sums=('${sum}')" PKGBUILD
+          if grep -F 'SKIP' PKGBUILD; then
+            echo 'Refusing to publish a PKGBUILD with skipped integrity checks.' >&2
+            exit 1
+          fi
 
       - name: Create non-root build user
         run: |
@@ -43,9 +70,37 @@ jobs:
           echo 'build ALL=(ALL) NOPASSWD: ALL' >> /etc/sudoers
           chown -R build:build .
 
-      - name: Generate .SRCINFO
+      - name: Verify and build AUR package
         run: |
-          sudo -u build makepkg --printsrcinfo > .SRCINFO
+          sudo -u build makepkg --syncdeps --cleanbuild --clean --noconfirm
+          install -d release-metadata
+          cp PKGBUILD release-metadata/PKGBUILD
+          sudo -u build makepkg --printsrcinfo > release-metadata/SRCINFO
+
+      - name: Upload verified package metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: aur-release-metadata
+          path: release-metadata/
+          if-no-files-found: error
+          retention-days: 1
+
+  publish-aur:
+    name: Publish verified package to AUR
+    needs: build
+    runs-on: ubuntu-latest
+
+    env:
+      PKGNAME: sway-title-animator
+      AUR_REPO: sway-title-animator
+      VERSION: ${{ github.ref_name }}
+
+    steps:
+      - name: Download verified package metadata
+        uses: actions/download-artifact@v4
+        with:
+          name: aur-release-metadata
+          path: release-metadata
 
       - name: Prepare SSH agent
         uses: webfactory/ssh-agent@v0.9.0
@@ -72,8 +127,9 @@ jobs:
           GIT_COMMITTER_NAME: ${{ secrets.AUR_COMMIT_NAME || 'github-actions[bot]' }}
           GIT_COMMITTER_EMAIL: ${{ secrets.AUR_COMMIT_EMAIL || 'github-actions[bot]@users.noreply.github.com' }}
         run: |
-          ver="${{ steps.v.outputs.version }}"
-          cp PKGBUILD .SRCINFO aur/
+          ver="${VERSION#v}"
+          cp release-metadata/PKGBUILD aur/PKGBUILD
+          cp release-metadata/SRCINFO aur/.SRCINFO
           cd aur
           git config user.name "$GIT_AUTHOR_NAME"
           git config user.email "$GIT_AUTHOR_EMAIL"
@@ -84,3 +140,91 @@ jobs:
           fi
           git commit -m "Release ${PKGNAME} ${ver}"
           git push origin HEAD:master
+
+  sync-pkgbuild:
+    name: Open repository metadata sync PR
+    needs: publish-aur
+    runs-on: ubuntu-latest
+
+    env:
+      VERSION: ${{ github.ref_name }}
+
+    steps:
+      - name: Checkout main without persisted credentials
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download verified package metadata
+        uses: actions/download-artifact@v4
+        with:
+          name: aur-release-metadata
+          path: release-metadata
+
+      - name: Update exact release metadata and open PR
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_SYNC_TOKEN }}
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo 'RELEASE_SYNC_TOKEN is required to create the metadata sync PR.' >&2
+            exit 1
+          fi
+
+          ver="${VERSION#v}"
+          branch="automation/aur-${VERSION}"
+
+          git config user.name "$GIT_AUTHOR_NAME"
+          git config user.email "$GIT_AUTHOR_EMAIL"
+          gh auth setup-git
+
+          if cmp -s release-metadata/PKGBUILD PKGBUILD && \
+            cmp -s release-metadata/SRCINFO .SRCINFO; then
+            echo "Exact package metadata for ${VERSION} is already on main."
+            exit 0
+          fi
+
+          remote_sha=
+          if git fetch origin \
+            "refs/heads/${branch}:refs/remotes/origin/${branch}" 2>/dev/null; then
+            remote_sha=$(git rev-parse "refs/remotes/origin/${branch}")
+          fi
+
+          git checkout -B "$branch" origin/main
+          cp release-metadata/PKGBUILD PKGBUILD
+          cp release-metadata/SRCINFO .SRCINFO
+          git add PKGBUILD .SRCINFO
+          if git diff --cached --quiet; then
+            echo "Exact package metadata for ${VERSION} is already committed."
+            exit 0
+          fi
+          git commit -m "chore: sync Arch package for ${VERSION}"
+
+          if [ -n "$remote_sha" ] && \
+            [ "$(git rev-parse 'HEAD^{tree}')" = \
+              "$(git rev-parse "${remote_sha}^{tree}")" ]; then
+            echo "Remote metadata branch already has the exact desired tree."
+          elif [ -n "$remote_sha" ]; then
+            git push \
+              --force-with-lease="refs/heads/${branch}:${remote_sha}" \
+              -u origin "HEAD:refs/heads/${branch}"
+          else
+            git push -u origin "$branch"
+          fi
+
+          pr_url=$(gh pr list --head "$branch" --state open --json url --jq '.[0].url')
+          if [ -n "$pr_url" ]; then
+            echo "Metadata sync PR already exists: $pr_url"
+            exit 0
+          fi
+
+          gh pr create \
+            --base main \
+            --head "$branch" \
+            --title "chore: sync Arch package for ${VERSION}" \
+            --body "Synchronizes the exact PKGBUILD and .SRCINFO used to build and publish sway-title-animator ${ver} to the AUR. The package passed makepkg before publication."

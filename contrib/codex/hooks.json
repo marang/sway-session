@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$HOME/.local/bin/sway-session\" report-codex-session",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

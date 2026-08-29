@@ -39,13 +39,19 @@ project checkpoint, whichever comes first.
 - `main.go`: CLI parsing and process startup only.
 - `daemon.go`: event subscription and animation loop.
 - `animator.go`: title calculation, caching, and Sway title updates.
-- `ipc.go`: bounded i3/Sway IPC framing and reconnect behavior.
 - `instance_lock.go`: single-instance lock and safe replacement.
 - `config.go` / `model.go`: configuration and shared data types.
 - `animations.go`, `animations_extra.go`, `animation_random.go`: pure animation
   rendering and deterministic seeded motion.
 - `audio_meter.go`: optional `parec` capture and spectral analysis.
 - `preview.go`: terminal preview and terminal-width handling.
+- `cmd/sway-session`: one-shot persistent work-session CLI.
+- `internal/swayipc`: bounded i3/Sway IPC framing and reconnect behavior shared
+  by both commands.
+- `internal/session`: validated context identity and versioned session state.
+- `internal/statefile`: owner-only, bounded, transactional JSON state
+  persistence.
+- `internal/diagnostic`: structured and human-readable CLI diagnostics.
 
 Keep new responsibilities in the matching module instead of growing `main.go`.
 Prefer small pure helpers and injected process/time/terminal boundaries for

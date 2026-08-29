@@ -1,0 +1,4 @@
+# Pane screen history is required for sway-session's persistent work contexts.
+# Treat this file and Herdr's state directory as sensitive terminal history.
+[experimental]
+pane_history = true

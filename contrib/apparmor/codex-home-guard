@@ -1,0 +1,87 @@
+# AppArmor deny-list guard for the native Codex CLI.
+#
+# Install with:
+#   sudo install -m 0644 contrib/apparmor/codex-home-guard /etc/apparmor.d/codex-home-guard
+#   sudo apparmor_parser -r /etc/apparmor.d/codex-home-guard
+#
+# This template assumes the default XDG config/state roots. Update the two
+# protected path rules before loading it when XDG_CONFIG_HOME or XDG_STATE_HOME
+# points elsewhere.
+
+abi <abi/4.0>,
+include <tunables/global>
+
+profile codex-home-guard /usr/bin/codex flags=(attach_disconnected,mediate_deleted) {
+  allow all,
+
+  # Keep every child inside the same profile.
+  /** ix,
+  deny change_profile,
+
+  # Authentication keys and credential stores.
+  audit deny @{HOME}/.ssh/{,**} mrwkl,
+  audit deny @{HOME}/.gnupg/{,**} mrwkl,
+  audit deny @{HOME}/.aws/{,**} mrwkl,
+  audit deny @{HOME}/.azure/{,**} mrwkl,
+  audit deny @{HOME}/.kube/{,**} mrwkl,
+  audit deny @{HOME}/.password-store/{,**} mrwkl,
+  audit deny @{HOME}/.local/share/password-store/{,**} mrwkl,
+  audit deny @{HOME}/.local/share/keyrings/{,**} mrwkl,
+  audit deny @{HOME}/.pki/{,**} mrwkl,
+
+  # Service and package-manager credentials.
+  audit deny @{HOME}/.config/gcloud/{,**} mrwkl,
+  audit deny @{HOME}/.config/gh/{,**} mrwkl,
+  audit deny @{HOME}/.config/glab-cli/{,**} mrwkl,
+  audit deny @{HOME}/.config/op/{,**} mrwkl,
+  audit deny @{HOME}/.config/rclone/{,**} mrwkl,
+  audit deny @{HOME}/.config/containers/auth.json mrwkl,
+  audit deny @{HOME}/.docker/config.json mrwkl,
+  audit deny @{HOME}/.netrc mrwkl,
+  audit deny @{HOME}/.git-credentials mrwkl,
+  audit deny @{HOME}/.npmrc mrwkl,
+  audit deny @{HOME}/.pypirc mrwkl,
+  audit deny @{HOME}/.pgpass mrwkl,
+  audit deny @{HOME}/.my.cnf mrwkl,
+  audit deny @{HOME}/.authinfo{,.gpg} mrwkl,
+
+  # Shell and REPL histories commonly contain pasted secrets.
+  audit deny @{HOME}/.*history mrwkl,
+  audit deny @{HOME}/.local/share/fish/fish_history mrwkl,
+
+  # Browser profiles contain sessions, cookies, and saved credentials.
+  audit deny @{HOME}/.mozilla/{,**} mrwkl,
+  audit deny @{HOME}/.config/chromium/{,**} mrwkl,
+  audit deny @{HOME}/.config/google-chrome{,-beta,-dev}/{,**} mrwkl,
+  audit deny @{HOME}/.config/BraveSoftware/{,**} mrwkl,
+
+  # GnuPG and desktop keyrings remain private. The dedicated SSH agent is
+  # intentionally available so Git can authenticate without reading .ssh.
+  audit deny @{run}/user/[0-9]*/gnupg/{,**} mrwkl,
+  audit deny @{run}/user/[0-9]*/keyring/{,**} mrwkl,
+
+  # Container APIs could ask an unconfined service to expose protected paths.
+  audit deny @{run}/user/[0-9]*/podman/podman.sock mrwkl,
+  audit deny @{run}/user/[0-9]*/docker.sock mrwkl,
+  audit deny /run/docker.sock mrwkl,
+  audit deny /var/run/docker.sock mrwkl,
+
+  # Persistent terminal history, Herdr's general pane-control sockets, and the
+  # outer-session registry stay outside Codex. File-deny rules override the
+  # broad allow rule above for reads, writes, mapping, locks, and links.
+  audit deny @{HOME}/.config/herdr/{,**} mrwkl,
+  audit deny @{HOME}/.local/state/sway-session/{,**} mrwkl,
+
+  # Sway IPC can execute commands through the unconfined compositor and would
+  # bypass the broker's fixed operation just as the Herdr control socket would.
+  audit deny @{run}/user/[0-9]*/sway-ipc.*.sock mrwkl,
+
+  # The only session integration endpoint exposed to Codex. It accepts one
+  # schema-validated association operation and returns no registry contents.
+  # Directory mutation is denied so the confined client cannot replace the
+  # broker pathname with its own listener.
+  audit deny @{run}/user/[0-9]*/sway-session wkl,
+  audit deny @{run}/user/[0-9]*/sway-session/ wkl,
+  audit deny @{run}/user/[0-9]*/sway-session/codex-report.sock klm,
+  owner @{run}/user/[0-9]*/sway-session/codex-report.sock rw,
+}

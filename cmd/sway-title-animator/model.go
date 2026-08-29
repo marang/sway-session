@@ -1,6 +1,10 @@
 package main
 
-import "time"
+import (
+	"time"
+
+	"github.com/marang/sway-title-animator/internal/swayipc"
+)
 
 const (
 	defaultFPS              = 25.0
@@ -217,37 +221,9 @@ type FrameAnimation struct {
 	Fill   bool     `toml:"fill"`
 }
 
-type Rect struct {
-	Width int `json:"width"`
-}
-
-type WindowProperties struct {
-	Class    string `json:"class"`
-	Instance string `json:"instance"`
-}
-
-type Node struct {
-	ID               int64            `json:"id"`
-	Name             string           `json:"name"`
-	Type             string           `json:"type"`
-	PID              int              `json:"pid"`
-	Layout           string           `json:"layout"`
-	AppID            *string          `json:"app_id"`
-	Window           *int64           `json:"window"`
-	Focused          bool             `json:"focused"`
-	Urgent           bool             `json:"urgent"`
-	Shell            string           `json:"shell"`
-	InhibitIdle      bool             `json:"inhibit_idle"`
-	SandboxEngine    *string          `json:"sandbox_engine"`
-	SandboxAppID     *string          `json:"sandbox_app_id"`
-	SandboxInstance  *string          `json:"sandbox_instance_id"`
-	Marks            []string         `json:"marks"`
-	Rect             Rect             `json:"rect"`
-	WindowProperties WindowProperties `json:"window_properties"`
-	Nodes            []*Node          `json:"nodes"`
-	FloatingNodes    []*Node          `json:"floating_nodes"`
-	Parent           *Node            `json:"-"`
-}
+type Rect = swayipc.Rect
+type WindowProperties = swayipc.WindowProperties
+type Node = swayipc.TreeNode
 
 type nodeWithParent struct {
 	node   *Node

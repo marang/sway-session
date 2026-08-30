@@ -2,6 +2,7 @@ package statefile
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -89,6 +90,52 @@ func TestLoadSnapshotDoesNotWaitBehindExternalTransactionLock(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("snapshot read waited behind the transaction lock")
+	}
+}
+
+func TestContextOperationsStopWaitingForStateLock(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state")
+	file := NewJSONFile(root, "state.json", validateTestDocument)
+	want := testDocument{Version: 1, Value: "locked"}
+	if err := file.Save(want); err != nil {
+		t.Fatal(err)
+	}
+	directory, err := openStateDirectory(root, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer directory.Close()
+	if err := lockDirectory(directory, unix.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	defer unlockDirectory(directory)
+
+	for name, operation := range map[string]func(context.Context) error{
+		"load": func(ctx context.Context) error {
+			var got testDocument
+			return file.LoadIntoContext(ctx, &got)
+		},
+		"update": func(ctx context.Context) error {
+			_, updateErr := file.UpdateContext(ctx, want, func(*testDocument) error {
+				t.Fatal("mutation ran without acquiring the state lock")
+				return nil
+			})
+			return updateErr
+		},
+		"inspect": func(ctx context.Context) error {
+			return file.InspectLockedContext(ctx, want, func(testDocument) error {
+				t.Fatal("inspection ran without acquiring the state lock")
+				return nil
+			})
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+			defer cancel()
+			if err := operation(ctx); !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("locked %s returned %v, want context deadline", name, err)
+			}
+		})
 	}
 }
 

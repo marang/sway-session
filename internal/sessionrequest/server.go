@@ -29,6 +29,8 @@ type Server struct {
 	socketStat  unix.Stat_t
 	handler     Handler
 	reportError func(error)
+	ctx         context.Context
+	cancel      context.CancelFunc
 	done        chan struct{}
 	closeOnce   sync.Once
 	wait        sync.WaitGroup
@@ -94,9 +96,11 @@ func StartServer(socketPath string, handler Handler, reportError func(error)) (*
 		closeSetup()
 		return nil, errors.New("session start endpoint is not an owner-only socket")
 	}
+	serverContext, cancelServer := context.WithCancel(context.Background())
 	server := &Server{
 		listener: listener, directory: directory, socketFD: socketFD, socketName: socketName, socketStat: socketStat,
-		handler: handler, reportError: reportError, done: make(chan struct{}), workers: make(chan struct{}, 4),
+		handler: handler, reportError: reportError, ctx: serverContext, cancel: cancelServer,
+		done: make(chan struct{}), workers: make(chan struct{}, 4),
 	}
 	server.wait.Add(1)
 	go server.serve()
@@ -236,7 +240,7 @@ func (server *Server) handle(connection *net.UnixConn) {
 		server.reject(connection, err)
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), exchangeTimeout)
+	ctx, cancel := context.WithTimeout(server.ctx, exchangeTimeout)
 	defer cancel()
 	response, err := server.handler(ctx, request)
 	if err != nil {
@@ -298,6 +302,7 @@ func (server *Server) Close() error {
 	var closeErr error
 	server.closeOnce.Do(func() {
 		close(server.done)
+		server.cancel()
 		closeErr = server.listener.Close()
 		server.wait.Wait()
 		if err := unlinkPinnedSocket(server.directory, server.socketName, server.socketStat); err != nil && !errors.Is(err, syscall.EADDRINUSE) {

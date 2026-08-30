@@ -1,6 +1,7 @@
 package swayipc
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -59,8 +60,25 @@ func (client *Client) Close() {
 // Request sends one request. Known read-only requests reconnect once after a
 // failed exchange; RUN_COMMAND returns CommandOutcomeUnknownError instead.
 func (client *Client) Request(messageType MessageType, payload []byte) (Message, error) {
+	return client.request(context.Background(), messageType, payload)
+}
+
+// RequestContext sends one request and interrupts its Sway connection when the
+// context is canceled. As with Request, read-only requests reconnect once, but
+// mutating requests are never replayed after an ambiguous exchange.
+func (client *Client) RequestContext(ctx context.Context, messageType MessageType, payload []byte) (Message, error) {
+	if ctx == nil {
+		return Message{}, errors.New("sway ipc request context is nil")
+	}
+	return client.request(ctx, messageType, payload)
+}
+
+func (client *Client) request(ctx context.Context, messageType MessageType, payload []byte) (Message, error) {
 	if err := validatePayloadSize(payload); err != nil {
 		return Message{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return Message{}, fmt.Errorf("sway ipc request canceled: %w", err)
 	}
 	attempts := 1
 	if retryableReadOnlyRequest(messageType) {
@@ -68,15 +86,18 @@ func (client *Client) Request(messageType MessageType, payload []byte) (Message,
 	}
 	var lastErr error
 	for range attempts {
-		if err := client.ensure(); err != nil {
+		if err := client.ensureContext(ctx); err != nil {
 			return Message{}, err
 		}
-		message, err := client.conn.Request(messageType, payload)
+		message, err := requestContext(ctx, client.conn, messageType, payload)
 		if err == nil {
 			return message, nil
 		}
 		lastErr = err
 		client.Close()
+		if ctx.Err() != nil {
+			break
+		}
 	}
 	if messageType == RunCommand {
 		return Message{}, &CommandOutcomeUnknownError{Cause: lastErr}
@@ -85,6 +106,32 @@ func (client *Client) Request(messageType MessageType, payload []byte) (Message,
 		return Message{}, fmt.Errorf("sway ipc request failed: %w", lastErr)
 	}
 	return Message{}, fmt.Errorf("sway ipc request failed after reconnect: %w", lastErr)
+}
+
+func requestContext(ctx context.Context, connection *Conn, messageType MessageType, payload []byte) (Message, error) {
+	if ctx.Done() == nil {
+		return connection.Request(messageType, payload)
+	}
+	completed := make(chan struct{})
+	canceled := make(chan bool, 1)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = connection.Close()
+			canceled <- true
+		case <-completed:
+			canceled <- false
+		}
+	}()
+
+	message, err := connection.Request(messageType, payload)
+	close(completed)
+	if <-canceled {
+		if contextErr := ctx.Err(); contextErr != nil {
+			return Message{}, fmt.Errorf("sway ipc request canceled: %w", contextErr)
+		}
+	}
+	return message, err
 }
 
 func retryableReadOnlyRequest(messageType MessageType) bool {
@@ -136,14 +183,14 @@ func CheckSubscribeResponse(message Message) error {
 	return nil
 }
 
-func (client *Client) ensure() error {
+func (client *Client) ensureContext(ctx context.Context) error {
 	if client == nil {
 		return fmt.Errorf("sway ipc client is nil")
 	}
 	if client.conn != nil {
 		return nil
 	}
-	conn, err := Dial(client.socket)
+	conn, err := DialContext(ctx, client.socket)
 	if err != nil {
 		return err
 	}

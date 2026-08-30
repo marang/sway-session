@@ -11,14 +11,17 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	sessionstate "github.com/marang/sway-title-animator/internal/session"
 	"github.com/marang/sway-title-animator/internal/statefile"
 	"github.com/marang/sway-title-animator/internal/swayipc"
 )
 
+const registrationRollbackTimeout = time.Second
+
 type SwayRequester interface {
-	Request(swayipc.MessageType, []byte) (swayipc.Message, error)
+	RequestContext(context.Context, swayipc.MessageType, []byte) (swayipc.Message, error)
 	Close()
 }
 
@@ -124,11 +127,11 @@ func (service *Service) Handle(ctx context.Context, request Request) (Response, 
 		return Response{}, errors.New("sway client is nil")
 	}
 	defer client.Close()
-	registry, err := loadRegistry(service.StateRoot)
+	registry, err := loadRegistryContext(ctx, service.StateRoot)
 	if err != nil {
 		return Response{}, err
 	}
-	tree, err := requestTree(client)
+	tree, err := requestTree(ctx, client)
 	if err != nil {
 		return Response{}, err
 	}
@@ -138,35 +141,35 @@ func (service *Service) Handle(ctx context.Context, request Request) (Response, 
 		if window, mapped, err := observeRequestedContext(tree, registry, contextValue.ID); err != nil {
 			return Response{}, err
 		} else if mapped {
-			return service.focusMappedActiveContext(request, client, window.Workspace)
+			return service.focusMappedActiveContext(ctx, request, client, window.Workspace)
 		}
-		if err := requireCompatibleSavedWorkspace(service.StateRoot, contextValue.ID, request.Workspace); err != nil {
+		if err := requireCompatibleSavedWorkspace(ctx, service.StateRoot, contextValue.ID, request.Workspace); err != nil {
 			return Response{}, err
 		}
 	}
 	if err := requireWorkspaceEmpty(tree, request.Workspace); err != nil {
 		return Response{}, err
 	}
-	contextValue, registry, created, err := service.ensureContext(request)
+	contextValue, _, created, err := service.ensureContext(ctx, request)
 	if err != nil {
 		return Response{}, err
 	}
 	if !created {
-		if err := requireCompatibleSavedWorkspace(service.StateRoot, contextValue.ID, request.Workspace); err != nil {
+		if err := requireCompatibleSavedWorkspace(ctx, service.StateRoot, contextValue.ID, request.Workspace); err != nil {
 			return Response{}, err
 		}
 	}
-	tree, err = requestTree(client)
+	tree, err = requestTree(ctx, client)
 	if err != nil {
 		return rollbackCreatedRegistration(service.StateRoot, request, contextValue, created, err)
 	}
 	if err := requireWorkspaceEmpty(tree, request.Workspace); err != nil {
 		return rollbackCreatedRegistration(service.StateRoot, request, contextValue, created, err)
 	}
-	if err := focusWorkspace(client, request.Workspace); err != nil {
+	if err := focusWorkspace(ctx, client, request.Workspace); err != nil {
 		return rollbackCreatedRegistration(service.StateRoot, request, contextValue, created, err)
 	}
-	tree, err = requestTree(client)
+	tree, err = requestTree(ctx, client)
 	if err != nil {
 		return rollbackCreatedRegistration(service.StateRoot, request, contextValue, created, err)
 	}
@@ -176,29 +179,15 @@ func (service *Service) Handle(ctx context.Context, request Request) (Response, 
 	if err := service.Restore.Restore(ctx, contextValue.ID); err != nil {
 		return Response{}, err
 	}
-	tree, err = requestTree(client)
-	if err != nil {
-		return Response{}, err
-	}
-	window, found, err := observeRequestedContext(tree, registry, contextValue.ID)
-	if err != nil {
-		return Response{}, err
-	}
-	if !found {
-		return Response{}, errors.New("restored context did not map before the broker deadline")
-	}
-	if !workspaceNameHasNumber(window.Workspace, request.Workspace) {
-		return Response{}, fmt.Errorf("restored context mapped on workspace %q instead of requested workspace %d", window.Workspace, request.Workspace)
-	}
-	return acceptedResponse(contextValue, request.Workspace, created), nil
+	return service.finalizeRestoredContext(ctx, request, client, contextValue.ID, created)
 }
 
-func (service *Service) focusMappedActiveContext(request Request, client SwayRequester, observedWorkspace string) (Response, error) {
+func (service *Service) focusMappedActiveContext(ctx context.Context, request Request, client SwayRequester, observedWorkspace string) (Response, error) {
 	if !workspaceNameHasNumber(observedWorkspace, request.Workspace) {
 		return Response{}, fmt.Errorf("context is already mapped on workspace %q", observedWorkspace)
 	}
 	var response Response
-	err := sessionstate.InspectRegistryLocked(service.StateRoot, func(registry sessionstate.Registry) error {
+	err := sessionstate.InspectRegistryLockedContext(ctx, service.StateRoot, func(registry sessionstate.Registry) error {
 		contextValue, found, err := matchingContext(registry, request)
 		if err != nil {
 			return err
@@ -206,7 +195,7 @@ func (service *Service) focusMappedActiveContext(request Request, client SwayReq
 		if !found {
 			return errors.New("matching context disappeared before focus")
 		}
-		tree, err := requestTree(client)
+		tree, err := requestTree(ctx, client)
 		if err != nil {
 			return err
 		}
@@ -220,7 +209,10 @@ func (service *Service) focusMappedActiveContext(request Request, client SwayReq
 		if !workspaceNameHasNumber(window.Workspace, request.Workspace) {
 			return fmt.Errorf("context is already mapped on workspace %q", window.Workspace)
 		}
-		if err := focusWorkspace(client, request.Workspace); err != nil {
+		if err := requireWorkspaceContainsOnlyWindow(tree, request.Workspace, window.ContainerID); err != nil {
+			return err
+		}
+		if err := focusWorkspace(ctx, client, request.Workspace); err != nil {
 			return err
 		}
 		response = acceptedResponse(contextValue, request.Workspace, false)
@@ -229,9 +221,42 @@ func (service *Service) focusMappedActiveContext(request Request, client SwayReq
 	return response, err
 }
 
-func requireCompatibleSavedWorkspace(root string, id sessionstate.ContextID, requested int) error {
+func (service *Service) finalizeRestoredContext(ctx context.Context, request Request, client SwayRequester, expectedID sessionstate.ContextID, created bool) (Response, error) {
+	var response Response
+	err := sessionstate.InspectRegistryLockedContext(ctx, service.StateRoot, func(registry sessionstate.Registry) error {
+		contextValue, found, err := matchingContext(registry, request)
+		if err != nil {
+			return err
+		}
+		if !found || contextValue.ID != expectedID {
+			return errors.New("matching context disappeared after restore")
+		}
+		tree, err := requestTree(ctx, client)
+		if err != nil {
+			return err
+		}
+		window, mapped, err := observeRequestedContext(tree, registry, contextValue.ID)
+		if err != nil {
+			return err
+		}
+		if !mapped {
+			return errors.New("restored context did not map before the broker deadline")
+		}
+		if !workspaceNameHasNumber(window.Workspace, request.Workspace) {
+			return fmt.Errorf("restored context mapped on workspace %q instead of requested workspace %d", window.Workspace, request.Workspace)
+		}
+		if err := requireWorkspaceContainsOnlyWindow(tree, request.Workspace, window.ContainerID); err != nil {
+			return err
+		}
+		response = acceptedResponse(contextValue, request.Workspace, created)
+		return nil
+	})
+	return response, err
+}
+
+func requireCompatibleSavedWorkspace(ctx context.Context, root string, id sessionstate.ContextID, requested int) error {
 	snapshot := sessionstate.LayoutSnapshot{Version: sessionstate.LayoutSchemaVersion, Workspaces: []sessionstate.WorkspaceLayout{}}
-	if err := sessionstate.LayoutFile(root).LoadInto(&snapshot); err != nil {
+	if err := sessionstate.LayoutFile(root).LoadIntoContext(ctx, &snapshot); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
 		}
@@ -279,8 +304,12 @@ func layoutContainsContext(node sessionstate.LayoutNode, id sessionstate.Context
 }
 
 func loadRegistry(root string) (sessionstate.Registry, error) {
+	return loadRegistryContext(context.Background(), root)
+}
+
+func loadRegistryContext(ctx context.Context, root string) (sessionstate.Registry, error) {
 	registry := sessionstate.Registry{Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{}}
-	if err := sessionstate.RegistryFile(root).LoadInto(&registry); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := sessionstate.RegistryFile(root).LoadIntoContext(ctx, &registry); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return sessionstate.Registry{}, fmt.Errorf("load context registry: %w", err)
 	}
 	return registry, nil
@@ -304,10 +333,10 @@ func matchingContext(registry sessionstate.Registry, request Request) (sessionst
 	return sessionstate.Context{}, false, nil
 }
 
-func (service *Service) ensureContext(request Request) (sessionstate.Context, sessionstate.Registry, bool, error) {
+func (service *Service) ensureContext(ctx context.Context, request Request) (sessionstate.Context, sessionstate.Registry, bool, error) {
 	var selected sessionstate.Context
 	created := false
-	registry, err := sessionstate.UpdateRegistry(service.StateRoot, func(registry *sessionstate.Registry) error {
+	registry, err := sessionstate.UpdateRegistryContext(ctx, service.StateRoot, func(registry *sessionstate.Registry) error {
 		current, found, err := matchingContext(*registry, request)
 		if err != nil {
 			return err
@@ -337,7 +366,7 @@ func (service *Service) ensureContext(request Request) (sessionstate.Context, se
 	if !errors.As(err, &unknown) || selected.ID == "" {
 		return sessionstate.Context{}, sessionstate.Registry{}, false, fmt.Errorf("ensure context registration: %w", err)
 	}
-	visible, loadErr := loadRegistry(service.StateRoot)
+	visible, loadErr := loadRegistryContext(ctx, service.StateRoot)
 	if loadErr != nil {
 		return sessionstate.Context{}, sessionstate.Registry{}, false, errors.Join(err, fmt.Errorf("reload context registration: %w", loadErr))
 	}
@@ -353,7 +382,9 @@ func rollbackCreatedRegistration(root string, request Request, contextValue sess
 	if !created {
 		return Response{}, cause
 	}
-	_, err := sessionstate.UpdateRegistry(root, func(registry *sessionstate.Registry) error {
+	cleanupContext, cancel := context.WithTimeout(context.Background(), registrationRollbackTimeout)
+	defer cancel()
+	_, err := sessionstate.UpdateRegistryContext(cleanupContext, root, func(registry *sessionstate.Registry) error {
 		for _, current := range registry.Contexts {
 			if current.ID != contextValue.ID {
 				continue
@@ -371,7 +402,7 @@ func rollbackCreatedRegistration(root string, request Request, contextValue sess
 	}
 	var unknown *statefile.CommitOutcomeUnknownError
 	if errors.As(err, &unknown) {
-		visible, loadErr := loadRegistry(root)
+		visible, loadErr := loadRegistryContext(cleanupContext, root)
 		if loadErr == nil {
 			removed := true
 			for _, current := range visible.Contexts {
@@ -398,8 +429,8 @@ func acceptedResponse(contextValue sessionstate.Context, workspace int, created 
 	return Response{Context: &contextValue, Workspace: workspace, Created: created}
 }
 
-func requestTree(client SwayRequester) (*swayipc.TreeNode, error) {
-	message, err := client.Request(swayipc.GetTree, nil)
+func requestTree(ctx context.Context, client SwayRequester) (*swayipc.TreeNode, error) {
+	message, err := client.RequestContext(ctx, swayipc.GetTree, nil)
 	if err != nil {
 		return nil, fmt.Errorf("request Sway tree: %w", err)
 	}
@@ -454,6 +485,72 @@ func requireWorkspaceEmpty(root *swayipc.TreeNode, number int) error {
 	return nil
 }
 
+func requireWorkspaceContainsOnlyWindow(root *swayipc.TreeNode, number int, containerID int64) error {
+	if containerID <= 0 {
+		return errors.New("requested context has an invalid Sway container ID")
+	}
+	var matches []*swayipc.TreeNode
+	var findWorkspaces func(*swayipc.TreeNode)
+	findWorkspaces = func(node *swayipc.TreeNode) {
+		if node == nil {
+			return
+		}
+		if node.Type == "workspace" && workspaceNameHasNumber(node.Name, number) {
+			matches = append(matches, node)
+		}
+		for _, child := range node.Nodes {
+			findWorkspaces(child)
+		}
+		for _, child := range node.FloatingNodes {
+			findWorkspaces(child)
+		}
+	}
+	findWorkspaces(root)
+	if len(matches) == 0 {
+		return fmt.Errorf("workspace number %d disappeared after restore", number)
+	}
+	if len(matches) > 1 {
+		return fmt.Errorf("workspace number %d is ambiguous", number)
+	}
+
+	leafIDs := make([]int64, 0, 2)
+	var collectLeaves func(*swayipc.TreeNode) error
+	collectLeaves = func(node *swayipc.TreeNode) error {
+		if node == nil {
+			return errors.New("workspace contains an invalid nil node")
+		}
+		if len(node.Nodes) == 0 && len(node.FloatingNodes) == 0 {
+			leafIDs = append(leafIDs, node.ID)
+			return nil
+		}
+		for _, child := range node.Nodes {
+			if err := collectLeaves(child); err != nil {
+				return err
+			}
+		}
+		for _, child := range node.FloatingNodes {
+			if err := collectLeaves(child); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	for _, child := range matches[0].Nodes {
+		if err := collectLeaves(child); err != nil {
+			return err
+		}
+	}
+	for _, child := range matches[0].FloatingNodes {
+		if err := collectLeaves(child); err != nil {
+			return err
+		}
+	}
+	if len(leafIDs) != 1 || leafIDs[0] != containerID {
+		return fmt.Errorf("workspace %q is not exclusive to the requested context", matches[0].Name)
+	}
+	return nil
+}
+
 func workspaceNameHasNumber(name string, number int) bool {
 	prefix := name
 	if before, _, found := strings.Cut(name, ":"); found {
@@ -463,8 +560,8 @@ func workspaceNameHasNumber(name string, number int) bool {
 	return err == nil && value == number
 }
 
-func focusWorkspace(client SwayRequester, number int) error {
-	message, err := client.Request(swayipc.RunCommand, []byte(fmt.Sprintf("workspace number %d", number)))
+func focusWorkspace(ctx context.Context, client SwayRequester, number int) error {
+	message, err := client.RequestContext(ctx, swayipc.RunCommand, []byte(fmt.Sprintf("workspace number %d", number)))
 	if err != nil {
 		return fmt.Errorf("focus requested workspace: %w", err)
 	}

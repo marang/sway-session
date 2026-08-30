@@ -5,19 +5,23 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	sessionstate "github.com/marang/sway-title-animator/internal/session"
 	"github.com/marang/sway-title-animator/internal/swayipc"
+	"golang.org/x/sys/unix"
 )
 
 type fakeRestoreRunner struct {
-	calls  []sessionstate.ContextID
-	err    error
-	mapped *sessionstate.ContextID
+	calls        []sessionstate.ContextID
+	err          error
+	mapped       *sessionstate.ContextID
+	afterRestore func() error
 }
 
 func (runner *fakeRestoreRunner) Restore(_ context.Context, id sessionstate.ContextID) error {
@@ -25,21 +29,25 @@ func (runner *fakeRestoreRunner) Restore(_ context.Context, id sessionstate.Cont
 	if runner.err == nil && runner.mapped != nil {
 		*runner.mapped = id
 	}
+	if runner.err == nil && runner.afterRestore != nil {
+		return runner.afterRestore()
+	}
 	return runner.err
 }
 
 type fakeSwayRequester struct {
-	workspace       int
-	mapped          sessionstate.ContextID
-	occupied        bool
-	commands        []string
-	treeRequests    int
-	occupyOnTree    int
-	occupyWorkspace int
-	onTree          func(int) error
+	workspace        int
+	mapped           sessionstate.ContextID
+	occupied         bool
+	floatingOccupied bool
+	commands         []string
+	treeRequests     int
+	occupyOnTree     int
+	occupyWorkspace  int
+	onTree           func(int) error
 }
 
-func (client *fakeSwayRequester) Request(messageType swayipc.MessageType, payload []byte) (swayipc.Message, error) {
+func (client *fakeSwayRequester) RequestContext(_ context.Context, messageType swayipc.MessageType, payload []byte) (swayipc.Message, error) {
 	switch messageType {
 	case swayipc.RunCommand:
 		command := string(payload)
@@ -59,7 +67,7 @@ func (client *fakeSwayRequester) Request(messageType swayipc.MessageType, payloa
 			client.workspace = client.occupyWorkspace
 			client.occupied = true
 		}
-		encoded, err := json.Marshal(serviceTree(client.workspace, client.mapped, client.occupied))
+		encoded, err := json.Marshal(serviceTree(client.workspace, client.mapped, client.occupied, client.floatingOccupied))
 		return swayipc.Message{Type: swayipc.GetTree, Payload: encoded}, err
 	default:
 		return swayipc.Message{}, errors.New("unexpected Sway request")
@@ -68,12 +76,27 @@ func (client *fakeSwayRequester) Request(messageType swayipc.MessageType, payloa
 
 func (client *fakeSwayRequester) Close() {}
 
-func serviceTree(workspace int, mapped sessionstate.ContextID, occupied bool) *swayipc.TreeNode {
+type blockingSwayRequester struct {
+	started chan struct{}
+}
+
+func (client *blockingSwayRequester) RequestContext(ctx context.Context, _ swayipc.MessageType, _ []byte) (swayipc.Message, error) {
+	close(client.started)
+	<-ctx.Done()
+	return swayipc.Message{}, ctx.Err()
+}
+
+func (client *blockingSwayRequester) Close() {}
+
+func serviceTree(workspace int, mapped sessionstate.ContextID, occupied bool, floatingOccupied bool) *swayipc.TreeNode {
 	workspaces := []*swayipc.TreeNode{{ID: 3, Type: "workspace", Name: "1", Nodes: []*swayipc.TreeNode{}, FloatingNodes: []*swayipc.TreeNode{}}}
 	if workspace != 0 {
 		target := &swayipc.TreeNode{ID: 4, Type: "workspace", Name: fmt.Sprintf("%d", workspace), Nodes: []*swayipc.TreeNode{}, FloatingNodes: []*swayipc.TreeNode{}}
 		if occupied {
 			target.Nodes = append(target.Nodes, &swayipc.TreeNode{ID: 5, Type: "con", Nodes: []*swayipc.TreeNode{}, FloatingNodes: []*swayipc.TreeNode{}})
+		}
+		if floatingOccupied {
+			target.FloatingNodes = append(target.FloatingNodes, &swayipc.TreeNode{ID: 7, Type: "floating_con", Nodes: []*swayipc.TreeNode{}, FloatingNodes: []*swayipc.TreeNode{}})
 		}
 		if mapped != "" {
 			appID, _ := mapped.AppID()
@@ -104,6 +127,63 @@ func TestServiceCreatesFocusesAndRestoresOneContext(t *testing.T) {
 	}
 	if !reflect.DeepEqual(client.commands, []string{"workspace number 7"}) || !reflect.DeepEqual(runner.calls, []sessionstate.ContextID{testContextID}) {
 		t.Fatalf("unexpected effects: commands=%v restores=%v", client.commands, runner.calls)
+	}
+}
+
+func TestServicePropagatesCancellationToSwayRequest(t *testing.T) {
+	request := Request{Version: ProtocolVersion, Session: "reboot-e2e", Cwd: t.TempDir(), Label: "REBOOT-E2E", Provider: "local", Workspace: 7}
+	client := &blockingSwayRequester{started: make(chan struct{})}
+	service := &Service{
+		StateRoot: filepath.Join(t.TempDir(), "state"),
+		NewContextID: func() (sessionstate.ContextID, error) {
+			return testContextID, nil
+		},
+		NewSway: func() SwayRequester { return client },
+		Restore: &fakeRestoreRunner{},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		_, err := service.Handle(ctx, request)
+		result <- err
+	}()
+	<-client.started
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("canceled Sway request returned %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("service did not stop after request cancellation")
+	}
+}
+
+func TestServiceStopsWaitingForRegistryLockAfterCancellation(t *testing.T) {
+	service, request, client, _ := testService(t)
+	if err := sessionstate.RegistryFile(service.StateRoot).Save(sessionstate.Registry{
+		Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	directory, err := os.Open(service.StateRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer directory.Close()
+	if err := unix.Flock(int(directory.Fd()), unix.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Flock(int(directory.Fd()), unix.LOCK_UN)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	_, err = service.Handle(ctx, request)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("locked registry returned %v, want context deadline", err)
+	}
+	if client.treeRequests != 0 {
+		t.Fatalf("service contacted Sway while registry remained locked: %d requests", client.treeRequests)
 	}
 }
 
@@ -303,6 +383,69 @@ func TestServiceKeepsRegistrationForRetryAfterRestoreFailure(t *testing.T) {
 	registry, loadErr := loadRegistry(service.StateRoot)
 	if loadErr != nil || len(registry.Contexts) != 1 || len(runner.calls) != 1 {
 		t.Fatalf("failed restore is not retryable: registry=%+v err=%v", registry, loadErr)
+	}
+}
+
+func TestServiceRejectsArchiveAfterRestoreBeforeFinalObservation(t *testing.T) {
+	service, request, _, runner := testService(t)
+	runner.afterRestore = func() error {
+		_, err := sessionstate.UpdateRegistry(service.StateRoot, func(registry *sessionstate.Registry) error {
+			_, err := sessionstate.SetContextState(registry, string(testContextID), sessionstate.ContextArchived)
+			return err
+		})
+		return err
+	}
+
+	_, err := service.Handle(context.Background(), request)
+	if err == nil || !strings.Contains(err.Error(), "archived") {
+		t.Fatalf("archive after restore was accepted: %v", err)
+	}
+	registry, loadErr := loadRegistry(service.StateRoot)
+	if loadErr != nil || len(registry.Contexts) != 1 || registry.Contexts[0].State != sessionstate.ContextArchived {
+		t.Fatalf("archived registry state was not preserved: registry=%+v err=%v", registry, loadErr)
+	}
+}
+
+func TestServiceRejectsWorkspaceOccupantAppearingDuringRestore(t *testing.T) {
+	for _, floating := range []bool{false, true} {
+		name := "tiled"
+		if floating {
+			name = "floating"
+		}
+		t.Run(name, func(t *testing.T) {
+			service, request, client, runner := testService(t)
+			runner.afterRestore = func() error {
+				client.occupied = !floating
+				client.floatingOccupied = floating
+				return nil
+			}
+
+			_, err := service.Handle(context.Background(), request)
+			if err == nil || !strings.Contains(err.Error(), "not exclusive") {
+				t.Fatalf("%s workspace occupant was accepted: %v", name, err)
+			}
+		})
+	}
+}
+
+func TestServiceRejectsMappedContextOnMixedWorkspace(t *testing.T) {
+	service, request, client, runner := testService(t)
+	contextValue := registeredContext(request)
+	if err := sessionstate.RegistryFile(service.StateRoot).Save(sessionstate.Registry{
+		Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{contextValue},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	client.workspace = request.Workspace
+	client.mapped = contextValue.ID
+	client.occupied = true
+
+	_, err := service.Handle(context.Background(), request)
+	if err == nil || !strings.Contains(err.Error(), "not exclusive") {
+		t.Fatalf("mapped context on mixed workspace was accepted: %v", err)
+	}
+	if len(client.commands) != 0 || len(runner.calls) != 0 {
+		t.Fatalf("mixed mapped workspace caused effects: commands=%v restores=%v", client.commands, runner.calls)
 	}
 }
 

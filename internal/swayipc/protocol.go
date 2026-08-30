@@ -3,10 +3,12 @@
 package swayipc
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"sync"
 	"syscall"
@@ -52,6 +54,19 @@ func Dial(path string) (*Conn, error) {
 		return nil, err
 	}
 	return &Conn{conn: os.NewFile(uintptr(fd), path)}, nil
+}
+
+// DialContext opens a close-on-exec Unix socket connection and allows callers
+// to bound connection establishment as part of a larger IPC exchange.
+func DialContext(ctx context.Context, path string) (*Conn, error) {
+	if ctx == nil {
+		return nil, errors.New("sway ipc dial context is nil")
+	}
+	connection, err := (&net.Dialer{}).DialContext(ctx, "unix", path)
+	if err != nil {
+		return nil, err
+	}
+	return &Conn{conn: connection}, nil
 }
 
 // Close closes the underlying IPC stream.

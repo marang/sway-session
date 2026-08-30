@@ -3,6 +3,7 @@ package statefile
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -13,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -24,6 +26,7 @@ const (
 
 	temporaryNameAttempts = 128
 	safeResolveFlags      = unix.RESOLVE_BENEATH | unix.RESOLVE_NO_MAGICLINKS | unix.RESOLVE_NO_SYMLINKS
+	lockRetryDelay        = 10 * time.Millisecond
 )
 
 // JSONFile is one validated state document in a private state directory.
@@ -74,6 +77,14 @@ func OpenPrivateDirectory(path string, create bool) (*os.File, error) {
 // LoadInto replaces target only after a complete strict decode and validation.
 // On any error, target remains the caller's in-memory last known-good value.
 func (file JSONFile[T]) LoadInto(target *T) error {
+	return file.LoadIntoContext(context.Background(), target)
+}
+
+// LoadIntoContext is LoadInto with cancelable state-lock acquisition.
+func (file JSONFile[T]) LoadIntoContext(ctx context.Context, target *T) error {
+	if ctx == nil {
+		return errors.New("state load context is nil")
+	}
 	if target == nil {
 		return errors.New("state target is nil")
 	}
@@ -85,7 +96,7 @@ func (file JSONFile[T]) LoadInto(target *T) error {
 		return err
 	}
 	defer directory.Close()
-	if err := lockDirectory(directory, unix.LOCK_SH); err != nil {
+	if err := lockDirectoryContext(ctx, directory, unix.LOCK_SH); err != nil {
 		return err
 	}
 	defer unlockDirectory(directory)
@@ -141,6 +152,14 @@ func (file JSONFile[T]) Save(value T) error {
 // Update returns the candidate with CommitOutcomeUnknownError so callers can
 // reload and reconcile instead of assuming that the mutation was rolled back.
 func (file JSONFile[T]) Update(initial T, mutate func(*T) error) (T, error) {
+	return file.UpdateContext(context.Background(), initial, mutate)
+}
+
+// UpdateContext is Update with cancelable state-lock acquisition.
+func (file JSONFile[T]) UpdateContext(ctx context.Context, initial T, mutate func(*T) error) (T, error) {
+	if ctx == nil {
+		return initial, errors.New("state update context is nil")
+	}
 	if mutate == nil {
 		return initial, errors.New("state mutation is nil")
 	}
@@ -152,7 +171,7 @@ func (file JSONFile[T]) Update(initial T, mutate func(*T) error) (T, error) {
 		return initial, err
 	}
 	defer directory.Close()
-	if err := lockDirectory(directory, unix.LOCK_EX); err != nil {
+	if err := lockDirectoryContext(ctx, directory, unix.LOCK_EX); err != nil {
 		return initial, err
 	}
 	defer unlockDirectory(directory)
@@ -184,6 +203,14 @@ func (file JSONFile[T]) Update(initial T, mutate func(*T) error) (T, error) {
 // and side effects must not race a concurrent Update using the same directory.
 // InspectLocked never writes the document itself.
 func (file JSONFile[T]) InspectLocked(initial T, inspect func(T) error) error {
+	return file.InspectLockedContext(context.Background(), initial, inspect)
+}
+
+// InspectLockedContext is InspectLocked with cancelable state-lock acquisition.
+func (file JSONFile[T]) InspectLockedContext(ctx context.Context, initial T, inspect func(T) error) error {
+	if ctx == nil {
+		return errors.New("state inspection context is nil")
+	}
 	if inspect == nil {
 		return errors.New("state inspection is nil")
 	}
@@ -195,7 +222,7 @@ func (file JSONFile[T]) InspectLocked(initial T, inspect func(T) error) error {
 		return err
 	}
 	defer directory.Close()
-	if err := lockDirectory(directory, unix.LOCK_EX); err != nil {
+	if err := lockDirectoryContext(ctx, directory, unix.LOCK_EX); err != nil {
 		return err
 	}
 	defer unlockDirectory(directory)
@@ -511,6 +538,39 @@ func lockDirectory(directory *os.File, operation int) error {
 		return fmt.Errorf("lock state directory: %w", err)
 	}
 	return nil
+}
+
+func lockDirectoryContext(ctx context.Context, directory *os.File, operation int) error {
+	if ctx == nil {
+		return errors.New("state lock context is nil")
+	}
+	if ctx.Done() == nil {
+		return lockDirectory(directory, operation)
+	}
+	for {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("lock state directory: %w", err)
+		}
+		err := unix.Flock(int(directory.Fd()), operation|unix.LOCK_NB)
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, unix.EWOULDBLOCK) && !errors.Is(err, unix.EAGAIN) {
+			return fmt.Errorf("lock state directory: %w", err)
+		}
+		timer := time.NewTimer(lockRetryDelay)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			return fmt.Errorf("lock state directory: %w", ctx.Err())
+		case <-timer.C:
+		}
+	}
 }
 
 func unlockDirectory(directory *os.File) {

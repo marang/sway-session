@@ -52,6 +52,52 @@ func TestServerAcceptsValidatedStartRequest(t *testing.T) {
 	}
 }
 
+func TestServerCloseCancelsActiveHandler(t *testing.T) {
+	request := testRequest(t)
+	socketPath := filepath.Join(t.TempDir(), "runtime", SocketFilename)
+	handlerStarted := make(chan struct{})
+	handlerStopped := make(chan struct{})
+	server, err := StartServer(socketPath, func(ctx context.Context, _ Request) (Response, error) {
+		close(handlerStarted)
+		<-ctx.Done()
+		close(handlerStopped)
+		return Response{}, ctx.Err()
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	clientDone := make(chan error, 1)
+	go func() {
+		_, sendErr := Send(context.Background(), socketPath, request)
+		clientDone <- sendErr
+	}()
+	select {
+	case <-handlerStarted:
+	case <-time.After(time.Second):
+		t.Fatal("handler did not start")
+	}
+
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- server.Close() }()
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatalf("close server: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("server close did not cancel the active handler")
+	}
+	select {
+	case <-handlerStopped:
+	default:
+		t.Fatal("server returned from close before handler stopped")
+	}
+	if err := <-clientDone; err == nil {
+		t.Fatal("client unexpectedly accepted a canceled handler response")
+	}
+}
+
 func TestServerRejectsUnknownFieldsBeforeHandler(t *testing.T) {
 	socketPath := filepath.Join(t.TempDir(), "runtime", SocketFilename)
 	called := false

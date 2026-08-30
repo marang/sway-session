@@ -2,6 +2,7 @@ package swayipc
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"net"
 	"os"
@@ -78,6 +79,48 @@ func TestClientUnixSocketRoundTrip(t *testing.T) {
 	}
 	if err := <-serverDone; err != nil {
 		t.Fatalf("server: %v", err)
+	}
+}
+
+func TestClientRequestContextInterruptsUnresponsivePeer(t *testing.T) {
+	socket := filepath.Join(t.TempDir(), "sway.sock")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		if errors.Is(err, syscall.EPERM) {
+			t.Skipf("unix sockets are not permitted in this sandbox: %v", err)
+		}
+		t.Fatalf("listen unix socket: %v", err)
+	}
+	defer listener.Close()
+
+	requestRead := make(chan error, 1)
+	peerReleased := make(chan struct{})
+	go func() {
+		connection, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			requestRead <- acceptErr
+			return
+		}
+		defer connection.Close()
+		_, readErr := readMessage(connection)
+		requestRead <- readErr
+		<-peerReleased
+	}()
+	defer close(peerReleased)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	client := NewClient(socket)
+	defer client.Close()
+	_, err = client.RequestContext(ctx, GetTree, nil)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("unresponsive peer returned %v, want context deadline", err)
+	}
+	if err := <-requestRead; err != nil {
+		t.Fatalf("peer did not receive request: %v", err)
+	}
+	if client.conn != nil {
+		t.Fatal("canceled request connection remained cached")
 	}
 }
 

@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -37,15 +38,25 @@ func RegistryFile(root string) statefile.JSONFile[Registry] {
 // UpdateRegistry serializes the complete registry load-modify-save operation
 // across concurrent sway-session processes.
 func UpdateRegistry(root string, mutate func(*Registry) error) (Registry, error) {
+	return UpdateRegistryContext(context.Background(), root, mutate)
+}
+
+// UpdateRegistryContext is UpdateRegistry with cancelable lock acquisition.
+func UpdateRegistryContext(ctx context.Context, root string, mutate func(*Registry) error) (Registry, error) {
 	initial := Registry{Version: ContextsSchemaVersion, Contexts: []Context{}}
-	return RegistryFile(root).Update(initial, mutate)
+	return RegistryFile(root).UpdateContext(ctx, initial, mutate)
 }
 
 // InspectRegistryLocked serializes an observation and its external effects
 // with all registry mutations without rewriting contexts.json.
 func InspectRegistryLocked(root string, inspect func(Registry) error) error {
+	return InspectRegistryLockedContext(context.Background(), root, inspect)
+}
+
+// InspectRegistryLockedContext is InspectRegistryLocked with cancelable lock acquisition.
+func InspectRegistryLockedContext(ctx context.Context, root string, inspect func(Registry) error) error {
 	initial := Registry{Version: ContextsSchemaVersion, Contexts: []Context{}}
-	return RegistryFile(root).InspectLocked(initial, inspect)
+	return RegistryFile(root).InspectLockedContext(ctx, initial, inspect)
 }
 
 func LayoutFile(root string) statefile.JSONFile[LayoutSnapshot] {

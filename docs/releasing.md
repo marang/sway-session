@@ -42,6 +42,20 @@ unrelated branch content. This keeps the package metadata in this source
 repository directly buildable without maintaining another Git repository
 beyond the AUR repository itself.
 
+If the AUR workflow infrastructure fails after a GitHub release has already
+been published, rerun the fixed workflow for the existing immutable tag rather
+than moving the tag or creating a replacement release:
+
+```sh
+gh workflow run aur.yml --ref main -f version=v0.3.0
+```
+
+The manual path accepts only a strict `vMAJOR.MINOR.PATCH` tag, checks out that
+exact tag, verifies that `HEAD` matches it, and requires its commit to be
+reachable from `origin/main` before building or publishing. The container uses
+a command-scoped `safe.directory` for the Actions workspace only; it does not
+persist a broad Git trust exception.
+
 Required GitHub secrets:
 
 ```text

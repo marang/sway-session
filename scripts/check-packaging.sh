@@ -45,7 +45,12 @@ require_fixed .github/workflows/aur.yml "grep -F 'SKIP' PKGBUILD"
 require_fixed .github/workflows/aur.yml 'sed -i "s/^pkgrel=.*/pkgrel=1/" PKGBUILD'
 require_fixed .github/workflows/aur.yml "grep -Fx 'pkgrel=1' PKGBUILD"
 require_fixed .github/workflows/aur.yml 'makepkg --syncdeps --cleanbuild --clean --noconfirm'
-require_fixed .github/workflows/aur.yml 'git merge-base --is-ancestor "$GITHUB_SHA" origin/main'
+require_fixed .github/workflows/aur.yml 'workflow_dispatch:'
+require_fixed .github/workflows/aur.yml 'VERSION: ${{ github.event.inputs.version || github.ref_name }}'
+require_fixed .github/workflows/aur.yml 'ref: ${{ github.event.inputs.version || github.ref_name }}'
+require_fixed .github/workflows/aur.yml 'show-ref --verify --quiet "refs/tags/$VERSION"'
+require_fixed .github/workflows/aur.yml 'git -c safe.directory="$GITHUB_WORKSPACE" \'
+require_fixed .github/workflows/aur.yml 'merge-base --is-ancestor "$tag_commit" origin/main'
 require_fixed .github/workflows/release.yml 'git merge-base --is-ancestor "$GITHUB_SHA" origin/main'
 require_fixed .github/workflows/aur.yml 'actions/upload-artifact@v4'
 require_fixed .github/workflows/aur.yml 'actions/download-artifact@v4'

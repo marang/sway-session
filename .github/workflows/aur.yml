@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Existing release tag to publish, for example v0.3.0
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -19,7 +25,7 @@ jobs:
     container: archlinux:latest
 
     env:
-      VERSION: ${{ github.ref_name }}
+      VERSION: ${{ github.event.inputs.version || github.ref_name }}
 
     steps:
       - name: Install deps
@@ -30,12 +36,30 @@ jobs:
       - name: Checkout source repo
         uses: actions/checkout@v5
         with:
+          ref: ${{ github.event.inputs.version || github.ref_name }}
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Verify tag commit is on main
+      - name: Validate release tag and main ancestry
         run: |
-          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+          if ! printf '%s\n' "$VERSION" | \
+            grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
+            echo "Refusing malformed release tag: $VERSION" >&2
+            exit 1
+          fi
+          if ! git -c safe.directory="$GITHUB_WORKSPACE" \
+            show-ref --verify --quiet "refs/tags/$VERSION"; then
+            echo "Refusing unknown release tag: $VERSION" >&2
+            exit 1
+          fi
+          tag_commit=$(git -c safe.directory="$GITHUB_WORKSPACE" rev-list -n 1 "$VERSION")
+          head_commit=$(git -c safe.directory="$GITHUB_WORKSPACE" rev-parse HEAD)
+          if [ "$head_commit" != "$tag_commit" ]; then
+            echo "Checkout does not match release tag $VERSION." >&2
+            exit 1
+          fi
+          if ! git -c safe.directory="$GITHUB_WORKSPACE" \
+            merge-base --is-ancestor "$tag_commit" origin/main; then
             echo 'Refusing to publish a tag whose commit is not on main.' >&2
             exit 1
           fi
@@ -93,7 +117,7 @@ jobs:
     env:
       PKGNAME: sway-title-animator
       AUR_REPO: sway-title-animator
-      VERSION: ${{ github.ref_name }}
+      VERSION: ${{ github.event.inputs.version || github.ref_name }}
 
     steps:
       - name: Download verified package metadata
@@ -147,7 +171,7 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      VERSION: ${{ github.ref_name }}
+      VERSION: ${{ github.event.inputs.version || github.ref_name }}
 
     steps:
       - name: Checkout main without persisted credentials

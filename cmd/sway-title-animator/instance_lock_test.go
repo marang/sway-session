@@ -57,9 +57,9 @@ func TestInstanceLockReplaceWaitsForVerifiedOwner(t *testing.T) {
 		if err != nil {
 			t.Fatalf("helper acquire lock: %v", err)
 		}
-		fmt.Println("LOCK_READY")
 		signals := make(chan os.Signal, 1)
 		signal.Notify(signals, syscall.SIGTERM)
+		fmt.Println("LOCK_READY")
 		<-signals
 		signal.Stop(signals)
 		if err := lock.Close(); err != nil {

@@ -8,14 +8,17 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/marang/sway-title-animator/internal/codexreport"
 	"github.com/marang/sway-title-animator/internal/diagnostic"
 	sessionstate "github.com/marang/sway-title-animator/internal/session"
+	"github.com/marang/sway-title-animator/internal/sessionrequest"
 	"github.com/marang/sway-title-animator/internal/swayipc"
 	"golang.org/x/term"
 )
@@ -38,10 +41,12 @@ var commandSpecs = map[string]commandSpec{
 	"archive":              {usage: "archive <context>", summary: "Exclude a context from automatic restore"},
 	"activate":             {usage: "activate <context>", summary: "Return an archived context to automatic restore"},
 	"purge":                {usage: "purge [--yes] <context>", summary: "Permanently remove a context and its saved Herdr state"},
+	"broker":               {usage: "broker [--socket <path>]", summary: "Serve typed work-session start requests"},
+	"request-start":        {usage: "request-start --session <name> --workspace <number> [options]", summary: "Request a typed ensure-and-start operation"},
 	"report-codex-session": {usage: "report-codex-session", summary: "Report a managed Codex SessionStart event to the narrow broker"},
 }
 
-var commandOrder = []string{"register", "restore", "list", "archive", "activate", "purge", "report-codex-session"}
+var commandOrder = []string{"register", "restore", "list", "archive", "activate", "purge", "broker", "request-start", "report-codex-session"}
 
 type swayRequester interface {
 	Request(swayipc.MessageType, []byte) (swayipc.Message, error)
@@ -64,6 +69,8 @@ type dependencies struct {
 	settleTimeout   time.Duration
 	stdinTerminal   func() bool
 	reportCodexHook func(context.Context, io.Reader, func(string) string) error
+	requestStart    func(context.Context, sessionrequest.Request) (sessionrequest.Response, error)
+	runBroker       func(context.Context, string, func(error)) error
 }
 
 func defaultDependencies(stdin io.Reader) dependencies {
@@ -88,11 +95,21 @@ func defaultDependencies(stdin io.Reader) dependencies {
 			return ok && term.IsTerminal(int(file.Fd()))
 		},
 		reportCodexHook: codexreport.ReportCodexHook,
+		requestStart: func(ctx context.Context, request sessionrequest.Request) (sessionrequest.Response, error) {
+			socketPath, err := sessionrequest.DefaultSocketPath()
+			if err != nil {
+				return sessionrequest.Response{}, err
+			}
+			return sessionrequest.Send(ctx, socketPath, request)
+		},
+		runBroker: runSessionRequestBroker,
 	}
 }
 
 func main() {
-	os.Exit(runWith(os.Args[1:], os.Stdin, os.Stdout, os.Stderr, defaultDependencies(os.Stdin)))
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	os.Exit(runWithContext(ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr, defaultDependencies(os.Stdin)))
 }
 
 func run(arguments []string, stdout io.Writer, stderr io.Writer) int {
@@ -100,6 +117,10 @@ func run(arguments []string, stdout io.Writer, stderr io.Writer) int {
 }
 
 func runWith(arguments []string, stdin io.Reader, stdout io.Writer, stderr io.Writer, deps dependencies) int {
+	return runWithContext(context.Background(), arguments, stdin, stdout, stderr, deps)
+}
+
+func runWithContext(ctx context.Context, arguments []string, stdin io.Reader, stdout io.Writer, stderr io.Writer, deps dependencies) int {
 	arguments, structured, help := globalOptions(arguments)
 	if len(arguments) == 0 {
 		if help {
@@ -134,7 +155,7 @@ func runWith(arguments []string, stdin io.Reader, stdout io.Writer, stderr io.Wr
 		return exitSuccess
 	}
 
-	result, commandFailure := executeCommand(context.Background(), name, arguments[1:], stdin, stderr, deps)
+	result, commandFailure := executeCommand(ctx, name, arguments[1:], stdin, stderr, structured, deps)
 	if commandFailure != nil {
 		if len(result.Contexts) != 0 || result.Message != "" {
 			if err := writeResult(stdout, structured, result); err != nil {
@@ -157,9 +178,11 @@ func runWith(arguments []string, stdin io.Reader, stdout io.Writer, stderr io.Wr
 }
 
 type commandResult struct {
-	Command  string                 `json:"command"`
-	Contexts []sessionstate.Context `json:"contexts"`
-	Message  string                 `json:"message,omitempty"`
+	Command   string                 `json:"command"`
+	Contexts  []sessionstate.Context `json:"contexts"`
+	Message   string                 `json:"message,omitempty"`
+	Workspace int                    `json:"workspace,omitempty"`
+	Created   bool                   `json:"created,omitempty"`
 }
 
 type commandFailure struct {
@@ -287,9 +310,12 @@ func writeCommandUsage(writer io.Writer, name string, spec commandSpec) {
 	if name == "register" {
 		_, _ = fmt.Fprintln(writer, "Options: --session NAME [--cwd PATH] [--label LABEL] [--provider NAME] [--id UUID]")
 	}
+	if name == "request-start" {
+		_, _ = fmt.Fprintln(writer, "Options: --session NAME --workspace NUMBER [--cwd PATH] [--label LABEL] [--provider NAME]")
+	}
 }
 
-func executeCommand(ctx context.Context, name string, arguments []string, stdin io.Reader, stderr io.Writer, deps dependencies) (commandResult, *commandFailure) {
+func executeCommand(ctx context.Context, name string, arguments []string, stdin io.Reader, stderr io.Writer, structured bool, deps dependencies) (commandResult, *commandFailure) {
 	switch name {
 	case "register":
 		return executeRegister(arguments, deps)
@@ -303,6 +329,10 @@ func executeCommand(ctx context.Context, name string, arguments []string, stdin 
 		return executePurge(ctx, arguments, stdin, stderr, deps)
 	case "restore":
 		return executeRestore(ctx, arguments, deps)
+	case "broker":
+		return executeBroker(ctx, arguments, stderr, structured, deps)
+	case "request-start":
+		return executeRequestStart(ctx, arguments, deps)
 	case "report-codex-session":
 		if len(arguments) != 0 {
 			return commandResult{}, usageFailure(name, "report-codex-session accepts no arguments")

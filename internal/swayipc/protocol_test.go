@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"net"
+	"os"
 	"path/filepath"
 	"syscall"
 	"testing"
@@ -78,6 +79,60 @@ func TestClientUnixSocketRoundTrip(t *testing.T) {
 	if err := <-serverDone; err != nil {
 		t.Fatalf("server: %v", err)
 	}
+}
+
+func TestConnCloseInterruptsBlockedRead(t *testing.T) {
+	socket := filepath.Join(t.TempDir(), "sway.sock")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		if errors.Is(err, syscall.EPERM) {
+			t.Skipf("unix sockets are not permitted in this sandbox: %v", err)
+		}
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	connection, err := Dial(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, ok := connection.conn.(*os.File)
+	if !ok {
+		t.Fatalf("unexpected Sway connection type %T", connection.conn)
+	}
+	readStarted := make(chan struct{})
+	connection.conn = &readNotifyingFile{File: file, started: readStarted}
+	server, err := listener.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	readDone := make(chan error, 1)
+	go func() {
+		_, readErr := connection.Read()
+		readDone <- readErr
+	}()
+	<-readStarted
+	if err := connection.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-readDone:
+		if err == nil {
+			t.Fatal("blocked read unexpectedly returned no error")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("closing Sway IPC connection did not interrupt blocked read")
+	}
+}
+
+type readNotifyingFile struct {
+	*os.File
+	started chan struct{}
+}
+
+func (file *readNotifyingFile) Read(value []byte) (int, error) {
+	close(file.started)
+	return file.File.Read(value)
 }
 
 func TestClientReconnectsOnceAfterFailedExchange(t *testing.T) {

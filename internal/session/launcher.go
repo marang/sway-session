@@ -230,6 +230,50 @@ func ResolveTrustedExecutable(name string) (string, error) {
 	return resolved, nil
 }
 
+// ResolveRootOwnedSystemExecutable resolves a fixed program only from system
+// bin directories and requires every resolved path component to be root-owned
+// and not group- or world-writable. Security brokers use this stricter variant
+// so a confined process cannot prepare a user-owned binary for a later
+// unconfined launch.
+func ResolveRootOwnedSystemExecutable(name string) (string, error) {
+	if name == "" || filepath.Base(name) != name {
+		return "", errors.New("system executable must be one fixed base name")
+	}
+	for _, candidate := range []string{filepath.Join("/usr/bin", name), filepath.Join("/usr/local/bin", name)} {
+		resolved, err := filepath.EvalSymlinks(candidate)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return "", fmt.Errorf("resolve %s: %w", candidate, err)
+		}
+		current := string(filepath.Separator)
+		for _, component := range strings.Split(strings.TrimPrefix(resolved, string(filepath.Separator)), string(filepath.Separator)) {
+			if component == "" {
+				continue
+			}
+			current = filepath.Join(current, component)
+			info, err := os.Lstat(current)
+			if err != nil {
+				return "", fmt.Errorf("inspect system executable path %s: %w", current, err)
+			}
+			stat, ok := info.Sys().(*syscall.Stat_t)
+			if !ok || stat.Uid != 0 || info.Mode().Perm()&0o022 != 0 {
+				return "", fmt.Errorf("system executable path %s must be root-owned and not group- or world-writable", current)
+			}
+		}
+		info, err := os.Stat(resolved)
+		if err != nil {
+			return "", err
+		}
+		if !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
+			return "", fmt.Errorf("system executable %s is not an executable regular file", resolved)
+		}
+		return resolved, nil
+	}
+	return "", fmt.Errorf("find root-owned %s in /usr/bin or /usr/local/bin", name)
+}
+
 type ManagedWindow struct {
 	ContainerID int64
 	Workspace   string

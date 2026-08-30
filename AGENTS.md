@@ -45,7 +45,12 @@ project checkpoint, whichever comes first.
   rendering and deterministic seeded motion.
 - `audio_meter.go`: optional `parec` capture and spectral analysis.
 - `preview.go`: terminal preview and terminal-width handling.
-- `cmd/sway-session`: one-shot persistent work-session CLI.
+- `cmd/sway-session`: persistent work-session CLI and its explicit long-running
+  `broker` command.
+- `cmd/sway-herdr-init` / `internal/herdrinit`: fixed, registry-locked
+  initialization of one empty Herdr session without general pane control.
+- `internal/sessionrequest`: owner-only typed session-start protocol and broker
+  service.
 - `internal/swayipc`: bounded i3/Sway IPC framing and reconnect behavior shared
   by both commands.
 - `internal/session`: validated context identity and versioned session state.

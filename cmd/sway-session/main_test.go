@@ -17,6 +17,7 @@ import (
 
 	"github.com/marang/sway-title-animator/internal/codexreport"
 	sessionstate "github.com/marang/sway-title-animator/internal/session"
+	"github.com/marang/sway-title-animator/internal/sessionrequest"
 	"github.com/marang/sway-title-animator/internal/swayipc"
 )
 
@@ -31,10 +32,89 @@ func TestHelpListsImplementedCommandContract(t *testing.T) {
 	if exitCode != exitSuccess || stderr.Len() != 0 {
 		t.Fatalf("unexpected help result code=%d stderr=%q", exitCode, stderr.String())
 	}
-	for _, expected := range []string{"register --session <name>", "restore [--socket <path>] [context]", "purge [--yes] <context>", "3  Operational failure"} {
+	for _, expected := range []string{"register --session <name>", "restore [--socket <path>] [context]", "broker [--socket <path>]", "request-start --session <name> --workspace <number>", "purge [--yes] <context>", "3  Operational failure"} {
 		if !strings.Contains(stdout.String(), expected) {
 			t.Fatalf("help does not contain %q:\n%s", expected, stdout.String())
 		}
+	}
+}
+
+func TestBrokerRunsUntilContextCancellation(t *testing.T) {
+	deps := testDependencies(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	called := 0
+	deps.runBroker = func(got context.Context, socket string, report func(error)) error {
+		called++
+		if socket != "/run/user/1000/sway.sock" {
+			t.Fatalf("unexpected Sway socket %q", socket)
+		}
+		if !errors.Is(got.Err(), context.Canceled) {
+			t.Fatalf("broker did not receive canceled context: %v", got.Err())
+		}
+		if report == nil {
+			t.Fatal("broker error reporter is nil")
+		}
+		return nil
+	}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := runWithContext(ctx, []string{"--json", "broker", "--socket", "/run/user/1000/sway.sock"}, strings.NewReader(""), &stdout, &stderr, deps)
+	if code != exitSuccess || called != 1 || stderr.Len() != 0 {
+		t.Fatalf("broker failed code=%d called=%d stderr=%q", code, called, stderr.String())
+	}
+	var result commandResult
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Command != "broker" || len(result.Contexts) != 0 {
+		t.Fatalf("unexpected broker result: %+v", result)
+	}
+}
+
+func TestBrokerRejectsRelativeSwaySocketBeforeRunner(t *testing.T) {
+	deps := testDependencies(t)
+	deps.runBroker = func(context.Context, string, func(error)) error {
+		t.Fatal("broker runner called with relative Sway socket")
+		return nil
+	}
+	var stderr bytes.Buffer
+	code := runWith([]string{"broker", "--socket", "relative.sock"}, strings.NewReader(""), io.Discard, &stderr, deps)
+	if code != exitOperation || !strings.Contains(stderr.String(), "absolute Sway IPC socket") {
+		t.Fatalf("unexpected result code=%d stderr=%q", code, stderr.String())
+	}
+}
+
+func TestRequestStartUsesOnlyTypedBrokerDependency(t *testing.T) {
+	deps := testDependencies(t)
+	project, err := deps.workingDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	called := 0
+	deps.requestStart = func(_ context.Context, request sessionrequest.Request) (sessionrequest.Response, error) {
+		called++
+		want := sessionrequest.Request{Version: sessionrequest.ProtocolVersion, Session: "reboot-e2e", Cwd: project, Label: "REBOOT-E2E", Provider: "local", Workspace: 7}
+		if request != want {
+			t.Fatalf("unexpected request: got=%+v want=%+v", request, want)
+		}
+		contextValue := sessionstate.Context{ID: testContextID, Label: request.Label, Provider: request.Provider, State: sessionstate.ContextActive, Launcher: sessionstate.Launcher{Kind: sessionstate.LauncherHerdr, Session: request.Session, Cwd: request.Cwd}}
+		return sessionrequest.Response{Version: sessionrequest.ProtocolVersion, OK: true, Context: &contextValue, Workspace: 7, Created: true}, nil
+	}
+	deps.stateRoot = func() (string, error) { return "", errors.New("request-start must not read state directly") }
+	deps.newSwayClient = func(string) swayRequester { t.Fatal("request-start must not open Sway IPC"); return nil }
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := runWith([]string{"--json", "request-start", "--session", "reboot-e2e", "--cwd", project, "--label", "REBOOT-E2E", "--provider", "local", "--workspace", "7"}, strings.NewReader(""), &stdout, &stderr, deps)
+	if code != exitSuccess || stderr.Len() != 0 || called != 1 {
+		t.Fatalf("request-start failed code=%d called=%d stderr=%q", code, called, stderr.String())
+	}
+	var result commandResult
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Command != "request-start" || result.Workspace != 7 || !result.Created || len(result.Contexts) != 1 || result.Contexts[0].ID != testContextID {
+		t.Fatalf("unexpected request-start result: %+v", result)
 	}
 }
 
@@ -263,6 +343,43 @@ func TestRestorePendingProcessPreventsDuplicateLaunch(t *testing.T) {
 
 	if code != exitSuccess || len(starter.calls) != 0 {
 		t.Fatalf("pending launch was duplicated: code=%d starts=%v stderr=%q", code, starter.calls, stderr.String())
+	}
+}
+
+func TestBrokerRestoreRequiresContextToRemainActive(t *testing.T) {
+	deps := testDependencies(t)
+	registered := registerTestContext(t, deps)
+	root, err := deps.stateRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sessionstate.UpdateRegistry(root, func(registry *sessionstate.Registry) error {
+		_, err := sessionstate.SetContextState(registry, string(registered.ID), sessionstate.ContextArchived)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	deps.newSwayClient = func(string) swayRequester {
+		t.Fatal("archived broker target reached Sway")
+		return nil
+	}
+	var stderr bytes.Buffer
+
+	code := runWith([]string{"restore", "--require-active", "--socket", "/run/user/1000/sway.sock", string(registered.ID)}, strings.NewReader(""), io.Discard, &stderr, deps)
+
+	if code != exitOperation || !strings.Contains(stderr.String(), "archived") {
+		t.Fatalf("archived broker target was not rejected: code=%d stderr=%q", code, stderr.String())
+	}
+}
+
+func TestExplicitManualRestoreStillAllowsArchivedContext(t *testing.T) {
+	contextValue := sessionstate.Context{ID: testContextID, State: sessionstate.ContextArchived}
+	registry := sessionstate.Registry{Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{contextValue}}
+
+	targets, err := restoreTargets(registry, string(contextValue.ID), false)
+
+	if err != nil || len(targets) != 1 || targets[0].ID != contextValue.ID {
+		t.Fatalf("manual archived restore changed semantics: targets=%+v err=%v", targets, err)
 	}
 }
 

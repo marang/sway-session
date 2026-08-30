@@ -140,11 +140,12 @@ This installs:
 ```text
 ~/.local/bin/sway-title-animator
 ~/.local/bin/sway-session
+~/.local/bin/sway-herdr-init
 ```
 
 Make sure `~/.local/bin` is in your `PATH`.
 
-Release archives and distribution packages also contain both programs and the
+Release archives and distribution packages also contain all three programs and the
 Sway, Herdr, Codex-hook, and AppArmor integration templates. Archives retain
 the repository-relative template paths; distribution packages install them
 under `/usr/share/doc/sway-title-animator`. The differing paths are called out
@@ -194,6 +195,52 @@ sway-session register --session lab-80 --label LAB-80 --provider linear
 sway-session restore LAB-80
 ```
 
+For an AppArmor-confined Codex workflow, `sway-session broker` exposes a
+separate typed start endpoint. It combines exact context registration or reuse
+with placement on one empty numbered workspace, without accepting pane roles
+or commands:
+
+> **Experimental security boundary:** the narrow interfaces protect the
+> registry, Sway IPC, and general Herdr controls, but the current launch path
+> creates an unconfined terminal, Herdr pane shell, and agent. User-writable
+> shell startup files or executable lookup can therefore escape the caller's
+> AppArmor profile. Enable this workflow only when that risk is explicitly
+> accepted. Future Agent Sandbox hardening is tracked in
+> [LAB-89](https://linear.app/riotbox/issue/LAB-89/harden-broker-created-herdr-sessions-with-agent-sandbox-integration).
+
+```sh
+/usr/bin/sway-session --json request-start \
+  --session lab-88 \
+  --cwd "$PWD" \
+  --label LAB-88 \
+  --workspace 7
+```
+
+Pass the returned `.contexts[0].id` to the packaged initializer:
+
+```sh
+/usr/bin/sway-herdr-init --json \
+  --context 8f33d6d0-7c54-4da1-9e38-2bd290ef85ca \
+  --role codex \
+  --role shell
+```
+
+The initializer derives the named Herdr session and working directory from the
+protected registry and holds its mutation lock through the dependent Herdr
+operation, so `archive` and `purge` cannot race initialization. It only splits
+a session proven to contain exactly one empty pane with the supported snapshot
+protocol, invokes Herdr's normal typed `agent start` operation, and otherwise
+returns a safe no-op. Existing Herdr layouts are never reshaped. The AppArmor
+transition intentionally recognizes only the root-owned
+`/usr/bin/sway-herdr-init` from a distribution package. The broker likewise
+launches only a root-owned system `sway-session` with a system-only executable
+search path. Do not allow-list a user-writable source-install copy.
+
+Pane roles are logical Herdr agent kinds such as `codex`, not executable paths
+or runtime definitions. A future trusted wrapper or container launcher belongs
+to the Herdr/agent integration layer; `sway-session` deliberately does not
+persist direct-versus-sandbox execution details.
+
 Lifecycle commands accept an exact UUID or an unambiguous exact label:
 
 ```sh
@@ -209,17 +256,18 @@ the registry entry; without `--yes`, it requires a terminal and the full UUID.
 Use the global option before a command, for example `sway-session --json list`,
 for stable machine-readable results and diagnostics.
 
-For automatic startup, add both lines to the Sway config:
+For automatic startup, add all three lines to the Sway config:
 
 ```conf
-exec_always --no-startup-id sway-title-animator --replace --fps 25
-exec --no-startup-id sway-session restore
+exec_always --no-startup-id /usr/bin/sway-title-animator --replace --fps 25
+exec --no-startup-id /usr/bin/sway-session broker
+exec --no-startup-id /usr/bin/sway-session restore
 ```
 
-The restore line intentionally uses `exec`, not `exec_always`, so reloading the
-Sway config does not launch another restore. Restore also checks Sway and
-already-started typed Alacritty processes before launching, so repeated manual
-calls reuse an existing or pending context window.
+The broker and restore lines intentionally use `exec`, not `exec_always`, so
+reloading the Sway config does not launch duplicates. Restore also checks Sway
+and already-started typed Alacritty processes before launching, so repeated
+manual calls reuse an existing or pending context window.
 
 ### Secure Codex resume
 
@@ -266,10 +314,14 @@ For a distribution-package install, use
 source path in the first command.
 
 The template assumes the default XDG paths under `~/.config` and
-`~/.local/state`; adjust its two state-root rules before loading it when custom
-XDG roots are in use. The policy denies Herdr history and control sockets,
-`sway-session` state, and Sway IPC while allowing only
-`$XDG_RUNTIME_DIR/sway-session/codex-report.sock`. From the matching Herdr pane,
+`~/.local/state`. The narrow initializer deliberately derives those defaults
+from the account database instead of trusting caller-provided XDG variables;
+custom XDG roots are not supported by this narrow helper yet. The policy denies
+direct Herdr history and control
+sockets, `sway-session` state, and Sway IPC while allowing only the typed
+`codex-report.sock` and `session-start.sock` endpoints. The root-owned
+`sway-herdr-init` receives a separate constrained profile for the fixed Herdr
+initialization described above. From the matching Herdr pane,
 run `scripts/verify-codex-boundary.sh` in a source checkout or the packaged
 `/usr/share/doc/sway-title-animator/scripts/verify-codex-boundary.sh` for a live
 positive/negative enforcement check after the profile, Herdr, and one

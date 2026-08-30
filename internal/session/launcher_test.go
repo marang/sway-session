@@ -121,3 +121,17 @@ func (starter *launcherRecordingStarter) Start(spec ProcessSpec) error {
 	starter.spec.Environment = append([]string(nil), spec.Environment...)
 	return nil
 }
+
+func TestResolveRootOwnedSystemExecutableIgnoresCallerPath(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	resolved, err := ResolveRootOwnedSystemExecutable("sh")
+	if err != nil {
+		t.Fatalf("resolve root-owned system executable: %v", err)
+	}
+	if resolved == "" || resolved[0] != '/' {
+		t.Fatalf("unexpected resolved path %q", resolved)
+	}
+	if _, err := ResolveRootOwnedSystemExecutable("../sh"); err == nil {
+		t.Fatal("unsafe executable name was accepted")
+	}
+}

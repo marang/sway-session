@@ -39,6 +39,22 @@ builds:
     goarch:
       - amd64
       - arm64
+  - id: sway-herdr-init
+    main: ./cmd/sway-herdr-init
+    binary: sway-herdr-init
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+      - -buildvcs=false
+    ldflags:
+      - -s -w -buildid=
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
 
 archives:
   - id: bundles
@@ -61,7 +77,7 @@ checksum:
 nfpms:
   - id: linux-packages
     package_name: sway-title-animator
-    ids: [sway-title-animator, sway-session]
+    ids: [sway-title-animator, sway-session, sway-herdr-init]
     formats: [deb, rpm]
     maintainer: "sway-title-animator Authors"
     description: "Animated Unicode titlebars for Sway"

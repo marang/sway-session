@@ -4,9 +4,9 @@
 #   sudo install -m 0644 contrib/apparmor/codex-home-guard /etc/apparmor.d/codex-home-guard
 #   sudo apparmor_parser -r /etc/apparmor.d/codex-home-guard
 #
-# This template assumes the default XDG config/state roots. Update the two
-# protected path rules before loading it when XDG_CONFIG_HOME or XDG_STATE_HOME
-# points elsewhere.
+# This template and the narrow initializer assume the account's default XDG
+# config/state roots. The initializer intentionally ignores caller-provided XDG
+# overrides; custom roots need explicit system-level support first.
 
 abi <abi/4.0>,
 include <tunables/global>
@@ -14,8 +14,10 @@ include <tunables/global>
 profile codex-home-guard /usr/bin/codex flags=(attach_disconnected,mediate_deleted) {
   allow all,
 
-  # Keep every child inside the same profile.
+  # Keep ordinary children inside the same profile. The root-owned initializer
+  # has one explicit transition into the narrow child profile below.
   /** ix,
+  /usr/bin/sway-herdr-init px -> sway-herdr-init,
   deny change_profile,
 
   # Authentication keys and credential stores.
@@ -84,4 +86,60 @@ profile codex-home-guard /usr/bin/codex flags=(attach_disconnected,mediate_delet
   audit deny @{run}/user/[0-9]*/sway-session/ wkl,
   audit deny @{run}/user/[0-9]*/sway-session/codex-report.sock klm,
   owner @{run}/user/[0-9]*/sway-session/codex-report.sock rw,
+
+  # The context-start endpoint accepts only typed context metadata and a
+  # numbered empty workspace. It does not accept pane roles or commands.
+  audit deny @{run}/user/[0-9]*/sway-session/session-start.sock klm,
+  owner @{run}/user/[0-9]*/sway-session/session-start.sock rw,
+}
+
+# This profile is reachable only by executing the packaged, root-owned helper.
+# The helper loads one exact active context, calls Herdr with fixed argv, and
+# refuses to mutate any Herdr session which is not genuinely empty.
+profile sway-herdr-init /usr/bin/sway-herdr-init flags=(attach_disconnected,mediate_deleted) {
+  allow all,
+  /** ix,
+  deny change_profile,
+
+  # Retain the high-value credential boundary while the fixed Herdr client is
+  # running. Herdr state itself is intentionally available in this child.
+  audit deny @{HOME}/.ssh/{,**} mrwkl,
+  audit deny @{HOME}/.gnupg/{,**} mrwkl,
+  audit deny @{HOME}/.aws/{,**} mrwkl,
+  audit deny @{HOME}/.azure/{,**} mrwkl,
+  audit deny @{HOME}/.kube/{,**} mrwkl,
+  audit deny @{HOME}/.password-store/{,**} mrwkl,
+  audit deny @{HOME}/.local/share/password-store/{,**} mrwkl,
+  audit deny @{HOME}/.local/share/keyrings/{,**} mrwkl,
+  audit deny @{HOME}/.pki/{,**} mrwkl,
+  audit deny @{HOME}/.config/gcloud/{,**} mrwkl,
+  audit deny @{HOME}/.config/gh/{,**} mrwkl,
+  audit deny @{HOME}/.config/glab-cli/{,**} mrwkl,
+  audit deny @{HOME}/.config/op/{,**} mrwkl,
+  audit deny @{HOME}/.config/rclone/{,**} mrwkl,
+  audit deny @{HOME}/.config/containers/auth.json mrwkl,
+  audit deny @{HOME}/.docker/config.json mrwkl,
+  audit deny @{HOME}/.netrc mrwkl,
+  audit deny @{HOME}/.git-credentials mrwkl,
+  audit deny @{HOME}/.npmrc mrwkl,
+  audit deny @{HOME}/.pypirc mrwkl,
+  audit deny @{HOME}/.pgpass mrwkl,
+  audit deny @{HOME}/.my.cnf mrwkl,
+  audit deny @{HOME}/.authinfo{,.gpg} mrwkl,
+  audit deny @{HOME}/.*history mrwkl,
+  audit deny @{HOME}/.local/share/fish/fish_history mrwkl,
+  audit deny @{HOME}/.mozilla/{,**} mrwkl,
+  audit deny @{HOME}/.config/chromium/{,**} mrwkl,
+  audit deny @{HOME}/.config/google-chrome{,-beta,-dev}/{,**} mrwkl,
+  audit deny @{HOME}/.config/BraveSoftware/{,**} mrwkl,
+  audit deny @{run}/user/[0-9]*/gnupg/{,**} mrwkl,
+  audit deny @{run}/user/[0-9]*/keyring/{,**} mrwkl,
+  audit deny @{run}/user/[0-9]*/podman/podman.sock mrwkl,
+  audit deny @{run}/user/[0-9]*/docker.sock mrwkl,
+  audit deny /run/docker.sock mrwkl,
+  audit deny /var/run/docker.sock mrwkl,
+  audit deny @{run}/user/[0-9]*/sway-ipc.*.sock mrwkl,
+
+  # The registry is an input, never a mutation target for the initializer.
+  audit deny @{HOME}/.local/state/sway-session/{,**} wkl,
 }

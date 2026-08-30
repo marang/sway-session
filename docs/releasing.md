@@ -12,7 +12,8 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
-GoReleaser builds `sway-title-animator` and `sway-session` in Linux archives for
+GoReleaser builds `sway-title-animator`, `sway-session`, and
+`sway-herdr-init` in Linux archives for
 `amd64` and `arm64`, plus Linux `deb` and `rpm` packages. The archives and
 packages also carry the Sway, Herdr, Codex-hook, and AppArmor integration
 templates plus the live Codex-boundary verification script. Package builds use
@@ -21,7 +22,7 @@ the `/usr/bin/sway-session` Codex-hook variant; source installs keep the
 
 ## AUR and repository package metadata
 
-The repository includes a source `PKGBUILD` for publishing both binaries and
+The repository includes a source `PKGBUILD` for publishing all three binaries and
 their integration templates in the `sway-title-animator` AUR package. The AUR
 workflow treats it as a release template: it updates `pkgver` and `sha256sums`
 from the pushed version tag, resets `pkgrel` to `1`, refuses skipped integrity

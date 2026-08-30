@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 	"syscall"
 )
 
@@ -35,6 +36,7 @@ type Message struct {
 
 // Conn is one connected i3/Sway IPC stream.
 type Conn struct {
+	mu   sync.Mutex
 	conn io.ReadWriteCloser
 }
 
@@ -54,31 +56,68 @@ func Dial(path string) (*Conn, error) {
 
 // Close closes the underlying IPC stream.
 func (conn *Conn) Close() error {
-	if conn == nil || conn.conn == nil {
+	if conn == nil {
 		return nil
 	}
-	err := conn.conn.Close()
+	conn.mu.Lock()
+	current := conn.conn
 	conn.conn = nil
-	return err
+	conn.mu.Unlock()
+	if current == nil {
+		return nil
+	}
+	interruptSocket(current)
+	return current.Close()
+}
+
+// interruptSocket wakes a goroutine already blocked in a raw socket read.
+// Closing an os.File descriptor alone is not guaranteed to interrupt a
+// concurrent blocking syscall on Linux because that syscall holds its own file
+// reference until it returns.
+func interruptSocket(current io.ReadWriteCloser) {
+	provider, ok := current.(interface {
+		SyscallConn() (syscall.RawConn, error)
+	})
+	if !ok {
+		return
+	}
+	raw, err := provider.SyscallConn()
+	if err != nil {
+		return
+	}
+	_ = raw.Control(func(fd uintptr) {
+		_ = syscall.Shutdown(int(fd), syscall.SHUT_RDWR)
+	})
 }
 
 // Request writes one request and reads its immediate response.
 func (conn *Conn) Request(messageType MessageType, payload []byte) (Message, error) {
-	if conn == nil || conn.conn == nil {
+	current := conn.current()
+	if current == nil {
 		return Message{}, errors.New("sway ipc connection is closed")
 	}
-	if err := writeMessage(conn.conn, messageType, payload); err != nil {
+	if err := writeMessage(current, messageType, payload); err != nil {
 		return Message{}, err
 	}
-	return readMessage(conn.conn)
+	return readMessage(current)
 }
 
 // Read reads one subsequent response or subscribed event.
 func (conn *Conn) Read() (Message, error) {
-	if conn == nil || conn.conn == nil {
+	current := conn.current()
+	if current == nil {
 		return Message{}, errors.New("sway ipc connection is closed")
 	}
-	return readMessage(conn.conn)
+	return readMessage(current)
+}
+
+func (conn *Conn) current() io.ReadWriteCloser {
+	if conn == nil {
+		return nil
+	}
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	return conn.conn
 }
 
 func writeMessage(writer io.Writer, messageType MessageType, payload []byte) error {

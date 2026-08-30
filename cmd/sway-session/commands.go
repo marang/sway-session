@@ -15,9 +15,48 @@ import (
 
 	"github.com/marang/sway-title-animator/internal/diagnostic"
 	sessionstate "github.com/marang/sway-title-animator/internal/session"
+	"github.com/marang/sway-title-animator/internal/sessionrequest"
 	"github.com/marang/sway-title-animator/internal/statefile"
 	"github.com/marang/sway-title-animator/internal/swayipc"
 )
+
+func executeRequestStart(ctx context.Context, arguments []string, deps dependencies) (commandResult, *commandFailure) {
+	set := newFlagSet("request-start")
+	sessionName := set.String("session", "", "Herdr session name")
+	cwd := set.String("cwd", "", "project directory")
+	label := set.String("label", "", "presentation label")
+	provider := set.String("provider", "", "provider metadata")
+	workspace := set.Int("workspace", 0, "numbered Sway workspace")
+	if err := set.Parse(arguments); err != nil || set.NArg() != 0 || *sessionName == "" || *workspace == 0 {
+		return commandResult{}, usageFailure("request-start", "request-start requires --session, --workspace, and no positional arguments")
+	}
+	directory := *cwd
+	var err error
+	if directory == "" {
+		directory, err = deps.workingDir()
+	} else {
+		directory, err = filepath.Abs(directory)
+	}
+	if err != nil {
+		return commandResult{}, failure("project_directory", "resolve project directory", err.Error())
+	}
+	directory = filepath.Clean(directory)
+	request := sessionrequest.Request{
+		Version: sessionrequest.ProtocolVersion, Session: *sessionName, Cwd: directory,
+		Label: *label, Provider: *provider, Workspace: *workspace,
+	}
+	if err := request.Validate(); err != nil {
+		return commandResult{}, failure("invalid_request", "invalid session start request", err.Error())
+	}
+	if deps.requestStart == nil {
+		return commandResult{}, failure("session_request", "request session start", "session request dependency is unavailable")
+	}
+	response, err := deps.requestStart(ctx, request)
+	if err != nil {
+		return commandResult{}, failure("session_request", "request session start", err.Error())
+	}
+	return commandResult{Command: "request-start", Contexts: []sessionstate.Context{*response.Context}, Workspace: response.Workspace, Created: response.Created}, nil
+}
 
 func executeRegister(arguments []string, deps dependencies) (commandResult, *commandFailure) {
 	set := newFlagSet("register")
@@ -231,6 +270,7 @@ func executePurge(ctx context.Context, arguments []string, stdin io.Reader, stde
 func executeRestore(ctx context.Context, arguments []string, deps dependencies) (commandResult, *commandFailure) {
 	set := newFlagSet("restore")
 	socketFlag := set.String("socket", "", "Sway IPC socket")
+	requireActive := set.Bool("require-active", false, "reject an explicitly selected archived context")
 	if err := set.Parse(arguments); err != nil || set.NArg() > 1 {
 		return commandResult{}, usageFailure("restore", "restore accepts at most one context")
 	}
@@ -252,7 +292,7 @@ func executeRestore(ctx context.Context, arguments []string, deps dependencies) 
 	result := commandResult{Command: "restore", Contexts: []sessionstate.Context{}}
 	var operationDiagnostics []diagnostic.Diagnostic
 	err := sessionstate.InspectRegistryLocked(root, func(registry sessionstate.Registry) error {
-		targets, err := restoreTargets(registry, selector)
+		targets, err := restoreTargets(registry, selector, *requireActive)
 		if err != nil {
 			return err
 		}
@@ -382,13 +422,17 @@ func executeRestore(ctx context.Context, arguments []string, deps dependencies) 
 	return result, nil
 }
 
-func restoreTargets(registry sessionstate.Registry, selector string) ([]sessionstate.Context, error) {
+func restoreTargets(registry sessionstate.Registry, selector string, requireActive bool) ([]sessionstate.Context, error) {
 	if selector != "" {
 		index, err := sessionstate.ResolveContext(registry, selector)
 		if err != nil {
 			return nil, err
 		}
-		return []sessionstate.Context{registry.Contexts[index]}, nil
+		selected := registry.Contexts[index]
+		if requireActive && selected.State != sessionstate.ContextActive {
+			return nil, fmt.Errorf("context %q is archived", selected.ID)
+		}
+		return []sessionstate.Context{selected}, nil
 	}
 	targets := make([]sessionstate.Context, 0, len(registry.Contexts))
 	for _, context := range registry.Contexts {

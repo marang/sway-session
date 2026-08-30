@@ -1,0 +1,321 @@
+package sessionrequest
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"testing"
+
+	sessionstate "github.com/marang/sway-title-animator/internal/session"
+	"github.com/marang/sway-title-animator/internal/swayipc"
+)
+
+type fakeRestoreRunner struct {
+	calls  []sessionstate.ContextID
+	err    error
+	mapped *sessionstate.ContextID
+}
+
+func (runner *fakeRestoreRunner) Restore(_ context.Context, id sessionstate.ContextID) error {
+	runner.calls = append(runner.calls, id)
+	if runner.err == nil && runner.mapped != nil {
+		*runner.mapped = id
+	}
+	return runner.err
+}
+
+type fakeSwayRequester struct {
+	workspace       int
+	mapped          sessionstate.ContextID
+	occupied        bool
+	commands        []string
+	treeRequests    int
+	occupyOnTree    int
+	occupyWorkspace int
+	onTree          func(int) error
+}
+
+func (client *fakeSwayRequester) Request(messageType swayipc.MessageType, payload []byte) (swayipc.Message, error) {
+	switch messageType {
+	case swayipc.RunCommand:
+		command := string(payload)
+		client.commands = append(client.commands, command)
+		if _, err := fmt.Sscanf(command, "workspace number %d", &client.workspace); err != nil {
+			return swayipc.Message{}, err
+		}
+		return swayipc.Message{Type: swayipc.RunCommand, Payload: []byte(`[{"success":true}]`)}, nil
+	case swayipc.GetTree:
+		client.treeRequests++
+		if client.onTree != nil {
+			if err := client.onTree(client.treeRequests); err != nil {
+				return swayipc.Message{}, err
+			}
+		}
+		if client.treeRequests == client.occupyOnTree {
+			client.workspace = client.occupyWorkspace
+			client.occupied = true
+		}
+		encoded, err := json.Marshal(serviceTree(client.workspace, client.mapped, client.occupied))
+		return swayipc.Message{Type: swayipc.GetTree, Payload: encoded}, err
+	default:
+		return swayipc.Message{}, errors.New("unexpected Sway request")
+	}
+}
+
+func (client *fakeSwayRequester) Close() {}
+
+func serviceTree(workspace int, mapped sessionstate.ContextID, occupied bool) *swayipc.TreeNode {
+	workspaces := []*swayipc.TreeNode{{ID: 3, Type: "workspace", Name: "1", Nodes: []*swayipc.TreeNode{}, FloatingNodes: []*swayipc.TreeNode{}}}
+	if workspace != 0 {
+		target := &swayipc.TreeNode{ID: 4, Type: "workspace", Name: fmt.Sprintf("%d", workspace), Nodes: []*swayipc.TreeNode{}, FloatingNodes: []*swayipc.TreeNode{}}
+		if occupied {
+			target.Nodes = append(target.Nodes, &swayipc.TreeNode{ID: 5, Type: "con", Nodes: []*swayipc.TreeNode{}, FloatingNodes: []*swayipc.TreeNode{}})
+		}
+		if mapped != "" {
+			appID, _ := mapped.AppID()
+			target.Nodes = append(target.Nodes, &swayipc.TreeNode{ID: 6, Type: "con", AppID: &appID, Nodes: []*swayipc.TreeNode{}, FloatingNodes: []*swayipc.TreeNode{}})
+		}
+		workspaces = append(workspaces, target)
+	}
+	return &swayipc.TreeNode{ID: 1, Type: "root", Nodes: []*swayipc.TreeNode{{ID: 2, Type: "output", Nodes: workspaces, FloatingNodes: []*swayipc.TreeNode{}}}, FloatingNodes: []*swayipc.TreeNode{}}
+}
+
+func testService(t *testing.T) (*Service, Request, *fakeSwayRequester, *fakeRestoreRunner) {
+	t.Helper()
+	request := Request{Version: ProtocolVersion, Session: "reboot-e2e", Cwd: t.TempDir(), Label: "REBOOT-E2E", Provider: "local", Workspace: 7}
+	client := &fakeSwayRequester{}
+	runner := &fakeRestoreRunner{mapped: &client.mapped}
+	service := &Service{StateRoot: filepath.Join(t.TempDir(), "state"), NewContextID: func() (sessionstate.ContextID, error) { return testContextID, nil }, NewSway: func() SwayRequester { return client }, Restore: runner}
+	return service, request, client, runner
+}
+
+func TestServiceCreatesFocusesAndRestoresOneContext(t *testing.T) {
+	service, request, client, runner := testService(t)
+	response, err := service.Handle(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !response.Created || response.Context == nil || response.Context.ID != testContextID || response.Workspace != 7 {
+		t.Fatalf("unexpected response: %+v", response)
+	}
+	if !reflect.DeepEqual(client.commands, []string{"workspace number 7"}) || !reflect.DeepEqual(runner.calls, []sessionstate.ContextID{testContextID}) {
+		t.Fatalf("unexpected effects: commands=%v restores=%v", client.commands, runner.calls)
+	}
+}
+
+func TestServiceRepeatedRequestReusesMappedContext(t *testing.T) {
+	service, request, client, runner := testService(t)
+	first, err := service.Handle(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.Handle(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !first.Created || second.Created || first.Context == nil || second.Context == nil || first.Context.ID != second.Context.ID {
+		t.Fatalf("request was not idempotent: first=%+v second=%+v", first, second)
+	}
+	if !reflect.DeepEqual(runner.calls, []sessionstate.ContextID{testContextID}) {
+		t.Fatalf("mapped context was restored again: %v", runner.calls)
+	}
+	if !reflect.DeepEqual(client.commands, []string{"workspace number 7", "workspace number 7"}) {
+		t.Fatalf("unexpected focus commands: %v", client.commands)
+	}
+}
+
+func TestServiceRejectsArchiveRacingMappedContextFocus(t *testing.T) {
+	service, request, client, runner := testService(t)
+	contextValue := registeredContext(request)
+	if err := sessionstate.RegistryFile(service.StateRoot).Save(sessionstate.Registry{
+		Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{contextValue},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	client.workspace = request.Workspace
+	client.mapped = contextValue.ID
+	client.onTree = func(requestNumber int) error {
+		if requestNumber != 1 {
+			return nil
+		}
+		_, err := sessionstate.UpdateRegistry(service.StateRoot, func(registry *sessionstate.Registry) error {
+			_, err := sessionstate.SetContextState(registry, string(contextValue.ID), sessionstate.ContextArchived)
+			return err
+		})
+		return err
+	}
+
+	_, err := service.Handle(context.Background(), request)
+
+	if err == nil || !strings.Contains(err.Error(), "archived") {
+		t.Fatalf("archive race was accepted: %v", err)
+	}
+	if len(client.commands) != 0 || len(runner.calls) != 0 {
+		t.Fatalf("archive race caused effects: commands=%v restores=%v", client.commands, runner.calls)
+	}
+}
+
+func TestServiceRejectsSavedWorkspaceConflictBeforeRestore(t *testing.T) {
+	service, request, client, runner := testService(t)
+	contextValue := registeredContext(request)
+	if err := sessionstate.RegistryFile(service.StateRoot).Save(sessionstate.Registry{
+		Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{contextValue},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := sessionstate.LayoutFile(service.StateRoot).Save(sessionstate.LayoutSnapshot{
+		Version: sessionstate.LayoutSchemaVersion,
+		Workspaces: []sessionstate.WorkspaceLayout{{
+			Name: "4: saved", RestoreMode: sessionstate.WorkspaceRestorePlacementOnly,
+			PlacementContexts: []sessionstate.ContextID{contextValue.ID},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := service.Handle(context.Background(), request); err == nil || !strings.Contains(err.Error(), "saved placement") {
+		t.Fatalf("conflicting saved workspace was accepted: %v", err)
+	}
+	if len(client.commands) != 0 || len(runner.calls) != 0 {
+		t.Fatalf("workspace conflict caused effects: commands=%v restores=%v", client.commands, runner.calls)
+	}
+}
+
+func TestServiceReusesContextWithCompatibleNamedWorkspace(t *testing.T) {
+	service, request, client, runner := testService(t)
+	contextValue := registeredContext(request)
+	if err := sessionstate.RegistryFile(service.StateRoot).Save(sessionstate.Registry{
+		Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{contextValue},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := sessionstate.LayoutFile(service.StateRoot).Save(sessionstate.LayoutSnapshot{
+		Version: sessionstate.LayoutSchemaVersion,
+		Workspaces: []sessionstate.WorkspaceLayout{{
+			Name: "7: requested", RestoreMode: sessionstate.WorkspaceRestorePlacementOnly,
+			PlacementContexts: []sessionstate.ContextID{contextValue.ID},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	response, err := service.Handle(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Created || response.Context == nil || response.Context.ID != contextValue.ID {
+		t.Fatalf("compatible context was not reused: %+v", response)
+	}
+	if !reflect.DeepEqual(client.commands, []string{"workspace number 7"}) || !reflect.DeepEqual(runner.calls, []sessionstate.ContextID{contextValue.ID}) {
+		t.Fatalf("unexpected effects: commands=%v restores=%v", client.commands, runner.calls)
+	}
+}
+
+func TestServiceRejectsContextMetadataConflictsWithoutEffects(t *testing.T) {
+	for name, mutate := range map[string]func(*Request){
+		"session metadata": func(value *Request) { value.Cwd = t.TempDir() },
+		"duplicate label":  func(value *Request) { value.Session = "different-session" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			service, request, client, runner := testService(t)
+			contextValue := registeredContext(request)
+			if err := sessionstate.RegistryFile(service.StateRoot).Save(sessionstate.Registry{
+				Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{contextValue},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			mutate(&request)
+			if _, err := service.Handle(context.Background(), request); err == nil || !strings.Contains(err.Error(), "conflict") && !strings.Contains(err.Error(), "already used") {
+				t.Fatalf("metadata conflict was accepted: %v", err)
+			}
+			if len(client.commands) != 0 || len(runner.calls) != 0 {
+				t.Fatalf("metadata conflict caused effects: commands=%v restores=%v", client.commands, runner.calls)
+			}
+		})
+	}
+}
+
+func registeredContext(request Request) sessionstate.Context {
+	return sessionstate.Context{
+		ID: testContextID, Label: request.Label, Provider: request.Provider, State: sessionstate.ContextActive,
+		Launcher: sessionstate.Launcher{Kind: sessionstate.LauncherHerdr, Session: request.Session, Cwd: request.Cwd},
+	}
+}
+
+func TestServiceRejectsOccupiedWorkspaceBeforeRegistration(t *testing.T) {
+	service, request, client, runner := testService(t)
+	client.workspace = request.Workspace
+	client.occupied = true
+	if _, err := service.Handle(context.Background(), request); err == nil || !strings.Contains(err.Error(), "not empty") {
+		t.Fatalf("occupied workspace was accepted: %v", err)
+	}
+	registry, loadErr := loadRegistry(service.StateRoot)
+	if loadErr != nil || len(registry.Contexts) != 0 || len(client.commands) != 0 || len(runner.calls) != 0 {
+		t.Fatalf("occupied rejection changed state: registry=%+v err=%v", registry, loadErr)
+	}
+}
+
+func TestServiceRollsBackNewRegistrationWhenWorkspaceBecomesOccupiedBeforeRestore(t *testing.T) {
+	service, request, client, runner := testService(t)
+	service.NewContextID = func() (sessionstate.ContextID, error) {
+		client.workspace = request.Workspace
+		client.occupied = true
+		return testContextID, nil
+	}
+	if _, err := service.Handle(context.Background(), request); err == nil || !strings.Contains(err.Error(), "not empty") {
+		t.Fatalf("workspace race was accepted: %v", err)
+	}
+	registry, loadErr := loadRegistry(service.StateRoot)
+	if loadErr != nil || len(registry.Contexts) != 0 || len(client.commands) != 0 || len(runner.calls) != 0 {
+		t.Fatalf("pre-restore failure leaked a registration: registry=%+v err=%v commands=%v restores=%v", registry, loadErr, client.commands, runner.calls)
+	}
+}
+
+func TestServiceKeepsReusedRegistrationWhenWorkspaceBecomesOccupiedBeforeRestore(t *testing.T) {
+	service, request, client, runner := testService(t)
+	contextValue := registeredContext(request)
+	if err := sessionstate.RegistryFile(service.StateRoot).Save(sessionstate.Registry{
+		Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{contextValue},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	client.occupyOnTree = 2
+	client.occupyWorkspace = request.Workspace
+	if _, err := service.Handle(context.Background(), request); err == nil || !strings.Contains(err.Error(), "not empty") {
+		t.Fatalf("workspace race was accepted: %v", err)
+	}
+	registry, loadErr := loadRegistry(service.StateRoot)
+	if loadErr != nil || len(registry.Contexts) != 1 || registry.Contexts[0].ID != contextValue.ID || len(client.commands) != 0 || len(runner.calls) != 0 {
+		t.Fatalf("reused registration was rolled back: registry=%+v err=%v commands=%v restores=%v", registry, loadErr, client.commands, runner.calls)
+	}
+}
+
+func TestServiceKeepsRegistrationForRetryAfterRestoreFailure(t *testing.T) {
+	service, request, _, runner := testService(t)
+	runner.err = errors.New("restore unavailable")
+	if _, err := service.Handle(context.Background(), request); err == nil || !strings.Contains(err.Error(), "restore unavailable") {
+		t.Fatalf("restore failure was hidden: %v", err)
+	}
+	registry, loadErr := loadRegistry(service.StateRoot)
+	if loadErr != nil || len(registry.Contexts) != 1 || len(runner.calls) != 1 {
+		t.Fatalf("failed restore is not retryable: registry=%+v err=%v", registry, loadErr)
+	}
+}
+
+func TestSystemExecutableEnvironmentDropsShadowingAndLoaderVariables(t *testing.T) {
+	t.Setenv("PATH", "/home/test/.local/bin:/usr/bin")
+	t.Setenv("LD_PRELOAD", "/home/test/inject.so")
+	t.Setenv("SWAYSOCK", "/run/user/1000/sway.sock")
+	environment := systemExecutableEnvironment()
+	joined := "\n" + strings.Join(environment, "\n") + "\n"
+	if strings.Contains(joined, "\nLD_PRELOAD=") || strings.Contains(joined, "/home/test/.local/bin") {
+		t.Fatalf("unsafe environment survived: %v", environment)
+	}
+	if !strings.Contains(joined, "\nPATH=/usr/local/sbin:/usr/local/bin:/usr/bin\n") || !strings.Contains(joined, "\nSWAYSOCK=/run/user/1000/sway.sock\n") {
+		t.Fatalf("required environment is missing: %v", environment)
+	}
+}

@@ -32,6 +32,7 @@ build() {
 
   CGO_ENABLED=0 go build "${_go_build_flags[@]}" -ldflags="${_go_ldflags[*]}" -o sway-title-animator ./cmd/sway-title-animator
   CGO_ENABLED=0 go build "${_go_build_flags[@]}" -ldflags="${_go_ldflags[*]}" -o sway-session ./cmd/sway-session
+  CGO_ENABLED=0 go build "${_go_build_flags[@]}" -ldflags="${_go_ldflags[*]}" -o sway-herdr-init ./cmd/sway-herdr-init
 }
 
 check() {
@@ -47,6 +48,7 @@ package() {
   cd "sway-title-animator-$pkgver"
   install -Dm755 sway-title-animator "$pkgdir/usr/bin/sway-title-animator"
   install -Dm755 sway-session "$pkgdir/usr/bin/sway-session"
+  install -Dm755 sway-herdr-init "$pkgdir/usr/bin/sway-herdr-init"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
   install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
   install -Dm644 config.example.toml "$pkgdir/usr/share/doc/$pkgname/config.example.toml"

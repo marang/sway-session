@@ -271,7 +271,8 @@ does not replace its last saved real-workspace placement.
 
 ## Restore flow
 
-1. Sway starts the title animator and runs `sway-session restore` once.
+1. Sway starts the title animator, starts `sway-session broker`, and runs
+   `sway-session restore` once.
 2. `sway-session` loads and validates the active context registry.
 3. It reads `GET_TREE` and identifies existing managed windows by stable
    application ID or `persist:<uuid>` mark.
@@ -339,6 +340,7 @@ sway-session list
 sway-session archive <context>
 sway-session activate <context>
 sway-session purge [--yes] <context>
+sway-session request-start --session <name> --workspace <number> [--cwd <path>] [--label <label>] [--provider <name>]
 sway-session report-codex-session # Codex SessionStart hook only
 ```
 
@@ -418,19 +420,50 @@ the sole mutation is sent. The hook ignores Codex transcript paths and launch
 commands. Herdr's native adapter derives the only resume command, the typed
 `codex resume <validated-uuid>` form, from the saved association.
 
+Codex-triggered creation uses a second owner-only runtime endpoint. Its request schema
+contains only typed context metadata and a numbered Sway workspace; it cannot
+contain Herdr roles, pane identifiers, or command text. The explicit
+`sway-session broker` ensures exact context identity, requires the target
+workspace to be empty, and restores the outer managed window through the normal
+`sway-session` path.
+
+Security status: this creation path is experimental and does not yet confine
+the terminal, Herdr pane shell, or agent which it creates. User-writable shell
+startup files and executable lookup can escape the caller's AppArmor profile.
+It may be enabled only with that risk explicitly accepted; documentation must
+not describe it as a complete confinement boundary. The agreed Agent Sandbox
+follow-up, threat model, and exit criteria are tracked in
+[LAB-89](https://linear.app/riotbox/issue/LAB-89/harden-broker-created-herdr-sessions-with-agent-sandbox-integration).
+
+Pane initialization remains outside the animator. The separately packaged,
+root-owned `sway-herdr-init` loads one exact active context from the protected
+registry, holds the registry mutation lock through initialization, derives the
+named Herdr session and cwd, and calls the ordinary Herdr CLI with fixed
+`snapshot`, `pane split`, and typed `agent start` argument shapes. It mutates
+only a session proven to use the supported snapshot protocol and to have one
+workspace, one tab, one pane, and no agent; every other existing or ambiguous
+session is a no-op. A dedicated AppArmor transition exposes this fixed helper
+without giving Codex general Sway IPC, Herdr socket, or registry access.
+
+Initializer roles are logical Herdr agent kinds rather than executable paths
+or runtime selections. Alternate trusted launchers, including containerized
+agent execution, remain an integration concern outside the persisted Sway
+context and do not expand the request broker protocol.
+
 ## Sway startup
 
 The intended Sway configuration is:
 
 ```text
-exec_always --no-startup-id sway-title-animator --replace
-exec --no-startup-id sway-session restore
+exec_always --no-startup-id /usr/bin/sway-title-animator --replace
+exec --no-startup-id /usr/bin/sway-session broker
+exec --no-startup-id /usr/bin/sway-session restore
 ```
 
-The restore command intentionally uses `exec`, not `exec_always`, so a config
-reload cannot duplicate windows. Startup ordering is race-safe: the animator
-performs an initial tree refresh, and the continuing event subscription catches
-windows mapped after that refresh.
+The broker and restore commands intentionally use `exec`, not `exec_always`, so
+a config reload cannot duplicate processes or windows. Startup ordering is
+race-safe: the animator performs an initial tree refresh, and the continuing
+event subscription catches windows mapped after that refresh.
 
 Session persistence is opt-in and disabled by default for existing users until
 configured. Removing the one-shot restore line stops automatic launches without
@@ -492,7 +525,7 @@ deleting state.
 - Add the typed Alacritty/Herdr launcher and duplicate detection.
 - Enforce registry-wide uniqueness of typed launcher identities.
 - Enable and validate Herdr pane history.
-- Add safe startup configuration and packaging for both binaries.
+- Add safe startup configuration and packaging for all three binaries.
 
 ### Phase 5: Secure Codex resume
 

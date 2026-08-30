@@ -200,12 +200,14 @@ separate typed start endpoint. It combines exact context registration or reuse
 with placement on one empty numbered workspace, without accepting pane roles
 or commands:
 
-> **Experimental security boundary:** the narrow interfaces protect the
-> registry, Sway IPC, and general Herdr controls, but the current launch path
-> creates an unconfined terminal, Herdr pane shell, and agent. User-writable
-> shell startup files or executable lookup can therefore escape the caller's
-> AppArmor profile. Enable this workflow only when that risk is explicitly
-> accepted. Future Agent Sandbox hardening is tracked in
+> **Experimental security boundary:** the narrow interfaces protect registry
+> files and constrain the intended request shapes, but the current AppArmor
+> deny-list does not reliably mediate `connect(2)` to pathname-based Sway,
+> Herdr, or container API sockets on every supported kernel. The launch path
+> also creates an unconfined terminal, Herdr pane shell, and agent. Direct
+> socket use, user-writable shell startup files, or executable lookup can
+> therefore escape the intended boundary. Enable this workflow only when that
+> risk is explicitly accepted. Future Agent Sandbox hardening is tracked in
 > [LAB-89](https://linear.app/riotbox/issue/LAB-89/harden-broker-created-herdr-sessions-with-agent-sandbox-integration).
 
 ```sh
@@ -229,7 +231,9 @@ The initializer derives the named Herdr session and working directory from the
 protected registry and holds its mutation lock through the dependent Herdr
 operation, so `archive` and `purge` cannot race initialization. It only splits
 a session proven to contain exactly one empty pane with the supported snapshot
-protocol, invokes Herdr's normal typed `agent start` operation, and otherwise
+protocol. The current integration targets Herdr 0.8.2 protocol 20 and rejects
+other protocol versions before mutation. It invokes Herdr's normal typed
+`agent start` operation and otherwise
 returns a safe no-op. Existing Herdr layouts are never reshaped. The AppArmor
 transition intentionally recognizes only the root-owned
 `/usr/bin/sway-herdr-init` from a distribution package. The broker likewise
@@ -317,15 +321,28 @@ The template assumes the default XDG paths under `~/.config` and
 `~/.local/state`. The narrow initializer deliberately derives those defaults
 from the account database instead of trusting caller-provided XDG variables;
 custom XDG roots are not supported by this narrow helper yet. The policy denies
-direct Herdr history and control
-sockets, `sway-session` state, and Sway IPC while allowing only the typed
-`codex-report.sock` and `session-start.sock` endpoints. The root-owned
+direct Herdr history and `sway-session` state access and protects the relevant
+socket pathnames from ordinary file operations. On kernels where AppArmor does
+not mediate pathname socket connections through those file rules, it does not
+enforce the intended direct Sway, Herdr, or container API connection deny; the
+typed `codex-report.sock` and `session-start.sock` workflow remains the only
+supported integration path. The root-owned
 `sway-herdr-init` receives a separate constrained profile for the fixed Herdr
-initialization described above. From the matching Herdr pane,
+initialization described above. Its `Px` transition scrubs unsafe dynamic
+loader variables such as `LD_PRELOAD` before granting the child profile's
+permissions. The parent Codex profile intentionally leaves GitHub CLI
+configuration accessible so `gh` can use credentials stored in the desktop
+keyring; do not use file-backed GitHub tokens with this policy. The initializer
+child profile does not need GitHub access and continues to deny it. From the
+matching Herdr pane,
 run `scripts/verify-codex-boundary.sh` in a source checkout or the packaged
 `/usr/share/doc/sway-title-animator/scripts/verify-codex-boundary.sh` for a live
 positive/negative enforcement check after the profile, Herdr, and one
-registered context are active.
+registered context are active. The live check uses only root-owned mode-0755
+files belonging to the installed `sway-title-animator` package; it never
+resolves a user-writable `sway-session` through `PATH`. It fails closed when
+the kernel exposes a known pathname-connect or runtime-path mutation gap
+instead of reporting a complete boundary.
 
 ## Choose a Preset
 

@@ -14,7 +14,7 @@ import (
 	sessionstate "github.com/marang/sway-title-animator/internal/session"
 )
 
-const emptySnapshot = `{"id":"snapshot","result":{"type":"session_snapshot","snapshot":{"version":"0.8.2","protocol":1,"workspaces":[{"workspace_id":"w1"}],"tabs":[{"workspace_id":"w1","tab_id":"w1:t1"}],"panes":[{"workspace_id":"w1","tab_id":"w1:t1","pane_id":"w1:p1","agent":null}],"layouts":[{"workspace_id":"w1","tab_id":"w1:t1","panes":[{"pane_id":"w1:p1"}],"splits":[]}],"agents":[]}}}`
+const emptySnapshot = `{"id":"snapshot","result":{"type":"session_snapshot","snapshot":{"version":"0.8.2","protocol":20,"workspaces":[{"workspace_id":"w1"}],"tabs":[{"workspace_id":"w1","tab_id":"w1:t1"}],"panes":[{"workspace_id":"w1","tab_id":"w1:t1","pane_id":"w1:p1","agent":null}],"layouts":[{"workspace_id":"w1","tab_id":"w1:t1","panes":[{"pane_id":"w1:p1"}],"splits":[]}],"agents":[]}}}`
 
 type runnerCall struct {
 	session   string
@@ -57,7 +57,7 @@ func readyShell(cwd string) []byte {
 }
 
 func splitSnapshot(original string, created string) []byte {
-	return []byte(fmt.Sprintf(`{"result":{"type":"session_snapshot","snapshot":{"version":"0.8.2","protocol":1,"workspaces":[{"workspace_id":"w1"}],"tabs":[{"workspace_id":"w1","tab_id":"w1:t1"}],"panes":[{"workspace_id":"w1","tab_id":"w1:t1","pane_id":%q,"agent":null},{"workspace_id":"w1","tab_id":"w1:t1","pane_id":%q,"agent":null}],"layouts":[{"workspace_id":"w1","tab_id":"w1:t1","panes":[{"pane_id":%q},{"pane_id":%q}],"splits":[{}]}],"agents":[]}}}`, original, created, original, created))
+	return []byte(fmt.Sprintf(`{"result":{"type":"session_snapshot","snapshot":{"version":"0.8.2","protocol":20,"workspaces":[{"workspace_id":"w1"}],"tabs":[{"workspace_id":"w1","tab_id":"w1:t1"}],"panes":[{"workspace_id":"w1","tab_id":"w1:t1","pane_id":%q,"agent":null},{"workspace_id":"w1","tab_id":"w1:t1","pane_id":%q,"agent":null}],"layouts":[{"workspace_id":"w1","tab_id":"w1:t1","panes":[{"pane_id":%q},{"pane_id":%q}],"splits":[{}]}],"agents":[]}}}`, original, created, original, created))
 }
 
 func TestInitializeCreatesOnlyRequestedEmptyLayout(t *testing.T) {
@@ -183,7 +183,7 @@ func TestInitializeRejectsUnknownSnapshotWithoutMutation(t *testing.T) {
 }
 
 func TestInitializeRejectsUnknownSnapshotProtocolWithoutMutation(t *testing.T) {
-	snapshot := strings.Replace(emptySnapshot, `"protocol":1`, `"protocol":2`, 1)
+	snapshot := strings.Replace(emptySnapshot, `"protocol":20`, `"protocol":21`, 1)
 	runner := &fakeRunner{outputs: [][]byte{[]byte(snapshot)}}
 
 	_, err := Initialize(context.Background(), testContext(t), []string{"codex", "shell"}, runner)

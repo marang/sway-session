@@ -13,7 +13,7 @@ depends=('sway')
 optdepends=(
   'libpulse: sound-reactive animation presets via parec'
   'alacritty: persistent work-session windows'
-  'herdr: persistent terminal panes, history, and agent sessions'
+  'herdr>=0.8.2: persistent terminal panes, history, and agent sessions'
   'apparmor: secure Codex resume boundary'
 )
 makedepends=('go>=1.26.5')

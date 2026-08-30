@@ -405,10 +405,12 @@ known context UUID + valid Codex session ID -> record association
 
 The reporter cannot inject pane input, run Herdr commands, select arbitrary
 executables, change launch metadata, or expose the underlying state files. It
-runs as a narrow broker outside the Codex confinement boundary; Codex receives
-access only to that broker's validated reporting endpoint. AppArmor policy and
-negative tests must prove the general Herdr socket and both state roots remain
-inaccessible from Codex while the reporting path works.
+runs as a narrow broker outside the Codex confinement boundary; the supported
+integration path exposes only that broker's validated reporting endpoint. A
+complete boundary would require negative tests to prove the general Herdr
+socket and both state roots remain inaccessible from Codex while the reporting
+path works. The current live check fails closed instead of claiming success
+when pathname socket-connect mediation is absent.
 
 The hook also carries Herdr's bounded current-pane identity as routing metadata.
 The broker never accepts a socket path or method from the hook: it resolves the
@@ -430,9 +432,13 @@ workspace to be empty, and restores the outer managed window through the normal
 Security status: this creation path is experimental and does not yet confine
 the terminal, Herdr pane shell, or agent which it creates. User-writable shell
 startup files and executable lookup can escape the caller's AppArmor profile.
-It may be enabled only with that risk explicitly accepted; documentation must
-not describe it as a complete confinement boundary. The agreed Agent Sandbox
-follow-up, threat model, and exit criteria are tracked in
+The current broad AppArmor deny-list also cannot reliably mediate `connect(2)`
+to pathname-based Sway, Herdr, or container API sockets on every supported
+kernel; file-path deny rules alone must not be described as proof of that
+connection boundary. It may be enabled only with those risks explicitly
+accepted; documentation must not describe it as a complete confinement
+boundary. The agreed Agent Sandbox follow-up, threat model, and exit criteria
+are tracked in
 [LAB-89](https://linear.app/riotbox/issue/LAB-89/harden-broker-created-herdr-sessions-with-agent-sandbox-integration).
 
 Pane initialization remains outside the animator. The separately packaged,
@@ -442,8 +448,16 @@ named Herdr session and cwd, and calls the ordinary Herdr CLI with fixed
 `snapshot`, `pane split`, and typed `agent start` argument shapes. It mutates
 only a session proven to use the supported snapshot protocol and to have one
 workspace, one tab, one pane, and no agent; every other existing or ambiguous
-session is a no-op. A dedicated AppArmor transition exposes this fixed helper
-without giving Codex general Sway IPC, Herdr socket, or registry access.
+session is a no-op. A dedicated capital-`P` AppArmor transition scrubs unsafe
+loader variables such as `LD_PRELOAD` before exposing this fixed helper's child
+profile. It keeps registry files inaccessible to the parent, but it does not
+repair the separately documented pathname socket-connect gap.
+
+The live boundary verifier invokes only `/usr/bin/sway-session` and
+`/usr/bin/sway-herdr-init` after checking that both are regular root-owned
+mode-0755 files belonging to the installed `sway-title-animator` package. A
+user-writable client found earlier in `PATH` must never stand in for the
+production integration.
 
 Initializer roles are logical Herdr agent kinds rather than executable paths
 or runtime selections. Alternate trusted launchers, including containerized

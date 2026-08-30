@@ -36,6 +36,11 @@ require_fixed .goreleaser.yaml 'contrib/codex/hooks-system.json'
 require_fixed PKGBUILD 'contrib/codex/hooks-system.json'
 require_fixed .goreleaser.yaml 'mode: 0755'
 require_fixed PKGBUILD 'install -Dm755 scripts/verify-codex-boundary.sh'
+require_fixed scripts/verify-codex-boundary.sh 'PATH=/usr/bin'
+require_fixed scripts/verify-codex-boundary.sh 'session_binary=/usr/bin/sway-session'
+require_fixed scripts/verify-codex-boundary.sh 'initializer_binary=/usr/bin/sway-herdr-init'
+require_fixed scripts/verify-codex-boundary.sh 'require_packaged_binary "$session_binary"'
+require_fixed scripts/verify-codex-boundary.sh 'LD_PRELOAD="$preload_probe"'
 require_fixed .github/workflows/aur.yml "grep -F 'SKIP' PKGBUILD"
 require_fixed .github/workflows/aur.yml 'sed -i "s/^pkgrel=.*/pkgrel=1/" PKGBUILD'
 require_fixed .github/workflows/aur.yml "grep -Fx 'pkgrel=1' PKGBUILD"

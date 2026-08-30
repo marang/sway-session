@@ -17,7 +17,9 @@ profile codex-home-guard /usr/bin/codex flags=(attach_disconnected,mediate_delet
   # Keep ordinary children inside the same profile. The root-owned initializer
   # has one explicit transition into the narrow child profile below.
   /** ix,
-  /usr/bin/sway-herdr-init px -> sway-herdr-init,
+  # Capital-P transition mode scrubs unsafe loader environment variables such
+  # as LD_PRELOAD before the helper gains the child profile's permissions.
+  /usr/bin/sway-herdr-init Px -> sway-herdr-init,
   deny change_profile,
 
   # Authentication keys and credential stores.
@@ -33,7 +35,9 @@ profile codex-home-guard /usr/bin/codex flags=(attach_disconnected,mediate_delet
 
   # Service and package-manager credentials.
   audit deny @{HOME}/.config/gcloud/{,**} mrwkl,
-  audit deny @{HOME}/.config/gh/{,**} mrwkl,
+  # GitHub CLI configuration is intentionally available to Codex. Keep gh
+  # authentication in the desktop keyring; file-backed tokens would no longer
+  # be protected by this deny-list profile.
   audit deny @{HOME}/.config/glab-cli/{,**} mrwkl,
   audit deny @{HOME}/.config/op/{,**} mrwkl,
   audit deny @{HOME}/.config/rclone/{,**} mrwkl,
@@ -59,38 +63,42 @@ profile codex-home-guard /usr/bin/codex flags=(attach_disconnected,mediate_delet
 
   # GnuPG and desktop keyrings remain private. The dedicated SSH agent is
   # intentionally available so Git can authenticate without reading .ssh.
-  audit deny @{run}/user/[0-9]*/gnupg/{,**} mrwkl,
-  audit deny @{run}/user/[0-9]*/keyring/{,**} mrwkl,
+  audit deny @{run}user/[0-9]*/gnupg/{,**} mrwkl,
+  audit deny @{run}user/[0-9]*/keyring/{,**} mrwkl,
 
-  # Container APIs could ask an unconfined service to expose protected paths.
-  audit deny @{run}/user/[0-9]*/podman/podman.sock mrwkl,
-  audit deny @{run}/user/[0-9]*/docker.sock mrwkl,
+  # Protect the pathname entries for container APIs which could ask an
+  # unconfined service to expose protected paths. On kernels which do not
+  # mediate pathname socket connect(2) through file rules, this deny-list does
+  # not prevent the connection itself; that accepted gap is tracked in LAB-89.
+  audit deny @{run}user/[0-9]*/podman/podman.sock mrwkl,
+  audit deny @{run}user/[0-9]*/docker.sock mrwkl,
   audit deny /run/docker.sock mrwkl,
   audit deny /var/run/docker.sock mrwkl,
 
-  # Persistent terminal history, Herdr's general pane-control sockets, and the
-  # outer-session registry stay outside Codex. File-deny rules override the
-  # broad allow rule above for reads, writes, mapping, locks, and links.
+  # Persistent terminal history and the outer-session registry stay outside
+  # Codex. The same file rules protect Herdr socket pathnames, but do not claim
+  # to mediate pathname socket connect(2) on every supported kernel.
   audit deny @{HOME}/.config/herdr/{,**} mrwkl,
   audit deny @{HOME}/.local/state/sway-session/{,**} mrwkl,
 
-  # Sway IPC can execute commands through the unconfined compositor and would
-  # bypass the broker's fixed operation just as the Herdr control socket would.
-  audit deny @{run}/user/[0-9]*/sway-ipc.*.sock mrwkl,
+  # Protect the Sway socket pathname. Direct Sway IPC can execute commands
+  # through the unconfined compositor, but pathname connect mediation is a
+  # known LAB-89 gap in this deny-list design.
+  audit deny @{run}user/[0-9]*/sway-ipc.*.sock mrwkl,
 
-  # The only session integration endpoint exposed to Codex. It accepts one
-  # schema-validated association operation and returns no registry contents.
-  # Directory mutation is denied so the confined client cannot replace the
-  # broker pathname with its own listener.
-  audit deny @{run}/user/[0-9]*/sway-session wkl,
-  audit deny @{run}/user/[0-9]*/sway-session/ wkl,
-  audit deny @{run}/user/[0-9]*/sway-session/codex-report.sock klm,
-  owner @{run}/user/[0-9]*/sway-session/codex-report.sock rw,
+  # The intended session integration endpoints exposed to Codex accept fixed,
+  # schema-validated operations and return no raw registry contents. Pathname
+  # mutation protections do not turn this broad deny-list into a complete
+  # socket-connect boundary; see the experimental status in the README.
+  audit deny @{run}user/[0-9]*/sway-session wkl,
+  audit deny @{run}user/[0-9]*/sway-session/ wkl,
+  audit deny @{run}user/[0-9]*/sway-session/codex-report.sock klm,
+  owner @{run}user/[0-9]*/sway-session/codex-report.sock rw,
 
   # The context-start endpoint accepts only typed context metadata and a
   # numbered empty workspace. It does not accept pane roles or commands.
-  audit deny @{run}/user/[0-9]*/sway-session/session-start.sock klm,
-  owner @{run}/user/[0-9]*/sway-session/session-start.sock rw,
+  audit deny @{run}user/[0-9]*/sway-session/session-start.sock klm,
+  owner @{run}user/[0-9]*/sway-session/session-start.sock rw,
 }
 
 # This profile is reachable only by executing the packaged, root-owned helper.
@@ -132,14 +140,16 @@ profile sway-herdr-init /usr/bin/sway-herdr-init flags=(attach_disconnected,medi
   audit deny @{HOME}/.config/chromium/{,**} mrwkl,
   audit deny @{HOME}/.config/google-chrome{,-beta,-dev}/{,**} mrwkl,
   audit deny @{HOME}/.config/BraveSoftware/{,**} mrwkl,
-  audit deny @{run}/user/[0-9]*/gnupg/{,**} mrwkl,
-  audit deny @{run}/user/[0-9]*/keyring/{,**} mrwkl,
-  audit deny @{run}/user/[0-9]*/podman/podman.sock mrwkl,
-  audit deny @{run}/user/[0-9]*/docker.sock mrwkl,
+  audit deny @{run}user/[0-9]*/gnupg/{,**} mrwkl,
+  audit deny @{run}user/[0-9]*/keyring/{,**} mrwkl,
+  audit deny @{run}user/[0-9]*/podman/podman.sock mrwkl,
+  audit deny @{run}user/[0-9]*/docker.sock mrwkl,
   audit deny /run/docker.sock mrwkl,
   audit deny /var/run/docker.sock mrwkl,
-  audit deny @{run}/user/[0-9]*/sway-ipc.*.sock mrwkl,
+  audit deny @{run}user/[0-9]*/sway-ipc.*.sock mrwkl,
 
-  # The registry is an input, never a mutation target for the initializer.
-  audit deny @{HOME}/.local/state/sway-session/{,**} wkl,
+  # Registry files are inputs, never mutation targets for the initializer. The
+  # directory itself retains w+k because Linux reports both permissions for
+  # the exclusive flock which serializes inspection with archive and purge.
+  audit deny @{HOME}/.local/state/sway-session/** wl,
 }

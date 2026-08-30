@@ -16,9 +16,10 @@ import (
 )
 
 const (
-	RequiredRoles      = 2
-	snapshotAttempts   = 24
-	snapshotRetryDelay = 250 * time.Millisecond
+	RequiredRoles                  = 2
+	supportedHerdrSnapshotProtocol = 20
+	snapshotAttempts               = 24
+	snapshotRetryDelay             = 250 * time.Millisecond
 )
 
 type Runner interface {
@@ -277,7 +278,7 @@ func decodeSessionSnapshot(output []byte) (sessionSnapshot, error) {
 	if response.Result.Type != "session_snapshot" {
 		return sessionSnapshot{}, fmt.Errorf("herdr snapshot returned unexpected result type %q", response.Result.Type)
 	}
-	if response.Result.Snapshot.Version == "" || response.Result.Snapshot.Protocol != 1 {
+	if response.Result.Snapshot.Version == "" || response.Result.Snapshot.Protocol != supportedHerdrSnapshotProtocol {
 		return sessionSnapshot{}, fmt.Errorf(
 			"unsupported Herdr snapshot version %q protocol %d",
 			response.Result.Snapshot.Version,

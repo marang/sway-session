@@ -37,7 +37,8 @@ project checkpoint, whichever comes first.
 ## Architecture
 
 - `main.go`: CLI parsing and process startup only.
-- `daemon.go`: event subscription and animation loop.
+- `daemon.go`: animation-only event subscription and frame loop; it must not
+  read session state or host session brokers.
 - `animator.go`: title calculation, caching, and Sway title updates.
 - `instance_lock.go`: single-instance lock and safe replacement.
 - `config.go` / `model.go`: configuration and shared data types.
@@ -46,7 +47,8 @@ project checkpoint, whichever comes first.
 - `audio_meter.go`: optional `parec` capture and spectral analysis.
 - `preview.go`: terminal preview and terminal-width handling.
 - `cmd/sway-session`: persistent work-session CLI and its explicit long-running
-  `broker` command.
+  `daemon`, including capture, marking, placement, layout restore, and the
+  existing narrow broker endpoints.
 - `cmd/sway-herdr-init` / `internal/herdrinit`: fixed, registry-locked
   initialization of one empty Herdr session without general pane control.
 - `internal/sessionrequest`: owner-only typed session-start protocol and broker
@@ -61,6 +63,12 @@ project checkpoint, whichever comes first.
 Keep new responsibilities in the matching module instead of growing `main.go`.
 Prefer small pure helpers and injected process/time/terminal boundaries for
 long-running behavior.
+
+`sway-title-animator` must remain usable without a registry or running
+`sway-session daemon`. It must not depend on `internal/session`,
+`internal/sessionrequest`, `internal/codexreport`, `internal/herdrinit`, or
+`internal/statefile`, and must never open session state files or sockets.
+Conversely, session capture and restore must not depend on the animator.
 
 ## Animation invariants
 

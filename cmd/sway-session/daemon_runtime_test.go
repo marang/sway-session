@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -20,18 +19,7 @@ type recordingRequester struct {
 	failure  error
 }
 
-func TestSessionErrorReporterSerializesConcurrentBrokerFailures(t *testing.T) {
-	reporter := &sessionErrorReporter{lastMessage: "same", lastAt: time.Now()}
-	var wait sync.WaitGroup
-	for range 32 {
-		wait.Add(1)
-		go func() {
-			defer wait.Done()
-			reporter.Report(errors.New("same"))
-		}()
-	}
-	wait.Wait()
-}
+func (*recordingRequester) Close() {}
 
 func TestFocusedContainerIDSelectsWindowLeafInsteadOfWorkspace(t *testing.T) {
 	leaf := &Node{ID: 42, Type: "con", Focused: true}

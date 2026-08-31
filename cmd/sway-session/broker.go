@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/marang/sway-title-animator/internal/diagnostic"
 	sessionstate "github.com/marang/sway-title-animator/internal/session"
 	"github.com/marang/sway-title-animator/internal/sessionrequest"
 	"github.com/marang/sway-title-animator/internal/swayipc"
@@ -30,15 +29,8 @@ func executeBroker(ctx context.Context, arguments []string, stderr io.Writer, st
 	if deps.runBroker == nil {
 		return commandResult{}, failure("broker", "run session broker", "Session broker dependency is unavailable.")
 	}
-	report := func(err error) {
-		if err == nil {
-			return
-		}
-		_ = diagnostic.WriteAll(stderr, "sway-session", []diagnostic.Diagnostic{{
-			Level: diagnostic.LevelError, Code: "broker_request", Message: "reject session broker request", Hint: err.Error(),
-		}}, structured)
-	}
-	if err := deps.runBroker(ctx, socket, report); err != nil {
+	reporter := newDiagnosticErrorReporter(stderr, structured, "broker_request", "reject session broker request")
+	if err := deps.runBroker(ctx, socket, reporter.Report); err != nil {
 		return commandResult{}, failure("broker", "run session broker", err.Error())
 	}
 	return commandResult{Command: "broker", Contexts: []sessionstate.Context{}}, nil
@@ -48,36 +40,40 @@ func runSessionRequestBroker(ctx context.Context, swaySocket string, reportError
 	if ctx == nil {
 		return errors.New("broker context is nil")
 	}
-	stateRoot, err := sessionstate.DefaultStateRoot()
-	if err != nil {
-		return err
-	}
-	socketPath, err := sessionrequest.DefaultSocketPath()
-	if err != nil {
-		return err
-	}
-	restoreExecutable, err := sessionstate.ResolveRootOwnedSystemExecutable("sway-session")
-	if err != nil {
-		return err
-	}
 	monitor, err := subscribeToSwayShutdown(swaySocket)
 	if err != nil {
 		return err
 	}
 	defer monitor.Close()
-	service := &sessionrequest.Service{
-		StateRoot:    stateRoot,
-		NewContextID: sessionstate.NewContextID,
-		NewSway:      func() sessionrequest.SwayRequester { return swayipc.NewClient(swaySocket) },
-		Restore:      sessionrequest.ExecRestoreRunner{Executable: restoreExecutable, SwaySocket: swaySocket},
-	}
-	server, err := sessionrequest.StartServer(socketPath, service.Handle, reportError)
+	server, err := startSessionRequestBroker(swaySocket, reportError)
 	if err != nil {
 		return err
 	}
 	waitErr := monitor.Wait(ctx)
 	closeErr := server.Close()
 	return errors.Join(waitErr, closeErr)
+}
+
+func startSessionRequestBroker(swaySocket string, reportError func(error)) (*sessionrequest.Server, error) {
+	stateRoot, err := sessionstate.DefaultStateRoot()
+	if err != nil {
+		return nil, err
+	}
+	socketPath, err := sessionrequest.DefaultSocketPath()
+	if err != nil {
+		return nil, err
+	}
+	restoreExecutable, err := sessionstate.ResolveRootOwnedSystemExecutable("sway-session")
+	if err != nil {
+		return nil, err
+	}
+	service := &sessionrequest.Service{
+		StateRoot:    stateRoot,
+		NewContextID: sessionstate.NewContextID,
+		NewSway:      func() sessionrequest.SwayRequester { return swayipc.NewClient(swaySocket) },
+		Restore:      sessionrequest.ExecRestoreRunner{Executable: restoreExecutable, SwaySocket: swaySocket},
+	}
+	return sessionrequest.StartServer(socketPath, service.Handle, reportError)
 }
 
 type swayShutdownMonitor struct {

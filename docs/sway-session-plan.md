@@ -1,7 +1,8 @@
 # Persistent Sway Work Sessions
 
-Status: Core Herdr work-session restore implemented; explicitly registered
-desktop-application restore is being added under LAB-95
+Status: Core Herdr work-session restore and explicit desktop registration are
+implemented; LAB-101 moves the runtime to the dedicated session-daemon process
+before desktop launch/restore continues in LAB-98
 
 Tracking issue: [LAB-80](https://linear.app/riotbox/issue/LAB-80/add-persistent-sway-work-session-restoration)
 
@@ -12,12 +13,13 @@ context owns one outer Alacritty window backed by one named Herdr session.
 Sway restores the outer window's workspace and layout, while Herdr restores
 the terminal panes, pane history, and resumable agents inside that window.
 
-The feature is split between the existing long-running title animator and the
-`sway-session` command. Both programs live in this repository and share small
-internal packages for bounded Sway IPC, state, identity, and restore planning.
-The LAB-95 extension reuses that architecture for explicitly registered normal
-desktop applications; it does not turn session restore into an automatic
-process or window recorder.
+The feature is owned entirely by the `sway-session` command and its explicit
+long-running daemon. The title animator is a separate animation/audio process
+with no session state, registry, restore, Herdr, or broker responsibility. Both
+programs remain in this repository and may share the small bounded Sway IPC
+package. Explicitly registered normal desktop applications reuse the session
+identity and layout model; this does not turn restore into an automatic process
+or window recorder.
 
 ## Goals
 
@@ -93,40 +95,42 @@ process or window recorder.
                             |
             +---------------+----------------+
             |                                |
-  sway-title-animator                  sway-session
-  long-running daemon                  one-shot CLI
+  sway-title-animator                  sway-session daemon
+  animation + audio                    session runtime
             |                                |
-  observe marked windows              manage contexts
-  persist layout tree                 launch missing windows
-  apply restore plans                 archive / activate / purge
-            |                                |
-            +---------------+----------------+
-                            |
-                  XDG state directory
-                            |
-                  Alacritty + Herdr
-                            |
-                panes, history, Codex resume
+  title_format only                    observe / mark / place
+                                             |
+                                      capture / layout restore
+                                             |
+                                      narrow broker endpoints
+                                             |
+                                      XDG session state
+                                             |
+                                      Alacritty + Herdr
+                                             |
+                                  panes, history, Codex resume
 ```
 
 ### Component responsibilities
 
-`sway-title-animator` remains the single long-running Sway listener. Its new
-session-state component:
+`sway-title-animator` is an independent animation/audio process. It:
 
-- observes marked windows and their relevant ancestors in `GET_TREE`;
-- persists meaningful layout changes after a debounce period;
-- recognizes managed windows when they appear;
-- moves those windows to saved workspaces; and
-- applies bounded Sway command plans for layout, size, floating state,
-  fullscreen state, and focus.
+- reads only the tree data needed to render and update title formats;
+- optionally analyzes live audio for sound-reactive presets; and
+- does not open session state, session sockets, the registry, or Herdr.
 
-`sway-session` is a separate binary with a one-shot CLI lifecycle. It:
+`sway-session` is a separate binary with one-shot lifecycle commands and an
+explicit long-running `daemon`. It:
 
 - owns the context registry;
 - lists, registers, archives, activates, restores, and purges contexts;
 - detects an already mapped context before launching anything;
 - invokes only configured, typed launcher adapters; and
+- observes registered windows, repairs stable marks, and restores placement;
+- captures debounced semantic layout snapshots and applies bounded restore
+  plans for layout, size, floating state, fullscreen state, and focus;
+- hosts the existing narrow session-start and Codex-report endpoints without
+  expanding either protocol; and
 - reports failures without preventing other contexts from restoring.
 
 The desktop-app registration surface resolves only the currently focused
@@ -159,9 +163,9 @@ It contains two active documents with separate writers and, after migration,
 one dedicated rollback document:
 
 ```text
-contexts.json   # written by sway-session
+contexts.json   # written by sway-session lifecycle commands and brokers
 contexts.v1.json # exact rollback evidence after the v1 -> v2 migration
-layout.json     # written by sway-title-animator
+layout.json     # written by sway-session daemon
 desktop-approvals/ # immutable approved user-local .desktop snapshots
 ```
 
@@ -330,14 +334,14 @@ does not replace its last saved real-workspace placement.
 
 ## Restore flow
 
-1. Sway starts the title animator, starts `sway-session broker`, and runs
-   `sway-session restore` once.
+1. Sway starts the independent title animator, starts `sway-session daemon`,
+   and runs `sway-session restore` once.
 2. `sway-session` loads and validates the active context registry.
 3. It reads `GET_TREE` and identifies existing managed windows by stable
    application ID or `persist:<uuid>` mark.
 4. Existing windows are reused. Each missing context is launched exactly once
    through the Herdr adapter.
-5. The title animator observes each mapped window, applies its stable mark, and
+5. The session daemon observes each mapped window, applies its stable mark, and
    moves it to the saved workspace.
 6. After the workspace's expected managed windows have appeared or a bounded
    settling timeout expires, a pure restore planner translates the saved tree
@@ -364,12 +368,14 @@ failure after sending `RUN_COMMAND` has an unknown outcome and is never retried
 blindly. The restore coordinator obtains a fresh `GET_TREE`, compares observed
 state with the desired state, and replans only commands that remain necessary.
 
-The title animator sends `RUN_COMMAND` messages through the existing bounded
-Sway IPC implementation. It does not spawn `swaymsg` or build shell commands.
-Automatic reconstruction applies only to contexts first observed without their
-stable mark during the current startup. A pre-existing marked window is treated
-as the user's current preference. A connection loss while applying the mark
-does not lose this new-window classification.
+The title animator uses the shared bounded Sway IPC implementation only for
+`title_format` updates and their reset. The session daemon independently uses
+that implementation for placement and layout commands; neither process spawns
+`swaymsg` or builds shell commands. Automatic reconstruction applies only to
+contexts first observed without their stable mark during the current startup.
+A pre-existing marked window is treated as the user's current preference. A
+connection loss while applying the mark does not lose this new-window
+classification.
 
 ### Best-effort compatibility
 
@@ -501,10 +507,11 @@ commands. Herdr's native adapter derives the only resume command, the typed
 
 Codex-triggered creation uses a second owner-only runtime endpoint. Its request schema
 contains only typed context metadata and a numbered Sway workspace; it cannot
-contain Herdr roles, pane identifiers, or command text. The explicit
-`sway-session broker` ensures exact context identity, requires the target
+contain Herdr roles, pane identifiers, or command text. The session daemon's
+unchanged typed endpoint ensures exact context identity, requires the target
 workspace to be empty, and restores the outer managed window through the normal
-`sway-session` path.
+`sway-session` path. The standalone `broker` command remains a compatibility
+entry point for that same protocol, but automatic startup uses the daemon.
 
 Security status: this creation path is experimental and does not yet confine
 the terminal, Herdr pane shell, or agent which it creates. User-writable shell
@@ -547,14 +554,16 @@ The intended Sway configuration is:
 
 ```text
 exec_always --no-startup-id /usr/bin/sway-title-animator --replace
-exec --no-startup-id /usr/bin/sway-session broker
+exec --no-startup-id /usr/bin/sway-session daemon
 exec --no-startup-id /usr/bin/sway-session restore
 ```
 
-The broker and restore commands intentionally use `exec`, not `exec_always`, so
-a config reload cannot duplicate processes or windows. Startup ordering is
-race-safe: the animator performs an initial tree refresh, and the continuing
-event subscription catches windows mapped after that refresh.
+The daemon and restore commands intentionally use `exec`, not `exec_always`, so
+a config reload cannot duplicate processes or windows. The daemon additionally
+holds an exclusive owner-only runtime lock. Startup ordering is race-safe: the
+daemon performs an initial tree refresh, and its continuing event subscription
+catches windows mapped after that refresh. The animator may start, stop, or be
+absent without changing session capture or restore behavior.
 
 Session persistence is opt-in and disabled by default for existing users until
 configured. Removing the one-shot restore line stops automatic launches without
@@ -567,6 +576,9 @@ deleting state.
 - A missing Herdr or Alacritty executable fails the affected context only.
 - A missing project directory is reported and not silently replaced with the
   home directory.
+- A newly launched outer context removes inherited `HERDR_*` pane metadata and
+  `CODEX_THREAD_ID` so manual restore from inside Herdr cannot become an
+  accidental nested-Herdr launch.
 - A duplicate stable application ID is treated as an ambiguity and does not
   launch another window.
 - A missing workspace is created by moving the window to its saved workspace;
@@ -592,7 +604,7 @@ deleting state.
 
 ### Phase 2: Capture and placement
 
-- Preserve typed Sway events in the daemon.
+- Preserve typed Sway events in the session daemon.
 - Extract marked workspace trees from `GET_TREE`.
 - Detect mixed managed/unregistered tiling and persist placement-only
   degradation.

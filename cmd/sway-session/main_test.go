@@ -32,10 +32,43 @@ func TestHelpListsImplementedCommandContract(t *testing.T) {
 	if exitCode != exitSuccess || stderr.Len() != 0 {
 		t.Fatalf("unexpected help result code=%d stderr=%q", exitCode, stderr.String())
 	}
-	for _, expected := range []string{"register --session <name>", "restore [--socket <path>] [context]", "app <subcommand> [options]", "broker [--socket <path>]", "request-start --session <name> --workspace <number>", "purge [--yes] <context>", "3  Operational failure"} {
+	for _, expected := range []string{"register --session <name>", "restore [--socket <path>] [context]", "app <subcommand> [options]", "daemon [--socket <path>]", "broker [--socket <path>]", "request-start --session <name> --workspace <number>", "purge [--yes] <context>", "3  Operational failure"} {
 		if !strings.Contains(stdout.String(), expected) {
 			t.Fatalf("help does not contain %q:\n%s", expected, stdout.String())
 		}
+	}
+}
+
+func TestDaemonRunsIndependentlyOfTitleAnimator(t *testing.T) {
+	deps := testDependencies(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	called := 0
+	deps.runDaemon = func(got context.Context, socket string, report func(error)) error {
+		called++
+		if socket != "/run/user/1000/sway.sock" {
+			t.Fatalf("unexpected Sway socket %q", socket)
+		}
+		if !errors.Is(got.Err(), context.Canceled) {
+			t.Fatalf("daemon did not receive canceled context: %v", got.Err())
+		}
+		if report == nil {
+			t.Fatal("daemon error reporter is nil")
+		}
+		return nil
+	}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := runWithContext(ctx, []string{"--json", "daemon", "--socket", "/run/user/1000/sway.sock"}, strings.NewReader(""), &stdout, &stderr, deps)
+	if code != exitSuccess || called != 1 || stderr.Len() != 0 {
+		t.Fatalf("daemon failed code=%d called=%d stderr=%q", code, called, stderr.String())
+	}
+	var result commandResult
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Command != "daemon" || len(result.Contexts) != 0 {
+		t.Fatalf("unexpected daemon result: %+v", result)
 	}
 }
 

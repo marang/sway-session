@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"sync"
+	"strings"
 	"time"
 
 	sessionstate "github.com/marang/sway-title-animator/internal/session"
@@ -19,9 +19,7 @@ const (
 	sessionStartupRetryDelay  = 5 * time.Second
 )
 
-type swayRequester interface {
-	Request(swayipc.MessageType, []byte) (swayipc.Message, error)
-}
+type Node = swayipc.TreeNode
 
 type sessionRuntime struct {
 	client             swayRequester
@@ -43,27 +41,6 @@ type sessionRuntime struct {
 	startupDeadline    time.Time
 	observeDeadline    time.Time
 	shutdown           bool
-}
-
-type sessionErrorReporter struct {
-	mu          sync.Mutex
-	lastMessage string
-	lastAt      time.Time
-}
-
-func (reporter *sessionErrorReporter) Report(err error) {
-	if err == nil {
-		return
-	}
-	reporter.mu.Lock()
-	defer reporter.mu.Unlock()
-	message := err.Error()
-	if message == reporter.lastMessage && time.Since(reporter.lastAt) < 5*time.Second {
-		return
-	}
-	reporter.lastMessage = message
-	reporter.lastAt = time.Now()
-	fmt.Fprintf(os.Stderr, "Unable to update persistent Sway session: %v\n", err)
 }
 
 func newSessionRuntime(client swayRequester) (*sessionRuntime, error) {
@@ -650,7 +627,7 @@ func (runtime *sessionRuntime) Shutdown() {
 	runtime.debouncer.Cancel()
 }
 
-func reconcilePersistentSession(animator *TitleAnimator, runtime *sessionRuntime, phase int, report func(error)) {
+func reconcilePersistentSession(client swayRequester, runtime *sessionRuntime, report func(error)) {
 	// Bound synchronous IPC work per event-loop turn. Long layout restores keep
 	// the periodic observation armed and continue on a later turn; reaching the
 	// bound is expected progress, not a failed stabilization attempt.
@@ -659,7 +636,7 @@ func reconcilePersistentSession(animator *TitleAnimator, runtime *sessionRuntime
 		runtime.ArmObservationRetry(time.Now())
 	}
 	for range maximumObservations {
-		root, err := animator.RefreshTree(phase)
+		root, err := requestTree(client)
 		if err != nil {
 			// An IPC disconnect preserves the last snapshot. The normal event
 			// reconnect path will obtain another tree without turning a socket
@@ -677,4 +654,10 @@ func reconcilePersistentSession(animator *TitleAnimator, runtime *sessionRuntime
 			return
 		}
 	}
+}
+
+func quoteSwayString(value string) string {
+	escaped := strings.ReplaceAll(value, "\\", "\\\\")
+	escaped = strings.ReplaceAll(escaped, "\"", "\\\"")
+	return "\"" + escaped + "\""
 }

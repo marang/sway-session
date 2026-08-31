@@ -42,12 +42,13 @@ var commandSpecs = map[string]commandSpec{
 	"activate":             {usage: "activate <context>", summary: "Return an archived context to automatic restore"},
 	"purge":                {usage: "purge [--yes] <context>", summary: "Permanently remove a context and its saved Herdr state"},
 	"broker":               {usage: "broker [--socket <path>]", summary: "Serve typed work-session start requests"},
+	"daemon":               {usage: "daemon [--socket <path>]", summary: "Observe and restore persistent Sway session state"},
 	"request-start":        {usage: "request-start --session <name> --workspace <number> [options]", summary: "Request a typed ensure-and-start operation"},
 	"report-codex-session": {usage: "report-codex-session", summary: "Report a managed Codex SessionStart event to the narrow broker"},
 	"app":                  {usage: "app <subcommand> [options]", summary: "Manage explicitly registered desktop applications"},
 }
 
-var commandOrder = []string{"register", "restore", "list", "archive", "activate", "purge", "app", "broker", "request-start", "report-codex-session"}
+var commandOrder = []string{"register", "restore", "list", "archive", "activate", "purge", "app", "daemon", "broker", "request-start", "report-codex-session"}
 
 type swayRequester interface {
 	Request(swayipc.MessageType, []byte) (swayipc.Message, error)
@@ -77,6 +78,7 @@ type dependencies struct {
 	reportCodexHook func(context.Context, io.Reader, func(string) string) error
 	requestStart    func(context.Context, sessionrequest.Request) (sessionrequest.Response, error)
 	runBroker       func(context.Context, string, func(error)) error
+	runDaemon       func(context.Context, string, func(error)) error
 }
 
 func defaultDependencies(stdin io.Reader) dependencies {
@@ -118,6 +120,7 @@ func defaultDependencies(stdin io.Reader) dependencies {
 			return sessionrequest.Send(ctx, socketPath, request)
 		},
 		runBroker: runSessionRequestBroker,
+		runDaemon: runSessionDaemon,
 	}
 	deps.presentApproval = func(message string, choices []sessionstate.ApprovalChoice) error {
 		swaynag, err := deps.resolveSystem("swaynag")
@@ -386,6 +389,8 @@ func executeCommand(ctx context.Context, name string, arguments []string, stdin 
 		return executeApp(arguments, deps)
 	case "broker":
 		return executeBroker(ctx, arguments, stderr, structured, deps)
+	case "daemon":
+		return executeDaemon(ctx, arguments, stderr, structured, deps)
 	case "request-start":
 		return executeRequestStart(ctx, arguments, deps)
 	case "report-codex-session":

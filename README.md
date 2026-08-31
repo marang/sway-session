@@ -251,10 +251,10 @@ last clean shutdown; `unpin` returns to follow mode. Rebind previews the old and
 new exact identities. Forget removes only the outer registration and live Sway
 mark; it never attempts to delete application-private state.
 
-For an AppArmor-confined Codex workflow, `sway-session broker` exposes a
-separate typed start endpoint. It combines exact context registration or reuse
-with placement on one empty numbered workspace, without accepting pane roles
-or commands:
+For an AppArmor-confined Codex workflow, the long-running `sway-session daemon`
+also exposes the existing separate typed start endpoint. It combines exact
+context registration or reuse with placement on one empty numbered workspace,
+without accepting pane roles or commands:
 
 > **Experimental security boundary:** the narrow interfaces protect registry
 > files and constrain the intended request shapes, but the current AppArmor
@@ -294,7 +294,10 @@ returns a safe no-op. Existing Herdr layouts are never reshaped. The AppArmor
 transition intentionally recognizes only the root-owned
 `/usr/bin/sway-herdr-init` from a distribution package. The broker likewise
 launches only a root-owned system `sway-session` with a system-only executable
-search path. Do not allow-list a user-writable source-install copy.
+search path. The outer Herdr launcher removes inherited `HERDR_*` pane metadata
+and `CODEX_THREAD_ID` before starting a distinct context, then injects only its
+new registered context ID. Do not allow-list a user-writable source-install
+copy.
 
 Pane roles are logical Herdr agent kinds such as `codex`, not executable paths
 or runtime definitions. A future trusted wrapper or container launcher belongs
@@ -320,18 +323,23 @@ For automatic startup, add all three lines to the Sway config:
 
 ```conf
 exec_always --no-startup-id /usr/bin/sway-title-animator --replace --fps 25
-exec --no-startup-id /usr/bin/sway-session broker
+exec --no-startup-id /usr/bin/sway-session daemon
 exec --no-startup-id /usr/bin/sway-session restore
 ```
 
-The broker and restore lines intentionally use `exec`, not `exec_always`, so
-reloading the Sway config does not launch duplicates. Restore also checks Sway
-and already-started typed Alacritty processes before launching, so repeated
-manual calls reuse an existing or pending context window.
+The daemon owns session observation, marking, placement, layout snapshots,
+layout restore, and both narrow broker endpoints. The animator remains an
+independent title-animation/audio process and never opens the registry, layout
+state, Herdr state, or session sockets. The daemon and restore lines
+intentionally use `exec`, not `exec_always`, so reloading the Sway config does
+not launch duplicates; the daemon also holds an exclusive runtime lock. The
+one-shot restore checks Sway and already-started typed Alacritty processes
+before launching, so repeated manual calls reuse an existing or pending
+context window.
 
 ### Secure Codex resume
 
-Codex resume metadata uses the title animator's owner-only runtime broker. The
+Codex resume metadata uses the session daemon's owner-only runtime broker. The
 Codex hook never opens Herdr state, the Herdr control socket, the outer-session
 registry, or the Sway IPC socket. It sends only the registered context UUID,
 Herdr's current pane identity, and a canonical Codex session UUID; the broker

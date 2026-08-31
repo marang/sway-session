@@ -1,5 +1,59 @@
 # Persistent Sway Session Verification
 
+## Current process-boundary procedure (LAB-101)
+
+Current builds run session observation and restore in `sway-session daemon`.
+The title animator is tested separately and is not a prerequisite for any step
+below. Before release, start the packaged daemon in one terminal:
+
+```sh
+/usr/bin/sway-session daemon
+```
+
+Then request the one-shot context launch from a second terminal:
+
+```sh
+/usr/bin/sway-session restore
+```
+
+With at least one registered context, verify that the daemon repairs its
+`persist:<uuid>` mark, restores its saved workspace and layout after remapping,
+and updates `layout.json` after the debounce interval. Then stop only the title
+animator and repeat placement/layout restore; it must still converge. Finally,
+restart the animator with the session daemon stopped and verify title animation
+continues while neither `contexts.json`, `layout.json`, nor either session
+socket is opened or created by the animator. Re-run the narrow broker boundary
+check separately because moving its server did not change either protocol:
+
+```sh
+/usr/share/doc/sway-title-animator/scripts/verify-codex-boundary.sh \
+  CONTEXT_UUID PANE_ID CODEX_SESSION_UUID HERDR_HISTORY STATE_FILE HERDR_SOCKET
+```
+
+The automated `make verify` gate includes a dependency/source boundary check,
+an animator fake-Sway integration test with all session roots absent, daemon
+capture/placement/layout tests, and the existing broker security tests.
+
+### LAB-101 live evidence (2026-08-31)
+
+The process split was exercised against the interactive Sway compositor with
+an isolated XDG state root, runtime root, Herdr configuration, registry, and
+one disposable context on workspace 98. The installed animator was suspended
+while the source-built `sway-session daemon` recognized the new window, added
+its stable mark, captured a floating 520-by-360 outer rectangle, and restored
+the window to workspace 98 with that rectangle after it was closed.
+
+The restore process was launched by Sway itself and deliberately inherited
+foreign `HERDR_*` and `CODEX_THREAD_ID` values. The typed launcher removed
+those pane-local variables before starting the new Alacritty/Herdr context;
+the restored window remained mapped and correctly placed throughout a
+12-second stability observation. This also verifies that the session path does
+not require a running animator. After stopping the session daemon, the
+source-built animator ran against real Sway with separate empty state/runtime
+roots: it created only its own instance-lock file and no session directory,
+state file, or broker socket. The disposable context and Herdr state were
+purged and all temporary test files were removed afterward.
+
 This document records the manual LAB-80 evidence gathered on 2026-08-29. It
 separates the outer Sway restore from components which were not available in
 the verification environment.

@@ -33,6 +33,10 @@ func TestAlacrittyHerdrLauncherPassesMetadataWithoutShellEvaluation(t *testing.T
 	if !reflect.DeepEqual(starter.spec.Environment, []string{"SWAY_SESSION_CONTEXT_ID=" + string(context.ID)}) {
 		t.Fatalf("context identity was not injected as typed environment: %q", starter.spec.Environment)
 	}
+	if !reflect.DeepEqual(starter.spec.UnsetEnvironment, []string{"CODEX_THREAD_ID"}) ||
+		!reflect.DeepEqual(starter.spec.UnsetEnvironmentPrefixes, []string{"HERDR_"}) {
+		t.Fatalf("pane-local environment was not removed: unset=%q prefixes=%q", starter.spec.UnsetEnvironment, starter.spec.UnsetEnvironmentPrefixes)
+	}
 }
 
 func TestAlacrittyHerdrLauncherRejectsOtherTypedLauncherKinds(t *testing.T) {
@@ -166,7 +170,12 @@ func TestResolveRootOwnedSystemExecutableIgnoresCallerPath(t *testing.T) {
 }
 
 func TestMergeEnvironmentOverridesExistingKeyWithoutDuplicates(t *testing.T) {
-	merged, err := mergeEnvironment([]string{"PATH=/untrusted", "LANG=C"}, []string{"PATH=/usr/local/bin:/usr/bin", "TOKEN=value"})
+	merged, err := mergeEnvironment(
+		[]string{"PATH=/untrusted", "LANG=C", "HERDR_ENV=1", "HERDR_SOCKET_PATH=/old", "CODEX_THREAD_ID=old"},
+		[]string{"PATH=/usr/local/bin:/usr/bin", "TOKEN=value"},
+		[]string{"CODEX_THREAD_ID"},
+		[]string{"HERDR_"},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,7 +183,10 @@ func TestMergeEnvironmentOverridesExistingKeyWithoutDuplicates(t *testing.T) {
 	if !reflect.DeepEqual(merged, want) {
 		t.Fatalf("environment override was ambiguous: got=%q want=%q", merged, want)
 	}
-	if _, err := mergeEnvironment(nil, []string{"BROKEN"}); err == nil {
+	if _, err := mergeEnvironment(nil, []string{"BROKEN"}, nil, nil); err == nil {
 		t.Fatal("malformed environment entry was accepted")
+	}
+	if _, err := mergeEnvironment(nil, nil, nil, []string{""}); err == nil {
+		t.Fatal("empty environment prefix was accepted")
 	}
 }

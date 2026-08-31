@@ -86,10 +86,11 @@ profile codex-home-guard /usr/bin/codex flags=(attach_disconnected,mediate_delet
   # known LAB-89 gap in this deny-list design.
   audit deny @{run}user/[0-9]*/sway-ipc.*.sock mrwkl,
 
-  # The intended session integration endpoints exposed to Codex accept fixed,
-  # schema-validated operations and return no raw registry contents. Pathname
-  # mutation protections do not turn this broad deny-list into a complete
-  # socket-connect boundary; see the experimental status in the README.
+  # The intended session integration endpoints are owned by the independent
+  # sway-session daemon. They accept fixed, schema-validated operations and
+  # return no raw registry contents. The title animator hosts neither endpoint.
+  # Pathname mutation protections do not turn this broad deny-list into a
+  # complete socket-connect boundary; see the experimental status in README.
   audit deny @{run}user/[0-9]*/sway-session wkl,
   audit deny @{run}user/[0-9]*/sway-session/ wkl,
   audit deny @{run}user/[0-9]*/sway-session/app-operations/{,**} mrwkl,

@@ -22,15 +22,22 @@ type ProcessStarter interface {
 type ExecProcessStarter struct{}
 
 type ProcessSpec struct {
-	Name        string
-	Arguments   []string
-	Environment []string
+	Name                     string
+	Arguments                []string
+	Environment              []string
+	UnsetEnvironment         []string
+	UnsetEnvironmentPrefixes []string
 }
 
 func (ExecProcessStarter) Start(spec ProcessSpec) error {
 	command := exec.Command(spec.Name, spec.Arguments...)
-	if len(spec.Environment) != 0 {
-		environment, err := mergeEnvironment(os.Environ(), spec.Environment)
+	if len(spec.Environment) != 0 || len(spec.UnsetEnvironment) != 0 || len(spec.UnsetEnvironmentPrefixes) != 0 {
+		environment, err := mergeEnvironment(
+			os.Environ(),
+			spec.Environment,
+			spec.UnsetEnvironment,
+			spec.UnsetEnvironmentPrefixes,
+		)
 		if err != nil {
 			return err
 		}
@@ -45,7 +52,7 @@ func (ExecProcessStarter) Start(spec ProcessSpec) error {
 	return nil
 }
 
-func mergeEnvironment(base []string, overrides []string) ([]string, error) {
+func mergeEnvironment(base []string, overrides []string, unset []string, unsetPrefixes []string) ([]string, error) {
 	values := make(map[string]string, len(base)+len(overrides))
 	order := make([]string, 0, len(base)+len(overrides))
 	apply := func(entries []string) error {
@@ -67,8 +74,33 @@ func mergeEnvironment(base []string, overrides []string) ([]string, error) {
 	if err := apply(overrides); err != nil {
 		return nil, err
 	}
+	removed := make(map[string]struct{}, len(unset))
+	for _, key := range unset {
+		if key == "" || strings.ContainsAny(key, "=\x00") {
+			return nil, errors.New("process environment contains an invalid unset key")
+		}
+		removed[key] = struct{}{}
+	}
+	for _, prefix := range unsetPrefixes {
+		if prefix == "" || strings.ContainsAny(prefix, "=\x00") {
+			return nil, errors.New("process environment contains an invalid unset prefix")
+		}
+	}
 	result := make([]string, 0, len(order))
 	for _, key := range order {
+		if _, excluded := removed[key]; excluded {
+			continue
+		}
+		excluded := false
+		for _, prefix := range unsetPrefixes {
+			if strings.HasPrefix(key, prefix) {
+				excluded = true
+				break
+			}
+		}
+		if excluded {
+			continue
+		}
 		result = append(result, values[key])
 	}
 	return result, nil
@@ -127,9 +159,11 @@ func (launcher AlacrittyHerdrLauncher) Launch(context Context) error {
 		return fmt.Errorf("project path %s is not a directory", context.Launcher.Cwd)
 	}
 	return launcher.Starter.Start(ProcessSpec{
-		Name:        launcher.Alacritty,
-		Arguments:   arguments,
-		Environment: []string{"SWAY_SESSION_CONTEXT_ID=" + string(context.ID)},
+		Name:                     launcher.Alacritty,
+		Arguments:                arguments,
+		Environment:              []string{"SWAY_SESSION_CONTEXT_ID=" + string(context.ID)},
+		UnsetEnvironment:         []string{"CODEX_THREAD_ID"},
+		UnsetEnvironmentPrefixes: []string{"HERDR_"},
 	})
 }
 

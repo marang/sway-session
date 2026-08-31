@@ -416,7 +416,7 @@ func TestExplicitManualRestoreStillAllowsArchivedContext(t *testing.T) {
 	}
 }
 
-func TestAutomaticRestoreSkipsDesktopContextsUntilApplicationRestoreExists(t *testing.T) {
+func TestAutomaticOneShotRestoreLeavesDesktopContextsToDaemon(t *testing.T) {
 	herdr := sessionstate.Context{ID: testContextID, State: sessionstate.ContextActive, Launcher: sessionstate.Launcher{Kind: sessionstate.LauncherHerdr}}
 	desktop := sessionstate.Context{ID: "22222222-2222-4222-8222-222222222222", State: sessionstate.ContextActive, Launcher: sessionstate.Launcher{Kind: sessionstate.LauncherDesktop}}
 	registry := sessionstate.Registry{Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{herdr, desktop}}
@@ -424,8 +424,48 @@ func TestAutomaticRestoreSkipsDesktopContextsUntilApplicationRestoreExists(t *te
 	if err != nil || len(targets) != 1 || targets[0].ID != herdr.ID {
 		t.Fatalf("automatic restore sent desktop context through Herdr: targets=%+v err=%v", targets, err)
 	}
-	if _, err := restoreTargets(registry, string(desktop.ID), false); err == nil || !strings.Contains(err.Error(), "LAB-98") {
-		t.Fatalf("explicit desktop restore did not explain deferred support: %v", err)
+	if _, err := restoreTargets(registry, string(desktop.ID), false); err == nil || !strings.Contains(err.Error(), "session daemon") {
+		t.Fatalf("explicit desktop restore did not preserve daemon ownership: %v", err)
+	}
+}
+
+func TestExplicitDesktopRestoreQueuesDesiredOpenForDaemon(t *testing.T) {
+	deps := testDependencies(t)
+	context := sessionstate.Context{
+		ID: testContextID, State: sessionstate.ContextActive,
+		Launcher: sessionstate.Launcher{Kind: sessionstate.LauncherFlatpak, FlatpakID: "org.example.App", FlatpakInstallation: sessionstate.FlatpakUser},
+		App: &sessionstate.Application{
+			Identity:    sessionstate.ApplicationIdentity{Protocol: sessionstate.WindowWayland, WaylandAppID: "org.example.App", SandboxAppID: "org.example.App"},
+			DesiredOpen: false, RestorePolicy: sessionstate.ApplicationRestoreFollow,
+		},
+	}
+	root, err := deps.stateRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sessionstate.UpdateRegistry(root, func(registry *sessionstate.Registry) error {
+		return sessionstate.AddContext(registry, context)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	deps.newSwayClient = func(string) swayRequester {
+		t.Fatal("queued desktop restore bypassed daemon ownership")
+		return nil
+	}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	code := runWith([]string{"restore", "--socket", "/run/user/1000/sway.sock", string(context.ID)}, strings.NewReader(""), &stdout, &stderr, deps)
+
+	if code != exitSuccess || !strings.Contains(stdout.String(), "queued") || stderr.Len() != 0 {
+		t.Fatalf("desktop restore was not queued: code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	var registry sessionstate.Registry
+	if err := sessionstate.RegistryFile(root).LoadInto(&registry); err != nil {
+		t.Fatal(err)
+	}
+	if !registry.Contexts[0].App.DesiredOpen {
+		t.Fatal("queued desktop restore did not persist desired-open state")
 	}
 }
 

@@ -290,6 +290,17 @@ func executeRestore(ctx context.Context, arguments []string, deps dependencies) 
 		selector = set.Arg(0)
 	}
 	result := commandResult{Command: "restore", Contexts: []sessionstate.Context{}}
+	if selector != "" {
+		queued, handled, err := queueDesktopRestore(root, selector)
+		if err != nil {
+			return commandResult{}, classifyStateError("queue desktop application restore", err)
+		}
+		if handled {
+			result.Contexts = append(result.Contexts, queued)
+			result.Message = "Desktop application restore queued for sway-session daemon."
+			return result, nil
+		}
+	}
 	var operationDiagnostics []diagnostic.Diagnostic
 	err := sessionstate.InspectRegistryLocked(root, func(registry sessionstate.Registry) error {
 		targets, err := restoreTargets(registry, selector, *requireActive)
@@ -422,6 +433,39 @@ func executeRestore(ctx context.Context, arguments []string, deps dependencies) 
 	return result, nil
 }
 
+var errNotDesktopApplication = errors.New("selected context is not a desktop application")
+
+func queueDesktopRestore(root string, selector string) (sessionstate.Context, bool, error) {
+	var queued sessionstate.Context
+	_, err := sessionstate.UpdateRegistry(root, func(registry *sessionstate.Registry) error {
+		index, err := sessionstate.ResolveContext(*registry, selector)
+		if err != nil {
+			return err
+		}
+		if registry.Contexts[index].App == nil {
+			return errNotDesktopApplication
+		}
+		if registry.Contexts[index].State != sessionstate.ContextActive {
+			return fmt.Errorf("desktop application context %q is archived; activate it before restore", registry.Contexts[index].ID)
+		}
+		registry.Contexts[index].App.DesiredOpen = true
+		queued = registry.Contexts[index]
+		return registry.Validate()
+	})
+	if errors.Is(err, errNotDesktopApplication) {
+		return sessionstate.Context{}, false, nil
+	}
+	if err != nil {
+		if queued.ID != "" && committedContext(root, queued.ID, func(context sessionstate.Context) bool {
+			return context.App != nil && context.App.DesiredOpen
+		}, err) {
+			return queued, true, nil
+		}
+		return sessionstate.Context{}, true, err
+	}
+	return queued, true, nil
+}
+
 func restoreTargets(registry sessionstate.Registry, selector string, requireActive bool) ([]sessionstate.Context, error) {
 	if selector != "" {
 		index, err := sessionstate.ResolveContext(registry, selector)
@@ -433,7 +477,7 @@ func restoreTargets(registry sessionstate.Registry, selector string, requireActi
 			return nil, fmt.Errorf("context %q is archived", selected.ID)
 		}
 		if selected.Launcher.Kind != sessionstate.LauncherHerdr {
-			return nil, fmt.Errorf("desktop application restore is not available until LAB-98; registration and policy state were preserved for context %q", selected.ID)
+			return nil, fmt.Errorf("desktop application context %q must be restored through the session daemon", selected.ID)
 		}
 		return []sessionstate.Context{selected}, nil
 	}

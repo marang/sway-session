@@ -75,9 +75,10 @@ profile codex-home-guard /usr/bin/codex flags=(attach_disconnected,mediate_delet
   audit deny /run/docker.sock mrwkl,
   audit deny /var/run/docker.sock mrwkl,
 
-  # Persistent terminal history and the outer-session registry stay outside
-  # Codex. The same file rules protect Herdr socket pathnames, but do not claim
-  # to mediate pathname socket connect(2) on every supported kernel.
+  # Persistent terminal history, outer-session registry/layout, approved
+  # desktop launchers, and the per-compositor application attempt journal stay
+  # outside Codex. The same file rules protect Herdr socket pathnames, but do
+  # not claim to mediate pathname socket connect(2) on every supported kernel.
   audit deny @{HOME}/.config/herdr/{,**} mrwkl,
   audit deny @{HOME}/.local/state/sway-session/{,**} mrwkl,
 

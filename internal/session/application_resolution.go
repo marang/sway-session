@@ -154,6 +154,10 @@ func ApplicationWindowByContainer(root *swayipc.TreeNode, containerID int64) (Wi
 }
 
 func walkApplicationWindows(node *swayipc.TreeNode, workspace string, visit func(WindowApplication, bool)) error {
+	return walkApplicationWindowsWithScratchpad(node, workspace, false, visit)
+}
+
+func walkApplicationWindowsWithScratchpad(node *swayipc.TreeNode, workspace string, includeScratchpad bool, visit func(WindowApplication, bool)) error {
 	if node == nil {
 		return errors.New("sway tree contains a nil node")
 	}
@@ -165,7 +169,7 @@ func walkApplicationWindows(node *swayipc.TreeNode, workspace string, visit func
 		if err != nil {
 			return fmt.Errorf("container %d: %w", node.ID, err)
 		}
-		if ok && workspace != "" && workspace != "__i3_scratch" && workspace != RestoreStagingWorkspace {
+		if ok && workspace != "" && (includeScratchpad || workspace != "__i3_scratch") && workspace != RestoreStagingWorkspace {
 			marks, err := applicationContextMarks(node.Marks)
 			if err != nil {
 				return fmt.Errorf("container %d: %w", node.ID, err)
@@ -174,12 +178,12 @@ func walkApplicationWindows(node *swayipc.TreeNode, workspace string, visit func
 		}
 	}
 	for _, child := range node.Nodes {
-		if err := walkApplicationWindows(child, workspace, visit); err != nil {
+		if err := walkApplicationWindowsWithScratchpad(child, workspace, includeScratchpad, visit); err != nil {
 			return err
 		}
 	}
 	for _, child := range node.FloatingNodes {
-		if err := walkApplicationWindows(child, workspace, visit); err != nil {
+		if err := walkApplicationWindowsWithScratchpad(child, workspace, includeScratchpad, visit); err != nil {
 			return err
 		}
 	}

@@ -177,8 +177,13 @@ version 2. The exact old bytes remain owner-only in `contexts.v1.json` beside
 the active registry as manual rollback evidence. Malformed or unknown-version
 state is never migrated, and the rollback file is never loaded automatically.
 Version 2 also supports explicit normal desktop-application registrations.
-Focused-window discovery and lifecycle commands are available now; automatic
-desktop-app launch and placement are completed by the following LAB-98 slice.
+The independent session daemon groups every matching top-level window into one
+application presence, adopts one unambiguous window as the optional layout
+anchor, and restores missing desired-open applications after a five-second
+autostart adoption grace period. It launches at most two applications while
+their first window is still pending and records launch intent before starting
+the process, so a daemon restart or ambiguous launcher outcome cannot duplicate
+the attempt in the same real Sway compositor session.
 
 Install Alacritty and Herdr, then enable Herdr pane history in
 `${XDG_CONFIG_HOME:-$HOME/.config}/herdr/config.toml`:
@@ -250,6 +255,18 @@ sway-session app forget --yes <context>
 last clean shutdown; `unpin` returns to follow mode. Rebind previews the old and
 new exact identities. Forget removes only the outer registration and live Sway
 mark; it never attempts to delete application-private state.
+
+In follow mode, the app becomes desired-open when any matching eligible
+top-level appears and desired-closed only after its last window has remained
+absent for two seconds. Profile pickers and authentication-to-main-window
+transitions therefore do not create a close/relaunch cycle. Multiple
+indistinguishable windows prove that the application is already present but are
+never guessed between for layout. Only a unique or already marked anchor is
+moved to the saved workspace; later application-owned windows are left alone.
+Scratchpad windows count as presence but scratchpad placement is intentionally
+deferred to LAB-92. Use `sway-session restore <context>` to atomically queue a
+desired-closed active desktop app for the daemon without bypassing its launch
+journal.
 
 For an AppArmor-confined Codex workflow, the long-running `sway-session daemon`
 also exposes the existing separate typed start endpoint. It combines exact
@@ -334,8 +351,9 @@ state, Herdr state, or session sockets. The daemon and restore lines
 intentionally use `exec`, not `exec_always`, so reloading the Sway config does
 not launch duplicates; the daemon also holds an exclusive runtime lock. The
 one-shot restore checks Sway and already-started typed Alacritty processes
-before launching, so repeated manual calls reuse an existing or pending
-context window.
+before launching Herdr contexts. Desktop applications are restored only by the
+daemon, which distinguishes a Sway config reload from a replaced compositor
+socket and never treats reload as a new launch session.
 
 ### Secure Codex resume
 

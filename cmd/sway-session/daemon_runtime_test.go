@@ -19,6 +19,38 @@ type recordingRequester struct {
 	failure  error
 }
 
+type recordingApplicationLauncher struct {
+	contexts     []sessionstate.Context
+	prepareErr   error
+	prepareErrBy map[sessionstate.ContextID]error
+	startErr     error
+	starts       int
+}
+
+type recordingPreparedApplicationLaunch struct {
+	launcher *recordingApplicationLauncher
+	context  sessionstate.Context
+}
+
+func (launch recordingPreparedApplicationLaunch) Start() error {
+	launch.launcher.starts++
+	if launch.launcher.startErr != nil {
+		return launch.launcher.startErr
+	}
+	launch.launcher.contexts = append(launch.launcher.contexts, launch.context)
+	return nil
+}
+
+func (launcher *recordingApplicationLauncher) Prepare(context sessionstate.Context) (preparedApplicationLaunch, error) {
+	if launcher.prepareErr != nil {
+		return nil, launcher.prepareErr
+	}
+	if err := launcher.prepareErrBy[context.ID]; err != nil {
+		return nil, err
+	}
+	return recordingPreparedApplicationLaunch{launcher: launcher, context: context}, nil
+}
+
 func (*recordingRequester) Close() {}
 
 func TestFocusedContainerIDSelectsWindowLeafInsteadOfWorkspace(t *testing.T) {
@@ -35,6 +67,64 @@ func TestFocusedContainerIDIgnoresEmptyFocusedWorkspace(t *testing.T) {
 	root.Nodes[0].Nodes[0].Focused = true
 	if got := focusedContainerID(root); got != 0 {
 		t.Fatalf("empty workspace produced restorable focus ID %d", got)
+	}
+}
+
+func TestSessionRuntimeUserActivityCancelsConflictingRestoreAndFocusReset(t *testing.T) {
+	runtime := &sessionRuntime{
+		persisted: sessionstate.LayoutSnapshot{Version: sessionstate.LayoutSchemaVersion, Workspaces: []sessionstate.WorkspaceLayout{{
+			Name: "98: apps", RestoreMode: sessionstate.WorkspaceRestorePlacementOnly, PlacementContexts: []sessionstate.ContextID{testManagedContextID},
+		}}},
+		restoreProgress: &sessionstate.RestoreProgress{Workspace: "98: apps", Phase: sessionstate.RestoreBuild},
+		restoreExcluded: map[string]struct{}{},
+	}
+
+	runtime.HandleEvent(swayipc.Event{Type: swayipc.EventBinding, Change: "run"}, time.Now())
+
+	if runtime.restoreProgress != nil || !runtime.originalFocusDone || !runtime.startupComplete {
+		t.Fatalf("user activity did not cancel conflicting restore state: %+v", runtime)
+	}
+	if _, excluded := runtime.restoreExcluded["98: apps"]; !excluded {
+		t.Fatal("canceled workspace remained eligible for structural restore")
+	}
+}
+
+func TestSessionRuntimeFocusActivityCancelsConflictingRestore(t *testing.T) {
+	for _, event := range []swayipc.Event{
+		{Type: swayipc.EventWindow, Change: "focus"},
+		{Type: swayipc.EventWorkspace, Change: "focus"},
+	} {
+		runtime := &sessionRuntime{
+			persisted: sessionstate.LayoutSnapshot{Version: sessionstate.LayoutSchemaVersion, Workspaces: []sessionstate.WorkspaceLayout{{
+				Name: "98: apps", RestoreMode: sessionstate.WorkspaceRestorePlacementOnly, PlacementContexts: []sessionstate.ContextID{testManagedContextID},
+			}}},
+			restoreProgress: &sessionstate.RestoreProgress{Workspace: "98: apps", Phase: sessionstate.RestoreBuild},
+			restoreExcluded: map[string]struct{}{},
+		}
+
+		runtime.HandleEvent(event, time.Now())
+
+		if runtime.restoreProgress != nil || !runtime.originalFocusDone || !runtime.startupComplete {
+			t.Fatalf("%s focus did not cancel conflicting restore state: %+v", event.Type, runtime)
+		}
+	}
+}
+
+func TestSessionRuntimeExpiredExpectedMoveCannotHideLaterUserMove(t *testing.T) {
+	now := time.Unix(5000, 0)
+	runtime := &sessionRuntime{
+		persisted: sessionstate.LayoutSnapshot{Version: sessionstate.LayoutSchemaVersion, Workspaces: []sessionstate.WorkspaceLayout{{
+			Name: "98: apps", RestoreMode: sessionstate.WorkspaceRestorePlacementOnly, PlacementContexts: []sessionstate.ContextID{testManagedContextID},
+		}}},
+		restoreProgress: &sessionstate.RestoreProgress{Workspace: "98: apps", Phase: sessionstate.RestoreBuild},
+		restoreExcluded: map[string]struct{}{},
+		expectedMoves:   map[int64]expectedMove{41: {count: 1, expiresAt: now.Add(-time.Second)}},
+	}
+
+	runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "move", Container: &Node{ID: 41}}, now)
+
+	if runtime.restoreProgress != nil {
+		t.Fatal("expired daemon move expectation hid a later user move")
 	}
 }
 
@@ -87,6 +177,280 @@ func TestSessionRuntimeMovesThenMarksNewWindowAndCapturesStableTree(t *testing.T
 	if _, scheduled := runtime.Deadline(); !scheduled {
 		t.Fatal("stable exact tree was not scheduled after placement-only restore")
 	}
+}
+
+func TestSessionRuntimeLaunchesDesktopAppsOnlyAfterAdoptionAndPersistsIntentFirst(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state")
+	context := sessionstate.Context{
+		ID: testManagedContextID, Label: "Example", Provider: "desktop", State: sessionstate.ContextActive,
+		Launcher: sessionstate.Launcher{Kind: sessionstate.LauncherFlatpak, FlatpakID: "org.example.App", FlatpakInstallation: sessionstate.FlatpakUser},
+		App: &sessionstate.Application{
+			Identity:    sessionstate.ApplicationIdentity{Protocol: sessionstate.WindowWayland, WaylandAppID: "org.example.App", SandboxAppID: "org.example.App"},
+			DesiredOpen: true, RestorePolicy: sessionstate.ApplicationRestoreFollow,
+		},
+	}
+	if err := sessionstate.RegistryFile(root).Save(sessionstate.Registry{Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{context}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := sessionstate.LayoutFile(root).Save(placementOnlySnapshot("98: apps", context.ID)); err != nil {
+		t.Fatal(err)
+	}
+	launcher := &recordingApplicationLauncher{}
+	start := time.Unix(1000, 0)
+	runtime, err := newSessionRuntimeWithOptions(&recordingRequester{}, sessionRuntimeOptions{
+		Root: root, CompositorID: strings.Repeat("e", 64), StartedAt: start,
+		ApplicationLauncher: launcher,
+		ApplicationRestore: sessionstate.ApplicationRestoreOptions{
+			AdoptionGrace: 10 * time.Second, CloseGrace: 2 * time.Second, LaunchTimeout: 10 * time.Second, MaxConcurrent: 2,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.Reconcile(daemonTree("98: apps"), start.Add(9*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if len(launcher.contexts) != 0 {
+		t.Fatalf("application launched during adoption grace: %+v", launcher.contexts)
+	}
+	if _, err := runtime.Reconcile(daemonTree("98: apps"), start.Add(10*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if len(launcher.contexts) != 1 || launcher.contexts[0].ID != context.ID {
+		t.Fatalf("missing desired application was not launched once: %+v", launcher.contexts)
+	}
+	var persisted sessionstate.ApplicationSessionState
+	if err := sessionstate.ApplicationSessionFile(root).LoadInto(&persisted); err != nil {
+		t.Fatal(err)
+	}
+	if len(persisted.Attempts) != 1 || persisted.Attempts[0].ContextID != context.ID {
+		t.Fatalf("launch intent was not durable: %+v", persisted)
+	}
+}
+
+func TestSessionRuntimePreflightFailureDoesNotStarveLaterLaunchCandidates(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state")
+	ids := []sessionstate.ContextID{
+		"11111111-1111-4111-8111-111111111111",
+		"22222222-2222-4222-8222-222222222222",
+		"33333333-3333-4333-8333-333333333333",
+	}
+	contexts := make([]sessionstate.Context, 0, len(ids))
+	for index, id := range ids {
+		appID := fmt.Sprintf("org.example.App%d", index+1)
+		contexts = append(contexts, sessionstate.Context{
+			ID: id, Label: appID, Provider: "desktop", State: sessionstate.ContextActive,
+			Launcher: sessionstate.Launcher{Kind: sessionstate.LauncherFlatpak, FlatpakID: appID, FlatpakInstallation: sessionstate.FlatpakUser},
+			App: &sessionstate.Application{
+				Identity:    sessionstate.ApplicationIdentity{Protocol: sessionstate.WindowWayland, WaylandAppID: appID, SandboxAppID: appID},
+				DesiredOpen: true, RestorePolicy: sessionstate.ApplicationRestoreFollow,
+			},
+		})
+	}
+	if err := sessionstate.RegistryFile(root).Save(sessionstate.Registry{Version: sessionstate.ContextsSchemaVersion, Contexts: contexts}); err != nil {
+		t.Fatal(err)
+	}
+	launcher := &recordingApplicationLauncher{prepareErrBy: map[sessionstate.ContextID]error{ids[0]: errors.New("approval changed")}}
+	start := time.Unix(1500, 0)
+	runtime, err := newSessionRuntimeWithOptions(&recordingRequester{}, sessionRuntimeOptions{
+		Root: root, CompositorID: strings.Repeat("d", 64), StartedAt: start, ApplicationLauncher: launcher,
+		ApplicationRestore: sessionstate.ApplicationRestoreOptions{
+			AdoptionGrace: time.Second, CloseGrace: time.Second, LaunchTimeout: 10 * time.Second, MaxConcurrent: 2,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, reconcileErr := runtime.Reconcile(daemonTree("98: apps"), start.Add(time.Second))
+	if reconcileErr == nil || len(launcher.contexts) != 1 || launcher.contexts[0].ID != ids[1] {
+		t.Fatalf("bounded preflights did not advance to a valid candidate: launches=%+v err=%v", launcher.contexts, reconcileErr)
+	}
+	_, reconcileErr = runtime.Reconcile(daemonTree("98: apps"), start.Add(3*time.Second))
+	if reconcileErr == nil || len(launcher.contexts) != 2 || launcher.contexts[1].ID != ids[2] {
+		t.Fatalf("failed preflight starved a later candidate across observations: launches=%+v err=%v", launcher.contexts, reconcileErr)
+	}
+}
+
+func TestApplicationLaunchCandidateRotationContinuesAfterBoundedPreflights(t *testing.T) {
+	contexts := []sessionstate.Context{
+		{ID: "11111111-1111-4111-8111-111111111111"},
+		{ID: "22222222-2222-4222-8222-222222222222"},
+		{ID: "33333333-3333-4333-8333-333333333333"},
+	}
+
+	rotated := rotateApplicationLaunchCandidates(contexts, contexts[1].ID)
+	if len(rotated) != 3 || rotated[0].ID != contexts[2].ID || rotated[1].ID != contexts[0].ID || rotated[2].ID != contexts[1].ID {
+		t.Fatalf("candidate rotation did not continue after its cursor: %+v", rotated)
+	}
+}
+
+func TestSessionRuntimeTreatsAmbiguousDesktopWindowsAsPresenceWithoutGuessing(t *testing.T) {
+	runtime, requester, launcher, context, start := testApplicationRuntime(t)
+	appID := context.App.Identity.WaylandAppID
+	sandbox := context.App.Identity.SandboxAppID
+	first := &Node{ID: 41, Type: "con", AppID: &appID, SandboxAppID: &sandbox}
+	second := &Node{ID: 42, Type: "con", AppID: &appID, SandboxAppID: &sandbox}
+
+	if refresh, err := runtime.Reconcile(daemonTree("98: apps", first, second), start.Add(10*time.Second)); err != nil || refresh {
+		t.Fatalf("reconcile ambiguous application group: refresh=%v err=%v", refresh, err)
+	}
+	if len(launcher.contexts) != 0 || len(requester.commands) != 0 {
+		t.Fatalf("ambiguous group was launched or placed: launches=%+v commands=%v", launcher.contexts, requester.commands)
+	}
+}
+
+func TestSessionRuntimePlacesLateDesktopAnchorWithoutRebuildingLayout(t *testing.T) {
+	runtime, requester, _, context, start := testApplicationRuntime(t)
+	runtime.startupComplete = true
+	appID := context.App.Identity.WaylandAppID
+	sandbox := context.App.Identity.SandboxAppID
+	window := &Node{ID: 41, Type: "con", AppID: &appID, SandboxAppID: &sandbox}
+
+	refresh, err := runtime.Reconcile(daemonTree("99: landing", window), start.Add(20*time.Second))
+	if err != nil || !refresh {
+		t.Fatalf("reconcile late application anchor: refresh=%v err=%v", refresh, err)
+	}
+	if len(requester.commands) != 2 ||
+		!strings.Contains(requester.commands[0], `workspace "98: apps"`) ||
+		!strings.Contains(requester.commands[1], `mark --add "persist:`) {
+		t.Fatalf("late unique anchor did not receive placement then mark: %v", requester.commands)
+	}
+	if runtime.lateRestorePending {
+		t.Fatal("late desktop anchor triggered disruptive full-layout rebuild")
+	}
+}
+
+func TestSessionRuntimePersistsFollowAppClosedOnlyAfterLastWindowGrace(t *testing.T) {
+	runtime, _, launcher, context, start := testApplicationRuntime(t)
+	runtime.startupComplete = true
+	appID := context.App.Identity.WaylandAppID
+	sandbox := context.App.Identity.SandboxAppID
+	mark, err := context.ID.Mark()
+	if err != nil {
+		t.Fatal(err)
+	}
+	window := &Node{ID: 41, Type: "con", AppID: &appID, SandboxAppID: &sandbox, Marks: []string{mark}}
+	if _, err := runtime.Reconcile(daemonTree("98: apps", window), start); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.Reconcile(daemonTree("98: apps"), start.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	var before sessionstate.Registry
+	if err := sessionstate.RegistryFile(runtime.root).LoadInto(&before); err != nil {
+		t.Fatal(err)
+	}
+	if !before.Contexts[0].App.DesiredOpen {
+		t.Fatal("application closed before the bounded grace period")
+	}
+	if _, err := runtime.Reconcile(daemonTree("98: apps"), start.Add(3*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	var after sessionstate.Registry
+	if err := sessionstate.RegistryFile(runtime.root).LoadInto(&after); err != nil {
+		t.Fatal(err)
+	}
+	if after.Contexts[0].App.DesiredOpen || len(launcher.contexts) != 0 {
+		t.Fatalf("last-window close did not persist without relaunch: app=%+v launches=%+v", after.Contexts[0].App, launcher.contexts)
+	}
+}
+
+func TestSessionRuntimePreflightFailureRemainsRetryableAfterReapproval(t *testing.T) {
+	runtime, _, launcher, context, start := testApplicationRuntime(t)
+	launcher.prepareErr = errors.New("desktop entry changed and requires reapproval")
+	if _, err := runtime.Reconcile(daemonTree("98: apps"), start.Add(10*time.Second)); err == nil {
+		t.Fatal("launcher preflight failure was not reported")
+	}
+	var state sessionstate.ApplicationSessionState
+	if err := sessionstate.ApplicationSessionFile(runtime.root).LoadInto(&state); err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Attempts) != 0 {
+		t.Fatalf("preflight failure consumed compositor attempt: %+v", state.Attempts)
+	}
+	launcher.prepareErr = nil
+	if _, err := runtime.Reconcile(daemonTree("98: apps"), start.Add(12*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if len(launcher.contexts) != 1 || launcher.contexts[0].ID != context.ID {
+		t.Fatalf("reapproved launcher was not retried: %+v", launcher.contexts)
+	}
+}
+
+func TestSessionRuntimeStartFailureRemainsAConservativeSingleAttempt(t *testing.T) {
+	runtime, _, launcher, context, start := testApplicationRuntime(t)
+	launcher.startErr = errors.New("process start outcome failed")
+	if _, err := runtime.Reconcile(daemonTree("98: apps"), start.Add(10*time.Second)); err == nil {
+		t.Fatal("process start failure was not reported")
+	}
+	var state sessionstate.ApplicationSessionState
+	if err := sessionstate.ApplicationSessionFile(runtime.root).LoadInto(&state); err != nil {
+		t.Fatal(err)
+	}
+	if launcher.starts != 1 || len(state.Attempts) != 1 || state.Attempts[0].ContextID != context.ID {
+		t.Fatalf("failed start did not retain one conservative attempt: starts=%d state=%+v", launcher.starts, state)
+	}
+	launcher.startErr = nil
+	if _, err := runtime.Reconcile(daemonTree("98: apps"), start.Add(12*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if launcher.starts != 1 {
+		t.Fatalf("failed or ambiguous start was replayed in the same compositor: %d", launcher.starts)
+	}
+}
+
+func TestNewSessionRuntimeRejectsMalformedApplicationSessionState(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state")
+	directory := filepath.Join(root, sessionstate.ApplicationSessionDirectory)
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, sessionstate.ApplicationSessionFilename), []byte(`{"version":1,"compositor_id":"bad","attempts":[]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := newSessionRuntimeWithOptions(&recordingRequester{}, sessionRuntimeOptions{
+		Root: root, CompositorID: strings.Repeat("a", 64), StartedAt: time.Unix(1000, 0),
+		ApplicationLauncher: &recordingApplicationLauncher{},
+		ApplicationRestore: sessionstate.ApplicationRestoreOptions{
+			AdoptionGrace: time.Second, CloseGrace: time.Second, LaunchTimeout: time.Second, MaxConcurrent: 2,
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "load desktop application restore state") {
+		t.Fatalf("malformed application session state was accepted: %v", err)
+	}
+}
+
+func testApplicationRuntime(t *testing.T) (*sessionRuntime, *recordingRequester, *recordingApplicationLauncher, sessionstate.Context, time.Time) {
+	t.Helper()
+	root := filepath.Join(t.TempDir(), "state")
+	context := sessionstate.Context{
+		ID: testManagedContextID, Label: "Example", Provider: "desktop", State: sessionstate.ContextActive,
+		Launcher: sessionstate.Launcher{Kind: sessionstate.LauncherFlatpak, FlatpakID: "org.example.App", FlatpakInstallation: sessionstate.FlatpakUser},
+		App: &sessionstate.Application{
+			Identity:    sessionstate.ApplicationIdentity{Protocol: sessionstate.WindowWayland, WaylandAppID: "org.example.App", SandboxAppID: "org.example.App"},
+			DesiredOpen: true, RestorePolicy: sessionstate.ApplicationRestoreFollow,
+		},
+	}
+	if err := sessionstate.RegistryFile(root).Save(sessionstate.Registry{Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{context}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := sessionstate.LayoutFile(root).Save(placementOnlySnapshot("98: apps", context.ID)); err != nil {
+		t.Fatal(err)
+	}
+	requester := &recordingRequester{}
+	launcher := &recordingApplicationLauncher{}
+	start := time.Unix(2000, 0)
+	runtime, err := newSessionRuntimeWithOptions(requester, sessionRuntimeOptions{
+		Root: root, CompositorID: strings.Repeat("f", 64), StartedAt: start, ApplicationLauncher: launcher,
+		ApplicationRestore: sessionstate.ApplicationRestoreOptions{
+			AdoptionGrace: 10 * time.Second, CloseGrace: 2 * time.Second, LaunchTimeout: 10 * time.Second, MaxConcurrent: 2,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return runtime, requester, launcher, context, start
 }
 
 func TestSessionRuntimeCapturesManualMoveOfMarkedWindowAfterDebounce(t *testing.T) {

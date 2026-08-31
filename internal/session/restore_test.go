@@ -39,6 +39,23 @@ func TestSelectRestoreWorkspaceRequiresNewlyMarkedContext(t *testing.T) {
 	}
 }
 
+func TestRestoreObservationIgnoresDuplicateArchivedContextWindows(t *testing.T) {
+	registry := registryWithContexts(testContextID)
+	registry.Contexts[0].State = ContextArchived
+	root := restoreTree(restoreWorkspace("98: apps", "splith",
+		managedTreeLeaf(t, 11, testContextID, nil, false),
+		managedTreeLeaf(t, 12, testContextID, nil, false),
+	))
+
+	observation, err := observeRestoreTree(root, registry)
+	if err != nil {
+		t.Fatalf("archived windows blocked active restore observation: %v", err)
+	}
+	if len(observation.contexts) != 0 {
+		t.Fatalf("archived windows remained structurally managed: %+v", observation.contexts)
+	}
+}
+
 func TestSelectRestoreWorkspaceRecoversTransientStagingAfterRestart(t *testing.T) {
 	desired := exactWorkspace("2", LayoutSplitHorizontal, testContextID, secondContextID)
 	root := restoreTree(

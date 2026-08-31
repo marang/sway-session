@@ -1,8 +1,7 @@
 # Persistent Sway Work Sessions
 
-Status: Core Herdr work-session restore and explicit desktop registration are
-implemented; LAB-101 moves the runtime to the dedicated session-daemon process
-before desktop launch/restore continues in LAB-98
+Status: Core Herdr work-session restore, the dedicated session-daemon process,
+and explicit desktop application group restore are implemented through LAB-98.
 
 Tracking issue: [LAB-80](https://linear.app/riotbox/issue/LAB-80/add-persistent-sway-work-session-restoration)
 
@@ -159,13 +158,15 @@ The default state root is:
 ${XDG_STATE_HOME:-$HOME/.local/state}/sway-session/
 ```
 
-It contains two active documents with separate writers and, after migration,
+It contains three active documents with separate purposes and, after migration,
 one dedicated rollback document:
 
 ```text
 contexts.json   # written by sway-session lifecycle commands and brokers
 contexts.v1.json # exact rollback evidence after the v1 -> v2 migration
 layout.json     # written by sway-session daemon
+application-runtime/
+  application-session.json # per-compositor conservative launch attempts
 desktop-approvals/ # immutable approved user-local .desktop snapshots
 ```
 
@@ -184,6 +185,13 @@ Every read-modify-write operation holds the state-directory lock from load
 through validation, mutation, rename, and directory sync so concurrent CLI
 processes cannot lose each other's changes. The documents include explicit
 schema versions.
+
+`application-session.json` identifies one compositor lifetime from the
+current-user-owned Sway socket inode and records each desktop launch intent before the
+typed process starter runs. A config reload retains that identity; replacing
+the compositor socket creates a fresh session and attempt budget. This is not a
+process watchdog: a failed, ambiguous, crashed, or deliberately closed app is
+not automatically retried in the same compositor lifetime.
 
 If the atomic rename succeeds but the following directory sync fails, the new
 document is already visible while its crash durability is unknown. The state
@@ -260,6 +268,38 @@ The catalog is only discovery metadata: origin, ownership, mutability, hashes,
 and installation state must be revalidated at registration and again before a
 launch. This schema/catalog slice is tracked by
 [LAB-96](https://linear.app/riotbox/issue/LAB-96/add-versioned-desktop-application-identities-and-registry-migration).
+
+### Desktop application group lifecycle
+
+The daemon treats every eligible top-level matching one registered identity as
+one application presence group. One pre-marked window is the anchor. Without a
+mark, exactly one normal-workspace window may be adopted; multiple
+indistinguishable windows prove presence but are never guessed between. The
+anchor alone participates in workspace/layout restore. Additional windows,
+tabs, profiles, URLs, authentication state, and application-private restore
+prompts remain application-owned.
+
+On a real compositor start, the daemon waits five seconds for independently
+autostarting applications. It then launches only active desired-open groups
+which remain absent, with at most two pending first-window mappings. Launch
+intent is atomically persisted before the typed desktop/Flatpak adapter starts
+the process. The same application is not retried after a daemon restart,
+explicit launcher failure, mapping ambiguity, or Sway config reload. A replaced
+Sway socket begins a new compositor session and a fresh attempt budget.
+
+Follow-mode state becomes open as soon as any matching top-level appears and
+becomes closed only when the last one has remained absent for two seconds. The
+grace preserves profile-picker/authentication-to-main-window transitions.
+Pinned state always remains desired-open but is not a same-session process
+watchdog. Scratchpad windows count as presence, while their placement remains
+out of scope until LAB-92.
+
+New unique anchors are moved to their saved workspace and marked without
+focus. Anchors mapped during startup may participate in the saved outer layout;
+late anchors receive placement only and never trigger a disruptive full-layout
+rebuild. Quiet later moves update the normal debounced snapshot. Live binding,
+focus, close, or non-daemon move activity supersedes conflicting restore work,
+and saved focus is applied at most once.
 
 ### Layout snapshot
 
@@ -339,8 +379,10 @@ does not replace its last saved real-workspace placement.
 2. `sway-session` loads and validates the active context registry.
 3. It reads `GET_TREE` and identifies existing managed windows by stable
    application ID or `persist:<uuid>` mark.
-4. Existing windows are reused. Each missing context is launched exactly once
-   through the Herdr adapter.
+4. Existing windows are reused. Missing Herdr contexts are launched through the
+   one-shot restore adapter. After its adoption grace, the daemon launches each
+   missing desired-open desktop application at most once for that compositor
+   session, with no more than two first-window mappings pending.
 5. The session daemon observes each mapped window, applies its stable mark, and
    moves it to the saved workspace.
 6. After the workspace's expected managed windows have appeared or a bounded
@@ -589,7 +631,10 @@ deleting state.
   workspace placement only.
 - An interrupted `RUN_COMMAND` response triggers fresh observation and
   replanning, never automatic command replay.
-- Repeated `restore` calls converge on one window per active context.
+- Repeated Herdr `restore` calls converge on one outer window per active Herdr
+  context. Desktop restore is application-level: all matching top-levels count
+  as one presence group, and repeated requests only queue desired-open state
+  for the daemon.
 
 ## Delivery plan
 
@@ -649,6 +694,17 @@ deleting state.
 - Run `make verify` and the repository `code-review` workflow.
 - Document observed limitations and create only bounded follow-up issues.
 
+### Phase 7: Explicit desktop application groups
+
+- Add trusted desktop/Flatpak launcher identities and explicit registration.
+- Observe all matching top-levels as one presence group with one optional
+  unambiguous layout anchor.
+- Persist follow/pinned desired-open lifecycle with a bounded close grace.
+- Adopt autostarts before launching missing groups, cap pending mappings at
+  two, and persist conservative attempt evidence per compositor lifetime.
+- Yield placement, structural restore, and focus to live user activity.
+- Keep scratchpad and standards-based per-window identity in LAB-92/LAB-93.
+
 ## Test matrix
 
 Automated tests must cover:
@@ -674,6 +730,9 @@ Automated tests must cover:
   evidence and no fallback for malformed or unknown input;
 - mixed Herdr, system-desktop, approved user-local, and Flatpak identities;
 - Wayland, XWayland, sandbox, and ambiguous application-identity fixtures;
+- application-group adoption, profile-picker transitions, last-window close
+  grace, pinned state, two-launch concurrency, daemon restart, Sway reload,
+  compositor replacement, late mapping, ambiguity, and user interruption;
 - bounded XDG desktop-entry precedence, hidden tombstones, malformed-entry
   fail-closed behavior, and explicit catalog invalidation;
 - archive, activate, and purge transitions;

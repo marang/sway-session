@@ -10,6 +10,7 @@ const eventBit MessageType = 1 << 31
 const (
 	workspaceEventMessage MessageType = eventBit
 	windowEventMessage    MessageType = eventBit | 3
+	bindingEventMessage   MessageType = eventBit | 5
 	shutdownEventMessage  MessageType = eventBit | 6
 )
 
@@ -63,6 +64,7 @@ type EventType string
 const (
 	EventWorkspace EventType = "workspace"
 	EventWindow    EventType = "window"
+	EventBinding   EventType = "binding"
 	EventShutdown  EventType = "shutdown"
 )
 
@@ -87,6 +89,8 @@ func (event Event) AffectsSessionLayout() bool {
 		return event.Change != "urgent"
 	case EventShutdown:
 		return false
+	case EventBinding:
+		return false
 	default:
 		return true
 	}
@@ -110,6 +114,8 @@ func DecodeEvent(message Message) (Event, error) {
 		eventType = EventWorkspace
 	case windowEventMessage:
 		eventType = EventWindow
+	case bindingEventMessage:
+		eventType = EventBinding
 	case shutdownEventMessage:
 		eventType = EventShutdown
 	default:

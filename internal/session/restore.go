@@ -134,7 +134,7 @@ func SelectRestoreWorkspace(
 	for _, workspace := range captured.Workspaces {
 		capturedByName[workspace.Name] = workspace
 	}
-	registered := registeredContextIDs(registry)
+	registered := activeContextIDs(registry)
 	selection := RestoreSelection{Degradations: []RestoreDegradation{}}
 
 	for _, workspace := range desired.Workspaces {
@@ -514,7 +514,7 @@ func observeRestoreTree(root *swayipc.TreeNode, registry Registry) (*restoreObse
 		return nil, fmt.Errorf("validate context registry: %w", err)
 	}
 	observation := &restoreObservation{
-		registered:    registeredContextIDs(registry),
+		registered:    activeContextIDs(registry),
 		contexts:      make(map[ContextID]*swayipc.TreeNode),
 		contextByNode: make(map[*swayipc.TreeNode]ContextID),
 		parents:       make(map[*swayipc.TreeNode]*swayipc.TreeNode),

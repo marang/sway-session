@@ -330,6 +330,16 @@ func TestRegistryRejectsInvalidDesktopApplicationUnion(t *testing.T) {
 	}
 }
 
+func TestPinnedApplicationRequiresDesiredOpen(t *testing.T) {
+	context := flatpakApplicationContext("org.example.App", "org.example.App")
+	context.ID = testContextID
+	context.App.RestorePolicy = ApplicationRestorePinned
+	context.App.DesiredOpen = false
+	if err := context.Validate(); err == nil {
+		t.Fatal("pinned desired-closed application passed validation")
+	}
+}
+
 func TestFlatpakApplicationIDValidation(t *testing.T) {
 	for _, valid := range []string{"org.example.App", "io.github.example.my_app", "org.example.My-App"} {
 		if !validFlatpakID(valid) {

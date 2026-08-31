@@ -11,6 +11,17 @@ import (
 // coalescing: consumers must re-read GET_TREE instead of treating events as a
 // complete state log.
 func StreamEvents(socket string, events chan<- Event, done <-chan struct{}) {
+	streamEvents(socket, []byte(`["window","workspace","shutdown"]`), false, events, done)
+}
+
+// StreamSessionEvents adds binding activity needed to keep persistent restore
+// work subordinate to live user intent. The title animator deliberately uses
+// the narrower StreamEvents subscription.
+func StreamSessionEvents(socket string, events chan<- Event, done <-chan struct{}) {
+	streamEvents(socket, []byte(`["window","workspace","binding","shutdown"]`), true, events, done)
+}
+
+func streamEvents(socket string, subscription []byte, preserveUserIntent bool, events chan<- Event, done <-chan struct{}) {
 	for {
 		select {
 		case <-done:
@@ -29,7 +40,7 @@ func StreamEvents(socket string, events chan<- Event, done <-chan struct{}) {
 			}
 			continue
 		}
-		response, err := connection.Request(Subscribe, []byte(`["window","workspace","shutdown"]`))
+		response, err := connection.Request(Subscribe, subscription)
 		if err == nil {
 			err = CheckSubscribeResponse(response)
 		}
@@ -64,15 +75,37 @@ func StreamEvents(socket string, events chan<- Event, done <-chan struct{}) {
 				_ = connection.Close()
 				return
 			}
-			select {
-			case events <- event:
-			default:
+			if !deliverEvent(events, done, event, preserveUserIntent) {
+				_ = connection.Close()
+				return
 			}
 		}
 		if waitForDone(done, time.Second) {
 			return
 		}
 	}
+}
+
+func deliverEvent(events chan<- Event, done <-chan struct{}, event Event, preserveUserIntent bool) bool {
+	if preserveUserIntent && eventSupersedesSessionRestore(event) {
+		select {
+		case events <- event:
+			return true
+		case <-done:
+			return false
+		}
+	}
+	select {
+	case events <- event:
+	default:
+	}
+	return true
+}
+
+func eventSupersedesSessionRestore(event Event) bool {
+	return event.Type == EventBinding ||
+		event.Type == EventWindow && (event.Change == "focus" || event.Change == "move" || event.Change == "close") ||
+		event.Type == EventWorkspace && event.Change == "focus"
 }
 
 func endpointGone(socket string) bool {

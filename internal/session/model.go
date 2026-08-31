@@ -436,6 +436,9 @@ func (application *Application) validate() error {
 	default:
 		return fmt.Errorf("unsupported restore policy %q", application.RestorePolicy)
 	}
+	if application.RestorePolicy == ApplicationRestorePinned && !application.DesiredOpen {
+		return errors.New("pinned application must remain desired-open")
+	}
 	return nil
 }
 

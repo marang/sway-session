@@ -48,7 +48,26 @@ func runSessionDaemon(ctx context.Context, swaySocket string, reportError func(e
 
 	control := swayipc.NewClient(swaySocket)
 	defer control.Close()
-	runtime, err := newSessionRuntime(control)
+	stateRoot, err := sessionstate.DefaultStateRoot()
+	if err != nil {
+		return err
+	}
+	compositorID, err := compositorIdentity(swaySocket)
+	if err != nil {
+		return fmt.Errorf("identify Sway compositor session: %w", err)
+	}
+	runtime, err := newSessionRuntimeWithOptions(control, sessionRuntimeOptions{
+		Root:                stateRoot,
+		CompositorID:        compositorID,
+		StartedAt:           time.Now(),
+		ApplicationLauncher: daemonApplicationLauncher{stateRoot: stateRoot},
+		ApplicationRestore: sessionstate.ApplicationRestoreOptions{
+			AdoptionGrace: applicationAdoptionGrace,
+			CloseGrace:    applicationCloseGrace,
+			LaunchTimeout: applicationLaunchTimeout,
+			MaxConcurrent: 2,
+		},
+	})
 	if err != nil {
 		return err
 	}
@@ -80,8 +99,53 @@ func runSessionDaemon(ctx context.Context, swaySocket string, reportError func(e
 	events := make(chan swayipc.Event, 16)
 	done := make(chan struct{})
 	defer close(done)
-	go swayipc.StreamEvents(swaySocket, events, done)
+	go swayipc.StreamSessionEvents(swaySocket, events, done)
 	return runSessionDaemonLoop(ctx, control, runtime, events, reportError)
+}
+
+type daemonApplicationLauncher struct {
+	stateRoot string
+}
+
+type preparedDesktopApplicationLaunch struct {
+	starter sessionstate.ProcessStarter
+	spec    sessionstate.ProcessSpec
+}
+
+func (launch preparedDesktopApplicationLaunch) Start() error {
+	return launch.starter.Start(launch.spec)
+}
+
+func (launcher daemonApplicationLauncher) Prepare(context sessionstate.Context) (preparedApplicationLaunch, error) {
+	starter := sessionstate.ExecProcessStarter{}
+	adapter := sessionstate.DesktopApplicationLauncher{
+		StateRoot: launcher.stateRoot,
+		Starter:   starter,
+	}
+	switch context.Launcher.Kind {
+	case sessionstate.LauncherDesktop:
+		gio, err := sessionstate.ResolveRootOwnedSystemExecutable("gio")
+		if err != nil {
+			return nil, err
+		}
+		adapter.GIO = gio
+	case sessionstate.LauncherFlatpak:
+		flatpak, err := sessionstate.ResolveRootOwnedSystemExecutable("flatpak")
+		if err != nil {
+			return nil, err
+		}
+		adapter.Flatpak = flatpak
+		if err := sessionstate.VerifyFlatpakInstallation(flatpak, context.Launcher, sessionstate.ExecCommandRunner{}); err != nil {
+			return nil, err
+		}
+	default:
+		return nil, fmt.Errorf("unsupported desktop application launcher kind %q", context.Launcher.Kind)
+	}
+	spec, err := adapter.Spec(context)
+	if err != nil {
+		return nil, err
+	}
+	return preparedDesktopApplicationLaunch{starter: starter, spec: spec}, nil
 }
 
 func runSessionDaemonLoop(
@@ -127,6 +191,7 @@ func runSessionDaemonLoop(
 			if event.Type == swayipc.EventShutdown {
 				return nil
 			}
+			runtime.HandleEvent(event, time.Now())
 			if event.AffectsSessionLayout() {
 				reconcilePersistentSession(control, runtime, reportError)
 				resetTimer()

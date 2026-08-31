@@ -301,6 +301,33 @@ func TestScratchpadIsExcludedFromCaptureButIncludedInDuplicateDetection(t *testi
 	}
 }
 
+func TestArchivedContextIsNeitherCapturedNorPlaced(t *testing.T) {
+	registry := registryWithContexts(testContextID)
+	registry.Contexts[0].State = ContextArchived
+	marked := managedTreeLeaf(t, 11, testContextID, nil, true)
+	root := treeWithWorkspaces(&swayipc.TreeNode{Name: "98: apps", Type: "workspace", Nodes: []*swayipc.TreeNode{marked}})
+
+	snapshot, err := CaptureLayout(root, registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Workspaces) != 0 {
+		t.Fatalf("archived context was captured as managed: %+v", snapshot)
+	}
+
+	unmarked := managedTreeLeaf(t, 12, testContextID, nil, false)
+	unmarked.Marks = nil
+	root = treeWithWorkspaces(&swayipc.TreeNode{Name: "99: landing", Type: "workspace", Nodes: []*swayipc.TreeNode{unmarked}})
+	desired := placementSnapshot("98: apps", testContextID)
+	actions, err := PlanPlacementActions(root, registry, desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(actions) != 0 {
+		t.Fatalf("archived context received placement actions: %+v", actions)
+	}
+}
+
 func TestPlanPlacementActionsMovesThenMarksNewStableApplicationID(t *testing.T) {
 	appID, err := testContextID.AppID()
 	if err != nil {

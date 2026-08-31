@@ -14,9 +14,11 @@ import (
 )
 
 const (
-	ContextsFilename         = "contexts.json"
-	ContextsV1BackupFilename = "contexts.v1.json"
-	LayoutFilename           = "layout.json"
+	ContextsFilename            = "contexts.json"
+	ContextsV1BackupFilename    = "contexts.v1.json"
+	LayoutFilename              = "layout.json"
+	ApplicationSessionFilename  = "application-session.json"
+	ApplicationSessionDirectory = "application-runtime"
 )
 
 // DefaultStateRoot resolves the private sway-session XDG state directory.
@@ -139,6 +141,10 @@ func InspectRegistryLockedContext(ctx context.Context, root string, inspect func
 
 func LayoutFile(root string) statefile.JSONFile[LayoutSnapshot] {
 	return statefile.NewJSONFile(root, LayoutFilename, (*LayoutSnapshot).Validate)
+}
+
+func ApplicationSessionFile(root string) statefile.JSONFile[ApplicationSessionState] {
+	return statefile.NewJSONFile(filepath.Join(root, ApplicationSessionDirectory), ApplicationSessionFilename, (*ApplicationSessionState).Validate)
 }
 
 func emptyRegistry() Registry {

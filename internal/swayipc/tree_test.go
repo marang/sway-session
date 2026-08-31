@@ -30,6 +30,12 @@ func TestDecodeEventPreservesTypedPayload(t *testing.T) {
 			payload:     `{"change":"exit"}`,
 			wantType:    EventShutdown,
 		},
+		{
+			name:        "binding",
+			messageType: eventBit | 5,
+			payload:     `{"change":"run"}`,
+			wantType:    EventBinding,
+		},
 	}
 
 	for _, test := range tests {
@@ -69,6 +75,7 @@ func TestEventLayoutRelevanceExcludesPresentationOnlyChanges(t *testing.T) {
 		{Type: EventWindow, Change: "urgent"},
 		{Type: EventWorkspace, Change: "urgent"},
 		{Type: EventShutdown, Change: "exit"},
+		{Type: EventBinding, Change: "run"},
 	} {
 		if event.AffectsSessionLayout() {
 			t.Fatalf("presentation-only event affected session layout: %+v", event)

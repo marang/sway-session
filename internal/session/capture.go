@@ -52,7 +52,7 @@ func CaptureLayout(root *swayipc.TreeNode, registry Registry) (LayoutSnapshot, e
 	if err := registry.Validate(); err != nil {
 		return LayoutSnapshot{}, fmt.Errorf("validate context registry: %w", err)
 	}
-	registered := registeredContextIDs(registry)
+	registered := activeContextIDs(registry)
 	workspaces, err := collectWorkspaces(root, false)
 	if err != nil {
 		return LayoutSnapshot{}, err
@@ -91,7 +91,7 @@ func PlanPlacementActions(root *swayipc.TreeNode, registry Registry, desired Lay
 	if err := desired.Validate(); err != nil {
 		return nil, fmt.Errorf("validate desired layout: %w", err)
 	}
-	registered := registeredContextIDs(registry)
+	registered := activeContextIDs(registry)
 	observed, err := observeContexts(root, registered)
 	if err != nil {
 		return nil, err

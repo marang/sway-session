@@ -131,6 +131,35 @@ func TestStartupCaptureReadyDoesNotWaitForArchivedContext(t *testing.T) {
 	}
 }
 
+func TestPreserveMissingPlacementsRetainsArchivedContextForLaterActivation(t *testing.T) {
+	previous := placementSnapshot("98: apps", testContextID)
+	captured := LayoutSnapshot{Version: LayoutSchemaVersion, Workspaces: []WorkspaceLayout{}}
+	registry := registryWithContexts(testContextID)
+	registry.Contexts[0].State = ContextArchived
+
+	preserved, err := PreserveMissingPlacements(previous, captured, registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(preserved, previous) {
+		t.Fatalf("archiving discarded the saved placement: got=%+v want=%+v", preserved, previous)
+	}
+}
+
+func TestStartupCaptureReadyDoesNotWaitForDesiredClosedDesktopApp(t *testing.T) {
+	previous := placementSnapshot("98: apps", testContextID)
+	empty := LayoutSnapshot{Version: LayoutSchemaVersion, Workspaces: []WorkspaceLayout{}}
+	context := flatpakApplicationContext("org.example.App", "org.example.App")
+	context.ID = testContextID
+	context.App.DesiredOpen = false
+	registry := Registry{Version: ContextsSchemaVersion, Contexts: []Context{context}}
+
+	ready, err := StartupCaptureReady(previous, empty, registry)
+	if err != nil || !ready {
+		t.Fatalf("desired-closed desktop app blocked startup: ready=%v err=%v", ready, err)
+	}
+}
+
 func TestPreserveMissingPlacementsKeepsExactWorkspaceWhileLeafIsAbsent(t *testing.T) {
 	previous := LayoutSnapshot{
 		Version: LayoutSchemaVersion,

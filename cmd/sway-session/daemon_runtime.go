@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"strings"
 	"time"
 
@@ -17,36 +18,78 @@ const (
 	sessionObservationDelay   = 2 * time.Second
 	sessionStartupSettleDelay = 10 * time.Second
 	sessionStartupRetryDelay  = 5 * time.Second
+	applicationAdoptionGrace  = 5 * time.Second
+	applicationCloseGrace     = 2 * time.Second
+	applicationLaunchTimeout  = 10 * time.Second
+	expectedMoveLifetime      = 500 * time.Millisecond
+	maxApplicationPreflights  = 2
 )
 
 type Node = swayipc.TreeNode
 
+type applicationContextLauncher interface {
+	Prepare(sessionstate.Context) (preparedApplicationLaunch, error)
+}
+
+type preparedApplicationLaunch interface {
+	Start() error
+}
+
+type sessionRuntimeOptions struct {
+	Root                string
+	CompositorID        string
+	StartedAt           time.Time
+	ApplicationLauncher applicationContextLauncher
+	ApplicationRestore  sessionstate.ApplicationRestoreOptions
+}
+
 type sessionRuntime struct {
-	client             swayRequester
-	root               string
-	persisted          sessionstate.LayoutSnapshot
-	desired            sessionstate.LayoutSnapshot
-	debouncer          *sessionstate.SnapshotDebouncer
-	registryPresent    bool
-	restoreProgress    *sessionstate.RestoreProgress
-	restoreEligible    map[sessionstate.ContextID]struct{}
-	restoreExcluded    map[string]struct{}
-	restoreSkipped     map[string]struct{}
-	restoreFailures    map[string]error
-	lateRestorePending bool
-	originalFocusID    int64
-	originalFocusSet   bool
-	originalFocusDone  bool
-	startupComplete    bool
-	startupDeadline    time.Time
-	observeDeadline    time.Time
-	shutdown           bool
+	client              swayRequester
+	root                string
+	persisted           sessionstate.LayoutSnapshot
+	desired             sessionstate.LayoutSnapshot
+	debouncer           *sessionstate.SnapshotDebouncer
+	registryPresent     bool
+	restoreProgress     *sessionstate.RestoreProgress
+	restoreEligible     map[sessionstate.ContextID]struct{}
+	restoreExcluded     map[string]struct{}
+	restoreSkipped      map[string]struct{}
+	restoreFailures     map[string]error
+	lateRestorePending  bool
+	originalFocusID     int64
+	originalFocusSet    bool
+	originalFocusDone   bool
+	startupComplete     bool
+	startupDeadline     time.Time
+	observeDeadline     time.Time
+	shutdown            bool
+	applications        *sessionstate.ApplicationRestoreCoordinator
+	applicationLauncher applicationContextLauncher
+	applicationCursor   sessionstate.ContextID
+	expectedMoves       map[int64]expectedMove
+}
+
+type expectedMove struct {
+	count     int
+	expiresAt time.Time
 }
 
 func newSessionRuntime(client swayRequester) (*sessionRuntime, error) {
 	root, err := sessionstate.DefaultStateRoot()
 	if err != nil {
 		return nil, err
+	}
+	return newSessionRuntimeWithOptions(client, sessionRuntimeOptions{Root: root})
+}
+
+func newSessionRuntimeWithOptions(client swayRequester, options sessionRuntimeOptions) (*sessionRuntime, error) {
+	root := options.Root
+	if root == "" {
+		var err error
+		root, err = sessionstate.DefaultStateRoot()
+		if err != nil {
+			return nil, err
+		}
 	}
 	previous := sessionstate.LayoutSnapshot{
 		Version:    sessionstate.LayoutSchemaVersion,
@@ -65,19 +108,118 @@ func newSessionRuntime(client swayRequester) (*sessionRuntime, error) {
 	if err != nil {
 		return nil, fmt.Errorf("initialize Sway layout debounce: %w", err)
 	}
-	return &sessionRuntime{
-		client:          client,
-		root:            root,
-		persisted:       previous,
-		desired:         previous,
-		debouncer:       debouncer,
-		registryPresent: registryPresent,
-		restoreEligible: make(map[sessionstate.ContextID]struct{}),
-		restoreExcluded: make(map[string]struct{}),
-		restoreSkipped:  make(map[string]struct{}),
-		restoreFailures: make(map[string]error),
-		startupComplete: len(previous.Workspaces) == 0,
-	}, nil
+	runtime := &sessionRuntime{
+		client:              client,
+		root:                root,
+		persisted:           previous,
+		desired:             previous,
+		debouncer:           debouncer,
+		registryPresent:     registryPresent,
+		restoreEligible:     make(map[sessionstate.ContextID]struct{}),
+		restoreExcluded:     make(map[string]struct{}),
+		restoreSkipped:      make(map[string]struct{}),
+		restoreFailures:     make(map[string]error),
+		startupComplete:     len(previous.Workspaces) == 0,
+		applicationLauncher: options.ApplicationLauncher,
+		expectedMoves:       make(map[int64]expectedMove),
+	}
+	if options.CompositorID != "" {
+		applicationState := sessionstate.ApplicationSessionState{}
+		if err := sessionstate.ApplicationSessionFile(root).LoadInto(&applicationState); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("load desktop application restore state: %w", err)
+		}
+		startedAt := options.StartedAt
+		if startedAt.IsZero() {
+			startedAt = time.Now()
+		}
+		coordinator, err := sessionstate.NewApplicationRestoreCoordinator(
+			options.CompositorID, applicationState, startedAt, options.ApplicationRestore,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("initialize desktop application restore: %w", err)
+		}
+		if applicationState.CompositorID != options.CompositorID {
+			if err := sessionstate.ApplicationSessionFile(root).Save(coordinator.State()); err != nil {
+				return nil, fmt.Errorf("persist new Sway compositor application session: %w", err)
+			}
+		}
+		runtime.applications = coordinator
+	}
+	return runtime, nil
+}
+
+// HandleEvent records live user intent before the next tree reconciliation.
+// Binding, focus, close, and non-daemon move activity supersede conflicting
+// startup reconstruction; application launch/adoption remains independent.
+func (runtime *sessionRuntime) HandleEvent(event swayipc.Event, now time.Time) {
+	if runtime == nil || runtime.shutdown {
+		return
+	}
+	interactiveFocus :=
+		event.Type == swayipc.EventWindow && event.Change == "focus" ||
+			event.Type == swayipc.EventWorkspace && event.Change == "focus"
+	if event.Type == swayipc.EventBinding || interactiveFocus {
+		runtime.cancelConflictingRestore()
+		return
+	}
+	if event.Type != swayipc.EventWindow || event.Change != "move" && event.Change != "close" {
+		return
+	}
+	if event.Change == "move" && event.Container != nil && runtime.consumeExpectedMove(event.Container.ID, now) {
+		return
+	}
+	if runtime.restoreProgress != nil || runtime.lateRestorePending {
+		runtime.cancelConflictingRestore()
+	}
+}
+
+func (runtime *sessionRuntime) cancelConflictingRestore() {
+	runtime.originalFocusDone = true
+	runtime.restoreProgress = nil
+	runtime.lateRestorePending = false
+	runtime.startupComplete = true
+	runtime.startupDeadline = time.Time{}
+	if runtime.restoreExcluded == nil {
+		runtime.restoreExcluded = make(map[string]struct{})
+	}
+	for _, workspace := range runtime.persisted.Workspaces {
+		runtime.restoreExcluded[workspace.Name] = struct{}{}
+	}
+}
+
+func (runtime *sessionRuntime) consumeExpectedMove(containerID int64, now time.Time) bool {
+	expected, exists := runtime.expectedMoves[containerID]
+	if containerID <= 0 || !exists {
+		return false
+	}
+	if !now.Before(expected.expiresAt) {
+		delete(runtime.expectedMoves, containerID)
+		return false
+	}
+	expected.count--
+	if expected.count == 0 {
+		delete(runtime.expectedMoves, containerID)
+	} else {
+		runtime.expectedMoves[containerID] = expected
+	}
+	return true
+}
+
+func (runtime *sessionRuntime) expectMove(containerID int64) {
+	if containerID <= 0 {
+		return
+	}
+	if runtime.expectedMoves == nil {
+		runtime.expectedMoves = make(map[int64]expectedMove)
+	}
+	expected := runtime.expectedMoves[containerID]
+	expected.count++
+	expected.expiresAt = time.Now().Add(expectedMoveLifetime)
+	runtime.expectedMoves[containerID] = expected
+}
+
+func (runtime *sessionRuntime) discardExpectedMove(containerID int64) {
+	_ = runtime.consumeExpectedMove(containerID, time.Now())
 }
 
 // Reconcile applies placement for newly mapped stable application IDs. It
@@ -109,6 +251,10 @@ func (runtime *sessionRuntime) Reconcile(root *Node, now time.Time) (bool, error
 	// resize). Keep a low-frequency semantic observation active only while a
 	// persistent registry exists so those changes still reach the debouncer.
 	runtime.observeDeadline = now.Add(sessionObservationDelay)
+	applicationRefresh, registry, applicationErr := runtime.reconcileApplications(root, registry, now)
+	if applicationRefresh || applicationErr != nil {
+		return applicationRefresh, applicationErr
+	}
 	actions, err := sessionstate.PlanPlacementActions(root, registry, runtime.desired)
 	if err != nil {
 		return false, err
@@ -191,6 +337,147 @@ func (runtime *sessionRuntime) Reconcile(root *Node, now time.Time) (bool, error
 	runtime.desired = stable
 	_, err = runtime.debouncer.Observe(stable, now)
 	return false, err
+}
+
+func (runtime *sessionRuntime) reconcileApplications(root *Node, registry sessionstate.Registry, now time.Time) (bool, sessionstate.Registry, error) {
+	if runtime.applications == nil {
+		return false, registry, nil
+	}
+	groups, err := sessionstate.ObserveApplicationGroups(root, registry)
+	if err != nil {
+		return false, registry, err
+	}
+	plan, err := runtime.applications.Plan(registry, groups, now)
+	if err != nil {
+		return false, registry, err
+	}
+	if len(plan.DesiredOpen) != 0 {
+		type desiredChange struct {
+			open     bool
+			identity sessionstate.ApplicationIdentity
+		}
+		changes := make(map[sessionstate.ContextID]desiredChange, len(plan.DesiredOpen))
+		for _, change := range plan.DesiredOpen {
+			for _, context := range registry.Contexts {
+				if context.ID == change.ContextID && context.App != nil {
+					changes[change.ContextID] = desiredChange{open: change.Open, identity: context.App.Identity}
+					break
+				}
+			}
+		}
+		updated, err := sessionstate.UpdateRegistry(runtime.root, func(current *sessionstate.Registry) error {
+			for index := range current.Contexts {
+				change, exists := changes[current.Contexts[index].ID]
+				if !exists || current.Contexts[index].App == nil || current.Contexts[index].App.Identity != change.identity {
+					continue
+				}
+				if current.Contexts[index].App.RestorePolicy == sessionstate.ApplicationRestorePinned && !change.open {
+					continue
+				}
+				current.Contexts[index].App.DesiredOpen = change.open
+			}
+			return current.Validate()
+		})
+		if err != nil {
+			return false, registry, fmt.Errorf("persist desktop application desired-open state: %w", err)
+		}
+		registry = updated
+	}
+	refresh := false
+	err = sessionstate.InspectRegistryLocked(runtime.root, func(current sessionstate.Registry) error {
+		registry = current
+		currentGroups, err := sessionstate.ObserveApplicationGroups(root, current)
+		if err != nil {
+			return err
+		}
+		currentPlan, err := runtime.applications.Plan(current, currentGroups, now)
+		if err != nil {
+			return err
+		}
+		// A concurrent lifecycle mutation which creates another desired-open
+		// change is handled on the next periodic observation. Never cross an
+		// external placement/launch boundary from stale registry evidence.
+		if len(currentPlan.DesiredOpen) != 0 {
+			return nil
+		}
+		placement, err := sessionstate.PlanApplicationPlacementActions(currentGroups, runtime.desired)
+		if err != nil {
+			return err
+		}
+		for _, action := range placement {
+			if action.Kind == sessionstate.PlacementAddMark && !runtime.startupComplete {
+				runtime.restoreEligible[action.ContextID] = struct{}{}
+			}
+			if err := runtime.applyPlacementAction(action); err != nil {
+				refresh = true
+				return err
+			}
+			refresh = true
+		}
+		var launchErrors []error
+		launchSlots := currentPlan.LaunchSlots
+		preflights := 0
+		for _, context := range rotateApplicationLaunchCandidates(currentPlan.Launch, runtime.applicationCursor) {
+			if launchSlots == 0 {
+				break
+			}
+			if preflights == maxApplicationPreflights {
+				break
+			}
+			preflights++
+			runtime.applicationCursor = context.ID
+			if runtime.applicationLauncher == nil {
+				launchErrors = append(launchErrors, fmt.Errorf("launch desktop application %q: launcher is unavailable", context.ID))
+				continue
+			}
+			prepared, err := runtime.applicationLauncher.Prepare(context)
+			if err != nil {
+				launchErrors = append(launchErrors, fmt.Errorf("prepare desktop application launch %q: %w", context.ID, err))
+				continue
+			}
+			previousState := runtime.applications.State()
+			candidate, err := runtime.applications.BeginAttempt(context.ID, now)
+			if err != nil {
+				launchErrors = append(launchErrors, fmt.Errorf("begin desktop application launch %q: %w", context.ID, err))
+				continue
+			}
+			if saveErr := sessionstate.ApplicationSessionFile(runtime.root).Save(candidate); saveErr != nil {
+				var unknown *statefile.CommitOutcomeUnknownError
+				var visible sessionstate.ApplicationSessionState
+				confirmed := errors.As(saveErr, &unknown) &&
+					sessionstate.ApplicationSessionFile(runtime.root).LoadInto(&visible) == nil &&
+					reflect.DeepEqual(visible, candidate)
+				if !confirmed {
+					_ = runtime.applications.RestoreState(previousState)
+					launchErrors = append(launchErrors, fmt.Errorf("persist desktop application launch intent %q: %w", context.ID, saveErr))
+					continue
+				}
+				launchErrors = append(launchErrors, fmt.Errorf("desktop application launch intent %q is visible but crash durability is unknown: %w", context.ID, saveErr))
+			}
+			launchSlots--
+			if err := prepared.Start(); err != nil {
+				launchErrors = append(launchErrors, fmt.Errorf("launch desktop application %q: %w", context.ID, err))
+			}
+		}
+		return errors.Join(launchErrors...)
+	})
+	return refresh, registry, err
+}
+
+func rotateApplicationLaunchCandidates(contexts []sessionstate.Context, after sessionstate.ContextID) []sessionstate.Context {
+	if len(contexts) < 2 || after == "" {
+		return contexts
+	}
+	for index := range contexts {
+		if contexts[index].ID != after {
+			continue
+		}
+		rotated := make([]sessionstate.Context, 0, len(contexts))
+		rotated = append(rotated, contexts[index+1:]...)
+		rotated = append(rotated, contexts[:index+1]...)
+		return rotated
+	}
+	return contexts
 }
 
 func (runtime *sessionRuntime) restoreStartupLayout(root *Node) (bool, bool, error) {
@@ -397,8 +684,10 @@ func (runtime *sessionRuntime) loadRegistry() (sessionstate.Registry, bool, erro
 
 func (runtime *sessionRuntime) applyPlacementAction(action sessionstate.PlacementAction) error {
 	var command string
+	move := false
 	switch action.Kind {
 	case sessionstate.PlacementMoveWorkspace:
+		move = true
 		command = fmt.Sprintf(
 			"[con_id=%d] move container to workspace %s",
 			action.ContainerID,
@@ -413,7 +702,15 @@ func (runtime *sessionRuntime) applyPlacementAction(action sessionstate.Placemen
 	default:
 		return fmt.Errorf("unsupported placement action %q", action.Kind)
 	}
+	if move {
+		runtime.expectMove(action.ContainerID)
+	}
 	if err := runtime.runSwayCommand(command); err != nil {
+		var unknown *swayipc.CommandOutcomeUnknownError
+		var invalid *swayipc.CommandResponseInvalidError
+		if move && !errors.As(err, &unknown) && !errors.As(err, &invalid) {
+			runtime.discardExpectedMove(action.ContainerID)
+		}
 		return fmt.Errorf("apply %s for context %q: %w", action.Kind, action.ContextID, err)
 	}
 	return nil
@@ -421,8 +718,10 @@ func (runtime *sessionRuntime) applyPlacementAction(action sessionstate.Placemen
 
 func (runtime *sessionRuntime) applyRestoreAction(action sessionstate.RestoreAction) error {
 	var command string
+	move := false
 	switch action.Kind {
 	case sessionstate.RestoreMoveWorkspace:
+		move = true
 		command = fmt.Sprintf("[con_id=%d] move container to workspace %s", action.ContainerID, quoteSwayString(action.Target))
 	case sessionstate.RestoreSplit:
 		direction := "horizontal"
@@ -441,6 +740,7 @@ func (runtime *sessionRuntime) applyRestoreAction(action sessionstate.RestoreAct
 	case sessionstate.RestoreRemoveMark:
 		command = fmt.Sprintf("[con_id=%d] unmark %s", action.ContainerID, quoteSwayString(action.Target))
 	case sessionstate.RestoreMoveToMark:
+		move = true
 		command = fmt.Sprintf("[con_id=%d] move container to mark %s", action.ContainerID, quoteSwayString(action.Target))
 	case sessionstate.RestoreSetFloating:
 		value := "disable"
@@ -458,6 +758,7 @@ func (runtime *sessionRuntime) applyRestoreAction(action sessionstate.RestoreAct
 			action.Geometry.Height,
 		)
 	case sessionstate.RestoreMoveFloating:
+		move = true
 		command = fmt.Sprintf(
 			"[con_id=%d] move absolute position %d px %d px",
 			action.ContainerID,
@@ -477,7 +778,18 @@ func (runtime *sessionRuntime) applyRestoreAction(action sessionstate.RestoreAct
 	default:
 		return fmt.Errorf("unsupported restore action %q", action.Kind)
 	}
-	return runtime.runSwayCommand(command)
+	if move {
+		runtime.expectMove(action.ContainerID)
+	}
+	err := runtime.runSwayCommand(command)
+	if err != nil {
+		var unknown *swayipc.CommandOutcomeUnknownError
+		var invalid *swayipc.CommandResponseInvalidError
+		if move && !errors.As(err, &unknown) && !errors.As(err, &invalid) {
+			runtime.discardExpectedMove(action.ContainerID)
+		}
+	}
+	return err
 }
 
 func (runtime *sessionRuntime) runSwayCommand(command string) error {

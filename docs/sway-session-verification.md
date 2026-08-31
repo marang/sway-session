@@ -1,5 +1,9 @@
 # Persistent Sway Session Verification
 
+> **Interactive-desktop safety:** never run these procedures on a single-digit
+> workspace. Create a disposable named workspace numbered 98 or higher, and
+> verify every target workspace before issuing a move, restore, or close.
+
 ## Current process-boundary procedure (LAB-101)
 
 Current builds run session observation and restore in `sway-session daemon`.
@@ -33,6 +37,47 @@ check separately because moving its server did not change either protocol:
 The automated `make verify` gate includes a dependency/source boundary check,
 an animator fake-Sway integration test with all session roots absent, daemon
 capture/placement/layout tests, and the existing broker security tests.
+
+## Desktop application group procedure (LAB-98)
+
+Use an isolated XDG state root and disposable workspace 98 or higher. Register
+one ordinary application, save its placement, close its last top-level window,
+and confirm follow mode changes `desired_open` only after the two-second grace.
+Queue it with `sway-session restore <context>` and verify the daemon launches it
+after the five-second adoption interval, moves and marks only one unique anchor,
+and writes `application-session.json` before the window maps.
+
+Repeat with two indistinguishable top-level windows: the group must count as
+present, no duplicate process may launch, and neither window may be guessed as
+the layout anchor. Restart only the daemon and reload Sway; neither action may
+repeat a recorded launch. A real compositor restart must create a new attempt
+identity. During restore, manually focus or move a test window and confirm the
+pending focus/layout work yields to that live action. Keep Chrome/Slack
+application-internal restore prompts and additional windows app-owned; this
+project restores one optional outer anchor, not private tabs, profiles, URLs,
+or per-window application state.
+
+### LAB-98 live evidence (2026-08-31)
+
+The source-built daemon was exercised against the real Sway compositor with
+isolated XDG state/runtime roots and a disposable user desktop entry launching
+Alacritty under the unique `lab98-e2e` Wayland app ID. Every test window stayed
+on `98: LAB-98 E2E`; no test window was created, moved, or closed on a
+single-digit workspace.
+
+- `app register-focused --yes` stored the approved desktop snapshot and added
+  exactly one `persist:<uuid>` mark.
+- The daemon captured the marked anchor and workspace 98 in `layout.json`.
+- Closing the last top-level changed follow-mode `desired_open` to false only
+  after the close grace.
+- An explicit `restore <uuid>` changed it back to true; the per-compositor
+  attempt was visible in `application-session.json` when the launched window
+  was first observed, and the resulting anchor was marked on workspace 98.
+- Restarting only the source daemon with the same real Sway socket left one
+  window and one attempt: no launch was replayed.
+
+The source daemon, both disposable Alacritty windows, its workspace, and all
+isolated test state were removed after the run.
 
 ### LAB-101 live evidence (2026-08-31)
 

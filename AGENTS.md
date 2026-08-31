@@ -56,6 +56,9 @@ project checkpoint, whichever comes first.
   service.
 - `internal/swayipc`: bounded i3/Sway IPC framing and reconnect behavior shared
   by both commands.
+- `internal/titleindicator`: versioned presentation-only Sway mark protocol
+  shared by the session daemon and animator; it contains no registry or restore
+  state.
 - `internal/session`: validated context/application identity, versioned session
   state, and the pure desktop-app restore coordinator.
 - `internal/statefile`: owner-only, bounded, transactional JSON state

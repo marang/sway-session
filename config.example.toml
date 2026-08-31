@@ -32,6 +32,15 @@ presets = [
   "spline",
 ]
 
+# Application persistence indicators are emitted by sway-session daemon and
+# rendered immediately before the app icon by the independent title animator.
+# Defaults are single-column glyphs available in Noto Sans Mono.
+[indicators]
+unregistered = "○"
+pending = "◔"
+registered = "●"
+pinned = "▲"
+
 [glyphs]
 aurora_bars = "▁▂▃▄▅▆▇█"
 aurora_dots = "·∙•"

@@ -3,9 +3,11 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	sessionstate "github.com/marang/sway-title-animator/internal/session"
 	"github.com/marang/sway-title-animator/internal/swayipc"
@@ -14,6 +16,8 @@ import (
 type daemonLoopRequester struct {
 	trees    []*swayipc.TreeNode
 	commands []string
+	failAt   int
+	failure  error
 }
 
 func (requester *daemonLoopRequester) Request(messageType swayipc.MessageType, payload []byte) (swayipc.Message, error) {
@@ -30,6 +34,9 @@ func (requester *daemonLoopRequester) Request(messageType swayipc.MessageType, p
 		return swayipc.Message{Type: swayipc.GetTree, Payload: encoded}, err
 	case swayipc.RunCommand:
 		requester.commands = append(requester.commands, string(payload))
+		if requester.failAt > 0 && len(requester.commands) == requester.failAt {
+			return swayipc.Message{}, requester.failure
+		}
 		return swayipc.Message{Type: swayipc.RunCommand, Payload: []byte(`[{"success":true}]`)}, nil
 	default:
 		return swayipc.Message{}, errors.New("unexpected fake Sway request")
@@ -72,5 +79,80 @@ func TestSessionDaemonLoopOwnsPlacementAndCaptureWithoutAnimator(t *testing.T) {
 	}
 	if got := runtime.desired.Workspaces; len(got) != 1 || got[0].Name != "9: saved" {
 		t.Fatalf("daemon did not capture the stable workspace: %+v", got)
+	}
+}
+
+func TestSessionDaemonLoopPublishesIndicatorsWithoutAnimator(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state")
+	registry := sessionstate.Registry{
+		Version:     sessionstate.ContextsSchemaVersion,
+		Preferences: sessionstate.RegistryPreferences{DesktopIndicators: true},
+		Contexts:    []sessionstate.Context{},
+	}
+	if err := sessionstate.RegistryFile(root).Save(registry); err != nil {
+		t.Fatal(err)
+	}
+	catalog := testDesktopCatalog(t, map[string]string{
+		"org.example.App.desktop": "[Desktop Entry]\nType=Application\nName=Example\nExec=/usr/bin/true\n",
+	}, false)
+	appID := "org.example.App"
+	unmarked := daemonTree("98: apps", &Node{ID: 42, Name: "Example", Type: "con", AppID: &appID})
+	marked := daemonTree("98: apps", &Node{
+		ID: 42, Name: "Example", Type: "con", AppID: &appID,
+		Marks: []string{"_sway_session_app_indicator_v1_unregistered_42"},
+	})
+	requester := &daemonLoopRequester{trees: []*swayipc.TreeNode{unmarked, marked}}
+	runtime, err := newSessionRuntimeWithOptions(requester, sessionRuntimeOptions{
+		Root: root,
+		IndicatorCatalog: func() (sessionstate.DesktopCatalog, error) {
+			return catalog, nil
+		},
+		IndicatorOperations: func() ([]sessionstate.ApplicationOperation, error) {
+			return []sessionstate.ApplicationOperation{}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := make(chan swayipc.Event, 1)
+	events <- swayipc.Event{Type: swayipc.EventShutdown, Change: "exit"}
+
+	if err := runSessionDaemonLoop(t.Context(), requester, runtime, events, nil); err != nil {
+		t.Fatalf("run session daemon loop: %v", err)
+	}
+	if len(requester.commands) != 1 || !strings.Contains(requester.commands[0], `_sway_session_app_indicator_v1_unregistered`) {
+		t.Fatalf("daemon did not publish application indicator: %v", requester.commands)
+	}
+}
+
+func TestIndicatorCatalogLoaderRefreshesInstalledDesktopEntriesPeriodically(t *testing.T) {
+	directory := t.TempDir()
+	writeEntry := func(name string) {
+		t.Helper()
+		data := "[Desktop Entry]\nType=Application\nName=" + name + "\nExec=/usr/bin/true\n"
+		if err := os.WriteFile(filepath.Join(directory, name+".desktop"), []byte(data), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeEntry("First")
+	cache := sessionstate.NewDesktopCatalogCache([]sessionstate.DesktopSearchDirectory{{
+		Path: directory, Origin: sessionstate.DesktopEntryUser,
+	}})
+	now := time.Unix(6000, 0)
+	load := newRefreshingDesktopCatalogLoader(cache, func() time.Time { return now }, time.Minute)
+
+	first, err := load()
+	if err != nil || len(first.Entries()) != 1 {
+		t.Fatalf("initial catalog = %+v err=%v", first.Entries(), err)
+	}
+	writeEntry("Second")
+	cached, err := load()
+	if err != nil || len(cached.Entries()) != 1 {
+		t.Fatalf("catalog refreshed before interval: %+v err=%v", cached.Entries(), err)
+	}
+	now = now.Add(time.Minute)
+	refreshed, err := load()
+	if err != nil || len(refreshed.Entries()) != 2 {
+		t.Fatalf("catalog did not refresh after interval: %+v err=%v", refreshed.Entries(), err)
 	}
 }

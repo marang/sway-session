@@ -17,7 +17,7 @@ func walk(node *Node, parent *Node, out *[]nodeWithParent) {
 }
 
 func isWindow(node *Node) bool {
-	if node == nil || node.Type != "con" || node.Name == "" {
+	if node == nil || (node.Type != "con" && node.Type != "floating_con") || node.Name == "" {
 		return false
 	}
 	return node.AppID != nil || node.Window != nil || node.WindowProperties.Class != ""

@@ -5,6 +5,8 @@ import (
 	"os/exec"
 	"testing"
 	"time"
+
+	"github.com/marang/sway-title-animator/internal/titleindicator"
 )
 
 func TestChildProcessLabelFindsDescendant(t *testing.T) {
@@ -130,6 +132,42 @@ func TestVisibleStatusTextDoesNotExposeWaylandShell(t *testing.T) {
 
 	if status := visibleStatusText(node); status != "" {
 		t.Fatalf("expected shell protocol to stay hidden, got %q", status)
+	}
+}
+
+func TestApplicationIndicatorAppearsImmediatelyBeforeAppIcon(t *testing.T) {
+	mark, err := titleindicator.Mark(titleindicator.Registered, 42)
+	if err != nil {
+		t.Fatal(err)
+	}
+	appID := "alacritty"
+	node := &Node{ID: 42, Name: "Shell", Type: "con", AppID: &appID, Marks: []string{mark}}
+
+	base, _ := NewTitleAnimator(nil).NodeFrameParts(node, nil)
+
+	if base != "● ▣ alacritty: Shell" {
+		t.Fatalf("title prefix = %q, want registered indicator before app icon", base)
+	}
+}
+
+func TestFloatingApplicationContainerIsRenderedAsWindow(t *testing.T) {
+	appID := "deepin-calculator"
+	node := &Node{ID: 97, Name: "Calculator", Type: "floating_con", AppID: &appID}
+
+	if !isWindow(node) {
+		t.Fatal("Sway floating application container was excluded from title rendering")
+	}
+}
+
+func TestInternalPersistenceMarksDoNotCreateGenericMarkBadge(t *testing.T) {
+	marks := []string{
+		"persist:11111111-1111-4111-8111-111111111111",
+		"_sway_session_app_indicator_v1_registered",
+		"user-visible",
+	}
+
+	if got := visibleMarkCount(marks); got != 1 {
+		t.Fatalf("visible mark count = %d, want only the user mark", got)
 	}
 }
 

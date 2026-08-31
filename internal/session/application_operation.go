@@ -3,6 +3,7 @@ package session
 import (
 	"bytes"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -17,14 +19,18 @@ import (
 )
 
 const (
-	ApplicationOperationVersion  = 1
+	ApplicationOperationVersion  = 2
 	MaxApplicationOperationItems = 128
 	defaultOperationTTL          = 2 * time.Minute
 	maxOperationTTL              = 10 * time.Minute
 	applicationOperationDir      = "sway-session/app-operations"
 	maxStoredOperations          = 256
-	maxApplicationOperationSize  = 256 * 1024
-	maxApplicationWorkspaceBytes = 256
+	// A separately bounded scan lets upgraded processes prune the small
+	// overflows that the pre-FD-lock implementation could leave behind.
+	// The admission limit remains maxStoredOperations.
+	maxStoredOperationRecoveryItems = maxStoredOperations * 4
+	maxApplicationOperationSize     = 256 * 1024
+	maxApplicationWorkspaceBytes    = 256
 )
 
 type ApplicationOperationKind string
@@ -46,9 +52,10 @@ type ApplicationOperation struct {
 }
 
 type ApplicationOperationItem struct {
-	ContextID ContextID          `json:"context_id"`
-	Window    *WindowApplication `json:"window,omitempty"`
-	DesktopID string             `json:"desktop_id"`
+	ContextID       ContextID          `json:"context_id"`
+	ContextRevision string             `json:"context_revision,omitempty"`
+	Window          *WindowApplication `json:"window,omitempty"`
+	DesktopID       string             `json:"desktop_id"`
 }
 
 func (operation *ApplicationOperation) Validate(now time.Time) error {
@@ -85,6 +92,14 @@ func (operation *ApplicationOperation) Validate(now time.Time) error {
 		}
 		switch operation.Kind {
 		case OperationRegister, OperationRebind:
+			if operation.Kind == OperationRegister && item.ContextRevision != "" {
+				return fmt.Errorf("items[%d]: registration must not contain a context revision", index)
+			}
+			if operation.Kind == OperationRebind {
+				if err := validateSHA256("context revision", item.ContextRevision); err != nil {
+					return fmt.Errorf("items[%d]: %w", index, err)
+				}
+			}
 			if item.Window == nil {
 				return fmt.Errorf("items[%d]: operation requires window evidence", index)
 			}
@@ -113,6 +128,9 @@ func (operation *ApplicationOperation) Validate(now time.Time) error {
 			}
 			seenContainers[item.Window.ContainerID] = struct{}{}
 		case OperationReapprove:
+			if err := validateSHA256("context revision", item.ContextRevision); err != nil {
+				return fmt.Errorf("items[%d]: %w", index, err)
+			}
 			if item.Window != nil {
 				return fmt.Errorf("items[%d]: reapproval must not contain window evidence", index)
 			}
@@ -124,6 +142,31 @@ func (operation *ApplicationOperation) Validate(now time.Time) error {
 	return nil
 }
 
+// ApplicationOperationContextRevision binds a pending context mutation to the
+// launcher and compositor identity the user reviewed. Lifecycle-only changes
+// such as desired-open and pinning deliberately do not invalidate approval.
+func ApplicationOperationContextRevision(context Context) (string, error) {
+	if err := context.Validate(); err != nil {
+		return "", fmt.Errorf("validate application operation context: %w", err)
+	}
+	if context.App == nil {
+		return "", errors.New("application operation context is not a desktop application")
+	}
+	revision := struct {
+		ID       ContextID           `json:"id"`
+		Launcher Launcher            `json:"launcher"`
+		Identity ApplicationIdentity `json:"identity"`
+	}{
+		ID: context.ID, Launcher: context.Launcher, Identity: context.App.Identity,
+	}
+	encoded, err := json.Marshal(revision)
+	if err != nil {
+		return "", fmt.Errorf("encode application operation context revision: %w", err)
+	}
+	digest := sha256.Sum256(encoded)
+	return hex.EncodeToString(digest[:]), nil
+}
+
 // ApplicationOperationStore persists one-time owner-only approval tokens.
 type ApplicationOperationStore struct {
 	RuntimeRoot string
@@ -132,8 +175,18 @@ type ApplicationOperationStore struct {
 }
 
 func (store ApplicationOperationStore) Create(operation ApplicationOperation) (string, error) {
+	var token string
+	err := statefile.WithPrivateDirectoryLock(store.directory(), func(directory *statefile.LockedPrivateDirectory) error {
+		var err error
+		token, err = store.createLocked(directory, operation)
+		return err
+	})
+	return token, err
+}
+
+func (store ApplicationOperationStore) createLocked(directory *statefile.LockedPrivateDirectory, operation ApplicationOperation) (string, error) {
 	now := store.now()
-	if err := store.prune(now); err != nil {
+	if err := store.prune(directory, now); err != nil {
 		return "", err
 	}
 	operation.Version = ApplicationOperationVersion
@@ -156,7 +209,7 @@ func (store ApplicationOperationStore) Create(operation ApplicationOperation) (s
 			return "", fmt.Errorf("generate application operation token: %w", err)
 		}
 		token := hex.EncodeToString(entropy[:])
-		err := statefile.CreatePrivateFile(store.directory(), token+".json", data)
+		err := directory.Create(token+".json", data)
 		if err == nil {
 			return token, nil
 		}
@@ -167,11 +220,8 @@ func (store ApplicationOperationStore) Create(operation ApplicationOperation) (s
 	return "", errors.New("generate application operation token: too many collisions")
 }
 
-func (store ApplicationOperationStore) prune(now time.Time) error {
-	names, err := statefile.ListPrivateFiles(store.directory(), maxStoredOperations)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
+func (store ApplicationOperationStore) prune(directory *statefile.LockedPrivateDirectory, now time.Time) error {
+	names, err := directory.List(maxStoredOperationRecoveryItems)
 	if err != nil {
 		return fmt.Errorf("inspect application operation store: %w", err)
 	}
@@ -181,7 +231,7 @@ func (store ApplicationOperationStore) prune(now time.Time) error {
 		if name != token+".json" || !validOperationToken(token) {
 			continue
 		}
-		data, readErr := statefile.ReadPrivateFile(store.directory(), name)
+		data, readErr := directory.Read(name)
 		if readErr != nil {
 			continue
 		}
@@ -192,7 +242,7 @@ func (store ApplicationOperationStore) prune(now time.Time) error {
 			ExpiresAt time.Time `json:"expires_at"`
 		}
 		if json.Unmarshal(data, &envelope) == nil && !envelope.ExpiresAt.After(now) {
-			if statefile.RemovePrivateFile(store.directory(), name) == nil {
+			if directory.Remove(name) == nil {
 				remaining--
 			}
 		}
@@ -238,6 +288,77 @@ func (store ApplicationOperationStore) Consume(token string) (ApplicationOperati
 		return ApplicationOperation{}, err
 	}
 	return operation, nil
+}
+
+// Discard removes a stored approval which can no longer be presented. Missing
+// tokens are already discarded and therefore succeed idempotently.
+func (store ApplicationOperationStore) Discard(token string) error {
+	if !validOperationToken(token) {
+		return errors.New("application operation token must contain 32 lowercase hexadecimal characters")
+	}
+	err := statefile.RemovePrivateFile(store.directory(), token+".json")
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("discard application operation token: %w", err)
+	}
+	return nil
+}
+
+// Active returns valid, unexpired approval operations without exposing their
+// one-time tokens or consuming them. Concurrently consumed files are skipped.
+func (store ApplicationOperationStore) Active() ([]ApplicationOperation, error) {
+	names, err := statefile.ListPrivateFiles(store.directory(), maxStoredOperationRecoveryItems)
+	if errors.Is(err, os.ErrNotExist) {
+		return []ApplicationOperation{}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("inspect application operation store: %w", err)
+	}
+	sort.Strings(names)
+	now := store.now()
+	active := make([]ApplicationOperation, 0, len(names))
+	for _, name := range names {
+		token := strings.TrimSuffix(name, ".json")
+		if name != token+".json" || !validOperationToken(token) {
+			continue
+		}
+		data, readErr := statefile.ReadPrivateFile(store.directory(), name)
+		if errors.Is(readErr, os.ErrNotExist) {
+			continue
+		}
+		if readErr != nil {
+			return nil, fmt.Errorf("read active application operation: %w", readErr)
+		}
+		if len(data) > maxApplicationOperationSize {
+			return nil, fmt.Errorf("application operation exceeds %d bytes", maxApplicationOperationSize)
+		}
+		var operation ApplicationOperation
+		decoder := json.NewDecoder(bytes.NewReader(data))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&operation); err != nil {
+			return nil, fmt.Errorf("decode active application operation: %w", err)
+		}
+		if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+			if err == nil {
+				return nil, errors.New("active application operation contains trailing JSON")
+			}
+			return nil, err
+		}
+		if !operation.ExpiresAt.After(now) {
+			removeErr := statefile.RemovePrivateFile(store.directory(), name)
+			if removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+				return nil, fmt.Errorf("remove expired application operation: %w", removeErr)
+			}
+			continue
+		}
+		if err := operation.Validate(now); err != nil {
+			return nil, fmt.Errorf("validate active application operation: %w", err)
+		}
+		active = append(active, operation)
+	}
+	return active, nil
 }
 
 func (store ApplicationOperationStore) directory() string {

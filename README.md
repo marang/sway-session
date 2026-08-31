@@ -145,6 +145,12 @@ This installs:
 
 Make sure `~/.local/bin` is in your `PATH`.
 
+The native `swaynag` approval path deliberately invokes the root-owned
+`/usr/bin/sway-session`, so it is available from a distribution-package
+install. A source-only install must make the same explicit decision from a
+trusted terminal with `sway-session app ... --yes`; it must not silently route
+an approval token into a user-writable executable.
+
 Release archives and distribution packages also contain all three programs and the
 Sway, Herdr, Codex-hook, and AppArmor integration templates. Archives retain
 the repository-relative template paths; distribution packages install them
@@ -153,13 +159,21 @@ below.
 
 ## Sway Setup
 
-Add this to your Sway config:
+For a distribution-package install, add the complete startup stanza below or
+include the packaged `45-title-animator.conf` template:
 
 ```conf
-exec_always --no-startup-id sway-title-animator --replace --fps 25
+exec_always --no-startup-id /usr/bin/sway-title-animator --replace --fps 25
+exec --no-startup-id /usr/bin/sway-session daemon
+exec --no-startup-id /usr/bin/sway-session restore
 ```
 
-Then reload Sway:
+Source-install users can replace `/usr/bin` with `$HOME/.local/bin`. Only the
+animator uses `exec_always`; the daemon and one-shot restore deliberately use
+`exec`, so a config reload cannot launch or restore the session again. Restart
+the Sway session once after first adding this stanza; a plain config reload
+starts only the animator and intentionally does not perform the initial daemon
+start or one-shot restore. Later animator/config updates can be applied with:
 
 ```sh
 swaymsg reload
@@ -216,12 +230,31 @@ sway-session app register-focused
 ```
 
 The command resolves exact Wayland, XWayland, or Flatpak identity evidence and
-opens a native `swaynag` approval. An ambiguous match presents explicit desktop
-entry choices and is never guessed. A repeat on an already registered window
-reports its status and repairs a missing stable mark; it is deliberately not a
-toggle. To preview one confirmation for all unregistered eligible apps on the
-focused workspace, use `sway-session app register-workspace`. `--yes` is
+opens a native `swaynag` approval for package installs. Source-only installs use
+the documented explicit `--yes` path. An ambiguous match presents explicit
+desktop entry choices and is never guessed. A repeat on an already registered
+window reports its status and repairs a missing stable mark; it is deliberately
+not a toggle. To preview one confirmation for all unregistered eligible apps on
+the focused workspace, use `sway-session app register-workspace`. `--yes` is
 available for deliberate noninteractive use.
+
+After the first successful desktop registration, eligible normal top-levels
+show one application-persistence indicator immediately before the app icon:
+
+```text
+○  unregistered and eligible
+◔  awaiting an explicit approval
+●  registered in follow mode
+▲  pinned as a sway-session autostart
+```
+
+Follow mode remembers whether the app remains desired-open; deliberately
+closing its last window disables the next startup restore after the two-second
+grace. Pinned mode keeps desired-open set across Sway starts. It is a bounded
+autostart, not an unbounded crash supervisor. Indicator mode remains inactive
+until the first registration succeeds. The daemon owns state derivation and
+hidden Sway marks; the animator only renders observed marks and remains usable
+when the daemon is absent.
 
 For an optional Sway keybinding, choose an otherwise unused chord, for example:
 
@@ -235,6 +268,10 @@ desktop entry is copied to an owner-only approved snapshot; changes to the
 source entry or its user-owned executable block later launch until explicit
 `app reapprove`. The confirmation preview shows the launcher origin and first
 executable token, never file/URI arguments.
+
+Desktop-entry restore uses the system `gio` command (GLib). Flatpak restore
+additionally needs `flatpak`; neither dependency is required for title
+animation or Herdr-only sessions.
 
 Application lifecycle and repair commands accept an exact UUID or unambiguous
 label:
@@ -250,6 +287,17 @@ sway-session app archive <context>
 sway-session app activate <context>
 sway-session app forget --yes <context>
 ```
+
+Machine consumers can list only desktop-application contexts with:
+
+```sh
+sway-session --json app list
+```
+
+The result is an object with `command: "app list"` and a `contexts` array
+sorted by context UUID. Context records may contain local launcher paths and
+approval checksums, so treat the output as private machine state rather than
+publishing it in logs or bug reports.
 
 `pin` keeps desired-open state independent of whether the app was open at the
 last clean shutdown; `unpin` returns to follow mode. Rebind previews the old and
@@ -267,6 +315,12 @@ Scratchpad windows count as presence but scratchpad placement is intentionally
 deferred to LAB-92. Use `sway-session restore <context>` to atomically queue a
 desired-closed active desktop app for the daemon without bypassing its launch
 journal.
+
+Sway exposes XWayland transient/type metadata, so classifiable XWayland dialogs
+are excluded. Sway 1.12 does not expose equivalent parent/type evidence for
+native Wayland surfaces; a matching Wayland `app_id` therefore belongs to the
+application-level presence group. Stable per-window disambiguation remains the
+LAB-93 `xdg-toplevel-tag` follow-up.
 
 For an AppArmor-confined Codex workflow, the long-running `sway-session daemon`
 also exposes the existing separate typed start endpoint. It combines exact
@@ -334,15 +388,9 @@ Archive excludes a context from automatic restore while retaining its Herdr
 state. Purge stops and deletes the exact named Herdr session before removing
 the registry entry; without `--yes`, it requires a terminal and the full UUID.
 Use the global option before a command, for example `sway-session --json list`,
-for stable machine-readable results and diagnostics.
-
-For automatic startup, add all three lines to the Sway config:
-
-```conf
-exec_always --no-startup-id /usr/bin/sway-title-animator --replace --fps 25
-exec --no-startup-id /usr/bin/sway-session daemon
-exec --no-startup-id /usr/bin/sway-session restore
-```
+for stable machine-readable results and diagnostics. The complete automatic
+startup stanza is documented in [Sway Setup](#sway-setup) and shipped as
+`contrib/sway/45-title-animator.conf`.
 
 The daemon owns session observation, marking, placement, layout snapshots,
 layout restore, and both narrow broker endpoints. The animator remains an
@@ -416,13 +464,13 @@ permissions. The parent Codex profile intentionally leaves GitHub CLI
 configuration accessible so `gh` can use credentials stored in the desktop
 keyring; do not use file-backed GitHub tokens with this policy. The initializer
 child profile does not need GitHub access and continues to deny it. From the
-matching Herdr pane,
-run `scripts/verify-codex-boundary.sh` in a source checkout or the packaged
+matching Herdr pane, run the packaged
 `/usr/share/doc/sway-title-animator/scripts/verify-codex-boundary.sh` for a live
 positive/negative enforcement check after the profile, Herdr, and one
-registered context are active. The live check uses only root-owned mode-0755
-files belonging to the installed `sway-title-animator` package; it never
-resolves a user-writable `sway-session` through `PATH`. It fails closed when
+registered context are active. A checkout copy can invoke the same script, but
+a successful live pass still requires the root-owned distribution-package
+binaries under `/usr/bin`. The check never resolves a user-writable
+`sway-session` through `PATH`. It fails closed when
 the kernel exposes a known pathname-connect or runtime-path mutation gap
 instead of reporting a complete boundary.
 
@@ -503,6 +551,12 @@ presets = [
   "smileys", "wave", "spline",
 ]
 
+[indicators]
+unregistered = "○"
+pending = "◔"
+registered = "●"
+pinned = "▲"
+
 [icons]
 alacritty = "▣"
 firefox = "🌐"
@@ -516,6 +570,11 @@ frames = [
   "░░▒▒▓▓▒▒░░··  ··",
 ]
 ```
+
+All four indicator values must be distinct printable single-rune glyphs with
+the same terminal width. The defaults are covered by Noto Sans Mono; configure
+Sway with a matching Pango font for predictable titlebar metrics, for example
+`font pango:Noto Sans Mono 10`.
 
 The old `[showcase]` section and `showcase_*` timing options are intentionally
 not aliases. Rename them to `[rotation]`, `rotation_hold_frames`, and

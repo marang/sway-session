@@ -57,6 +57,46 @@ application-internal restore prompts and additional windows app-owned; this
 project restores one optional outer anchor, not private tabs, profiles, URLs,
 or per-window application state.
 
+## Visible desktop integration procedure (LAB-99)
+
+Use only disposable named workspaces `98: LAB-99 E2E` and, when a landing
+workspace is needed, `99: LAB-99 Landing`. Verify the focused workspace before
+every move or close. Never create, move, close, or restore a test window on a
+single-digit workspace.
+
+1. Start the animator with an isolated config and the session daemon with
+   isolated state/runtime roots. Before any successful desktop registration,
+   confirm no application indicator is shown.
+2. Register one ordinary app, then exercise a later `swaynag` approval so all
+   four title states are visible: `○` unregistered, `◔` pending, `●`
+   registered/follow, and `▲` pinned/autostart. Dismiss one approval and verify
+   pending disappears after expiry. Check the glyphs with Sway configured for
+   Noto Sans Mono on normal, tabbed, stacked, narrow, focused, and unfocused
+   titlebars.
+3. Cover a native Wayland app, an XWayland app, Chrome's single top-level
+   application-owned restore, Slack Flatpak when installed, and an
+   Alacritty/Herdr context on a mixed workspace. Herdr windows and classifiable
+   XWayland dialogs must not receive desktop-app indicators. Record the known
+   Sway 1.12 limitation that native Wayland parent/type metadata is unavailable;
+   those surfaces remain part of the application-level group until LAB-93.
+   Additional application-owned windows must not be rearranged.
+4. Exercise register, rebind, reapprove after changing a disposable user-local
+   desktop entry, pin, unpin, archive, activate, and forget. Compare
+   `sway-session --json app list` with the private registry; do not publish its
+   paths or checksums.
+5. Reload the Sway config and confirm neither daemon nor restore is launched a
+   second time. Replace the compositor/socket in an isolated environment and
+   confirm the one-shot restore runs once. Stop the animator while the daemon
+   restores, then stop the daemon while the animator continues animating.
+6. Confirm one reconciliation pass emits one consolidated degraded diagnostic
+   when multiple indicator/catalog or workspace details fail. Verify supported
+   placement and capture continue despite the presentation failure.
+
+Before handoff, run `make verify`, `make packaging-check`, the AppArmor policy
+checks, the `code-review` workflow, and the repository-level architecture
+checkpoint. Remove only the isolated roots, test entries, windows, and
+workspaces created by this procedure.
+
 ### LAB-98 live evidence (2026-08-31)
 
 The source-built daemon was exercised against the real Sway compositor with
@@ -78,6 +118,45 @@ single-digit workspace.
 
 The source daemon, both disposable Alacritty windows, its workspace, and all
 isolated test state were removed after the run.
+
+### LAB-99 live evidence (2026-08-31)
+
+The visible desktop integration was exercised against the interactive Sway
+1.12 compositor using only `98: LAB-99 E2E` and `99: LAB-99 Pending`. No test
+window was created, moved, restored, or closed on a single-digit workspace.
+State, runtime, desktop-catalog additions, binaries, and screenshots remained
+under one disposable `/tmp` root.
+
+- Before the first successful registration, the test Alacritty had neither a
+  persistence mark nor an application indicator. A deliberately mutable test
+  desktop entry was rejected by the launcher-trust boundary; registration was
+  repeated with root-owned `/usr/share/applications/Alacritty.desktop`.
+- `app register-focused --yes` enabled the opt-in latch, wrote one typed desktop
+  context, and converged on the container-scoped registered mark. `app pin` then
+  replaced it with the pinned mark. Real screenshots showed `●` and `▲`
+  immediately before the Alacritty icon, and `app list` returned only the one
+  desktop context as JSON.
+- A second root-owned Deepin Calculator application received `○`, then `◔`
+  while a one-time registration approval was active. This live case exposed
+  that Sway reports the floating application leaf as `floating_con`; the
+  animator had accepted only `con`. The window classifier and regression test
+  were corrected, after which both states rendered in the real floating
+  titlebar.
+- With the animator stopped, a fresh daemon launched the pinned Alacritty,
+  placed it on workspace 98, added its stable context mark, and added the
+  container-scoped pinned indicator. The daemon was started through Sway for
+  this step so its GUI child did not inherit the Codex AppArmor profile.
+- After stopping that daemon, the source-built animator continued independently
+  and rendered the restored window's `▲` title with no session daemon process
+  running. The automated process-boundary test separately proves it opens no
+  session state or session socket.
+
+The two disposable application windows, both high-numbered workspaces, all
+test processes, and the isolated roots were removed after the run. The wider
+manual matrix above remains the procedure for Chrome/Slack, XWayland dialogs,
+tabbed/stacked titlebars, and user-local reapproval; automated tests cover those
+planner and approval contracts where no matching live application was used in
+this run.
 
 ### LAB-101 live evidence (2026-08-31)
 

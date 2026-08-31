@@ -13,6 +13,8 @@ import (
 	"github.com/marang/sway-title-animator/internal/swayipc"
 )
 
+const desktopCatalogRefreshInterval = time.Minute
+
 func executeDaemon(ctx context.Context, arguments []string, stderr io.Writer, structured bool, deps dependencies) (commandResult, *commandFailure) {
 	set := newFlagSet("daemon")
 	socketFlag := set.String("socket", "", "Sway IPC socket")
@@ -56,6 +58,22 @@ func runSessionDaemon(ctx context.Context, swaySocket string, reportError func(e
 	if err != nil {
 		return fmt.Errorf("identify Sway compositor session: %w", err)
 	}
+	search, catalogConfigErr := sessionstate.DefaultDesktopSearchPath()
+	catalogCache := sessionstate.NewDesktopCatalogCache(search)
+	refreshCatalog := newRefreshingDesktopCatalogLoader(catalogCache, time.Now, desktopCatalogRefreshInterval)
+	indicatorCatalog := func() (sessionstate.DesktopCatalog, error) {
+		if catalogConfigErr != nil {
+			return sessionstate.DesktopCatalog{}, catalogConfigErr
+		}
+		return refreshCatalog()
+	}
+	operationStore, operationStoreErr := sessionstate.DefaultApplicationOperationStore()
+	indicatorOperations := func() ([]sessionstate.ApplicationOperation, error) {
+		if operationStoreErr != nil {
+			return nil, operationStoreErr
+		}
+		return operationStore.Active()
+	}
 	runtime, err := newSessionRuntimeWithOptions(control, sessionRuntimeOptions{
 		Root:                stateRoot,
 		CompositorID:        compositorID,
@@ -67,6 +85,8 @@ func runSessionDaemon(ctx context.Context, swaySocket string, reportError func(e
 			LaunchTimeout: applicationLaunchTimeout,
 			MaxConcurrent: 2,
 		},
+		IndicatorCatalog:    indicatorCatalog,
+		IndicatorOperations: indicatorOperations,
 	})
 	if err != nil {
 		return err
@@ -101,6 +121,31 @@ func runSessionDaemon(ctx context.Context, swaySocket string, reportError func(e
 	defer close(done)
 	go swayipc.StreamSessionEvents(swaySocket, events, done)
 	return runSessionDaemonLoop(ctx, control, runtime, events, reportError)
+}
+
+func newRefreshingDesktopCatalogLoader(
+	cache *sessionstate.DesktopCatalogCache,
+	now func() time.Time,
+	interval time.Duration,
+) func() (sessionstate.DesktopCatalog, error) {
+	if now == nil {
+		now = time.Now
+	}
+	if interval <= 0 {
+		interval = desktopCatalogRefreshInterval
+	}
+	loadedAt := time.Time{}
+	return func() (sessionstate.DesktopCatalog, error) {
+		current := now()
+		if loadedAt.IsZero() || !current.Before(loadedAt.Add(interval)) {
+			cache.Invalidate()
+		}
+		catalog, err := cache.Load()
+		if err == nil && (loadedAt.IsZero() || !current.Before(loadedAt.Add(interval))) {
+			loadedAt = current
+		}
+		return catalog, err
+	}
 }
 
 type daemonApplicationLauncher struct {

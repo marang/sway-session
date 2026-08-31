@@ -722,3 +722,45 @@ func TestPrivateFileRejectsSymlinkAndFIFO(t *testing.T) {
 		t.Fatal("private file consume blocked on FIFO")
 	}
 }
+
+func TestLockedPrivateDirectoryOperationsRemainOnVerifiedInodeAfterPathReplacement(t *testing.T) {
+	root := t.TempDir()
+	directoryPath := filepath.Join(root, "private")
+	displacedPath := filepath.Join(root, "displaced")
+
+	err := WithPrivateDirectoryLock(directoryPath, func(directory *LockedPrivateDirectory) error {
+		if err := os.Rename(directoryPath, displacedPath); err != nil {
+			return fmt.Errorf("displace locked directory: %w", err)
+		}
+		if err := os.Mkdir(directoryPath, DirectoryMode); err != nil {
+			return fmt.Errorf("replace locked directory path: %w", err)
+		}
+		if err := directory.Create("token.json", []byte("pinned inode")); err != nil {
+			return err
+		}
+		names, err := directory.List(1)
+		if err != nil {
+			return err
+		}
+		if len(names) != 1 || names[0] != "token.json" {
+			return fmt.Errorf("locked listing used replacement path: %v", names)
+		}
+		data, err := directory.Read("token.json")
+		if err != nil {
+			return err
+		}
+		if string(data) != "pinned inode" {
+			return fmt.Errorf("locked read returned %q", data)
+		}
+		return directory.Remove("token.json")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(directoryPath, "token.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("replacement path unexpectedly contains token: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(displacedPath, "token.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("descriptor-relative remove did not remove token: %v", err)
+	}
+}

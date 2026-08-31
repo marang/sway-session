@@ -179,6 +179,342 @@ func TestSessionRuntimeMovesThenMarksNewWindowAndCapturesStableTree(t *testing.T
 	}
 }
 
+func TestSessionRuntimeConfirmedPlacementFailureDoesNotStarveLaterContext(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state")
+	secondID := sessionstate.ContextID("22222222-2222-4222-8222-222222222222")
+	if err := sessionstate.RegistryFile(root).Save(sessionRegistryIDs(testManagedContextID, secondID)); err != nil {
+		t.Fatal(err)
+	}
+	requester := &recordingRequester{failAt: 1, failure: errors.New("explicit rejection")}
+	runtime, err := newSessionRuntimeWithOptions(requester, sessionRuntimeOptions{Root: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstAppID, _ := testManagedContextID.AppID()
+	secondAppID, _ := secondID.AppID()
+	tree := daemonTree("98: placement",
+		&Node{ID: 41, Name: "first", Type: "con", AppID: &firstAppID},
+		&Node{ID: 42, Name: "second", Type: "con", AppID: &secondAppID},
+	)
+
+	refresh, err := runtime.Reconcile(tree, time.Unix(100, 0))
+	if !refresh || err == nil {
+		t.Fatalf("confirmed failure was not degraded around: refresh=%v err=%v", refresh, err)
+	}
+	if len(requester.commands) != 2 || !strings.Contains(requester.commands[1], string(secondID)) {
+		t.Fatalf("first rejected context starved later placement: %v", requester.commands)
+	}
+}
+
+func TestSessionRuntimeRejectedMoveCannotReplaceLastGoodWorkspace(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state")
+	registry := sessionRegistry(testManagedContextID)
+	if err := sessionstate.RegistryFile(root).Save(registry); err != nil {
+		t.Fatal(err)
+	}
+	previous := placementOnlySnapshot("98: saved", testManagedContextID)
+	if err := sessionstate.LayoutFile(root).Save(previous); err != nil {
+		t.Fatal(err)
+	}
+	requester := &recordingRequester{failAt: 1, failure: errors.New("explicit rejection")}
+	runtime, err := newSessionRuntimeWithOptions(requester, sessionRuntimeOptions{Root: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime.startupComplete = true
+	appID, _ := testManagedContextID.AppID()
+	wrongWorkspace := daemonTree("99: landing", &Node{ID: 41, Name: "terminal", Type: "con", AppID: &appID})
+	now := time.Unix(100, 0)
+
+	refresh, err := runtime.Reconcile(wrongWorkspace, now)
+	if refresh || err == nil {
+		t.Fatalf("rejected move was not isolated as a confirmed failure: refresh=%v err=%v", refresh, err)
+	}
+	if targets := snapshotWorkspaceTargets(runtime.desired); targets[testManagedContextID] != "98: saved" {
+		t.Fatalf("rejected move replaced desired workspace: %+v", runtime.desired)
+	}
+	if err := runtime.Flush(now.Add(sessionSnapshotDebounce)); err != nil {
+		t.Fatal(err)
+	}
+	var persisted sessionstate.LayoutSnapshot
+	if err := sessionstate.LayoutFile(root).LoadInto(&persisted); err != nil {
+		t.Fatal(err)
+	}
+	if targets := snapshotWorkspaceTargets(persisted); targets[testManagedContextID] != "98: saved" {
+		t.Fatalf("rejected move replaced persisted workspace: %+v", persisted)
+	}
+}
+
+func TestSessionRuntimeRejectedMoveDoesNotBlockIndependentCapture(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state")
+	secondID := sessionstate.ContextID("22222222-2222-4222-8222-222222222222")
+	if err := sessionstate.RegistryFile(root).Save(sessionRegistryIDs(testManagedContextID, secondID)); err != nil {
+		t.Fatal(err)
+	}
+	previous := sessionstate.LayoutSnapshot{
+		Version: sessionstate.LayoutSchemaVersion,
+		Workspaces: []sessionstate.WorkspaceLayout{
+			placementOnlySnapshot("98: saved", testManagedContextID).Workspaces[0],
+			placementOnlySnapshot("97: previous", secondID).Workspaces[0],
+		},
+	}
+	if err := sessionstate.LayoutFile(root).Save(previous); err != nil {
+		t.Fatal(err)
+	}
+	requester := &recordingRequester{failAt: 1, failure: errors.New("explicit rejection")}
+	runtime, err := newSessionRuntimeWithOptions(requester, sessionRuntimeOptions{Root: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime.startupComplete = true
+	firstAppID, _ := testManagedContextID.AppID()
+	tree := daemonTree("99: landing", &Node{ID: 41, Name: "first", Type: "con", AppID: &firstAppID})
+	tree.Nodes[0].Nodes = append(tree.Nodes[0].Nodes, daemonTree("96: current", managedDaemonLeaf(t, 42, secondID)).Nodes[0].Nodes[0])
+	now := time.Unix(200, 0)
+
+	refresh, err := runtime.Reconcile(tree, now)
+	if refresh || err == nil {
+		t.Fatalf("rejected move was not isolated as a confirmed failure: refresh=%v err=%v", refresh, err)
+	}
+	if err := runtime.Flush(now.Add(sessionSnapshotDebounce)); err != nil {
+		t.Fatal(err)
+	}
+	var persisted sessionstate.LayoutSnapshot
+	if err := sessionstate.LayoutFile(root).LoadInto(&persisted); err != nil {
+		t.Fatal(err)
+	}
+	targets := snapshotWorkspaceTargets(persisted)
+	if targets[testManagedContextID] != "98: saved" || targets[secondID] != "96: current" {
+		t.Fatalf("capture isolation targets = %+v, snapshot=%+v", targets, persisted)
+	}
+}
+
+func TestSessionRuntimeConfirmedDesktopPlacementFailureDoesNotStarveLaterApplication(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state")
+	ids := []sessionstate.ContextID{
+		"11111111-1111-4111-8111-111111111111",
+		"22222222-2222-4222-8222-222222222222",
+	}
+	contexts := make([]sessionstate.Context, 0, len(ids))
+	for index, id := range ids {
+		appID := fmt.Sprintf("org.example.App%d", index+1)
+		contexts = append(contexts, sessionstate.Context{
+			ID: id, Label: appID, Provider: "desktop", State: sessionstate.ContextActive,
+			Launcher: sessionstate.Launcher{Kind: sessionstate.LauncherFlatpak, FlatpakID: appID, FlatpakInstallation: sessionstate.FlatpakUser},
+			App: &sessionstate.Application{
+				Identity:    sessionstate.ApplicationIdentity{Protocol: sessionstate.WindowWayland, WaylandAppID: appID, SandboxAppID: appID},
+				DesiredOpen: true, RestorePolicy: sessionstate.ApplicationRestoreFollow,
+			},
+		})
+	}
+	registry := sessionstate.Registry{Version: sessionstate.ContextsSchemaVersion, Contexts: contexts}
+	if err := sessionstate.RegistryFile(root).Save(registry); err != nil {
+		t.Fatal(err)
+	}
+	desired := sessionstate.LayoutSnapshot{
+		Version: sessionstate.LayoutSchemaVersion,
+		Workspaces: []sessionstate.WorkspaceLayout{{
+			Name: "98: apps", RestoreMode: sessionstate.WorkspaceRestorePlacementOnly, PlacementContexts: ids,
+		}},
+	}
+	if err := sessionstate.LayoutFile(root).Save(desired); err != nil {
+		t.Fatal(err)
+	}
+	requester := &recordingRequester{failAt: 1, failure: errors.New("explicit rejection")}
+	start := time.Unix(1000, 0)
+	runtime, err := newSessionRuntimeWithOptions(requester, sessionRuntimeOptions{
+		Root: root, CompositorID: strings.Repeat("d", 64), StartedAt: start,
+		ApplicationLauncher: &recordingApplicationLauncher{},
+		ApplicationRestore: sessionstate.ApplicationRestoreOptions{
+			AdoptionGrace: time.Second, CloseGrace: time.Second, LaunchTimeout: 10 * time.Second, MaxConcurrent: 2,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstID, secondID := contexts[0].App.Identity.WaylandAppID, contexts[1].App.Identity.WaylandAppID
+	firstSandbox, secondSandbox := firstID, secondID
+	tree := daemonTree("99: landing",
+		&Node{ID: 51, Type: "con", AppID: &firstID, SandboxAppID: &firstSandbox},
+		&Node{ID: 52, Type: "con", AppID: &secondID, SandboxAppID: &secondSandbox},
+	)
+
+	refresh, err := runtime.Reconcile(tree, start)
+	if !refresh || err == nil {
+		t.Fatalf("desktop placement failure was not degraded around: refresh=%v err=%v", refresh, err)
+	}
+	if len(requester.commands) != 3 || !strings.Contains(requester.commands[1], "con_id=52") || !strings.Contains(requester.commands[2], string(ids[1])) {
+		t.Fatalf("first rejected application starved later placement: %v", requester.commands)
+	}
+}
+
+func TestSessionRuntimePublishesIdempotentApplicationIndicatorMarks(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state")
+	registry := sessionstate.Registry{
+		Version:     sessionstate.ContextsSchemaVersion,
+		Preferences: sessionstate.RegistryPreferences{DesktopIndicators: true},
+		Contexts:    []sessionstate.Context{},
+	}
+	if err := sessionstate.RegistryFile(root).Save(registry); err != nil {
+		t.Fatal(err)
+	}
+	catalog := testDesktopCatalog(t, map[string]string{
+		"org.example.App.desktop": "[Desktop Entry]\nType=Application\nName=Example\nExec=/usr/bin/true\n",
+	}, false)
+	requester := &recordingRequester{}
+	runtime, err := newSessionRuntimeWithOptions(requester, sessionRuntimeOptions{
+		Root: root,
+		IndicatorCatalog: func() (sessionstate.DesktopCatalog, error) {
+			return catalog, nil
+		},
+		IndicatorOperations: func() ([]sessionstate.ApplicationOperation, error) {
+			return []sessionstate.ApplicationOperation{}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	appID := "org.example.App"
+	tree := daemonTree("98: apps", &Node{ID: 41, Name: "Example", Type: "con", AppID: &appID})
+
+	refresh, err := runtime.ReconcileIndicators(tree)
+	if err != nil || !refresh {
+		t.Fatalf("publish indicator: refresh=%v err=%v", refresh, err)
+	}
+	if len(requester.commands) != 1 || !strings.Contains(requester.commands[0], `_sway_session_app_indicator_v1_unregistered`) {
+		t.Fatalf("unexpected indicator commands: %v", requester.commands)
+	}
+
+	tree.Nodes[0].Nodes[0].Nodes[0].Marks = []string{"_sway_session_app_indicator_v1_unregistered_41"}
+	refresh, err = runtime.ReconcileIndicators(tree)
+	if err != nil || refresh {
+		t.Fatalf("stable indicator should be a no-op: refresh=%v err=%v", refresh, err)
+	}
+	if len(requester.commands) != 1 {
+		t.Fatalf("stable indicator was rewritten: %v", requester.commands)
+	}
+}
+
+func TestSessionRuntimeConfirmedIndicatorFailureDoesNotStarveLaterWindow(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state")
+	registry := sessionstate.Registry{
+		Version:     sessionstate.ContextsSchemaVersion,
+		Preferences: sessionstate.RegistryPreferences{DesktopIndicators: true},
+		Contexts:    []sessionstate.Context{},
+	}
+	if err := sessionstate.RegistryFile(root).Save(registry); err != nil {
+		t.Fatal(err)
+	}
+	catalog := testDesktopCatalog(t, map[string]string{
+		"org.example.First.desktop":  "[Desktop Entry]\nType=Application\nName=First\nExec=/usr/bin/true\n",
+		"org.example.Second.desktop": "[Desktop Entry]\nType=Application\nName=Second\nExec=/usr/bin/true\n",
+	}, false)
+	requester := &recordingRequester{failAt: 1, failure: errors.New("explicit rejection")}
+	runtime, err := newSessionRuntimeWithOptions(requester, sessionRuntimeOptions{
+		Root: root,
+		IndicatorCatalog: func() (sessionstate.DesktopCatalog, error) {
+			return catalog, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, second := "org.example.First", "org.example.Second"
+	tree := daemonTree("98: apps",
+		&Node{ID: 41, Name: "First", Type: "con", AppID: &first},
+		&Node{ID: 42, Name: "Second", Type: "con", AppID: &second},
+	)
+
+	refresh, err := runtime.ReconcileIndicators(tree)
+	if !refresh || err == nil {
+		t.Fatalf("confirmed indicator failure was not degraded around: refresh=%v err=%v", refresh, err)
+	}
+	if len(requester.commands) != 2 || !strings.Contains(requester.commands[1], "con_id=42") {
+		t.Fatalf("first rejected indicator starved later window: %v", requester.commands)
+	}
+}
+
+func TestSessionRuntimeRemovesExpiredPendingIndicator(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state")
+	registry := sessionstate.Registry{
+		Version:     sessionstate.ContextsSchemaVersion,
+		Preferences: sessionstate.RegistryPreferences{DesktopIndicators: true},
+		Contexts:    []sessionstate.Context{},
+	}
+	if err := sessionstate.RegistryFile(root).Save(registry); err != nil {
+		t.Fatal(err)
+	}
+	catalog := testDesktopCatalog(t, map[string]string{
+		"org.example.App.desktop": "[Desktop Entry]\nType=Application\nName=Example\nExec=/usr/bin/true\n",
+	}, false)
+	requester := &recordingRequester{}
+	runtime, err := newSessionRuntimeWithOptions(requester, sessionRuntimeOptions{
+		Root: root,
+		IndicatorCatalog: func() (sessionstate.DesktopCatalog, error) {
+			return catalog, nil
+		},
+		IndicatorOperations: func() ([]sessionstate.ApplicationOperation, error) {
+			return []sessionstate.ApplicationOperation{}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	appID := "org.example.App"
+	tree := daemonTree("98: apps", &Node{
+		ID: 41, Name: "Example", Type: "con", AppID: &appID,
+		Marks: []string{"_sway_session_app_indicator_v1_pending_41"},
+	})
+
+	refresh, err := runtime.ReconcileIndicators(tree)
+	if err != nil || !refresh {
+		t.Fatalf("remove expired pending indicator: refresh=%v err=%v", refresh, err)
+	}
+	if len(requester.commands) != 2 ||
+		!strings.Contains(requester.commands[0], "unmark") ||
+		!strings.Contains(requester.commands[1], "unregistered_41") {
+		t.Fatalf("expired pending did not converge to unregistered: %v", requester.commands)
+	}
+}
+
+func TestPersistentReconciliationConsolidatesDegradedDiagnosticsPerPass(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state")
+	registry := sessionRegistry(testManagedContextID)
+	registry.Preferences.DesktopIndicators = true
+	if err := sessionstate.RegistryFile(root).Save(registry); err != nil {
+		t.Fatal(err)
+	}
+	if err := sessionstate.LayoutFile(root).Save(placementOnlySnapshot("98: saved", testManagedContextID)); err != nil {
+		t.Fatal(err)
+	}
+	appID, _ := testManagedContextID.AppID()
+	requester := &daemonLoopRequester{trees: []*Node{
+		daemonTree("99: landing", &Node{ID: 42, Name: "terminal", Type: "con", AppID: &appID}),
+		daemonTree("98: saved", &Node{ID: 42, Name: "terminal", Type: "con", AppID: &appID}),
+		daemonTree("98: saved", managedDaemonLeaf(t, 42, testManagedContextID)),
+	}, failAt: 1, failure: errors.New("explicit placement rejection")}
+	runtime, err := newSessionRuntimeWithOptions(requester, sessionRuntimeOptions{
+		Root: root,
+		IndicatorCatalog: func() (sessionstate.DesktopCatalog, error) {
+			return sessionstate.DesktopCatalog{}, errors.New("catalog unavailable")
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reported := make([]error, 0)
+
+	reconcilePersistentSession(requester, runtime, func(err error) {
+		reported = append(reported, err)
+	})
+
+	if len(reported) != 1 ||
+		!strings.Contains(reported[0].Error(), "catalog unavailable") ||
+		!strings.Contains(reported[0].Error(), "explicit placement rejection") {
+		t.Fatalf("diagnostics were not consolidated: %+v", reported)
+	}
+}
+
 func TestSessionRuntimeLaunchesDesktopAppsOnlyAfterAdoptionAndPersistsIntentFirst(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "state")
 	context := sessionstate.Context{
@@ -493,7 +829,7 @@ func TestSessionRuntimeCapturesManualMoveOfMarkedWindowAfterDebounce(t *testing.
 	}
 }
 
-func TestSessionRuntimeSchedulesPeriodicObservationOnlyWithRegistry(t *testing.T) {
+func TestSessionRuntimeSchedulesPeriodicObservationToDiscoverFirstRegistry(t *testing.T) {
 	stateHome := filepath.Join(t.TempDir(), "state")
 	t.Setenv("XDG_STATE_HOME", stateHome)
 	runtime, err := newSessionRuntime(&recordingRequester{})
@@ -504,8 +840,11 @@ func TestSessionRuntimeSchedulesPeriodicObservationOnlyWithRegistry(t *testing.T
 	if _, err := runtime.Reconcile(daemonTree("1"), start); err != nil {
 		t.Fatalf("reconcile without registry: %v", err)
 	}
-	if runtime.ObservationDue(start.Add(time.Hour)) {
-		t.Fatal("missing registry enabled periodic tree observation")
+	if runtime.ObservationDue(start.Add(sessionObservationDelay - time.Nanosecond)) {
+		t.Fatal("missing-registry observation became due early")
+	}
+	if !runtime.ObservationDue(start.Add(sessionObservationDelay)) {
+		t.Fatal("missing registry was not scheduled for external-registration discovery")
 	}
 
 	root := filepath.Join(stateHome, "sway-session")
@@ -527,7 +866,7 @@ func TestSessionRuntimeSchedulesPeriodicObservationOnlyWithRegistry(t *testing.T
 	}
 }
 
-func TestSessionRuntimeDoesNotRetryStartupWithoutRegistry(t *testing.T) {
+func TestSessionRuntimeObservesWithoutStartingRestoreWhenRegistryIsMissing(t *testing.T) {
 	stateHome := filepath.Join(t.TempDir(), "state")
 	t.Setenv("XDG_STATE_HOME", stateHome)
 	root := filepath.Join(stateHome, "sway-session")
@@ -541,8 +880,12 @@ func TestSessionRuntimeDoesNotRetryStartupWithoutRegistry(t *testing.T) {
 	if _, err := runtime.Reconcile(daemonTree("1"), time.Unix(275, 0)); err != nil {
 		t.Fatalf("reconcile without registry: %v", err)
 	}
-	if deadline, scheduled := runtime.Deadline(); scheduled {
-		t.Fatalf("missing registry scheduled startup retry at %v", deadline)
+	deadline, scheduled := runtime.Deadline()
+	if !scheduled || deadline != time.Unix(275, 0).Add(sessionObservationDelay) {
+		t.Fatalf("missing registry did not schedule only observation: %v scheduled=%v", deadline, scheduled)
+	}
+	if !runtime.startupDeadline.IsZero() {
+		t.Fatalf("missing registry scheduled startup restore at %v", runtime.startupDeadline)
 	}
 }
 
@@ -1028,6 +1371,31 @@ func placementOnlySnapshot(workspace string, id sessionstate.ContextID) sessions
 			PlacementContexts: []sessionstate.ContextID{id},
 		}},
 	}
+}
+
+func snapshotWorkspaceTargets(snapshot sessionstate.LayoutSnapshot) map[sessionstate.ContextID]string {
+	targets := make(map[sessionstate.ContextID]string)
+	for _, workspace := range snapshot.Workspaces {
+		for _, id := range workspace.PlacementContexts {
+			targets[id] = workspace.Name
+		}
+		var collect func(sessionstate.LayoutNode)
+		collect = func(node sessionstate.LayoutNode) {
+			if node.ContextID != nil {
+				targets[*node.ContextID] = workspace.Name
+			}
+			for _, child := range node.Children {
+				collect(child)
+			}
+		}
+		if workspace.Tiling != nil {
+			collect(*workspace.Tiling)
+		}
+		for _, floating := range workspace.Floating {
+			collect(floating)
+		}
+	}
+	return targets
 }
 
 func exactDaemonSnapshot(workspace string, ids ...sessionstate.ContextID) sessionstate.LayoutSnapshot {

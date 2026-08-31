@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/marang/sway-title-animator/internal/swayipc"
+	"github.com/marang/sway-title-animator/internal/titleindicator"
 )
 
 type TitleAnimator struct {
@@ -155,7 +156,8 @@ func (animator *TitleAnimator) NodeFrameParts(node *Node, parent *Node) (string,
 	icon := iconFor(node)
 	label := animator.WindowLabel(node)
 	statusText := visibleStatusText(node)
-	visiblePrefix := fmt.Sprintf("%s %s%s: ", icon, label, statusText)
+	indicator := applicationIndicator(node.Marks, node.ID)
+	visiblePrefix := fmt.Sprintf("%s%s %s%s: ", indicator, icon, label, statusText)
 	title := node.Name
 	if animator.hasFocus && node.ID == animator.focusedID {
 		tabColumns := int(float64(tabWidthPX(node, parent)) / settings.ApproxCharWidth)
@@ -166,6 +168,28 @@ func (animator *TitleAnimator) NodeFrameParts(node *Node, parent *Node) (string,
 		return visiblePrefix + title, max(0, tabColumns-fixedColumns+2)
 	}
 	return visiblePrefix + title, 0
+}
+
+func applicationIndicator(marks []string, containerID int64) string {
+	state, ok := titleindicator.FromMarks(marks, containerID)
+	if !ok {
+		return ""
+	}
+	var glyph string
+	switch state {
+	case titleindicator.Unregistered:
+		glyph = applicationIndicatorUnregistered
+	case titleindicator.Pending:
+		glyph = applicationIndicatorPending
+	case titleindicator.Registered:
+		glyph = applicationIndicatorRegistered
+	case titleindicator.Pinned:
+		glyph = applicationIndicatorPinned
+	}
+	if glyph == "" {
+		return ""
+	}
+	return glyph + " "
 }
 
 func (animator *TitleAnimator) ApplyFocusedFrame(phase int) {
@@ -303,7 +327,10 @@ func statusBadges(node *Node) []statusBadge {
 func visibleMarkCount(marks []string) int {
 	count := 0
 	for _, mark := range marks {
-		if mark != "" && !strings.HasPrefix(mark, "_") {
+		// Project-owned control marks are compositor metadata, not user badges.
+		// Filtering the stable mark prefix is presentation-only: the animator
+		// never interprets its identity or opens session state.
+		if mark != "" && !strings.HasPrefix(mark, "_") && !strings.HasPrefix(mark, "persist:") {
 			count++
 		}
 	}

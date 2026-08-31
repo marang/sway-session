@@ -14,6 +14,9 @@ optdepends=(
   'libpulse: sound-reactive animation presets via parec'
   'alacritty: persistent work-session windows'
   'herdr>=0.8.2: persistent terminal panes, history, and agent sessions'
+  'flatpak: restore explicitly registered Flatpak desktop applications'
+  'glib2: restore desktop-entry applications through gio'
+  'noto-fonts: recommended Noto Sans Mono glyph coverage for desktop-app indicators'
   'apparmor: secure Codex resume boundary'
 )
 makedepends=('go>=1.26.5')

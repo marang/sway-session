@@ -88,6 +88,26 @@ nfpms:
       - sway
     recommends:
       - pulseaudio-utils
+      - flatpak
+      - apparmor
+      - python3
+    overrides:
+      deb:
+        recommends:
+          - pulseaudio-utils
+          - flatpak
+          - apparmor
+          - python3
+          - libglib2.0-bin
+          - fonts-noto-mono
+      rpm:
+        recommends:
+          - pulseaudio-utils
+          - flatpak
+          - apparmor
+          - python3
+          - glib2
+          - google-noto-sans-mono-fonts
     contents:
       - src: ./README.md
         dst: /usr/share/doc/sway-title-animator/README.md

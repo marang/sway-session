@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/pelletier/go-toml/v2"
 )
@@ -83,6 +85,7 @@ func applyConfig(config Config) {
 	if config.Audio.Motion != nil {
 		audioSettings.Motion = *config.Audio.Motion
 	}
+	applyIndicatorConfig(config.Indicators)
 	applyGlyphConfig(config.Glyphs)
 	iconRules = append(configuredIconRules(config.Icons), iconRules...)
 	for name, animation := range config.Animation {
@@ -187,7 +190,43 @@ func validateRuntimeSettings() error {
 	if err := validateSettings(settings); err != nil {
 		return err
 	}
-	return validateAudioSettings(audioSettings)
+	if err := validateAudioSettings(audioSettings); err != nil {
+		return err
+	}
+	return validateApplicationIndicatorGlyphs()
+}
+
+func validateApplicationIndicatorGlyphs() error {
+	glyphs := []string{
+		applicationIndicatorUnregistered,
+		applicationIndicatorPending,
+		applicationIndicatorRegistered,
+		applicationIndicatorPinned,
+	}
+	seen := make(map[string]struct{}, len(glyphs))
+	columns := 0
+	for _, glyph := range glyphs {
+		if !utf8.ValidString(glyph) || utf8.RuneCountInString(glyph) != 1 {
+			return errors.New("application indicator glyphs must each contain exactly one Unicode character")
+		}
+		character, _ := utf8.DecodeRuneInString(glyph)
+		if !unicode.IsPrint(character) || unicode.IsSpace(character) {
+			return errors.New("application indicator glyphs must be visible characters")
+		}
+		width := textColumns(glyph)
+		if width < 1 || width > 2 {
+			return errors.New("application indicator glyphs must occupy one or two terminal columns")
+		}
+		if columns != 0 && width != columns {
+			return errors.New("application indicator glyphs must have equal terminal width")
+		}
+		columns = width
+		if _, duplicate := seen[glyph]; duplicate {
+			return errors.New("application indicator glyphs must be distinct")
+		}
+		seen[glyph] = struct{}{}
+	}
+	return nil
 }
 
 func applyGlyphConfig(glyphs ConfigGlyphs) {
@@ -208,6 +247,21 @@ func applyGlyphConfig(glyphs ConfigGlyphs) {
 	assignRunes(glyphs.ConstellationStar, &constellationStar)
 	assignRunes(glyphs.CircuitTiles, &circuitTiles)
 	assignRunes(glyphs.CometTrail, &cometTrail)
+}
+
+func applyIndicatorConfig(indicators ConfigIndicators) {
+	if indicators.Unregistered != nil {
+		applicationIndicatorUnregistered = *indicators.Unregistered
+	}
+	if indicators.Pending != nil {
+		applicationIndicatorPending = *indicators.Pending
+	}
+	if indicators.Registered != nil {
+		applicationIndicatorRegistered = *indicators.Registered
+	}
+	if indicators.Pinned != nil {
+		applicationIndicatorPinned = *indicators.Pinned
+	}
 }
 
 func filterKnownPresets(names []string) []string {

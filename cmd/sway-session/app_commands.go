@@ -95,10 +95,12 @@ func executeAppRegisterFocused(arguments []string, deps dependencies) (commandRe
 	for _, candidate := range candidates {
 		operation, err := newRegisterOperation([]sessionstate.WindowApplication{resolution.Window}, []sessionstate.DesktopEntry{candidate}, deps)
 		if err != nil {
+			err = errors.Join(err, discardApplicationOperationChoices(choices, deps))
 			return commandResult{}, failure("app_operation", "prepare focused registration", err.Error())
 		}
 		choice, err := storeApplicationOperation(operation, approvalChoiceLabel(candidate), deps)
 		if err != nil {
+			err = errors.Join(err, discardApplicationOperationChoices(choices, deps))
 			return commandResult{}, failure("app_operation", "store focused registration approval", err.Error())
 		}
 		choices = append(choices, choice)
@@ -107,11 +109,13 @@ func executeAppRegisterFocused(arguments []string, deps dependencies) (commandRe
 	if len(candidates) == 1 {
 		summary, summaryErr := sessionstate.DesktopApprovalSummary(candidates[0])
 		if summaryErr != nil {
+			summaryErr = errors.Join(summaryErr, discardApplicationOperationChoices(choices, deps))
 			return commandResult{}, failure("launcher_trust", "preview desktop launcher", summaryErr.Error())
 		}
 		message = fmt.Sprintf("Register %s on workspace %s for session restore?", summary, resolution.Window.Workspace)
 	}
 	if err := deps.presentApproval(message, choices); err != nil {
+		err = errors.Join(err, discardApplicationOperationChoices(choices, deps))
 		return commandResult{}, failure("approval_ui", "open application registration confirmation", err.Error())
 	}
 	return commandResult{Command: "app register-focused", Message: "Registration confirmation opened."}, nil
@@ -179,6 +183,7 @@ func executeAppRegisterWorkspace(arguments []string, deps dependencies) (command
 	}
 	message := boundedDisplay("Register these applications from workspace "+pendingWindows[0].Workspace+": "+strings.Join(names, ", ")+"?", 4000)
 	if err := deps.presentApproval(message, []sessionstate.ApprovalChoice{choice}); err != nil {
+		err = errors.Join(err, discardApplicationOperationChoices([]sessionstate.ApprovalChoice{choice}, deps))
 		return commandResult{}, failure("approval_ui", "open workspace registration confirmation", err.Error())
 	}
 	return commandResult{Command: "app register-workspace", Message: "Workspace registration confirmation opened."}, nil
@@ -280,7 +285,12 @@ func executeAppRebindFocused(arguments []string, deps dependencies) (commandResu
 	if err := validatePreviewCandidate(candidates[0]); err != nil {
 		return commandResult{}, failure("launcher_trust", "preview rebound desktop launcher", err.Error())
 	}
-	item := sessionstate.ApplicationOperationItem{ContextID: environment.registry.Contexts[index].ID, Window: &window, DesktopID: candidates[0].ID}
+	context := environment.registry.Contexts[index]
+	revision, err := sessionstate.ApplicationOperationContextRevision(context)
+	if err != nil {
+		return commandResult{}, failure("app_operation", "bind application approval to current context", err.Error())
+	}
+	item := sessionstate.ApplicationOperationItem{ContextID: context.ID, ContextRevision: revision, Window: &window, DesktopID: candidates[0].ID}
 	operation := applicationOperation(sessionstate.OperationRebind, []sessionstate.ApplicationOperationItem{item}, deps)
 	if *yes {
 		return applyApplicationOperation(operation, deps, *socketFlag)
@@ -292,10 +302,12 @@ func executeAppRebindFocused(arguments []string, deps dependencies) (commandResu
 	old := environment.registry.Contexts[index]
 	summary, err := sessionstate.DesktopApprovalSummary(candidates[0])
 	if err != nil {
+		err = errors.Join(err, discardApplicationOperationChoices([]sessionstate.ApprovalChoice{choice}, deps))
 		return commandResult{}, failure("launcher_trust", "preview rebound desktop launcher", err.Error())
 	}
 	message := fmt.Sprintf("Rebind %s (%s) to %s?", contextDisplayName(old), launcherDisplay(old.Launcher), summary)
 	if err := deps.presentApproval(message, []sessionstate.ApprovalChoice{choice}); err != nil {
+		err = errors.Join(err, discardApplicationOperationChoices([]sessionstate.ApprovalChoice{choice}, deps))
 		return commandResult{}, failure("approval_ui", "open application rebind confirmation", err.Error())
 	}
 	return commandResult{Command: "app rebind-focused", Message: "Application rebind confirmation opened."}, nil
@@ -323,7 +335,11 @@ func executeAppReapprove(arguments []string, deps dependencies) (commandResult, 
 	if context.Launcher.Kind != sessionstate.LauncherDesktop || context.Launcher.DesktopOrigin != sessionstate.DesktopEntryUser {
 		return commandResult{}, failure("app_reapproval", "reapprove application launcher", "only approved user-local desktop entries require reapproval")
 	}
-	item := sessionstate.ApplicationOperationItem{ContextID: context.ID, DesktopID: context.Launcher.DesktopID}
+	revision, err := sessionstate.ApplicationOperationContextRevision(context)
+	if err != nil {
+		return commandResult{}, failure("app_operation", "bind launcher reapproval to current context", err.Error())
+	}
+	item := sessionstate.ApplicationOperationItem{ContextID: context.ID, ContextRevision: revision, DesktopID: context.Launcher.DesktopID}
 	operation := applicationOperation(sessionstate.OperationReapprove, []sessionstate.ApplicationOperationItem{item}, deps)
 	if *yes {
 		return applyApplicationOperation(operation, deps, "")
@@ -333,6 +349,7 @@ func executeAppReapprove(arguments []string, deps dependencies) (commandResult, 
 		return commandResult{}, failure("app_operation", "store launcher reapproval", err.Error())
 	}
 	if err := deps.presentApproval("Approve the current user-local desktop entry and executable checksums for "+contextDisplayName(context)+"?", []sessionstate.ApprovalChoice{choice}); err != nil {
+		err = errors.Join(err, discardApplicationOperationChoices([]sessionstate.ApprovalChoice{choice}, deps))
 		return commandResult{}, failure("approval_ui", "open launcher reapproval confirmation", err.Error())
 	}
 	return commandResult{Command: "app reapprove", Message: "Launcher reapproval confirmation opened."}, nil
@@ -565,6 +582,23 @@ func storeApplicationOperation(operation sessionstate.ApplicationOperation, labe
 	return sessionstate.ApprovalChoice{Label: label, Token: token}, nil
 }
 
+func discardApplicationOperationChoices(choices []sessionstate.ApprovalChoice, deps dependencies) error {
+	if len(choices) == 0 {
+		return nil
+	}
+	store, err := deps.operationStore()
+	if err != nil {
+		return fmt.Errorf("resolve application operation store for rollback: %w", err)
+	}
+	var discardErrors []error
+	for _, choice := range choices {
+		if err := store.Discard(choice.Token); err != nil {
+			discardErrors = append(discardErrors, err)
+		}
+	}
+	return errors.Join(discardErrors...)
+}
+
 func applyApplicationOperation(operation sessionstate.ApplicationOperation, deps dependencies, socketOverride string) (commandResult, *commandFailure) {
 	if err := operation.Validate(deps.now().UTC()); err != nil {
 		return commandResult{}, failure("app_operation", "validate application approval", err.Error())
@@ -674,6 +708,13 @@ func applyRebindOperation(root string, catalog sessionstate.DesktopCatalog, oper
 		return commandResult{}, classifyStateError("select application to rebind", err)
 	}
 	previous := registry.Contexts[index]
+	currentRevision, err := sessionstate.ApplicationOperationContextRevision(previous)
+	if err != nil || currentRevision != item.ContextRevision {
+		if err == nil {
+			err = errors.New("application context changed while rebind approval was pending")
+		}
+		return commandResult{}, failure("app_stale", "revalidate application rebind", err.Error())
+	}
 	approval, err := sessionstate.PrepareDesktopApproval(root, item.ContextID, entry)
 	if err != nil {
 		return commandResult{}, failure("launcher_trust", "approve rebound desktop launcher", err.Error())
@@ -692,7 +733,7 @@ func applyRebindOperation(root string, catalog sessionstate.DesktopCatalog, oper
 	replacement.State = previous.State
 	replacement.App.DesiredOpen = previous.App.DesiredOpen
 	replacement.App.RestorePolicy = previous.App.RestorePolicy
-	old, err := sessionstate.RebindApplicationContext(root, client, replacement, window.ContainerID)
+	old, replacement, err := sessionstate.RebindApplicationContext(root, client, previous, replacement, window.ContainerID)
 	if err != nil {
 		_ = sessionstate.DiscardDesktopApproval(root, approval)
 		return commandResult{}, classifyStateError("rebind desktop application", err)
@@ -714,6 +755,13 @@ func applyReapproveOperation(root string, catalog sessionstate.DesktopCatalog, o
 		return commandResult{}, classifyStateError("select application to reapprove", err)
 	}
 	previous := registry.Contexts[index]
+	currentRevision, err := sessionstate.ApplicationOperationContextRevision(previous)
+	if err != nil || currentRevision != item.ContextRevision {
+		if err == nil {
+			err = errors.New("application context changed while reapproval was pending")
+		}
+		return commandResult{}, failure("app_stale", "revalidate launcher reapproval", err.Error())
+	}
 	if previous.Launcher.Kind != sessionstate.LauncherDesktop || previous.Launcher.DesktopOrigin != sessionstate.DesktopEntryUser || previous.Launcher.DesktopID != item.DesktopID {
 		return commandResult{}, failure("app_stale", "revalidate launcher reapproval", "application launcher changed while approval was pending")
 	}
@@ -725,20 +773,8 @@ func applyReapproveOperation(root string, catalog sessionstate.DesktopCatalog, o
 	if err != nil {
 		return commandResult{}, failure("launcher_trust", "reapprove desktop launcher", err.Error())
 	}
-	replacement := previous
-	replacement.Launcher = approval.Launcher
-	_, err = sessionstate.UpdateRegistry(root, func(current *sessionstate.Registry) error {
-		currentIndex, err := sessionstate.ResolveContext(*current, string(item.ContextID))
-		if err != nil {
-			return err
-		}
-		if !reflect.DeepEqual(current.Contexts[currentIndex], previous) {
-			return errors.New("application context changed while launcher reapproval was pending")
-		}
-		current.Contexts[currentIndex] = replacement
-		return current.Validate()
-	})
-	if err != nil && !registryContainsExactApplicationContext(root, replacement) {
+	previous, replacement, err := sessionstate.ReapproveApplicationContext(root, item.ContextID, item.ContextRevision, approval.Launcher)
+	if err != nil {
 		_ = sessionstate.DiscardDesktopApproval(root, approval)
 		return commandResult{}, classifyStateError("reapprove desktop launcher", err)
 	}

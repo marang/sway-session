@@ -37,6 +37,14 @@ type JSONFile[T any] struct {
 	syncAfterRename func(*os.File) error
 }
 
+// LockedPrivateDirectory exposes descriptor-relative operations for one
+// verified owner-only directory while WithPrivateDirectoryLock holds its
+// exclusive advisory lock. The descriptor, rather than the mutable pathname,
+// anchors every operation in a compound transaction.
+type LockedPrivateDirectory struct {
+	file *os.File
+}
+
 // CommitOutcomeUnknownError reports a replacement that is already visible in
 // the current filesystem namespace but whose durability could not be
 // confirmed. Callers must reload and reconcile before retrying the mutation or
@@ -74,6 +82,68 @@ func OpenPrivateDirectory(path string, create bool) (*os.File, error) {
 	return openStateDirectory(path, create)
 }
 
+// WithPrivateDirectoryLock runs action while holding an exclusive lock on a
+// symlink-free owner-only directory. All compound file operations must use the
+// supplied descriptor-relative directory so pathname replacement cannot move
+// later steps onto a different inode and lock domain.
+func WithPrivateDirectoryLock(path string, action func(*LockedPrivateDirectory) error) error {
+	if action == nil {
+		return errors.New("private directory action is nil")
+	}
+	directory, err := OpenPrivateDirectory(path, true)
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	if err := lockDirectory(directory, unix.LOCK_EX); err != nil {
+		return err
+	}
+	defer unlockDirectory(directory)
+	return action(&LockedPrivateDirectory{file: directory})
+}
+
+// Create creates one bounded owner-only regular file exactly once.
+func (directory *LockedPrivateDirectory) Create(name string, data []byte) error {
+	if err := directory.validateName(name); err != nil {
+		return err
+	}
+	if len(data) > MaxFileSize {
+		return fmt.Errorf("private file is too large: %d bytes exceeds %d", len(data), MaxFileSize)
+	}
+	return createPrivateFileAt(directory.file, name, data)
+}
+
+// Read reads one bounded owner-only regular file without following symlinks.
+func (directory *LockedPrivateDirectory) Read(name string) ([]byte, error) {
+	if err := directory.validateName(name); err != nil {
+		return nil, err
+	}
+	return readPrivateRegularFileAt(directory.file, name)
+}
+
+// List returns at most max directory-entry names from the pinned directory.
+func (directory *LockedPrivateDirectory) List(max int) ([]string, error) {
+	if directory == nil || directory.file == nil {
+		return nil, errors.New("locked private directory is nil")
+	}
+	return listPrivateFilesAt(directory.file, max)
+}
+
+// Remove removes one verified regular file. A missing file succeeds.
+func (directory *LockedPrivateDirectory) Remove(name string) error {
+	if err := directory.validateName(name); err != nil {
+		return err
+	}
+	return removePrivateFileAt(directory.file, name)
+}
+
+func (directory *LockedPrivateDirectory) validateName(name string) error {
+	if directory == nil || directory.file == nil {
+		return errors.New("locked private directory is nil")
+	}
+	return validatePrivateFileName(name)
+}
+
 // CreatePrivateFile creates one bounded owner-only file exactly once. It is
 // intended for random operation tokens whose names must never be replaced.
 func CreatePrivateFile(directoryPath string, name string, data []byte) error {
@@ -92,6 +162,10 @@ func CreatePrivateFile(directoryPath string, name string, data []byte) error {
 		return err
 	}
 	defer unlockDirectory(directory)
+	return createPrivateFileAt(directory, name, data)
+}
+
+func createPrivateFileAt(directory *os.File, name string, data []byte) error {
 	fd, err := openAt2(int(directory.Fd()), name, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC|unix.O_NOFOLLOW, uint64(RegularFileMode))
 	if err != nil {
 		return fmt.Errorf("create private file: %w", err)
@@ -165,6 +239,16 @@ func ListPrivateFiles(directoryPath string, max int) ([]string, error) {
 		return nil, err
 	}
 	defer unlockDirectory(directory)
+	return listPrivateFilesAt(directory, max)
+}
+
+func listPrivateFilesAt(directory *os.File, max int) ([]string, error) {
+	if max <= 0 {
+		return nil, errors.New("private file list bound must be positive")
+	}
+	if _, err := directory.Seek(0, io.SeekStart); err != nil {
+		return nil, fmt.Errorf("rewind private directory: %w", err)
+	}
 	names := make([]string, 0)
 	for {
 		entries, readErr := directory.ReadDir(128)
@@ -233,6 +317,10 @@ func RemovePrivateFile(directoryPath string, name string) error {
 		return err
 	}
 	defer unlockDirectory(directory)
+	return removePrivateFileAt(directory, name)
+}
+
+func removePrivateFileAt(directory *os.File, name string) error {
 	_, exists, err := inspectTargetAt(directory, name)
 	if err != nil {
 		return err
@@ -504,6 +592,10 @@ func validatePrivateFilePath(directory string, name string) error {
 	if directory == "" || !filepath.IsAbs(directory) || filepath.Clean(directory) != directory {
 		return errors.New("private directory must be a clean absolute path")
 	}
+	return validatePrivateFileName(name)
+}
+
+func validatePrivateFileName(name string) error {
 	if name == "" || name == "." || name == ".." || filepath.Base(name) != name {
 		return errors.New("private filename must be one base name")
 	}

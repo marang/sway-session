@@ -50,6 +50,51 @@ func TestAppRegisterFocusedFlatpakIsExplicitMarkedAndIdempotent(t *testing.T) {
 	}
 }
 
+func TestAppListJSONReturnsOnlyApplicationsSortedByContextID(t *testing.T) {
+	deps := testDependencies(t)
+	root, err := deps.stateRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstID := sessionstate.ContextID("11111111-1111-4111-8111-111111111111")
+	secondID := sessionstate.ContextID("22222222-2222-4222-8222-222222222222")
+	application := func(id sessionstate.ContextID, appID string) sessionstate.Context {
+		return sessionstate.Context{
+			ID: id, Label: appID, Provider: "desktop", State: sessionstate.ContextActive,
+			Launcher: sessionstate.Launcher{Kind: sessionstate.LauncherFlatpak, FlatpakID: appID, FlatpakInstallation: sessionstate.FlatpakUser},
+			App: &sessionstate.Application{
+				Identity: sessionstate.ApplicationIdentity{
+					Protocol: sessionstate.WindowWayland, WaylandAppID: appID, SandboxAppID: appID,
+				},
+				DesiredOpen: true, RestorePolicy: sessionstate.ApplicationRestoreFollow,
+			},
+		}
+	}
+	registry := sessionstate.Registry{Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{
+		application(secondID, "org.example.Second"),
+		{ID: "33333333-3333-4333-8333-333333333333", State: sessionstate.ContextActive, Launcher: sessionstate.Launcher{Kind: sessionstate.LauncherHerdr, Session: "work", Cwd: "/work"}},
+		application(firstID, "org.example.First"),
+	}}
+	if err := sessionstate.RegistryFile(root).Save(registry); err != nil {
+		t.Fatal(err)
+	}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	code := runWith([]string{"--json", "app", "list"}, strings.NewReader(""), &stdout, &stderr, deps)
+	if code != exitSuccess || stderr.Len() != 0 {
+		t.Fatalf("app list failed code=%d stderr=%q", code, stderr.String())
+	}
+	var result commandResult
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("decode app list: %v\n%s", err, stdout.String())
+	}
+	if result.Command != "app list" || len(result.Contexts) != 2 ||
+		result.Contexts[0].ID != firstID || result.Contexts[1].ID != secondID {
+		t.Fatalf("unexpected application list: %+v", result)
+	}
+}
+
 func TestAppStatusAndRegisteredNoOpDoNotRequireDesktopCatalog(t *testing.T) {
 	deps := testDependencies(t)
 	registered := sessionstate.Context{
@@ -150,6 +195,71 @@ func TestAppRegisterFocusedAmbiguityUsesOneTimeTypedSwaynagChoices(t *testing.T)
 	}
 	if code = runWith([]string{"app", "confirm", choices[0].Token}, strings.NewReader(""), &stdout, &stderr, deps); code != exitOperation {
 		t.Fatalf("approval token replay succeeded with code %d", code)
+	}
+}
+
+func TestAppRegisterFocusedRollsBackApprovalWhenPresentationFails(t *testing.T) {
+	deps := testDependencies(t)
+	catalog := testDesktopCatalog(t, map[string]string{
+		"org.example.App.desktop": "[Desktop Entry]\nType=Application\nName=Example App\nExec=/usr/bin/true\nStartupWMClass=Example\n",
+	}, false)
+	deps.desktopCatalog = func() (sessionstate.DesktopCatalog, error) { return catalog, nil }
+	appID := "org.example.App"
+	deps.newSwayClient = func(string) swayRequester {
+		return &appCommandClient{tree: applicationCommandTree(&swayipc.TreeNode{ID: 42, Type: "con", Focused: true, AppID: &appID})}
+	}
+	now := time.Unix(5000, 0).UTC()
+	store := sessionstate.ApplicationOperationStore{
+		RuntimeRoot: t.TempDir(),
+		Now:         func() time.Time { return now },
+		Random:      bytes.NewReader(bytes.Repeat([]byte{6}, 16)),
+	}
+	deps.now = func() time.Time { return now }
+	deps.operationStore = func() (sessionstate.ApplicationOperationStore, error) { return store, nil }
+	deps.presentApproval = func(string, []sessionstate.ApprovalChoice) error { return errors.New("swaynag unavailable") }
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	code := runWith([]string{"app", "register-focused", "--socket", "/run/user/1000/sway.sock"}, strings.NewReader(""), &stdout, &stderr, deps)
+	if code != exitOperation {
+		t.Fatalf("presentation failure exit code = %d stderr=%q", code, stderr.String())
+	}
+	active, err := store.Active()
+	if err != nil || len(active) != 0 {
+		t.Fatalf("failed presenter left a pending approval: %+v err=%v", active, err)
+	}
+}
+
+func TestAppRegisterFocusedRollsBackEarlierChoicesWhenLaterStoreFails(t *testing.T) {
+	deps := testDependencies(t)
+	catalog := testDesktopCatalog(t, map[string]string{
+		"first.desktop":  "[Desktop Entry]\nType=Application\nName=First\nExec=/usr/bin/true\nStartupWMClass=Shared\n",
+		"second.desktop": "[Desktop Entry]\nType=Application\nName=Second\nExec=/usr/bin/true\nStartupWMClass=Shared\n",
+	}, false)
+	deps.desktopCatalog = func() (sessionstate.DesktopCatalog, error) { return catalog, nil }
+	client := &appCommandClient{tree: applicationCommandTree(&swayipc.TreeNode{
+		ID: 43, Type: "con", Focused: true,
+		WindowProperties: swayipc.WindowProperties{Class: "Shared", Instance: "shared"},
+	})}
+	deps.newSwayClient = func(string) swayRequester { return client }
+	now := time.Unix(5100, 0).UTC()
+	store := sessionstate.ApplicationOperationStore{
+		RuntimeRoot: t.TempDir(),
+		Now:         func() time.Time { return now },
+		Random:      bytes.NewReader(bytes.Repeat([]byte{7}, 16)),
+	}
+	deps.now = func() time.Time { return now }
+	deps.operationStore = func() (sessionstate.ApplicationOperationStore, error) { return store, nil }
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	code := runWith([]string{"app", "register-focused", "--socket", "/run/user/1000/sway.sock"}, strings.NewReader(""), &stdout, &stderr, deps)
+	if code != exitOperation {
+		t.Fatalf("partial store failure exit code = %d stderr=%q", code, stderr.String())
+	}
+	active, err := store.Active()
+	if err != nil || len(active) != 0 {
+		t.Fatalf("partial choice creation left an unreachable approval: %+v err=%v", active, err)
 	}
 }
 

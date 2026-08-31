@@ -133,6 +133,22 @@ func FocusedWorkspaceApplications(root *swayipc.TreeNode) ([]WindowApplication, 
 	return windows, nil
 }
 
+// ApplicationWindows returns every eligible normal top-level on a regular
+// workspace. Scratchpad windows remain outside the first desktop persistence
+// release.
+func ApplicationWindows(root *swayipc.TreeNode) ([]WindowApplication, error) {
+	windows := make([]WindowApplication, 0)
+	if err := walkApplicationWindows(root, "", func(window WindowApplication, _ bool) {
+		windows = append(windows, window)
+	}); err != nil {
+		return nil, err
+	}
+	sort.Slice(windows, func(left, right int) bool {
+		return windows[left].ContainerID < windows[right].ContainerID
+	})
+	return windows, nil
+}
+
 // ApplicationWindowByContainer re-observes one exact container before a
 // short-lived approval is applied.
 func ApplicationWindowByContainer(root *swayipc.TreeNode, containerID int64) (WindowApplication, error) {

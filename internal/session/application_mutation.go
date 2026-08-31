@@ -91,14 +91,19 @@ func RegisterApplicationContexts(root string, client SwayRequestClient, contexts
 
 // RebindApplicationContext replaces the exact live identity and typed launcher
 // while transferring the context mark to the newly focused window.
-func RebindApplicationContext(root string, client SwayRequestClient, replacement Context, newContainerID int64) (Context, error) {
+func RebindApplicationContext(root string, client SwayRequestClient, expected Context, replacement Context, newContainerID int64) (Context, Context, error) {
+	expectedRevision, err := ApplicationOperationContextRevision(expected)
+	if err != nil {
+		return Context{}, Context{}, err
+	}
 	var previous Context
+	var applied Context
 	oldContainerID := int64(0)
 	removedOldMark := false
 	addedNewMark := false
 	attemptedOldRemoval := false
 	attemptedNewMark := false
-	_, err := UpdateRegistry(root, func(registry *Registry) error {
+	_, err = UpdateRegistry(root, func(registry *Registry) error {
 		index, err := ResolveContext(*registry, string(replacement.ID))
 		if err != nil {
 			return err
@@ -107,9 +112,20 @@ func RebindApplicationContext(root string, client SwayRequestClient, replacement
 		if previous.App == nil {
 			return errors.New("rebind is only available for desktop application contexts")
 		}
+		currentRevision, err := ApplicationOperationContextRevision(previous)
+		if err != nil || currentRevision != expectedRevision {
+			return errors.New("application context changed while rebind approval was pending")
+		}
+		applied = replacement
+		applied.State = previous.State
+		if applied.App == nil {
+			return errors.New("rebind replacement is not a desktop application context")
+		}
+		applied.App.DesiredOpen = previous.App.DesiredOpen
+		applied.App.RestorePolicy = previous.App.RestorePolicy
 		candidate := *registry
 		candidate.Contexts = append([]Context(nil), registry.Contexts...)
-		candidate.Contexts[index] = replacement
+		candidate.Contexts[index] = applied
 		if err := candidate.Validate(); err != nil {
 			return err
 		}
@@ -131,11 +147,11 @@ func RebindApplicationContext(root string, client SwayRequestClient, replacement
 			}
 			addedNewMark = true
 		}
-		registry.Contexts[index] = replacement
+		registry.Contexts[index] = applied
 		return nil
 	})
-	if err == nil || registryContainsExactContext(root, replacement) {
-		return previous, nil
+	if err == nil || registryContainsExactContext(root, applied) {
+		return previous, applied, nil
 	}
 	var rollbackErrors []error
 	if addedNewMark || attemptedNewMark {
@@ -149,9 +165,42 @@ func RebindApplicationContext(root string, client SwayRequestClient, replacement
 		}
 	}
 	if len(rollbackErrors) != 0 {
-		return Context{}, fmt.Errorf("rebind application: %w; additionally roll back Sway marks: %v", err, errors.Join(rollbackErrors...))
+		return Context{}, Context{}, fmt.Errorf("rebind application: %w; additionally roll back Sway marks: %v", err, errors.Join(rollbackErrors...))
 	}
-	return Context{}, err
+	return Context{}, Context{}, err
+}
+
+// ReapproveApplicationContext replaces only the trusted launcher snapshot
+// after revalidating the reviewed launcher-and-identity revision under the
+// registry lock. Concurrent lifecycle changes remain authoritative.
+func ReapproveApplicationContext(root string, id ContextID, expectedRevision string, launcher Launcher) (Context, Context, error) {
+	var previous Context
+	var replacement Context
+	_, err := UpdateRegistry(root, func(registry *Registry) error {
+		index, err := ResolveContext(*registry, string(id))
+		if err != nil {
+			return err
+		}
+		previous = registry.Contexts[index]
+		currentRevision, err := ApplicationOperationContextRevision(previous)
+		if err != nil || currentRevision != expectedRevision {
+			return errors.New("application context changed while launcher reapproval was pending")
+		}
+		replacement = previous
+		replacement.Launcher = launcher
+		candidate := *registry
+		candidate.Contexts = append([]Context(nil), registry.Contexts...)
+		candidate.Contexts[index] = replacement
+		if err := candidate.Validate(); err != nil {
+			return err
+		}
+		registry.Contexts[index] = replacement
+		return nil
+	})
+	if err == nil || registryContainsExactContext(root, replacement) {
+		return previous, replacement, nil
+	}
+	return Context{}, Context{}, err
 }
 
 // RepairApplicationMark is the safe no-op/status behavior for an already

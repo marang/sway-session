@@ -55,6 +55,12 @@ presets = [
   "spline",
 ]
 
+[indicators]
+unregistered = "○"
+pending = "◔"
+registered = "●"
+pinned = "▲"
+
 [glyphs]
 aurora_bars = "▁▂▃▄▅▆▇█"
 aurora_dots = "·∙•"
@@ -98,19 +104,23 @@ var (
 		Motion:      defaultAudioMotion,
 	}
 
-	auroraBars        = []rune("▁▂▃▄▅▆▇█")
-	auroraDots        = []rune("·∙•")
-	auroraSparkles    = []rune("✦✧")
-	shadeRamp         = []rune(" ·░▒▓█")
-	spectrumBars      = []rune("▁▂▃▄▅▆▇█")
-	spectrumLeft      = []rune("⟨([{<")
-	spectrumRight     = []rune(">}])⟩")
-	radarLevels       = []rune(" ·┄─═●")
-	radarSweep        = []rune("◜◠◝◞◡◟")
-	constellationStar = []rune("✦✧✶✷")
-	circuitTiles      = []rune("─╴╶═╡╞╪┄╍╾╼")
-	cometTrail        = []rune("·░▒▓")
-	iconRules         = []iconRule{
+	auroraBars                       = []rune("▁▂▃▄▅▆▇█")
+	auroraDots                       = []rune("·∙•")
+	auroraSparkles                   = []rune("✦✧")
+	shadeRamp                        = []rune(" ·░▒▓█")
+	spectrumBars                     = []rune("▁▂▃▄▅▆▇█")
+	spectrumLeft                     = []rune("⟨([{<")
+	spectrumRight                    = []rune(">}])⟩")
+	radarLevels                      = []rune(" ·┄─═●")
+	radarSweep                       = []rune("◜◠◝◞◡◟")
+	constellationStar                = []rune("✦✧✶✷")
+	circuitTiles                     = []rune("─╴╶═╡╞╪┄╍╾╼")
+	cometTrail                       = []rune("·░▒▓")
+	applicationIndicatorUnregistered = "○"
+	applicationIndicatorPending      = "◔"
+	applicationIndicatorRegistered   = "●"
+	applicationIndicatorPinned       = "▲"
+	iconRules                        = []iconRule{
 		{"firefox", "🌐"},
 		{"librewolf", "🌐"},
 		{"chromium", "🌐"},
@@ -172,12 +182,13 @@ type AudioSettings struct {
 }
 
 type Config struct {
-	Settings  ConfigSettings            `toml:"settings"`
-	Audio     ConfigAudio               `toml:"audio"`
-	Rotation  ConfigRotation            `toml:"rotation"`
-	Glyphs    ConfigGlyphs              `toml:"glyphs"`
-	Icons     map[string]string         `toml:"icons"`
-	Animation map[string]FrameAnimation `toml:"animation"`
+	Settings   ConfigSettings            `toml:"settings"`
+	Audio      ConfigAudio               `toml:"audio"`
+	Rotation   ConfigRotation            `toml:"rotation"`
+	Indicators ConfigIndicators          `toml:"indicators"`
+	Glyphs     ConfigGlyphs              `toml:"glyphs"`
+	Icons      map[string]string         `toml:"icons"`
+	Animation  map[string]FrameAnimation `toml:"animation"`
 }
 
 type ConfigSettings struct {
@@ -199,6 +210,13 @@ type ConfigAudio struct {
 
 type ConfigRotation struct {
 	Presets []string `toml:"presets"`
+}
+
+type ConfigIndicators struct {
+	Unregistered *string `toml:"unregistered"`
+	Pending      *string `toml:"pending"`
+	Registered   *string `toml:"registered"`
+	Pinned       *string `toml:"pinned"`
 }
 
 type ConfigGlyphs struct {

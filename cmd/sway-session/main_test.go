@@ -39,6 +39,28 @@ func TestHelpListsImplementedCommandContract(t *testing.T) {
 	}
 }
 
+func TestAppHelpDocumentsMachineReadableInventoryAndIndicatorStates(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := run([]string{"app", "--help"}, &stdout, &stderr)
+
+	if exitCode != exitSuccess || stderr.Len() != 0 {
+		t.Fatalf("app help failed code=%d stderr=%q", exitCode, stderr.String())
+	}
+	for _, expected := range []string{
+		"sway-session --json app list",
+		"○ unregistered",
+		"◔ pending",
+		"● registered/follow",
+		"▲ pinned/autostart",
+	} {
+		if !strings.Contains(stdout.String(), expected) {
+			t.Fatalf("app help missing %q:\n%s", expected, stdout.String())
+		}
+	}
+}
+
 func TestDaemonRunsIndependentlyOfTitleAnimator(t *testing.T) {
 	deps := testDependencies(t)
 	ctx, cancel := context.WithCancel(context.Background())

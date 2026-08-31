@@ -368,6 +368,8 @@ func writeCommandUsage(writer io.Writer, name string, spec commandSpec) {
 	}
 	if name == "app" {
 		_, _ = fmt.Fprintln(writer, "Subcommands: register-focused, register-workspace, confirm, status, list, rebind-focused, reapprove, pin, unpin, archive, activate, forget")
+		_, _ = fmt.Fprintln(writer, "Machine-readable inventory: sway-session --json app list")
+		_, _ = fmt.Fprintln(writer, "Indicators after first registration: ○ unregistered, ◔ pending, ● registered/follow, ▲ pinned/autostart")
 	}
 }
 

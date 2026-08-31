@@ -41,6 +41,8 @@ type sessionRuntimeOptions struct {
 	StartedAt           time.Time
 	ApplicationLauncher applicationContextLauncher
 	ApplicationRestore  sessionstate.ApplicationRestoreOptions
+	IndicatorCatalog    func() (sessionstate.DesktopCatalog, error)
+	IndicatorOperations func() ([]sessionstate.ApplicationOperation, error)
 }
 
 type sessionRuntime struct {
@@ -67,6 +69,8 @@ type sessionRuntime struct {
 	applicationLauncher applicationContextLauncher
 	applicationCursor   sessionstate.ContextID
 	expectedMoves       map[int64]expectedMove
+	indicatorCatalog    func() (sessionstate.DesktopCatalog, error)
+	indicatorOperations func() ([]sessionstate.ApplicationOperation, error)
 }
 
 type expectedMove struct {
@@ -122,6 +126,8 @@ func newSessionRuntimeWithOptions(client swayRequester, options sessionRuntimeOp
 		startupComplete:     len(previous.Workspaces) == 0,
 		applicationLauncher: options.ApplicationLauncher,
 		expectedMoves:       make(map[int64]expectedMove),
+		indicatorCatalog:    options.IndicatorCatalog,
+		indicatorOperations: options.IndicatorOperations,
 	}
 	if options.CompositorID != "" {
 		applicationState := sessionstate.ApplicationSessionState{}
@@ -146,6 +152,64 @@ func newSessionRuntimeWithOptions(client swayRequester, options sessionRuntimeOp
 		runtime.applications = coordinator
 	}
 	return runtime, nil
+}
+
+// ReconcileIndicators is deliberately independent from core capture and
+// restore. Presentation failures are reported by the caller but never prevent
+// session convergence.
+func (runtime *sessionRuntime) ReconcileIndicators(root *Node) (bool, error) {
+	if runtime == nil || runtime.shutdown {
+		return false, nil
+	}
+	registry, available, err := runtime.loadRegistry()
+	if err != nil {
+		return false, err
+	}
+	if !available {
+		registry = sessionstate.Registry{Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{}}
+	}
+	catalog := sessionstate.DesktopCatalog{}
+	operations := []sessionstate.ApplicationOperation{}
+	if registry.Preferences.DesktopIndicators {
+		if runtime.indicatorCatalog == nil {
+			return false, errors.New("desktop application indicator catalog is unavailable")
+		}
+		catalog, err = runtime.indicatorCatalog()
+		if err != nil {
+			return false, fmt.Errorf("load desktop application indicator catalog: %w", err)
+		}
+		if runtime.indicatorOperations != nil {
+			operations, err = runtime.indicatorOperations()
+			if err != nil {
+				return false, fmt.Errorf("load pending desktop application indicators: %w", err)
+			}
+		}
+	}
+	actions, err := sessionstate.PlanApplicationIndicatorActions(root, registry, catalog, operations)
+	if err != nil {
+		return false, fmt.Errorf("plan desktop application indicators: %w", err)
+	}
+	refresh := false
+	var actionErrors []error
+	for _, action := range actions {
+		verb := "unmark"
+		if action.Kind == sessionstate.ApplicationIndicatorAdd {
+			verb = "mark --add"
+		}
+		command := fmt.Sprintf("[con_id=%d] %s %s", action.ContainerID, verb, quoteSwayString(action.Mark))
+		if err := runtime.runSwayCommand(command); err != nil {
+			var unknown *swayipc.CommandOutcomeUnknownError
+			var invalid *swayipc.CommandResponseInvalidError
+			wrapped := fmt.Errorf("apply desktop application indicator on container %d: %w", action.ContainerID, err)
+			if errors.As(err, &unknown) || errors.As(err, &invalid) {
+				return true, errors.Join(errors.Join(actionErrors...), wrapped)
+			}
+			actionErrors = append(actionErrors, wrapped)
+			continue
+		}
+		refresh = true
+	}
+	return refresh, errors.Join(actionErrors...)
 }
 
 // HandleEvent records live user intent before the next tree reconciliation.
@@ -224,7 +288,14 @@ func (runtime *sessionRuntime) discardExpectedMove(containerID int64) {
 
 // Reconcile applies placement for newly mapped stable application IDs. It
 // returns true only when the caller must obtain a fresh tree before capture.
-func (runtime *sessionRuntime) Reconcile(root *Node, now time.Time) (bool, error) {
+func (runtime *sessionRuntime) Reconcile(root *Node, now time.Time) (needsRefresh bool, resultErr error) {
+	var degraded []error
+	defer func() {
+		if len(degraded) != 0 {
+			degraded = append(degraded, resultErr)
+			resultErr = errors.Join(degraded...)
+		}
+	}()
 	if runtime == nil || runtime.shutdown {
 		return false, nil
 	}
@@ -235,7 +306,11 @@ func (runtime *sessionRuntime) Reconcile(root *Node, now time.Time) (bool, error
 	}
 	if !available {
 		runtime.registryPresent = false
-		runtime.observeDeadline = time.Time{}
+		// Registration is performed by a separate CLI process. Keep one slow
+		// observation armed even before contexts.json exists so the first
+		// successful registration cannot be missed if its Sway mark event races
+		// the registry commit.
+		runtime.observeDeadline = now.Add(sessionObservationDelay)
 		runtime.startupDeadline = time.Time{}
 		return false, err
 	}
@@ -250,8 +325,12 @@ func (runtime *sessionRuntime) Reconcile(root *Node, now time.Time) (bool, error
 	// Sway does not emit an IPC event for every geometry change (notably
 	// resize). Keep a low-frequency semantic observation active only while a
 	// persistent registry exists so those changes still reach the debouncer.
+	// The missing-registry branch above schedules a separate discovery tick.
 	runtime.observeDeadline = now.Add(sessionObservationDelay)
-	applicationRefresh, registry, applicationErr := runtime.reconcileApplications(root, registry, now)
+	applicationRefresh, registry, applicationDegraded, applicationErr := runtime.reconcileApplications(root, registry, now)
+	if applicationDegraded != nil {
+		degraded = append(degraded, applicationDegraded)
+	}
 	if applicationRefresh || applicationErr != nil {
 		return applicationRefresh, applicationErr
 	}
@@ -259,12 +338,19 @@ func (runtime *sessionRuntime) Reconcile(root *Node, now time.Time) (bool, error
 	if err != nil {
 		return false, err
 	}
+	failedMoveContexts := make(map[sessionstate.ContextID]struct{})
 	if len(actions) != 0 {
+		placementRefresh := false
+		failedContexts := make(map[sessionstate.ContextID]struct{})
 		for _, action := range actions {
+			if _, failed := failedContexts[action.ContextID]; failed {
+				continue
+			}
 			// Seeing an unmarked stable application ID proves this is a newly
 			// mapped context for the current startup. Record that fact before
 			// sending the mark command so an ambiguous response cannot make the
 			// subsequent marked observation look like a pre-existing window.
+			_, alreadyEligible := runtime.restoreEligible[action.ContextID]
 			if action.Kind == sessionstate.PlacementAddMark {
 				runtime.restoreEligible[action.ContextID] = struct{}{}
 				if runtime.startupComplete {
@@ -274,13 +360,40 @@ func (runtime *sessionRuntime) Reconcile(root *Node, now time.Time) (bool, error
 			if err := runtime.applyPlacementAction(action); err != nil {
 				var unknown *swayipc.CommandOutcomeUnknownError
 				var invalid *swayipc.CommandResponseInvalidError
-				return errors.As(err, &unknown) || errors.As(err, &invalid), err
+				if errors.As(err, &unknown) || errors.As(err, &invalid) {
+					return true, err
+				}
+				if action.Kind == sessionstate.PlacementAddMark && !alreadyEligible {
+					delete(runtime.restoreEligible, action.ContextID)
+				}
+				failedContexts[action.ContextID] = struct{}{}
+				if action.Kind == sessionstate.PlacementMoveWorkspace {
+					failedMoveContexts[action.ContextID] = struct{}{}
+				}
+				degraded = append(degraded, err)
+				continue
 			}
+			placementRefresh = true
 		}
-		return true, nil
+		if placementRefresh {
+			return true, nil
+		}
 	}
 
-	captured, err := sessionstate.CaptureLayout(root, registry)
+	captureRegistry := registry
+	if len(failedMoveContexts) != 0 {
+		captureRegistry.Contexts = append([]sessionstate.Context(nil), registry.Contexts...)
+		for index := range captureRegistry.Contexts {
+			if _, failed := failedMoveContexts[captureRegistry.Contexts[index].ID]; failed {
+				// A window whose absolute placement was rejected is not trustworthy
+				// capture evidence for this pass. Treat it as temporarily absent so
+				// PreserveMissingPlacements keeps its last-good target without
+				// blocking unrelated contexts from being captured.
+				captureRegistry.Contexts[index].State = sessionstate.ContextArchived
+			}
+		}
+	}
+	captured, err := sessionstate.CaptureLayout(root, captureRegistry)
 	if err != nil {
 		return false, err
 	}
@@ -339,17 +452,17 @@ func (runtime *sessionRuntime) Reconcile(root *Node, now time.Time) (bool, error
 	return false, err
 }
 
-func (runtime *sessionRuntime) reconcileApplications(root *Node, registry sessionstate.Registry, now time.Time) (bool, sessionstate.Registry, error) {
+func (runtime *sessionRuntime) reconcileApplications(root *Node, registry sessionstate.Registry, now time.Time) (bool, sessionstate.Registry, error, error) {
 	if runtime.applications == nil {
-		return false, registry, nil
+		return false, registry, nil, nil
 	}
 	groups, err := sessionstate.ObserveApplicationGroups(root, registry)
 	if err != nil {
-		return false, registry, err
+		return false, registry, nil, err
 	}
 	plan, err := runtime.applications.Plan(registry, groups, now)
 	if err != nil {
-		return false, registry, err
+		return false, registry, nil, err
 	}
 	if len(plan.DesiredOpen) != 0 {
 		type desiredChange struct {
@@ -379,11 +492,12 @@ func (runtime *sessionRuntime) reconcileApplications(root *Node, registry sessio
 			return current.Validate()
 		})
 		if err != nil {
-			return false, registry, fmt.Errorf("persist desktop application desired-open state: %w", err)
+			return false, registry, nil, fmt.Errorf("persist desktop application desired-open state: %w", err)
 		}
 		registry = updated
 	}
 	refresh := false
+	var degradedErrors []error
 	err = sessionstate.InspectRegistryLocked(runtime.root, func(current sessionstate.Registry) error {
 		registry = current
 		currentGroups, err := sessionstate.ObserveApplicationGroups(root, current)
@@ -404,13 +518,28 @@ func (runtime *sessionRuntime) reconcileApplications(root *Node, registry sessio
 		if err != nil {
 			return err
 		}
+		failedContexts := make(map[sessionstate.ContextID]struct{})
 		for _, action := range placement {
+			if _, failed := failedContexts[action.ContextID]; failed {
+				continue
+			}
+			_, alreadyEligible := runtime.restoreEligible[action.ContextID]
 			if action.Kind == sessionstate.PlacementAddMark && !runtime.startupComplete {
 				runtime.restoreEligible[action.ContextID] = struct{}{}
 			}
 			if err := runtime.applyPlacementAction(action); err != nil {
-				refresh = true
-				return err
+				var unknown *swayipc.CommandOutcomeUnknownError
+				var invalid *swayipc.CommandResponseInvalidError
+				if errors.As(err, &unknown) || errors.As(err, &invalid) {
+					refresh = true
+					return err
+				}
+				if action.Kind == sessionstate.PlacementAddMark && !alreadyEligible {
+					delete(runtime.restoreEligible, action.ContextID)
+				}
+				failedContexts[action.ContextID] = struct{}{}
+				degradedErrors = append(degradedErrors, err)
+				continue
 			}
 			refresh = true
 		}
@@ -459,9 +588,10 @@ func (runtime *sessionRuntime) reconcileApplications(root *Node, registry sessio
 				launchErrors = append(launchErrors, fmt.Errorf("launch desktop application %q: %w", context.ID, err))
 			}
 		}
-		return errors.Join(launchErrors...)
+		degradedErrors = append(degradedErrors, launchErrors...)
+		return nil
 	})
-	return refresh, registry, err
+	return refresh, registry, errors.Join(degradedErrors...), err
 }
 
 func rotateApplicationLaunchCandidates(contexts []sessionstate.Context, after sessionstate.ContextID) []sessionstate.Context {
@@ -868,7 +998,7 @@ func (runtime *sessionRuntime) ObservationDue(now time.Time) bool {
 }
 
 func (runtime *sessionRuntime) ArmObservationRetry(now time.Time) {
-	if runtime != nil && !runtime.shutdown && runtime.registryPresent {
+	if runtime != nil && !runtime.shutdown {
 		runtime.observeDeadline = now.Add(sessionObservationDelay)
 	}
 }
@@ -944,6 +1074,23 @@ func reconcilePersistentSession(client swayRequester, runtime *sessionRuntime, r
 	// the periodic observation armed and continue on a later turn; reaching the
 	// bound is expected progress, not a failed stabilization attempt.
 	const maximumObservations = 4
+	var diagnostics []error
+	seenDiagnostics := make(map[string]struct{})
+	collect := func(err error) {
+		if err == nil {
+			return
+		}
+		if _, duplicate := seenDiagnostics[err.Error()]; duplicate {
+			return
+		}
+		seenDiagnostics[err.Error()] = struct{}{}
+		diagnostics = append(diagnostics, err)
+	}
+	defer func() {
+		if report != nil && len(diagnostics) != 0 {
+			report(errors.Join(diagnostics...))
+		}
+	}()
 	if runtime != nil {
 		runtime.ArmObservationRetry(time.Now())
 	}
@@ -959,10 +1106,10 @@ func reconcilePersistentSession(client swayRequester, runtime *sessionRuntime, r
 			return
 		}
 		refresh, err := runtime.Reconcile(root, time.Now())
-		if err != nil && report != nil {
-			report(err)
-		}
-		if !refresh {
+		collect(err)
+		indicatorRefresh, indicatorErr := runtime.ReconcileIndicators(root)
+		collect(indicatorErr)
+		if !refresh && !indicatorRefresh {
 			return
 		}
 	}

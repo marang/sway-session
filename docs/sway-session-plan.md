@@ -1,7 +1,8 @@
 # Persistent Sway Work Sessions
 
 Status: Core Herdr work-session restore, the dedicated session-daemon process,
-and explicit desktop application group restore are implemented through LAB-98.
+explicit desktop application group restore, and its visible integration are
+implemented through LAB-99.
 
 Tracking issue: [LAB-80](https://linear.app/riotbox/issue/LAB-80/add-persistent-sway-work-session-restoration)
 
@@ -52,8 +53,11 @@ or window recorder.
 
 ## Decisions
 
-1. Only explicitly registered contexts are managed. Temporary browser windows,
-   dialogs, and unrelated terminals remain untouched.
+1. Only explicitly registered contexts are managed. Unrelated terminals and
+   Sway-classifiable XWayland transient/dialog windows remain untouched. Native
+   Wayland surfaces sharing one `app_id` cannot be classified by parent/type in
+   Sway 1.12 and therefore remain application-group presence until LAB-93 adds
+   stable per-window tags.
 2. Every context has an immutable UUID. Human labels and provider references,
    such as `LAB-123`, are mutable metadata rather than technical identity.
 3. A managed window uses the mark `persist:<uuid>` and a stable generic
@@ -86,6 +90,10 @@ or window recorder.
 12. A typed launcher identity is registry-wide unique. For Herdr, the identity
     is the launcher kind plus validated session name, including for archived
     contexts.
+13. Desktop persistence state crosses the process seam only as one versioned,
+    underscore-prefixed, container-scoped Sway mark per eligible window. The
+    daemon derives it from registry and approval state; the animator renders it
+    without reading session state.
 
 ## Architecture
 
@@ -98,6 +106,8 @@ or window recorder.
   animation + audio                    session runtime
             |                                |
   title_format only                    observe / mark / place
+            ^                                |
+            +---- hidden indicator mark -----+
                                              |
                                       capture / layout restore
                                              |
@@ -115,6 +125,7 @@ or window recorder.
 `sway-title-animator` is an independent animation/audio process. It:
 
 - reads only the tree data needed to render and update title formats;
+- renders a configured glyph for a versioned presentation-only indicator mark;
 - optionally analyzes live audio for sound-reactive presets; and
 - does not open session state, session sockets, the registry, or Herdr.
 
@@ -124,8 +135,11 @@ explicit long-running `daemon`. It:
 - owns the context registry;
 - lists, registers, archives, activates, restores, and purges contexts;
 - detects an already mapped context before launching anything;
-- invokes only configured, typed launcher adapters; and
+- invokes only configured, typed launcher adapters;
 - observes registered windows, repairs stable marks, and restores placement;
+- derives unregistered, pending, registered/follow, and pinned presentation
+  marks for eligible normal top-levels after the durable indicator preference
+  is activated;
 - captures debounced semantic layout snapshots and applies bounded restore
   plans for layout, size, floating state, fullscreen state, and focus;
 - hosts the existing narrow session-start and Codex-report endpoints without
@@ -241,6 +255,9 @@ validated values, not executable command fragments. Executable paths and fixed
 argument templates come from trusted program configuration or compiled adapter
 policy. The registry remains bounded at 128 contexts, matching the worst-case
 two placement operations per context under the 256-action planner limit.
+`desktop_indicators` is a durable activation latch: it starts false, becomes
+true in the first successful desktop-registration transaction, and is not reset
+by later archive or forget operations.
 
 ### Explicit desktop application identities
 
@@ -294,6 +311,17 @@ Pinned state always remains desired-open but is not a same-session process
 watchdog. Scratchpad windows count as presence, while their placement remains
 out of scope until LAB-92.
 
+When the activation latch is true, the daemon derives exactly one
+presentation-only state per eligible normal top-level: unregistered, pending
+approval, registered/follow, or pinned. Active typed approval files are
+owner-only, bounded, expiring inputs. Consumed, expired, stale, or superseded
+operations cannot keep a window pending. Herdr contexts and Sway-classifiable
+XWayland dialogs are suppressed. The daemon publishes one globally unique,
+container-scoped versioned hidden Sway mark per eligible window and repairs it
+during normal observation; mark failures are consolidated as a degraded
+diagnostic and never block restore. The animator maps that mark to the
+configurable `○`, `◔`, `●`, or `▲` default immediately before the app icon.
+
 New unique anchors are moved to their saved workspace and marked without
 focus. Anchors mapped during startup may participate in the saved outer layout;
 late anchors receive placement only and never trigger a disruptive full-layout
@@ -346,8 +374,10 @@ never trigger or postpone state writes by themselves.
 
 Because Sway does not publish an IPC event for every resize or geometry
 change, an existing registry also enables a low-frequency semantic `GET_TREE`
-observation. Unchanged trees do not schedule writes, and a missing registry
-keeps this observation disabled.
+observation. Unchanged trees do not schedule writes. A missing registry keeps
+capture disabled but retains one slow discovery observation so the first
+registration by a separate CLI process cannot be missed if its mark event
+races the registry commit.
 
 Before extracting a restorable tree, capture inspects the complete workspace.
 If it finds an unregistered tiled leaf alongside a managed leaf, it records the
@@ -459,6 +489,10 @@ sway-session app reapprove [--yes] <context>
 sway-session app pin|unpin|archive|activate <context>
 sway-session app forget --yes <context>
 ```
+
+`sway-session --json app list` returns only desktop-application contexts in a
+stable UUID order. Its records can include machine-local launcher paths and
+approval checksums, so the output remains private operational state.
 
 Commands accept an exact canonical UUID or an unambiguous exact human label.
 Human-readable output uses labels first and retains the full UUID so duplicate
@@ -608,8 +642,10 @@ catches windows mapped after that refresh. The animator may start, stop, or be
 absent without changing session capture or restore behavior.
 
 Session persistence is opt-in and disabled by default for existing users until
-configured. Removing the one-shot restore line stops automatic launches without
-deleting state.
+configured. Removing the one-shot restore line stops automatic Herdr context
+launches without deleting state. Desired-open desktop applications are restored
+by the daemon itself; unpin, archive, or forget them before disabling that
+behavior, or stop configuring the daemon.
 
 ## Failure behavior
 
@@ -705,6 +741,18 @@ deleting state.
 - Yield placement, structural restore, and focus to live user activity.
 - Keep scratchpad and standards-based per-window identity in LAB-92/LAB-93.
 
+### Phase 8: Visible integration and release
+
+- Publish four application-level states through one versioned hidden Sway mark
+  owned by `sway-session daemon`.
+- Render configurable equal-width Noto Sans Mono defaults before the app icon
+  without giving the animator registry or restore responsibility.
+- Ship the one-shot startup stanza, optional registration binding, structured
+  app inventory, optional Flatpak/GIO dependencies, and consolidated degraded
+  diagnostics.
+- Validate the process split, packaging, AppArmor documentation, independent
+  reviews, and real Sway behavior on disposable workspace 98 or higher.
+
 ## Test matrix
 
 Automated tests must cover:
@@ -733,6 +781,8 @@ Automated tests must cover:
 - application-group adoption, profile-picker transitions, last-window close
   grace, pinned state, two-launch concurrency, daemon restart, Sway reload,
   compositor replacement, late mapping, ambiguity, and user interruption;
+- inactive/active indicator mode, pending approval expiry, four-state marker
+  convergence, hidden-mark cleanup, glyph validation, and exact title ordering;
 - bounded XDG desktop-entry precedence, hidden tombstones, malformed-entry
   fail-closed behavior, and explicit catalog invalidation;
 - archive, activate, and purge transitions;

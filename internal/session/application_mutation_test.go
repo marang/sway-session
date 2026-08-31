@@ -70,6 +70,101 @@ func TestRegisterRollsBackAttemptedMarkWhenUnknownOutcomeCannotBeObserved(t *tes
 	}
 }
 
+func TestRebindPreservesLifecycleChangedAfterApprovalWasReviewed(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state")
+	expected := flatpakApplicationContext("org.example.Old", "org.example.Old")
+	expected.ID = testContextID
+	expected.App.DesiredOpen = true
+	if err := RegistryFile(root).Save(Registry{Version: ContextsSchemaVersion, Contexts: []Context{expected}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := UpdateRegistry(root, func(registry *Registry) error {
+		registry.Contexts[0].App.RestorePolicy = ApplicationRestorePinned
+		return registry.Validate()
+	}); err != nil {
+		t.Fatal(err)
+	}
+	replacement := flatpakApplicationContext("org.example.New", "org.example.New")
+	replacement.ID = expected.ID
+	client := &mutationSwayClient{tree: applicationTree(appWindow(42, true, "org.example.New", "", "", "org.example.New"))}
+
+	if _, _, err := RebindApplicationContext(root, client, expected, replacement, 42); err != nil {
+		t.Fatalf("lifecycle-only change invalidated rebind approval: %v", err)
+	}
+	var registry Registry
+	if err := RegistryFile(root).LoadInto(&registry); err != nil {
+		t.Fatal(err)
+	}
+	if registry.Contexts[0].Launcher.FlatpakID != "org.example.New" || registry.Contexts[0].App.RestorePolicy != ApplicationRestorePinned {
+		t.Fatalf("rebind did not merge reviewed identity with current lifecycle: %+v", registry.Contexts[0])
+	}
+}
+
+func TestRebindRejectsLauncherChangedAfterApprovalWasReviewed(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state")
+	expected := flatpakApplicationContext("org.example.Old", "org.example.Old")
+	expected.ID = testContextID
+	if err := RegistryFile(root).Save(Registry{Version: ContextsSchemaVersion, Contexts: []Context{expected}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := UpdateRegistry(root, func(registry *Registry) error {
+		registry.Contexts[0].Launcher.FlatpakID = "org.example.Concurrent"
+		registry.Contexts[0].App.Identity.WaylandAppID = "org.example.Concurrent"
+		registry.Contexts[0].App.Identity.SandboxAppID = "org.example.Concurrent"
+		return registry.Validate()
+	}); err != nil {
+		t.Fatal(err)
+	}
+	replacement := flatpakApplicationContext("org.example.New", "org.example.New")
+	replacement.ID = expected.ID
+	client := &mutationSwayClient{tree: applicationTree(appWindow(42, true, "org.example.New", "", "", "org.example.New"))}
+
+	if _, _, err := RebindApplicationContext(root, client, expected, replacement, 42); err == nil {
+		t.Fatal("rebind accepted a launcher changed after approval")
+	}
+	if client.commandCalls != 0 {
+		t.Fatalf("stale rebind crossed the Sway mutation boundary: %d commands", client.commandCalls)
+	}
+}
+
+func TestReapprovePreservesLifecycleChangedAfterApprovalWasReviewed(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state")
+	digest := strings.Repeat("a", 64)
+	expected := desktopApplicationContext("local.example.desktop", "local.example")
+	expected.ID = testContextID
+	expected.Launcher.DesktopOrigin = DesktopEntryUser
+	expected.Launcher.DesktopPath = "/home/example/.local/share/applications/local.example.desktop"
+	expected.Launcher.DesktopEntrySHA256 = digest
+	expected.Launcher.ApprovedDesktopPath = "/home/example/.local/state/sway-session/desktop-approvals/local.example.desktop"
+	expected.Launcher.ApprovedExecutablePath = "/home/example/.local/bin/example"
+	expected.Launcher.ApprovedExecutableSHA256 = digest
+	expected.App.DesiredOpen = true
+	if err := RegistryFile(root).Save(Registry{Version: ContextsSchemaVersion, Contexts: []Context{expected}}); err != nil {
+		t.Fatal(err)
+	}
+	revision, err := ApplicationOperationContextRevision(expected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := UpdateRegistry(root, func(registry *Registry) error {
+		registry.Contexts[0].App.RestorePolicy = ApplicationRestorePinned
+		return registry.Validate()
+	}); err != nil {
+		t.Fatal(err)
+	}
+	launcher := expected.Launcher
+	launcher.DesktopEntrySHA256 = strings.Repeat("b", 64)
+	launcher.ApprovedExecutableSHA256 = strings.Repeat("b", 64)
+
+	_, replacement, err := ReapproveApplicationContext(root, expected.ID, revision, launcher)
+	if err != nil {
+		t.Fatalf("lifecycle-only change invalidated reapproval: %v", err)
+	}
+	if replacement.Launcher.DesktopEntrySHA256 != strings.Repeat("b", 64) || replacement.App.RestorePolicy != ApplicationRestorePinned {
+		t.Fatalf("reapproval did not merge reviewed launcher with current lifecycle: %+v", replacement)
+	}
+}
+
 func TestPinnedRestorePolicyForcesDesiredOpen(t *testing.T) {
 	context := flatpakApplicationContext("org.example.App", "org.example.App")
 	context.ID = testContextID

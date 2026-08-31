@@ -51,6 +51,9 @@ func AlacrittyHerdrArguments(context Context, herdrExecutable string) ([]string,
 	if err := context.Validate(); err != nil {
 		return nil, fmt.Errorf("validate context: %w", err)
 	}
+	if context.Launcher.Kind != LauncherHerdr {
+		return nil, fmt.Errorf("herdr launcher does not support context launcher kind %q", context.Launcher.Kind)
+	}
 	if !filepath.IsAbs(herdrExecutable) {
 		return nil, errors.New("herdr executable must be an absolute path")
 	}
@@ -73,14 +76,15 @@ func AlacrittyHerdrArguments(context Context, herdrExecutable string) ([]string,
 // Launch creates one terminal with a stable Wayland app ID and a typed Herdr
 // session attachment. No registry value is interpreted by a shell.
 func (launcher AlacrittyHerdrLauncher) Launch(context Context) error {
-	if err := context.Validate(); err != nil {
-		return fmt.Errorf("validate context: %w", err)
-	}
 	if launcher.Starter == nil {
 		return errors.New("process starter is nil")
 	}
 	if !filepath.IsAbs(launcher.Alacritty) || !filepath.IsAbs(launcher.Herdr) {
 		return errors.New("launcher executables must be absolute paths")
+	}
+	arguments, err := AlacrittyHerdrArguments(context, launcher.Herdr)
+	if err != nil {
+		return err
 	}
 	info, err := os.Stat(context.Launcher.Cwd)
 	if err != nil {
@@ -88,10 +92,6 @@ func (launcher AlacrittyHerdrLauncher) Launch(context Context) error {
 	}
 	if !info.IsDir() {
 		return fmt.Errorf("project path %s is not a directory", context.Launcher.Cwd)
-	}
-	arguments, err := AlacrittyHerdrArguments(context, launcher.Herdr)
-	if err != nil {
-		return err
 	}
 	return launcher.Starter.Start(ProcessSpec{
 		Name:        launcher.Alacritty,

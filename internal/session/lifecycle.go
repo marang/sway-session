@@ -73,7 +73,10 @@ func AddContext(registry *Registry, context Context) error {
 			return fmt.Errorf("context ID %q is already registered", context.ID)
 		}
 		if current.Launcher.identity() == context.Launcher.identity() {
-			return fmt.Errorf("launcher session %q is already registered by context %q", context.Launcher.Session, current.ID)
+			return fmt.Errorf("launcher identity %q is already registered by context %q", context.Launcher.identity().value, current.ID)
+		}
+		if current.App != nil && context.App != nil && applicationIdentitiesOverlap(current.App.Identity, context.App.Identity) {
+			return fmt.Errorf("application identity is already registered by context %q", current.ID)
 		}
 	}
 	registry.Contexts = append(registry.Contexts, context)

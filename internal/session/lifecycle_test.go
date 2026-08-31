@@ -58,6 +58,41 @@ func TestLifecycleMutationsValidateStateAndLauncherIdentity(t *testing.T) {
 	}
 }
 
+func TestAddContextRejectsOverlappingApplicationIdentityWithoutMutation(t *testing.T) {
+	first := Context{
+		ID:    testContextID,
+		State: ContextActive,
+		Launcher: Launcher{
+			Kind:          LauncherDesktop,
+			DesktopID:     "first.desktop",
+			DesktopOrigin: DesktopEntrySystem,
+			DesktopPath:   "/usr/share/applications/first.desktop",
+		},
+		App: &Application{
+			Identity: ApplicationIdentity{
+				Protocol:     WindowWayland,
+				WaylandAppID: "shared.app",
+			},
+			RestorePolicy: ApplicationRestoreFollow,
+		},
+	}
+	registry := Registry{Version: ContextsSchemaVersion, Contexts: []Context{first}}
+	second := first
+	second.ID = ContextID("6ba7b810-9dad-41d1-80b4-00c04fd430c8")
+	second.Launcher.DesktopID = "second.desktop"
+	second.Launcher.DesktopPath = "/usr/share/applications/second.desktop"
+	secondApp := *first.App
+	secondApp.Identity.StartupWMClass = "ResolverHintDoesNotDisambiguate"
+	second.App = &secondApp
+
+	if err := AddContext(&registry, second); err == nil {
+		t.Fatal("expected overlapping application identity rejection")
+	}
+	if len(registry.Contexts) != 1 || registry.Contexts[0].ID != first.ID {
+		t.Fatalf("failed AddContext mutated registry: %+v", registry.Contexts)
+	}
+}
+
 func testValidContext(id ContextID) Context {
 	return Context{
 		ID: id, State: ContextActive,

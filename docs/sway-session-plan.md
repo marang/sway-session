@@ -1,6 +1,7 @@
 # Persistent Sway Work Sessions
 
-Status: Implemented on the LAB-80 feature branch; pending merge
+Status: Core Herdr work-session restore implemented; explicitly registered
+desktop-application restore is being added under LAB-95
 
 Tracking issue: [LAB-80](https://linear.app/riotbox/issue/LAB-80/add-persistent-sway-work-session-restoration)
 
@@ -11,10 +12,12 @@ context owns one outer Alacritty window backed by one named Herdr session.
 Sway restores the outer window's workspace and layout, while Herdr restores
 the terminal panes, pane history, and resumable agents inside that window.
 
-The feature is split between the existing long-running title animator and a
-new `sway-session` command. Both programs live in this repository and share
-small internal packages for bounded Sway IPC, state, identity, and restore
-planning.
+The feature is split between the existing long-running title animator and the
+`sway-session` command. Both programs live in this repository and share small
+internal packages for bounded Sway IPC, state, identity, and restore planning.
+The LAB-95 extension reuses that architecture for explicitly registered normal
+desktop applications; it does not turn session restore into an automatic
+process or window recorder.
 
 ## Goals
 
@@ -31,6 +34,9 @@ planning.
 - Preserve the existing AppArmor boundary around Codex and avoid exposing the
   general Herdr control socket.
 - Keep runtime state private, versioned, atomic, and outside Git.
+- Let explicitly registered normal desktop applications share the existing
+  UUID, mark, workspace, and layout model without persisting their private
+  in-application state.
 
 ## Non-goals
 
@@ -52,8 +58,9 @@ planning.
 3. A managed window uses the mark `persist:<uuid>` and a stable generic
    application ID derived from the UUID. Provider names never appear in the
    application ID contract.
-4. Closing a window does not deactivate its context. The context opens again
-   on the next restore unless explicitly archived.
+4. Closing a Herdr context window does not deactivate its context. The context
+   opens again on the next restore unless explicitly archived. Registered
+   desktop applications instead persist their explicit desired-open state.
 5. `archive` is reversible. `purge` is the only operation that permanently
    removes context state and requests removal of the corresponding Herdr
    session and pane history.
@@ -64,8 +71,11 @@ planning.
 8. The first version supports exactly one outer Alacritty/Herdr window per
    context. Repeated restore operations reuse that window instead of creating
    duplicates.
-9. Launch metadata is typed. The first launcher kind is `herdr`; no state file
-   contains a command interpreted by a shell.
+9. Launch metadata is a validated tagged union. Registry schema version 1
+   contained only `herdr`; version 2 also models system desktop entries,
+   approved user-local desktop entries, and Flatpak application IDs. No state
+   file contains a generic command, argument vector, environment, or value
+   interpreted by a shell.
 10. Codex does not receive access to the general Herdr control socket. Native
     resume metadata crosses a narrow, validated reporting boundary.
 11. A workspace containing both managed and unregistered tiled windows
@@ -135,10 +145,12 @@ The default state root is:
 ${XDG_STATE_HOME:-$HOME/.local/state}/sway-session/
 ```
 
-It contains two files with separate writers:
+It contains two active documents with separate writers and, after migration,
+one dedicated rollback document:
 
 ```text
 contexts.json   # written by sway-session
+contexts.v1.json # exact rollback evidence after the v1 -> v2 migration
 layout.json     # written by sway-title-animator
 ```
 
@@ -160,21 +172,27 @@ layer reports that condition with a typed error and returns the visible
 candidate; callers must reload and reconcile before retrying the mutation or
 performing dependent external side effects.
 
-"Preserve the last valid version" has a deliberately fail-closed meaning in
-version 1: an invalid new candidate never replaces the valid on-disk file, and
-a failed load never replaces a caller's already loaded in-memory value. If the
-primary file is already malformed when a process starts, the process reports an
-actionable error and does not automatically fall back to a `.bak` copy. A future
-disk-recovery design would require generations or tombstones so an old backup
-cannot resurrect an archived or purged context.
+"Preserve the last valid version" has a deliberately fail-closed meaning: an
+invalid new candidate never replaces the valid on-disk file, and a failed load
+never replaces a caller's already loaded in-memory value. The one supported
+registry migration preserves the exact valid version-1 bytes as owner-only
+`contexts.v1.json` before atomically installing version 2. That rollback file
+is evidence for deliberate manual recovery and is never an automatic fallback.
+Malformed or unknown-version input is left byte-for-byte untouched and does not
+create a rollback file. A general disk-recovery design would require generations
+or tombstones so an old backup cannot resurrect an archived or purged context.
 
 ### Context registry
 
-The exact schema will be finalized with tests, but its semantic shape is:
+The registry schema is version 2. Existing valid version-1 Herdr registries are
+migrated automatically as described above. Its Herdr-compatible shape is:
 
 ```json
 {
-  "version": 1,
+  "version": 2,
+  "preferences": {
+    "desktop_indicators": false
+  },
   "contexts": [
     {
       "id": "immutable-uuid",
@@ -192,11 +210,36 @@ The exact schema will be finalized with tests, but its semantic shape is:
 ```
 
 `provider` and `label` are optional presentation metadata. Launcher fields are
-validated values, not executable command fragments. Executable paths and
-fixed argument templates come from trusted program configuration or compiled
-adapter policy. Version 1 bounds the registry at 128 contexts, matching the
-worst-case two placement operations per context under the 256-action planner
-limit.
+validated values, not executable command fragments. Executable paths and fixed
+argument templates come from trusted program configuration or compiled adapter
+policy. The registry remains bounded at 128 contexts, matching the worst-case
+two placement operations per context under the 256-action planner limit.
+
+### Explicit desktop application identities
+
+The version-2 registry adds `desktop` and `flatpak` launcher variants alongside
+the unchanged `herdr` variant. A desktop context stores application-level
+desired-open state and either `follow` or `pinned` restore policy. Its window
+identity stores only exact compositor-visible values: Wayland app ID, or the
+XWayland class and instance pair, plus optional `StartupWMClass` resolver
+metadata and Flatpak sandbox application ID. Titles, URLs, profile names,
+arguments, environments, and application-private session data are forbidden.
+
+System desktop launchers store a resolved desktop-file ID and path. User-local
+desktop launchers additionally store the approved desktop-file checksum and,
+when the approved executable is user-owned, its absolute path and checksum.
+Flatpak launchers store a validated application ID and the system or user
+installation. Launcher identity is registry-wide unique. Application identities
+must also be non-overlapping; `StartupWMClass` is a resolution hint and never a
+way to distinguish two otherwise identical live windows.
+
+The bounded XDG catalog follows desktop-file precedence, including hidden
+tombstones and nested desktop-file IDs. A malformed higher-precedence entry
+claims its ID and fails closed instead of exposing a lower-precedence launcher.
+The catalog is only discovery metadata: origin, ownership, mutability, hashes,
+and installation state must be revalidated at registration and again before a
+launch. This schema/catalog slice is tracked by
+[LAB-96](https://linear.app/riotbox/issue/LAB-96/add-versioned-desktop-application-identities-and-registry-migration).
 
 ### Layout snapshot
 
@@ -581,6 +624,12 @@ Automated tests must cover:
 - floating geometry clamping;
 - one-window-per-context duplicate prevention;
 - registry-wide typed launcher-identity uniqueness;
+- version-1 to version-2 registry migration with exact owner-only rollback
+  evidence and no fallback for malformed or unknown input;
+- mixed Herdr, system-desktop, approved user-local, and Flatpak identities;
+- Wayland, XWayland, sandbox, and ambiguous application-identity fixtures;
+- bounded XDG desktop-entry precedence, hidden tombstones, malformed-entry
+  fail-closed behavior, and explicit catalog invalidation;
 - archive, activate, and purge transitions;
 - typed launcher validation and absence of shell evaluation;
 - per-context and per-workspace failure isolation;
@@ -600,7 +649,12 @@ Manual evidence must distinguish:
 ## Deferred extensions
 
 - Multiple outer windows per context via explicit child identities.
-- Additional typed launchers for other terminal multiplexers or applications.
+- Additional typed launchers beyond the implemented Herdr identity and the
+  explicitly registered desktop/Flatpak application design.
+- Scratchpad restoration for registered applications, tracked in LAB-92.
+- Generic per-window application identity after stable `xdg-toplevel-tag`
+  support is available, tracked in LAB-93.
+- Privileged or `pkexec` desktop application restore, tracked in LAB-94.
 - A stable declarative-layout backend after upstream Sway support is released.
 - Optional retention policies for archived Herdr history.
 - A richer interactive session browser after the core CLI is proven reliable.

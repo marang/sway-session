@@ -1,6 +1,7 @@
 package session
 
 import (
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math"
@@ -10,7 +11,7 @@ import (
 )
 
 const (
-	ContextsSchemaVersion = 1
+	ContextsSchemaVersion = 2
 	LayoutSchemaVersion   = 1
 	MaxContexts           = 128
 )
@@ -24,12 +25,49 @@ const (
 
 type LauncherKind string
 
-const LauncherHerdr LauncherKind = "herdr"
+const (
+	LauncherHerdr   LauncherKind = "herdr"
+	LauncherDesktop LauncherKind = "desktop"
+	LauncherFlatpak LauncherKind = "flatpak"
+)
+
+type DesktopEntryOrigin string
+
+const (
+	DesktopEntrySystem DesktopEntryOrigin = "system"
+	DesktopEntryUser   DesktopEntryOrigin = "user"
+)
+
+type FlatpakInstallation string
+
+const (
+	FlatpakSystem FlatpakInstallation = "system"
+	FlatpakUser   FlatpakInstallation = "user"
+)
+
+type WindowProtocol string
+
+const (
+	WindowWayland  WindowProtocol = "wayland"
+	WindowXWayland WindowProtocol = "xwayland"
+)
+
+type ApplicationRestorePolicy string
+
+const (
+	ApplicationRestoreFollow ApplicationRestorePolicy = "follow"
+	ApplicationRestorePinned ApplicationRestorePolicy = "pinned"
+)
 
 // Registry is the versioned contexts.json document written by sway-session.
 type Registry struct {
-	Version  int       `json:"version"`
-	Contexts []Context `json:"contexts"`
+	Version     int                 `json:"version"`
+	Preferences RegistryPreferences `json:"preferences"`
+	Contexts    []Context           `json:"contexts"`
+}
+
+type RegistryPreferences struct {
+	DesktopIndicators bool `json:"desktop_indicators"`
 }
 
 type Context struct {
@@ -38,12 +76,45 @@ type Context struct {
 	Provider string       `json:"provider,omitempty"`
 	State    ContextState `json:"state"`
 	Launcher Launcher     `json:"launcher"`
+	App      *Application `json:"app,omitempty"`
 }
 
+// Launcher is a validated tagged union. Fields for launcher kinds other than
+// Kind must remain empty, so persistent state never turns into a generic
+// command or argument store.
 type Launcher struct {
-	Kind    LauncherKind `json:"kind"`
-	Session string       `json:"session"`
-	Cwd     string       `json:"cwd"`
+	Kind LauncherKind `json:"kind"`
+
+	Session string `json:"session,omitempty"`
+	Cwd     string `json:"cwd,omitempty"`
+
+	DesktopID                string             `json:"desktop_id,omitempty"`
+	DesktopOrigin            DesktopEntryOrigin `json:"desktop_origin,omitempty"`
+	DesktopPath              string             `json:"desktop_path,omitempty"`
+	DesktopEntrySHA256       string             `json:"desktop_entry_sha256,omitempty"`
+	ApprovedExecutablePath   string             `json:"approved_executable_path,omitempty"`
+	ApprovedExecutableSHA256 string             `json:"approved_executable_sha256,omitempty"`
+
+	FlatpakID           string              `json:"flatpak_id,omitempty"`
+	FlatpakInstallation FlatpakInstallation `json:"flatpak_installation,omitempty"`
+}
+
+type Application struct {
+	Identity      ApplicationIdentity      `json:"identity"`
+	DesiredOpen   bool                     `json:"desired_open"`
+	RestorePolicy ApplicationRestorePolicy `json:"restore_policy"`
+}
+
+// ApplicationIdentity contains only stable compositor-visible identifiers and
+// desktop metadata. It deliberately excludes titles, process arguments, URLs,
+// profiles, and application-private state.
+type ApplicationIdentity struct {
+	Protocol       WindowProtocol `json:"protocol"`
+	WaylandAppID   string         `json:"wayland_app_id,omitempty"`
+	X11Class       string         `json:"x11_class,omitempty"`
+	X11Instance    string         `json:"x11_instance,omitempty"`
+	StartupWMClass string         `json:"startup_wm_class,omitempty"`
+	SandboxAppID   string         `json:"sandbox_app_id,omitempty"`
 }
 
 // LayoutSnapshot is the versioned layout.json document written by the daemon.
@@ -133,6 +204,7 @@ func (registry *Registry) Validate() error {
 	}
 	seen := make(map[ContextID]struct{}, len(registry.Contexts))
 	seenLaunchers := make(map[launcherIdentity]int, len(registry.Contexts))
+	seenApplications := make([]applicationIdentityRecord, 0, len(registry.Contexts))
 	for index := range registry.Contexts {
 		context := &registry.Contexts[index]
 		if err := context.validate(); err != nil {
@@ -145,25 +217,61 @@ func (registry *Registry) Validate() error {
 		identity := context.Launcher.identity()
 		if previous, exists := seenLaunchers[identity]; exists {
 			return fmt.Errorf(
-				"contexts[%d]: launcher %q session %q is already used by contexts[%d]",
+				"contexts[%d]: launcher %q identity %q is already used by contexts[%d]",
 				index,
 				identity.kind,
-				identity.session,
+				identity.value,
 				previous,
 			)
 		}
 		seenLaunchers[identity] = index
+		if context.App != nil {
+			for _, previous := range seenApplications {
+				if applicationIdentitiesOverlap(context.App.Identity, previous.identity) {
+					return fmt.Errorf("contexts[%d]: application identity overlaps contexts[%d]", index, previous.index)
+				}
+			}
+			seenApplications = append(seenApplications, applicationIdentityRecord{identity: context.App.Identity, index: index})
+		}
 	}
 	return nil
 }
 
 type launcherIdentity struct {
-	kind    LauncherKind
-	session string
+	kind  LauncherKind
+	value string
+}
+
+type applicationIdentityRecord struct {
+	identity ApplicationIdentity
+	index    int
+}
+
+func applicationIdentitiesOverlap(left ApplicationIdentity, right ApplicationIdentity) bool {
+	if left.Protocol != right.Protocol {
+		return false
+	}
+	primaryMatches := left.WaylandAppID == right.WaylandAppID
+	if left.Protocol == WindowXWayland {
+		primaryMatches = left.X11Class == right.X11Class && left.X11Instance == right.X11Instance
+	}
+	if !primaryMatches {
+		return false
+	}
+	return left.SandboxAppID == "" || right.SandboxAppID == "" || left.SandboxAppID == right.SandboxAppID
 }
 
 func (launcher Launcher) identity() launcherIdentity {
-	return launcherIdentity{kind: launcher.Kind, session: launcher.Session}
+	switch launcher.Kind {
+	case LauncherHerdr:
+		return launcherIdentity{kind: launcher.Kind, value: launcher.Session}
+	case LauncherDesktop:
+		return launcherIdentity{kind: launcher.Kind, value: launcher.DesktopID}
+	case LauncherFlatpak:
+		return launcherIdentity{kind: launcher.Kind, value: launcher.FlatpakID}
+	default:
+		return launcherIdentity{kind: launcher.Kind}
+	}
 }
 
 func (context *Context) validate() error {
@@ -179,7 +287,34 @@ func (context *Context) validate() error {
 	if context.State != ContextActive && context.State != ContextArchived {
 		return fmt.Errorf("invalid state %q", context.State)
 	}
-	return context.Launcher.validate()
+	if err := context.Launcher.validate(); err != nil {
+		return err
+	}
+	switch context.Launcher.Kind {
+	case LauncherHerdr:
+		if context.App != nil {
+			return errors.New("herdr context must not contain desktop application state")
+		}
+	case LauncherDesktop, LauncherFlatpak:
+		if context.App == nil {
+			return errors.New("desktop application launcher requires application state")
+		}
+		if err := context.App.validate(); err != nil {
+			return fmt.Errorf("invalid application state: %w", err)
+		}
+		if context.Launcher.Kind == LauncherDesktop && context.App.Identity.SandboxAppID != "" {
+			return errors.New("desktop launcher must not contain a Flatpak sandbox identity")
+		}
+		if context.Launcher.Kind == LauncherFlatpak {
+			if context.App.Identity.SandboxAppID != context.Launcher.FlatpakID {
+				return errors.New("flatpak window sandbox identity must match launcher application ID")
+			}
+			if !validFlatpakID(context.App.Identity.SandboxAppID) {
+				return errors.New("flatpak window sandbox identity must be a valid Flatpak application ID")
+			}
+		}
+	}
+	return nil
 }
 
 // Validate checks one context independently of a registry.
@@ -191,9 +326,19 @@ func (context *Context) Validate() error {
 }
 
 func (launcher *Launcher) validate() error {
-	if launcher.Kind != LauncherHerdr {
+	switch launcher.Kind {
+	case LauncherHerdr:
+		return launcher.validateHerdr()
+	case LauncherDesktop:
+		return launcher.validateDesktop()
+	case LauncherFlatpak:
+		return launcher.validateFlatpak()
+	default:
 		return fmt.Errorf("unsupported launcher kind %q", launcher.Kind)
 	}
+}
+
+func (launcher *Launcher) validateHerdr() error {
 	if launcher.Session == "default" {
 		return errors.New("launcher session name \"default\" is reserved by Herdr and cannot be purged safely")
 	}
@@ -208,6 +353,123 @@ func (launcher *Launcher) validate() error {
 	}
 	if containsControl(launcher.Cwd) {
 		return errors.New("launcher cwd must not contain control characters")
+	}
+	if launcher.hasDesktopFields() || launcher.hasFlatpakFields() {
+		return errors.New("herdr launcher must not contain desktop or Flatpak fields")
+	}
+	return nil
+}
+
+func (launcher *Launcher) validateDesktop() error {
+	if launcher.Session != "" || launcher.Cwd != "" || launcher.hasFlatpakFields() {
+		return errors.New("desktop launcher must not contain Herdr or Flatpak fields")
+	}
+	if err := validateDesktopID(launcher.DesktopID); err != nil {
+		return fmt.Errorf("invalid desktop ID: %w", err)
+	}
+	if err := validateAbsoluteFilePath("desktop path", launcher.DesktopPath, ".desktop"); err != nil {
+		return err
+	}
+	switch launcher.DesktopOrigin {
+	case DesktopEntrySystem:
+		if launcher.DesktopEntrySHA256 != "" || launcher.ApprovedExecutablePath != "" || launcher.ApprovedExecutableSHA256 != "" {
+			return errors.New("system desktop launcher must not contain user approval fields")
+		}
+	case DesktopEntryUser:
+		if err := validateSHA256("desktop entry", launcher.DesktopEntrySHA256); err != nil {
+			return err
+		}
+		if (launcher.ApprovedExecutablePath == "") != (launcher.ApprovedExecutableSHA256 == "") {
+			return errors.New("approved executable path and checksum must either both be present or both be absent")
+		}
+		if launcher.ApprovedExecutablePath != "" {
+			if err := validateAbsoluteFilePath("approved executable path", launcher.ApprovedExecutablePath, ""); err != nil {
+				return err
+			}
+			if err := validateSHA256("approved executable", launcher.ApprovedExecutableSHA256); err != nil {
+				return err
+			}
+		}
+	default:
+		return fmt.Errorf("unsupported desktop entry origin %q", launcher.DesktopOrigin)
+	}
+	return nil
+}
+
+func (launcher *Launcher) validateFlatpak() error {
+	if launcher.Session != "" || launcher.Cwd != "" || launcher.hasDesktopFields() {
+		return errors.New("flatpak launcher must not contain Herdr or desktop fields")
+	}
+	if !validFlatpakID(launcher.FlatpakID) {
+		return errors.New("flatpak application ID must be a valid reverse-DNS D-Bus name")
+	}
+	switch launcher.FlatpakInstallation {
+	case FlatpakSystem, FlatpakUser:
+	default:
+		return fmt.Errorf("unsupported Flatpak installation %q", launcher.FlatpakInstallation)
+	}
+	return nil
+}
+
+func (launcher *Launcher) hasDesktopFields() bool {
+	return launcher.DesktopID != "" || launcher.DesktopOrigin != "" || launcher.DesktopPath != "" ||
+		launcher.DesktopEntrySHA256 != "" || launcher.ApprovedExecutablePath != "" || launcher.ApprovedExecutableSHA256 != ""
+}
+
+func (launcher *Launcher) hasFlatpakFields() bool {
+	return launcher.FlatpakID != "" || launcher.FlatpakInstallation != ""
+}
+
+func (application *Application) validate() error {
+	if application == nil {
+		return errors.New("application state is nil")
+	}
+	if err := application.Identity.validate(); err != nil {
+		return err
+	}
+	switch application.RestorePolicy {
+	case ApplicationRestoreFollow, ApplicationRestorePinned:
+	default:
+		return fmt.Errorf("unsupported restore policy %q", application.RestorePolicy)
+	}
+	return nil
+}
+
+func (identity *ApplicationIdentity) validate() error {
+	if identity == nil {
+		return errors.New("application identity is nil")
+	}
+	for name, value := range map[string]string{
+		"Wayland app ID": identity.WaylandAppID,
+		"X11 class":      identity.X11Class,
+		"X11 instance":   identity.X11Instance,
+		"StartupWMClass": identity.StartupWMClass,
+		"sandbox app ID": identity.SandboxAppID,
+	} {
+		if err := validateIdentityValue(name, value); err != nil {
+			return err
+		}
+	}
+	switch identity.Protocol {
+	case WindowWayland:
+		if identity.WaylandAppID == "" {
+			return errors.New("wayland identity requires an app ID")
+		}
+		if identity.X11Class != "" || identity.X11Instance != "" {
+			return errors.New("wayland identity must not contain X11 class or instance")
+		}
+	case WindowXWayland:
+		if identity.WaylandAppID != "" {
+			return errors.New("XWayland identity must not contain a Wayland app ID")
+		}
+		if identity.X11Class == "" || identity.X11Instance == "" {
+			return errors.New("XWayland identity requires both class and instance")
+		}
+	default:
+		return fmt.Errorf("unsupported window protocol %q", identity.Protocol)
+	}
+	if identity.SandboxAppID != "" && !validBusName(identity.SandboxAppID) {
+		return errors.New("sandbox app ID must be a valid D-Bus name")
 	}
 	return nil
 }
@@ -422,6 +684,102 @@ func validateMetadata(name string, value string) error {
 		return fmt.Errorf("%s must not contain control characters", name)
 	}
 	return nil
+}
+
+func validateDesktopID(value string) error {
+	if value == "" || value != strings.TrimSpace(value) || containsControl(value) {
+		return errors.New("desktop ID must be non-empty, trimmed, and contain no control characters")
+	}
+	if len(value) > 512 {
+		return errors.New("desktop ID must be at most 512 bytes")
+	}
+	if strings.ContainsAny(value, `/\\`) || !strings.HasSuffix(value, ".desktop") || value == ".desktop" {
+		return errors.New("desktop ID must be one path-free name ending in .desktop")
+	}
+	return nil
+}
+
+func validateAbsoluteFilePath(name string, value string, suffix string) error {
+	if value == "" || !filepath.IsAbs(value) {
+		return fmt.Errorf("%s must be an absolute path", name)
+	}
+	if filepath.Clean(value) != value {
+		return fmt.Errorf("%s must be a clean absolute path", name)
+	}
+	if len(value) > 4096 || containsControl(value) {
+		return fmt.Errorf("%s must be at most 4096 bytes and contain no control characters", name)
+	}
+	if suffix != "" && !strings.HasSuffix(value, suffix) {
+		return fmt.Errorf("%s must end in %s", name, suffix)
+	}
+	return nil
+}
+
+func validateSHA256(name string, value string) error {
+	if len(value) != 64 || value != strings.ToLower(value) {
+		return fmt.Errorf("%s SHA-256 must contain 64 lowercase hexadecimal characters", name)
+	}
+	decoded, err := hex.DecodeString(value)
+	if err != nil || len(decoded) != 32 {
+		return fmt.Errorf("%s SHA-256 must contain 64 lowercase hexadecimal characters", name)
+	}
+	return nil
+}
+
+func validateIdentityValue(name string, value string) error {
+	if value == "" {
+		return nil
+	}
+	if value != strings.TrimSpace(value) || containsControl(value) {
+		return fmt.Errorf("%s must be trimmed and contain no control characters", name)
+	}
+	if len(value) > 256 {
+		return fmt.Errorf("%s must be at most 256 bytes", name)
+	}
+	return nil
+}
+
+// validBusName implements the conservative common subset used by D-Bus
+// well-known names and Flatpak application IDs. Flatpak itself remains the
+// authority for whether an installed ID can be launched.
+func validBusName(value string) bool {
+	if len(value) == 0 || len(value) > 255 || !strings.Contains(value, ".") {
+		return false
+	}
+	for _, component := range strings.Split(value, ".") {
+		if component == "" || component[0] >= '0' && component[0] <= '9' {
+			return false
+		}
+		for _, character := range component {
+			if character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' ||
+				character >= '0' && character <= '9' || character == '_' || character == '-' {
+				continue
+			}
+			return false
+		}
+	}
+	return true
+}
+
+// validFlatpakID applies Flatpak's stricter application-ID conventions on top
+// of the D-Bus shape: at least three components, lowercase domain components,
+// and hyphens only in the final application component.
+func validFlatpakID(value string) bool {
+	if !validBusName(value) {
+		return false
+	}
+	components := strings.Split(value, ".")
+	if len(components) < 3 {
+		return false
+	}
+	for _, component := range components[:len(components)-1] {
+		for _, character := range component {
+			if character >= 'A' && character <= 'Z' || character == '-' {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func containsControl(value string) bool {

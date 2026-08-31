@@ -172,6 +172,14 @@ one Alacritty window backed by one named [Herdr](https://herdr.dev/) session.
 Sway restores the outer workspace and layout; Herdr restores the terminal tabs,
 panes, supported agent sessions, and pane screen history.
 
+On first access, valid version-1 context registries are atomically upgraded to
+version 2. The exact old bytes remain owner-only in `contexts.v1.json` beside
+the active registry as manual rollback evidence. Malformed or unknown-version
+state is never migrated, and the rollback file is never loaded automatically.
+Version 2 is the shared foundation for explicitly registered normal desktop
+applications; their user-facing registration and restore commands are still
+being delivered under LAB-95.
+
 Install Alacritty and Herdr, then enable Herdr pane history in
 `${XDG_CONFIG_HOME:-$HOME/.config}/herdr/config.toml`:
 

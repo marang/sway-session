@@ -35,6 +35,35 @@ func TestAlacrittyHerdrLauncherPassesMetadataWithoutShellEvaluation(t *testing.T
 	}
 }
 
+func TestAlacrittyHerdrLauncherRejectsOtherTypedLauncherKinds(t *testing.T) {
+	context := Context{
+		ID:    testContextID,
+		State: ContextActive,
+		Launcher: Launcher{
+			Kind:          LauncherDesktop,
+			DesktopID:     "org.example.App.desktop",
+			DesktopOrigin: DesktopEntrySystem,
+			DesktopPath:   "/usr/share/applications/org.example.App.desktop",
+		},
+		App: &Application{
+			Identity:      ApplicationIdentity{Protocol: WindowWayland, WaylandAppID: "org.example.App"},
+			RestorePolicy: ApplicationRestoreFollow,
+		},
+	}
+	starter := &launcherRecordingStarter{}
+	launcher := AlacrittyHerdrLauncher{Alacritty: "/usr/bin/alacritty", Herdr: "/usr/bin/herdr", Starter: starter}
+
+	if _, err := AlacrittyHerdrArguments(context, "/usr/bin/herdr"); err == nil {
+		t.Fatal("Herdr argument adapter accepted a desktop launcher")
+	}
+	if err := launcher.Launch(context); err == nil {
+		t.Fatal("Herdr process adapter accepted a desktop launcher")
+	}
+	if starter.spec.Name != "" {
+		t.Fatalf("rejected desktop context started a process: %+v", starter.spec)
+	}
+}
+
 func TestFindPendingAlacrittyLaunchesMatchesOnlyCompleteTypedArgv(t *testing.T) {
 	procRoot := t.TempDir()
 	context := testValidContext(testContextID)

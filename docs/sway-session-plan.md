@@ -129,6 +129,16 @@ session-state component:
 - invokes only configured, typed launcher adapters; and
 - reports failures without preventing other contexts from restoring.
 
+The desktop-app registration surface resolves only the currently focused
+eligible top-level window, or a previewed current-workspace batch. A healthy
+already-registered focus is a status/mark-repair no-op rather than a toggle.
+Ambiguity is presented through owner-only, single-use, two-minute operation
+tokens under `${XDG_RUNTIME_DIR}/sway-session/app-operations`; the token schema
+cannot carry executable commands, arguments, environments, titles, or URIs.
+`swaynag` receives only a fixed root-owned `sway-session app confirm <token>`
+action. The Codex profile denies those token files, and neither application
+registration nor confirmation is exposed by `sessionrequest`.
+
 Herdr owns everything inside the terminal window:
 
 - named sessions;
@@ -152,7 +162,12 @@ one dedicated rollback document:
 contexts.json   # written by sway-session
 contexts.v1.json # exact rollback evidence after the v1 -> v2 migration
 layout.json     # written by sway-title-animator
+desktop-approvals/ # immutable approved user-local .desktop snapshots
 ```
+
+Short-lived confirmation tokens live in the owner-only runtime directory, not
+the persistent state root. At most 256 token files are retained; expired tokens
+are pruned and every confirmation consumes its token before applying work.
 
 The directory uses mode `0700`; regular state files use mode `0600`. The state
 directory is opened without following symlinks, then all reads, temporary-file
@@ -226,8 +241,9 @@ metadata and Flatpak sandbox application ID. Titles, URLs, profile names,
 arguments, environments, and application-private session data are forbidden.
 
 System desktop launchers store a resolved desktop-file ID and path. User-local
-desktop launchers additionally store the approved desktop-file checksum and,
-when the approved executable is user-owned, its absolute path and checksum.
+desktop launchers additionally store an owner-only immutable desktop-file
+snapshot and the source desktop-file checksum and, when the approved executable
+is user-owned, its absolute path and checksum.
 Flatpak launchers store a validated application ID and the system or user
 installation. Launcher identity is registry-wide unique. Application identities
 must also be non-overlapping; `StartupWMClass` is a resolution hint and never a
@@ -385,6 +401,15 @@ sway-session activate <context>
 sway-session purge [--yes] <context>
 sway-session request-start --session <name> --workspace <number> [--cwd <path>] [--label <label>] [--provider <name>]
 sway-session report-codex-session # Codex SessionStart hook only
+sway-session app register-focused [--desktop-id <id>] [--yes]
+sway-session app register-workspace [--yes]
+sway-session app confirm <one-time-token>
+sway-session app status
+sway-session app list
+sway-session app rebind-focused [--desktop-id <id>] [--yes] <context>
+sway-session app reapprove [--yes] <context>
+sway-session app pin|unpin|archive|activate <context>
+sway-session app forget --yes <context>
 ```
 
 Commands accept an exact canonical UUID or an unambiguous exact human label.
@@ -396,6 +421,15 @@ option rather than parsing presentation text.
 keeps its registry record and Herdr state. `activate` reverses archive. `purge`
 requires deliberate confirmation in an interactive terminal, with an explicit
 non-interactive confirmation flag for automation.
+
+Desktop registration is explicit and applies an optimistic stable mark only as
+part of the serialized registry transaction. A rejected mark or failed state
+commit compensates the other side; an ambiguous IPC outcome is resolved with a
+fresh tree instead of replaying the command. User-local launcher source or
+executable changes block until `reapprove`. `rebind-focused` shows and then
+atomically replaces the old launcher/identity while transferring the stable
+mark. Administrative and indirect entries (`pkexec`, `sudo`, shells, `env`, and
+similar wrappers) are rejected; privileged launch support remains LAB-94.
 
 Herdr session names follow Herdr's 64-byte ASCII name contract. The reserved
 name `default` is rejected because Herdr maps it to non-deletable default state.

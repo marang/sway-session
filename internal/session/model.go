@@ -92,6 +92,7 @@ type Launcher struct {
 	DesktopOrigin            DesktopEntryOrigin `json:"desktop_origin,omitempty"`
 	DesktopPath              string             `json:"desktop_path,omitempty"`
 	DesktopEntrySHA256       string             `json:"desktop_entry_sha256,omitempty"`
+	ApprovedDesktopPath      string             `json:"approved_desktop_path,omitempty"`
 	ApprovedExecutablePath   string             `json:"approved_executable_path,omitempty"`
 	ApprovedExecutableSHA256 string             `json:"approved_executable_sha256,omitempty"`
 
@@ -372,11 +373,14 @@ func (launcher *Launcher) validateDesktop() error {
 	}
 	switch launcher.DesktopOrigin {
 	case DesktopEntrySystem:
-		if launcher.DesktopEntrySHA256 != "" || launcher.ApprovedExecutablePath != "" || launcher.ApprovedExecutableSHA256 != "" {
+		if launcher.DesktopEntrySHA256 != "" || launcher.ApprovedDesktopPath != "" || launcher.ApprovedExecutablePath != "" || launcher.ApprovedExecutableSHA256 != "" {
 			return errors.New("system desktop launcher must not contain user approval fields")
 		}
 	case DesktopEntryUser:
 		if err := validateSHA256("desktop entry", launcher.DesktopEntrySHA256); err != nil {
+			return err
+		}
+		if err := validateAbsoluteFilePath("approved desktop path", launcher.ApprovedDesktopPath, ".desktop"); err != nil {
 			return err
 		}
 		if (launcher.ApprovedExecutablePath == "") != (launcher.ApprovedExecutableSHA256 == "") {
@@ -413,7 +417,7 @@ func (launcher *Launcher) validateFlatpak() error {
 
 func (launcher *Launcher) hasDesktopFields() bool {
 	return launcher.DesktopID != "" || launcher.DesktopOrigin != "" || launcher.DesktopPath != "" ||
-		launcher.DesktopEntrySHA256 != "" || launcher.ApprovedExecutablePath != "" || launcher.ApprovedExecutableSHA256 != ""
+		launcher.DesktopEntrySHA256 != "" || launcher.ApprovedDesktopPath != "" || launcher.ApprovedExecutablePath != "" || launcher.ApprovedExecutableSHA256 != ""
 }
 
 func (launcher *Launcher) hasFlatpakFields() bool {

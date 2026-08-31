@@ -74,6 +74,181 @@ func OpenPrivateDirectory(path string, create bool) (*os.File, error) {
 	return openStateDirectory(path, create)
 }
 
+// CreatePrivateFile creates one bounded owner-only file exactly once. It is
+// intended for random operation tokens whose names must never be replaced.
+func CreatePrivateFile(directoryPath string, name string, data []byte) error {
+	if err := validatePrivateFilePath(directoryPath, name); err != nil {
+		return err
+	}
+	if len(data) > MaxFileSize {
+		return fmt.Errorf("private file is too large: %d bytes exceeds %d", len(data), MaxFileSize)
+	}
+	directory, err := openStateDirectory(directoryPath, true)
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	if err := lockDirectory(directory, unix.LOCK_EX); err != nil {
+		return err
+	}
+	defer unlockDirectory(directory)
+	fd, err := openAt2(int(directory.Fd()), name, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC|unix.O_NOFOLLOW, uint64(RegularFileMode))
+	if err != nil {
+		return fmt.Errorf("create private file: %w", err)
+	}
+	file := os.NewFile(uintptr(fd), name)
+	if file == nil {
+		_ = unix.Close(fd)
+		_ = unix.Unlinkat(int(directory.Fd()), name, 0)
+		return errors.New("create private file: invalid file descriptor")
+	}
+	keep := false
+	defer func() {
+		_ = file.Close()
+		if !keep {
+			_ = unix.Unlinkat(int(directory.Fd()), name, 0)
+		}
+	}()
+	if err := file.Chmod(RegularFileMode); err != nil {
+		return err
+	}
+	if _, err := io.Copy(file, bytes.NewReader(data)); err != nil {
+		return fmt.Errorf("write private file: %w", err)
+	}
+	if err := file.Sync(); err != nil {
+		return fmt.Errorf("sync private file: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close private file: %w", err)
+	}
+	if err := directory.Sync(); err != nil {
+		return fmt.Errorf("sync private directory: %w", err)
+	}
+	keep = true
+	return nil
+}
+
+// ReadPrivateFile reads one bounded owner-only regular file without following
+// symlinks.
+func ReadPrivateFile(directoryPath string, name string) ([]byte, error) {
+	if err := validatePrivateFilePath(directoryPath, name); err != nil {
+		return nil, err
+	}
+	directory, err := openStateDirectory(directoryPath, false)
+	if err != nil {
+		return nil, err
+	}
+	defer directory.Close()
+	if err := lockDirectory(directory, unix.LOCK_SH); err != nil {
+		return nil, err
+	}
+	defer unlockDirectory(directory)
+	return readPrivateRegularFileAt(directory, name)
+}
+
+// ListPrivateFiles returns at most max verified directory-entry names. It does
+// not follow or open entries and fails when the directory contains more than
+// the caller's explicit bound.
+func ListPrivateFiles(directoryPath string, max int) ([]string, error) {
+	if max <= 0 {
+		return nil, errors.New("private file list bound must be positive")
+	}
+	if err := validatePrivateFilePath(directoryPath, "placeholder"); err != nil {
+		return nil, err
+	}
+	directory, err := openStateDirectory(directoryPath, false)
+	if err != nil {
+		return nil, err
+	}
+	defer directory.Close()
+	if err := lockDirectory(directory, unix.LOCK_SH); err != nil {
+		return nil, err
+	}
+	defer unlockDirectory(directory)
+	names := make([]string, 0)
+	for {
+		entries, readErr := directory.ReadDir(128)
+		for _, entry := range entries {
+			names = append(names, entry.Name())
+			if len(names) > max {
+				return nil, fmt.Errorf("private directory contains more than %d entries", max)
+			}
+		}
+		if errors.Is(readErr, io.EOF) {
+			break
+		}
+		if readErr != nil {
+			return nil, fmt.Errorf("list private directory: %w", readErr)
+		}
+		if len(entries) == 0 {
+			return nil, errors.New("list private directory returned no entries without completion")
+		}
+	}
+	return names, nil
+}
+
+// ConsumePrivateFile atomically reads and removes a private file under the
+// directory lock. A second consumer observes a missing file.
+func ConsumePrivateFile(directoryPath string, name string) ([]byte, error) {
+	if err := validatePrivateFilePath(directoryPath, name); err != nil {
+		return nil, err
+	}
+	directory, err := openStateDirectory(directoryPath, false)
+	if err != nil {
+		return nil, err
+	}
+	defer directory.Close()
+	if err := lockDirectory(directory, unix.LOCK_EX); err != nil {
+		return nil, err
+	}
+	defer unlockDirectory(directory)
+	data, err := readPrivateRegularFileAt(directory, name)
+	if err != nil {
+		return nil, err
+	}
+	if err := unix.Unlinkat(int(directory.Fd()), name, 0); err != nil {
+		return nil, fmt.Errorf("consume private file: %w", err)
+	}
+	if err := directory.Sync(); err != nil {
+		return nil, fmt.Errorf("sync private directory after consume: %w", err)
+	}
+	return data, nil
+}
+
+// RemovePrivateFile removes one verified owner-only regular file. A missing
+// file is a successful idempotent result.
+func RemovePrivateFile(directoryPath string, name string) error {
+	if err := validatePrivateFilePath(directoryPath, name); err != nil {
+		return err
+	}
+	directory, err := openStateDirectory(directoryPath, false)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	if err := lockDirectory(directory, unix.LOCK_EX); err != nil {
+		return err
+	}
+	defer unlockDirectory(directory)
+	_, exists, err := inspectTargetAt(directory, name)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+	if err := unix.Unlinkat(int(directory.Fd()), name, 0); err != nil {
+		return fmt.Errorf("remove private file: %w", err)
+	}
+	if err := directory.Sync(); err != nil {
+		return fmt.Errorf("sync private directory: %w", err)
+	}
+	return nil
+}
+
 // LoadInto replaces target only after a complete strict decode and validation.
 // On any error, target remains the caller's in-memory last known-good value.
 func (file JSONFile[T]) LoadInto(target *T) error {
@@ -275,11 +450,15 @@ func (file JSONFile[T]) encode(value T) ([]byte, error) {
 }
 
 func (file JSONFile[T]) saveAt(directory *os.File, data []byte) error {
-	previous, previousExists, err := inspectTargetAt(directory, file.name)
+	return savePrivateDataAt(directory, file.name, data, file.syncAfterRename)
+}
+
+func savePrivateDataAt(directory *os.File, name string, data []byte, syncAfterRename func(*os.File) error) error {
+	previous, previousExists, err := inspectTargetAt(directory, name)
 	if err != nil {
 		return err
 	}
-	temporary, temporaryName, err := createTemporaryFileAt(directory, file.name)
+	temporary, temporaryName, err := createTemporaryFileAt(directory, name)
 	if err != nil {
 		return err
 	}
@@ -305,19 +484,28 @@ func (file JSONFile[T]) saveAt(directory *os.File, data []byte) error {
 	if err := temporary.Close(); err != nil {
 		return fmt.Errorf("close temporary state file: %w", err)
 	}
-	if err := verifyUnchangedTargetAt(directory, file.name, previous, previousExists); err != nil {
+	if err := verifyUnchangedTargetAt(directory, name, previous, previousExists); err != nil {
 		return err
 	}
-	if err := unix.Renameat(int(directory.Fd()), temporaryName, int(directory.Fd()), file.name); err != nil {
+	if err := unix.Renameat(int(directory.Fd()), temporaryName, int(directory.Fd()), name); err != nil {
 		return fmt.Errorf("replace state file: %w", err)
 	}
 	keepTemporary = false
-	syncAfterRename := file.syncAfterRename
 	if syncAfterRename == nil {
 		syncAfterRename = syncFile
 	}
 	if err := syncAfterRename(directory); err != nil {
 		return &CommitOutcomeUnknownError{Cause: fmt.Errorf("sync state directory: %w", err)}
+	}
+	return nil
+}
+
+func validatePrivateFilePath(directory string, name string) error {
+	if directory == "" || !filepath.IsAbs(directory) || filepath.Clean(directory) != directory {
+		return errors.New("private directory must be a clean absolute path")
+	}
+	if name == "" || name == "." || name == ".." || filepath.Base(name) != name {
+		return errors.New("private filename must be one base name")
 	}
 	return nil
 }

@@ -44,9 +44,10 @@ var commandSpecs = map[string]commandSpec{
 	"broker":               {usage: "broker [--socket <path>]", summary: "Serve typed work-session start requests"},
 	"request-start":        {usage: "request-start --session <name> --workspace <number> [options]", summary: "Request a typed ensure-and-start operation"},
 	"report-codex-session": {usage: "report-codex-session", summary: "Report a managed Codex SessionStart event to the narrow broker"},
+	"app":                  {usage: "app <subcommand> [options]", summary: "Manage explicitly registered desktop applications"},
 }
 
-var commandOrder = []string{"register", "restore", "list", "archive", "activate", "purge", "broker", "request-start", "report-codex-session"}
+var commandOrder = []string{"register", "restore", "list", "archive", "activate", "purge", "app", "broker", "request-start", "report-codex-session"}
 
 type swayRequester interface {
 	Request(swayipc.MessageType, []byte) (swayipc.Message, error)
@@ -60,6 +61,11 @@ type dependencies struct {
 	herdrPaths      func() (sessionstate.HerdrPaths, error)
 	validateHistory func(sessionstate.HerdrPaths) error
 	resolveProgram  func(string) (string, error)
+	resolveSystem   func(string) (string, error)
+	desktopCatalog  func() (sessionstate.DesktopCatalog, error)
+	operationStore  func() (sessionstate.ApplicationOperationStore, error)
+	presentApproval func(string, []sessionstate.ApprovalChoice) error
+	verifyFlatpak   func(sessionstate.Launcher) error
 	newSwayClient   func(string) swayRequester
 	processStarter  sessionstate.ProcessStarter
 	herdrRunner     sessionstate.HerdrCommandRunner
@@ -74,13 +80,22 @@ type dependencies struct {
 }
 
 func defaultDependencies(stdin io.Reader) dependencies {
-	return dependencies{
+	deps := dependencies{
 		stateRoot:       sessionstate.DefaultStateRoot,
 		workingDir:      os.Getwd,
 		newContextID:    sessionstate.NewContextID,
 		herdrPaths:      sessionstate.DefaultHerdrPaths,
 		validateHistory: sessionstate.ValidateHerdrPaneHistory,
 		resolveProgram:  sessionstate.ResolveTrustedExecutable,
+		resolveSystem:   sessionstate.ResolveRootOwnedSystemExecutable,
+		desktopCatalog: func() (sessionstate.DesktopCatalog, error) {
+			search, err := sessionstate.DefaultDesktopSearchPath()
+			if err != nil {
+				return sessionstate.DesktopCatalog{}, err
+			}
+			return sessionstate.LoadDesktopCatalog(search)
+		},
+		operationStore: sessionstate.DefaultApplicationOperationStore,
 		newSwayClient: func(socket string) swayRequester {
 			return swayipc.NewClient(socket)
 		},
@@ -104,6 +119,27 @@ func defaultDependencies(stdin io.Reader) dependencies {
 		},
 		runBroker: runSessionRequestBroker,
 	}
+	deps.presentApproval = func(message string, choices []sessionstate.ApprovalChoice) error {
+		swaynag, err := deps.resolveSystem("swaynag")
+		if err != nil {
+			return err
+		}
+		swaySession, err := deps.resolveSystem("sway-session")
+		if err != nil {
+			return err
+		}
+		return (sessionstate.SwaynagApprovalPresenter{
+			Swaynag: swaynag, SwaySession: swaySession, Starter: deps.processStarter,
+		}).Present(message, choices)
+	}
+	deps.verifyFlatpak = func(launcher sessionstate.Launcher) error {
+		flatpak, err := deps.resolveSystem("flatpak")
+		if err != nil {
+			return err
+		}
+		return sessionstate.VerifyFlatpakInstallation(flatpak, launcher, sessionstate.ExecCommandRunner{})
+	}
+	return deps
 }
 
 func main() {
@@ -231,11 +267,25 @@ func writeResult(writer io.Writer, structured bool, result commandResult) error 
 		if provider == "" {
 			provider = "-"
 		}
-		if _, err := fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\t%s\n", label, context.ID, context.State, provider, context.Launcher.Session, context.Launcher.Cwd); err != nil {
+		launcherName, launcherDetail := launcherOutput(context.Launcher)
+		if _, err := fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\t%s\n", label, context.ID, context.State, provider, launcherName, launcherDetail); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func launcherOutput(launcher sessionstate.Launcher) (string, string) {
+	switch launcher.Kind {
+	case sessionstate.LauncherHerdr:
+		return launcher.Session, launcher.Cwd
+	case sessionstate.LauncherDesktop:
+		return launcher.DesktopID, launcher.DesktopPath
+	case sessionstate.LauncherFlatpak:
+		return launcher.FlatpakID, string(launcher.FlatpakInstallation)
+	default:
+		return string(launcher.Kind), ""
+	}
 }
 
 func globalOptions(arguments []string) ([]string, bool, bool) {
@@ -313,6 +363,9 @@ func writeCommandUsage(writer io.Writer, name string, spec commandSpec) {
 	if name == "request-start" {
 		_, _ = fmt.Fprintln(writer, "Options: --session NAME --workspace NUMBER [--cwd PATH] [--label LABEL] [--provider NAME]")
 	}
+	if name == "app" {
+		_, _ = fmt.Fprintln(writer, "Subcommands: register-focused, register-workspace, confirm, status, list, rebind-focused, reapprove, pin, unpin, archive, activate, forget")
+	}
 }
 
 func executeCommand(ctx context.Context, name string, arguments []string, stdin io.Reader, stderr io.Writer, structured bool, deps dependencies) (commandResult, *commandFailure) {
@@ -329,6 +382,8 @@ func executeCommand(ctx context.Context, name string, arguments []string, stdin 
 		return executePurge(ctx, arguments, stdin, stderr, deps)
 	case "restore":
 		return executeRestore(ctx, arguments, deps)
+	case "app":
+		return executeApp(arguments, deps)
 	case "broker":
 		return executeBroker(ctx, arguments, stderr, structured, deps)
 	case "request-start":

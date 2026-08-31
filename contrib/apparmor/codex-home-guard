@@ -92,6 +92,7 @@ profile codex-home-guard /usr/bin/codex flags=(attach_disconnected,mediate_delet
   # socket-connect boundary; see the experimental status in the README.
   audit deny @{run}user/[0-9]*/sway-session wkl,
   audit deny @{run}user/[0-9]*/sway-session/ wkl,
+  audit deny @{run}user/[0-9]*/sway-session/app-operations/{,**} mrwkl,
   audit deny @{run}user/[0-9]*/sway-session/codex-report.sock klm,
   owner @{run}user/[0-9]*/sway-session/codex-report.sock rw,
 

@@ -176,9 +176,9 @@ On first access, valid version-1 context registries are atomically upgraded to
 version 2. The exact old bytes remain owner-only in `contexts.v1.json` beside
 the active registry as manual rollback evidence. Malformed or unknown-version
 state is never migrated, and the rollback file is never loaded automatically.
-Version 2 is the shared foundation for explicitly registered normal desktop
-applications; their user-facing registration and restore commands are still
-being delivered under LAB-95.
+Version 2 also supports explicit normal desktop-application registrations.
+Focused-window discovery and lifecycle commands are available now; automatic
+desktop-app launch and placement are completed by the following LAB-98 slice.
 
 Install Alacritty and Herdr, then enable Herdr pane history in
 `${XDG_CONFIG_HOME:-$HOME/.config}/herdr/config.toml`:
@@ -202,6 +202,54 @@ Register the current project and start or attach its named Herdr session:
 sway-session register --session lab-80 --label LAB-80 --provider linear
 sway-session restore LAB-80
 ```
+
+To register an ordinary application, focus one of its top-level windows and
+run:
+
+```sh
+sway-session app register-focused
+```
+
+The command resolves exact Wayland, XWayland, or Flatpak identity evidence and
+opens a native `swaynag` approval. An ambiguous match presents explicit desktop
+entry choices and is never guessed. A repeat on an already registered window
+reports its status and repairs a missing stable mark; it is deliberately not a
+toggle. To preview one confirmation for all unregistered eligible apps on the
+focused workspace, use `sway-session app register-workspace`. `--yes` is
+available for deliberate noninteractive use.
+
+For an optional Sway keybinding, choose an otherwise unused chord, for example:
+
+```conf
+bindsym $mod+Ctrl+p exec --no-startup-id /usr/bin/sway-session app register-focused
+```
+
+System desktop entries are revalidated as root-owned launch material. Flatpak
+registration records only the validated app ID and installation. A user-local
+desktop entry is copied to an owner-only approved snapshot; changes to the
+source entry or its user-owned executable block later launch until explicit
+`app reapprove`. The confirmation preview shows the launcher origin and first
+executable token, never file/URI arguments.
+
+Application lifecycle and repair commands accept an exact UUID or unambiguous
+label:
+
+```sh
+sway-session app status
+sway-session app list
+sway-session app rebind-focused <context>
+sway-session app reapprove <context>
+sway-session app pin <context>
+sway-session app unpin <context>
+sway-session app archive <context>
+sway-session app activate <context>
+sway-session app forget --yes <context>
+```
+
+`pin` keeps desired-open state independent of whether the app was open at the
+last clean shutdown; `unpin` returns to follow mode. Rebind previews the old and
+new exact identities. Forget removes only the outer registration and live Sway
+mark; it never attempts to delete application-private state.
 
 For an AppArmor-confined Codex workflow, `sway-session broker` exposes a
 separate typed start endpoint. It combines exact context registration or reuse

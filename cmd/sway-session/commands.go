@@ -432,11 +432,14 @@ func restoreTargets(registry sessionstate.Registry, selector string, requireActi
 		if requireActive && selected.State != sessionstate.ContextActive {
 			return nil, fmt.Errorf("context %q is archived", selected.ID)
 		}
+		if selected.Launcher.Kind != sessionstate.LauncherHerdr {
+			return nil, fmt.Errorf("desktop application restore is not available until LAB-98; registration and policy state were preserved for context %q", selected.ID)
+		}
 		return []sessionstate.Context{selected}, nil
 	}
 	targets := make([]sessionstate.Context, 0, len(registry.Contexts))
 	for _, context := range registry.Contexts {
-		if context.State == sessionstate.ContextActive {
+		if context.State == sessionstate.ContextActive && context.Launcher.Kind == sessionstate.LauncherHerdr {
 			targets = append(targets, context)
 		}
 	}

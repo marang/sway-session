@@ -209,6 +209,7 @@ func TestRegistryValidatesTypedDesktopAndFlatpakApplications(t *testing.T) {
 			DesktopOrigin:            DesktopEntryUser,
 			DesktopPath:              "/home/example/.local/share/applications/local.example.desktop",
 			DesktopEntrySHA256:       digest,
+			ApprovedDesktopPath:      "/home/example/.local/state/sway-session/desktop-approvals/local.example.desktop",
 			ApprovedExecutablePath:   "/home/example/.local/bin/example",
 			ApprovedExecutableSHA256: digest,
 		},
@@ -266,6 +267,7 @@ func TestRegistryRejectsDuplicateTypedLauncherIdentities(t *testing.T) {
 	tests[0].second.Launcher.DesktopOrigin = DesktopEntryUser
 	tests[0].second.Launcher.DesktopPath = "/home/example/.local/share/applications/shared.desktop"
 	tests[0].second.Launcher.DesktopEntrySHA256 = strings.Repeat("a", 64)
+	tests[0].second.Launcher.ApprovedDesktopPath = "/home/example/.local/state/sway-session/desktop-approvals/shared.desktop"
 	tests[1].first.Launcher.FlatpakInstallation = FlatpakSystem
 
 	for index, test := range tests {
@@ -291,6 +293,7 @@ func TestRegistryRejectsInvalidDesktopApplicationUnion(t *testing.T) {
 			DesktopOrigin:            DesktopEntryUser,
 			DesktopPath:              "/home/example/.local/share/applications/local.example.desktop",
 			DesktopEntrySHA256:       digest,
+			ApprovedDesktopPath:      "/home/example/.local/state/sway-session/desktop-approvals/local.example.desktop",
 			ApprovedExecutablePath:   "/home/example/.local/bin/example",
 			ApprovedExecutableSHA256: digest,
 		},

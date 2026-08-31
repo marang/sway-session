@@ -164,3 +164,17 @@ func TestResolveRootOwnedSystemExecutableIgnoresCallerPath(t *testing.T) {
 		t.Fatal("unsafe executable name was accepted")
 	}
 }
+
+func TestMergeEnvironmentOverridesExistingKeyWithoutDuplicates(t *testing.T) {
+	merged, err := mergeEnvironment([]string{"PATH=/untrusted", "LANG=C"}, []string{"PATH=/usr/local/bin:/usr/bin", "TOKEN=value"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"PATH=/usr/local/bin:/usr/bin", "LANG=C", "TOKEN=value"}
+	if !reflect.DeepEqual(merged, want) {
+		t.Fatalf("environment override was ambiguous: got=%q want=%q", merged, want)
+	}
+	if _, err := mergeEnvironment(nil, []string{"BROKEN"}); err == nil {
+		t.Fatal("malformed environment entry was accepted")
+	}
+}

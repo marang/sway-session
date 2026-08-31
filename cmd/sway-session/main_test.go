@@ -32,7 +32,7 @@ func TestHelpListsImplementedCommandContract(t *testing.T) {
 	if exitCode != exitSuccess || stderr.Len() != 0 {
 		t.Fatalf("unexpected help result code=%d stderr=%q", exitCode, stderr.String())
 	}
-	for _, expected := range []string{"register --session <name>", "restore [--socket <path>] [context]", "broker [--socket <path>]", "request-start --session <name> --workspace <number>", "purge [--yes] <context>", "3  Operational failure"} {
+	for _, expected := range []string{"register --session <name>", "restore [--socket <path>] [context]", "app <subcommand> [options]", "broker [--socket <path>]", "request-start --session <name> --workspace <number>", "purge [--yes] <context>", "3  Operational failure"} {
 		if !strings.Contains(stdout.String(), expected) {
 			t.Fatalf("help does not contain %q:\n%s", expected, stdout.String())
 		}
@@ -373,13 +373,26 @@ func TestBrokerRestoreRequiresContextToRemainActive(t *testing.T) {
 }
 
 func TestExplicitManualRestoreStillAllowsArchivedContext(t *testing.T) {
-	contextValue := sessionstate.Context{ID: testContextID, State: sessionstate.ContextArchived}
+	contextValue := sessionstate.Context{ID: testContextID, State: sessionstate.ContextArchived, Launcher: sessionstate.Launcher{Kind: sessionstate.LauncherHerdr}}
 	registry := sessionstate.Registry{Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{contextValue}}
 
 	targets, err := restoreTargets(registry, string(contextValue.ID), false)
 
 	if err != nil || len(targets) != 1 || targets[0].ID != contextValue.ID {
 		t.Fatalf("manual archived restore changed semantics: targets=%+v err=%v", targets, err)
+	}
+}
+
+func TestAutomaticRestoreSkipsDesktopContextsUntilApplicationRestoreExists(t *testing.T) {
+	herdr := sessionstate.Context{ID: testContextID, State: sessionstate.ContextActive, Launcher: sessionstate.Launcher{Kind: sessionstate.LauncherHerdr}}
+	desktop := sessionstate.Context{ID: "22222222-2222-4222-8222-222222222222", State: sessionstate.ContextActive, Launcher: sessionstate.Launcher{Kind: sessionstate.LauncherDesktop}}
+	registry := sessionstate.Registry{Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{herdr, desktop}}
+	targets, err := restoreTargets(registry, "", false)
+	if err != nil || len(targets) != 1 || targets[0].ID != herdr.ID {
+		t.Fatalf("automatic restore sent desktop context through Herdr: targets=%+v err=%v", targets, err)
+	}
+	if _, err := restoreTargets(registry, string(desktop.ID), false); err == nil || !strings.Contains(err.Error(), "LAB-98") {
+		t.Fatalf("explicit desktop restore did not explain deferred support: %v", err)
 	}
 }
 
@@ -546,14 +559,23 @@ func testDependencies(t *testing.T) dependencies {
 		resolveProgram: func(name string) (string, error) {
 			return "/trusted/" + name, nil
 		},
-		newSwayClient:  func(string) swayRequester { return &fakeSwayClient{trees: []*swayipc.TreeNode{treeWithContexts()}} },
-		processStarter: &recordingStarter{},
-		herdrRunner:    &recordingHerdrRunner{},
-		findPending:    func(string, sessionstate.Context, string, string) ([]int, error) { return nil, nil },
-		now:            time.Now,
-		sleep:          func(time.Duration) {},
-		settleTimeout:  time.Second,
-		stdinTerminal:  func() bool { return false },
+		resolveSystem: func(name string) (string, error) { return "/usr/bin/" + name, nil },
+		desktopCatalog: func() (sessionstate.DesktopCatalog, error) {
+			return sessionstate.LoadDesktopCatalog(nil)
+		},
+		operationStore: func() (sessionstate.ApplicationOperationStore, error) {
+			return sessionstate.ApplicationOperationStore{RuntimeRoot: filepath.Join(base, "runtime")}, nil
+		},
+		presentApproval: func(string, []sessionstate.ApprovalChoice) error { return nil },
+		verifyFlatpak:   func(sessionstate.Launcher) error { return nil },
+		newSwayClient:   func(string) swayRequester { return &fakeSwayClient{trees: []*swayipc.TreeNode{treeWithContexts()}} },
+		processStarter:  &recordingStarter{},
+		herdrRunner:     &recordingHerdrRunner{},
+		findPending:     func(string, sessionstate.Context, string, string) ([]int, error) { return nil, nil },
+		now:             time.Now,
+		sleep:           func(time.Duration) {},
+		settleTimeout:   time.Second,
+		stdinTerminal:   func() bool { return false },
 	}
 }
 

@@ -30,7 +30,11 @@ type ProcessSpec struct {
 func (ExecProcessStarter) Start(spec ProcessSpec) error {
 	command := exec.Command(spec.Name, spec.Arguments...)
 	if len(spec.Environment) != 0 {
-		command.Env = append(os.Environ(), spec.Environment...)
+		environment, err := mergeEnvironment(os.Environ(), spec.Environment)
+		if err != nil {
+			return err
+		}
+		command.Env = environment
 	}
 	if err := command.Start(); err != nil {
 		return err
@@ -39,6 +43,35 @@ func (ExecProcessStarter) Start(spec ProcessSpec) error {
 		return fmt.Errorf("release launched process: %w", err)
 	}
 	return nil
+}
+
+func mergeEnvironment(base []string, overrides []string) ([]string, error) {
+	values := make(map[string]string, len(base)+len(overrides))
+	order := make([]string, 0, len(base)+len(overrides))
+	apply := func(entries []string) error {
+		for _, entry := range entries {
+			key, _, ok := strings.Cut(entry, "=")
+			if !ok || key == "" || strings.ContainsRune(key, '\x00') {
+				return errors.New("process environment contains an invalid entry")
+			}
+			if _, exists := values[key]; !exists {
+				order = append(order, key)
+			}
+			values[key] = entry
+		}
+		return nil
+	}
+	if err := apply(base); err != nil {
+		return nil, err
+	}
+	if err := apply(overrides); err != nil {
+		return nil, err
+	}
+	result := make([]string, 0, len(order))
+	for _, key := range order {
+		result = append(result, values[key])
+	}
+	return result, nil
 }
 
 type AlacrittyHerdrLauncher struct {

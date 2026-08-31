@@ -668,3 +668,57 @@ func assertMode(t *testing.T, path string, want os.FileMode) {
 		t.Fatalf("unexpected mode for %s: got=%04o want=%04o", path, got, want)
 	}
 }
+
+func TestPrivateFileCreateConsumeAndReplayProtection(t *testing.T) {
+	directory := filepath.Join(t.TempDir(), "private")
+	if err := CreatePrivateFile(directory, "token.json", []byte("typed operation")); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(filepath.Join(directory, "token.json"))
+	if err != nil || info.Mode().Perm() != RegularFileMode {
+		t.Fatalf("private file mode mismatch: info=%v err=%v", info, err)
+	}
+	if err := CreatePrivateFile(directory, "token.json", []byte("replacement")); err == nil {
+		t.Fatal("exclusive private file was replaced")
+	}
+	data, err := ConsumePrivateFile(directory, "token.json")
+	if err != nil || string(data) != "typed operation" {
+		t.Fatalf("consume failed data=%q err=%v", data, err)
+	}
+	if _, err := ConsumePrivateFile(directory, "token.json"); err == nil {
+		t.Fatal("private file was replayable")
+	}
+}
+
+func TestPrivateFileRejectsSymlinkAndFIFO(t *testing.T) {
+	directory := filepath.Join(t.TempDir(), "private")
+	if err := os.Mkdir(directory, DirectoryMode); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside")
+	if err := os.WriteFile(outside, []byte("outside"), RegularFileMode); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(directory, "link")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadPrivateFile(directory, "link"); err == nil {
+		t.Fatal("private file read followed symlink")
+	}
+	if err := unix.Mkfifo(filepath.Join(directory, "fifo"), uint32(RegularFileMode)); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := ConsumePrivateFile(directory, "fifo")
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("private file consume accepted FIFO")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("private file consume blocked on FIFO")
+	}
+}

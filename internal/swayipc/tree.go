@@ -22,8 +22,11 @@ type Rect struct {
 }
 
 type WindowProperties struct {
-	Class    string `json:"class"`
-	Instance string `json:"instance"`
+	Class        string `json:"class"`
+	Instance     string `json:"instance"`
+	WindowRole   string `json:"window_role"`
+	WindowType   string `json:"window_type"`
+	TransientFor *int64 `json:"transient_for"`
 }
 
 // TreeNode is the bounded GET_TREE subset shared by title animation and

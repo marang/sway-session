@@ -46,9 +46,10 @@ var commandSpecs = map[string]commandSpec{
 	"request-start":        {usage: "request-start --session <name> --workspace <number> [options]", summary: "Request a typed ensure-and-start operation"},
 	"report-codex-session": {usage: "report-codex-session", summary: "Report a managed Codex SessionStart event to the narrow broker"},
 	"app":                  {usage: "app <subcommand> [options]", summary: "Manage explicitly registered desktop applications"},
+	"completion":           {usage: "completion contexts <command>", summary: "Emit read-only shell completion candidates"},
 }
 
-var commandOrder = []string{"register", "restore", "list", "archive", "activate", "purge", "app", "daemon", "broker", "request-start", "report-codex-session"}
+var commandOrder = []string{"register", "restore", "list", "archive", "activate", "purge", "app", "daemon", "broker", "request-start", "report-codex-session", "completion"}
 
 type swayRequester interface {
 	Request(swayipc.MessageType, []byte) (swayipc.Message, error)
@@ -217,11 +218,12 @@ func runWithContext(ctx context.Context, arguments []string, stdin io.Reader, st
 }
 
 type commandResult struct {
-	Command   string                 `json:"command"`
-	Contexts  []sessionstate.Context `json:"contexts"`
-	Message   string                 `json:"message,omitempty"`
-	Workspace int                    `json:"workspace,omitempty"`
-	Created   bool                   `json:"created,omitempty"`
+	Command              string                 `json:"command"`
+	Contexts             []sessionstate.Context `json:"contexts"`
+	CompletionCandidates []completionCandidate  `json:"completion_candidates,omitempty"`
+	Message              string                 `json:"message,omitempty"`
+	Workspace            int                    `json:"workspace,omitempty"`
+	Created              bool                   `json:"created,omitempty"`
 }
 
 type commandFailure struct {
@@ -256,6 +258,14 @@ func writeFailure(writer io.Writer, structured bool, item *commandFailure) {
 func writeResult(writer io.Writer, structured bool, result commandResult) error {
 	if structured {
 		return json.NewEncoder(writer).Encode(result)
+	}
+	if len(result.CompletionCandidates) != 0 {
+		for _, candidate := range result.CompletionCandidates {
+			if _, err := fmt.Fprintf(writer, "%s\t%s\n", candidate.Value, candidate.Description); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
 	if result.Message != "" {
 		_, err := fmt.Fprintln(writer, result.Message)
@@ -371,6 +381,10 @@ func writeCommandUsage(writer io.Writer, name string, spec commandSpec) {
 		_, _ = fmt.Fprintln(writer, "Machine-readable inventory: sway-session --json app list")
 		_, _ = fmt.Fprintln(writer, "Indicators after first registration: ○ unregistered, ◔ pending, ● registered/follow, ▲ pinned/autostart")
 	}
+	if name == "completion" {
+		_, _ = fmt.Fprintln(writer, "Commands: archive, activate, restore, restore-active, purge, app-forget")
+		_, _ = fmt.Fprintln(writer, "Output: one canonical UUID and presentation-only description per tab-separated line.")
+	}
 }
 
 func executeCommand(ctx context.Context, name string, arguments []string, stdin io.Reader, stderr io.Writer, structured bool, deps dependencies) (commandResult, *commandFailure) {
@@ -410,6 +424,8 @@ func executeCommand(ctx context.Context, name string, arguments []string, stdin 
 			return commandResult{}, failure("codex_report", "report Codex session", err.Error())
 		}
 		return commandResult{Command: name, Contexts: []sessionstate.Context{}}, nil
+	case "completion":
+		return executeCompletion(arguments, deps)
 	default:
 		return commandResult{}, failure("unknown_command", fmt.Sprintf("unknown command %q", name), "")
 	}

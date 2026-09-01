@@ -69,6 +69,9 @@ archives:
       - contrib/codex/hooks.json
       - contrib/codex/hooks-system.json
       - contrib/apparmor/codex-home-guard
+      - contrib/completions/bash/sway-session
+      - contrib/completions/zsh/_sway-session
+      - contrib/completions/fish/sway-session.fish
       - scripts/verify-codex-boundary.sh
 
 checksum:
@@ -127,6 +130,16 @@ nfpms:
         dst: /usr/share/doc/sway-title-animator/scripts/verify-codex-boundary.sh
         file_info:
           mode: 0755
+      - src: ./contrib/completions/bash/sway-session
+        dst: /usr/share/bash-completion/completions/sway-session
+      - src: ./contrib/completions/zsh/_sway-session
+        dst: /usr/share/zsh/vendor-completions/_sway-session
+        packager: deb
+      - src: ./contrib/completions/zsh/_sway-session
+        dst: /usr/share/zsh/site-functions/_sway-session
+        packager: rpm
+      - src: ./contrib/completions/fish/sway-session.fish
+        dst: /usr/share/fish/vendor_completions.d/sway-session.fish
 
 release:
   github:

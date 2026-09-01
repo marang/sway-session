@@ -32,7 +32,7 @@ func TestHelpListsImplementedCommandContract(t *testing.T) {
 	if exitCode != exitSuccess || stderr.Len() != 0 {
 		t.Fatalf("unexpected help result code=%d stderr=%q", exitCode, stderr.String())
 	}
-	for _, expected := range []string{"register --session <name>", "restore [--socket <path>] [context]", "app <subcommand> [options]", "daemon [--socket <path>]", "broker [--socket <path>]", "request-start --session <name> --workspace <number>", "purge [--yes] <context>", "3  Operational failure"} {
+	for _, expected := range []string{"register --session <name>", "restore [--socket <path>] [context]", "app <subcommand> [options]", "daemon [--socket <path>]", "broker [--socket <path>]", "request-start --session <name> --workspace <number>", "purge [--yes] <context>", "completion contexts <command>", "3  Operational failure"} {
 		if !strings.Contains(stdout.String(), expected) {
 			t.Fatalf("help does not contain %q:\n%s", expected, stdout.String())
 		}
@@ -57,6 +57,26 @@ func TestAppHelpDocumentsMachineReadableInventoryAndIndicatorStates(t *testing.T
 	} {
 		if !strings.Contains(stdout.String(), expected) {
 			t.Fatalf("app help missing %q:\n%s", expected, stdout.String())
+		}
+	}
+}
+
+func TestCompletionHelpDocumentsStableReadOnlyRecordContract(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := run([]string{"completion", "--help"}, &stdout, &stderr)
+
+	if exitCode != exitSuccess || stderr.Len() != 0 {
+		t.Fatalf("completion help failed code=%d stderr=%q", exitCode, stderr.String())
+	}
+	for _, expected := range []string{
+		"archive, activate, restore, restore-active, purge, app-forget",
+		"canonical UUID",
+		"tab-separated line",
+	} {
+		if !strings.Contains(stdout.String(), expected) {
+			t.Fatalf("completion help missing %q:\n%s", expected, stdout.String())
 		}
 	}
 }

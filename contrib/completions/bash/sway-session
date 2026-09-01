@@ -1,0 +1,311 @@
+# Bash completion for sway-session.
+
+_sway_session_contexts() {
+	local scope=$1 prefix=$2 output line uuid description index
+	local -a values descriptions
+
+	output=$(command sway-session completion contexts "$scope" 2>/dev/null) || return 0
+	while IFS= read -r line || [[ -n $line ]]; do
+		[[ $line == *$'\t'* && $line != *$'\t'*$'\t'* ]] || continue
+		uuid=${line%%$'\t'*}
+		description=${line#*$'\t'}
+		[[ -n $description ]] || continue
+		[[ $uuid =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || continue
+		[[ $uuid != 00000000-0000-0000-0000-000000000000 ]] || continue
+		[[ $uuid == "$prefix"* ]] || continue
+		values+=("$uuid")
+		descriptions+=("$description")
+	done <<<"$output"
+
+	if ((${#values[@]} > 0)); then
+		printf '\n' >&2
+		for index in "${!values[@]}"; do
+			printf '%s  -- %s\n' "${values[index]}" "${descriptions[index]}" >&2
+		done
+	fi
+	if ((${#values[@]} == 1)); then
+		COMPREPLY+=("${values[0]}")
+		return 0
+	fi
+	for index in "${!values[@]}"; do
+		COMPREPLY+=("${values[index]}")
+	done
+}
+
+_sway_session_files() {
+	local candidate
+	compopt -o filenames 2>/dev/null || true
+	while IFS= read -r candidate; do
+		COMPREPLY+=("$candidate")
+	done < <(compgen -f -- "$cur")
+}
+
+_sway_session_static() {
+	local candidate
+	COMPREPLY=()
+	while IFS= read -r candidate; do
+		if ((${global_options_ended:-0})) && [[ $candidate == --json || $candidate == -h || $candidate == --help ]]; then
+			continue
+		fi
+		COMPREPLY+=("$candidate")
+	done < <(compgen -W "$1" -- "$cur")
+}
+
+_sway_session_context_pending() {
+	local command=$1 skip_next=0 word
+	shift
+	for word in "$@"; do
+		if ((skip_next)); then
+			skip_next=0
+			continue
+		fi
+		case $word in
+			--socket|--desktop-id)
+				skip_next=1
+				;;
+			--json|-h|--help|--yes|--require-active)
+				;;
+			--*)
+				;;
+			*)
+				return 1
+				;;
+		esac
+	done
+	return 0
+}
+
+_sway_session_restore_scope() {
+	local skip_next=0 word
+	for word in "$@"; do
+		if ((skip_next)); then
+			skip_next=0
+			continue
+		fi
+		case $word in
+			--socket) skip_next=1 ;;
+			--require-active) printf '%s\n' restore-active; return 0 ;;
+		esac
+	done
+	printf '%s\n' restore
+}
+
+_sway_session_marker_is_value() {
+	local command=${arguments[0]-} app_command=${arguments[1]-} start=1 word pending=0 parsing=1
+	local value_options=''
+	case $command in
+		register) value_options=' --session --cwd --label --provider --id ' ;;
+		restore|daemon|broker) value_options=' --socket ' ;;
+		request-start) value_options=' --session --cwd --label --provider --workspace ' ;;
+		app)
+			start=2
+			case $app_command in
+				register-focused|rebind-focused) value_options=' --socket --desktop-id ' ;;
+				register-workspace|status|forget) value_options=' --socket ' ;;
+			esac
+			;;
+	esac
+	for word in "${arguments[@]:start}"; do
+		if ((pending)); then
+			pending=0
+			continue
+		fi
+		((parsing)) || return 1
+		case $word in
+			--)
+				parsing=0
+				;;
+			--*=*)
+				;;
+			--*)
+				[[ $value_options == *" $word "* ]] && pending=1
+				;;
+			*)
+				parsing=0
+				;;
+		esac
+	done
+	((pending))
+}
+
+_sway_session() {
+	local cur=${COMP_WORDS[COMP_CWORD]} word command="" app_command="" context_scope="" index options_ended=0 terminator_arguments=0 global_options_ended=0 invalid_command_option=0
+	local -a arguments=()
+	COMPREPLY=()
+
+	for ((index = 1; index < COMP_CWORD; index++)); do
+		word=${COMP_WORDS[index]}
+		if ((options_ended)); then
+			arguments+=("$word")
+			((terminator_arguments += 1))
+			continue
+		fi
+		case $word in
+			--json|-h|--help)
+				if ((global_options_ended)); then
+					_sway_session_marker_is_value || invalid_command_option=1
+					arguments+=("$word")
+				fi
+				continue
+				;;
+			--)
+				global_options_ended=1
+				if _sway_session_marker_is_value; then
+					arguments+=("$word")
+				else
+					options_ended=1
+				fi
+				continue
+				;;
+		esac
+		arguments+=("$word")
+	done
+
+	command=${arguments[0]-}
+	((invalid_command_option)) && return 0
+	if [[ -z $command ]]; then
+		((options_ended)) && return 0
+		_sway_session_static 'register restore list archive activate purge app daemon broker request-start report-codex-session completion --json -h --help'
+		return 0
+	fi
+	app_command=${arguments[1]-}
+	if ((options_ended)); then
+		((terminator_arguments == 0)) || return 0
+		case $command in
+			restore)
+				if _sway_session_context_pending restore "${arguments[@]:1}"; then
+					context_scope=$(_sway_session_restore_scope "${arguments[@]:1}")
+					_sway_session_contexts "$context_scope" "$cur"
+				fi
+				;;
+			purge)
+				_sway_session_context_pending "$command" "${arguments[@]:1}" && _sway_session_contexts "$command" "$cur"
+				;;
+			app)
+				if [[ $app_command == forget ]] && _sway_session_context_pending app-forget "${arguments[@]:2}"; then
+					_sway_session_contexts app-forget "$cur"
+				fi
+				;;
+		esac
+		return 0
+	fi
+
+	case $command in
+		register)
+			case ${arguments[-1]-} in
+				--cwd) _sway_session_files; return 0 ;;
+				--session|--label|--provider|--id) return 0 ;;
+			esac
+			_sway_session_static '--session --cwd --label --provider --id --json -h --help'
+			;;
+		restore)
+			case ${arguments[-1]-} in
+				--socket) _sway_session_files; return 0 ;;
+			esac
+			if _sway_session_context_pending restore "${arguments[@]:1}"; then
+				_sway_session_static '--socket --require-active --json -h --help'
+				if [[ $cur != -* ]]; then
+					context_scope=$(_sway_session_restore_scope "${arguments[@]:1}")
+					_sway_session_contexts "$context_scope" "$cur"
+				fi
+			else
+				_sway_session_static '--json -h --help'
+			fi
+			;;
+		list|report-codex-session)
+			_sway_session_static '--json -h --help'
+			;;
+		archive|activate|purge)
+			if _sway_session_context_pending "$command" "${arguments[@]:1}"; then
+				if [[ $command == purge ]]; then
+					_sway_session_static '--yes --json -h --help'
+				else
+					_sway_session_static '--json -h --help'
+				fi
+				[[ $cur == -* ]] || _sway_session_contexts "$command" "$cur"
+			else
+				_sway_session_static '--json -h --help'
+			fi
+			;;
+		daemon|broker)
+			case ${arguments[-1]-} in
+				--socket) _sway_session_files; return 0 ;;
+			esac
+			_sway_session_static '--socket --json -h --help'
+			;;
+		request-start)
+			case ${arguments[-1]-} in
+				--cwd) _sway_session_files; return 0 ;;
+				--session|--label|--provider|--workspace) return 0 ;;
+			esac
+			_sway_session_static '--session --cwd --label --provider --workspace --json -h --help'
+			;;
+		completion)
+			case ${arguments[1]-} in
+				'') _sway_session_static 'contexts --json -h --help' ;;
+				contexts)
+					if [[ -z ${arguments[2]-} ]]; then
+						_sway_session_static 'archive activate restore restore-active purge app-forget'
+					elif [[ $cur == -* ]]; then
+						_sway_session_static '--json -h --help'
+					fi
+					;;
+			esac
+			;;
+		app)
+			if [[ -z $app_command ]]; then
+				_sway_session_static 'register-focused register-workspace confirm status list rebind-focused reapprove pin unpin archive activate forget --json -h --help'
+				return 0
+			fi
+			case $app_command in
+				register-focused)
+					case ${arguments[-1]-} in --socket) _sway_session_files; return 0;; esac
+					[[ ${arguments[-1]-} == --desktop-id ]] && return 0
+					_sway_session_static '--socket --desktop-id --yes --json -h --help'
+					;;
+				register-workspace)
+					case ${arguments[-1]-} in --socket) _sway_session_files; return 0;; esac
+					_sway_session_static '--socket --yes --json -h --help'
+					;;
+				confirm|pin|unpin|archive|activate)
+					_sway_session_static '--json -h --help'
+					;;
+				status)
+					case ${arguments[-1]-} in --socket) _sway_session_files; return 0;; esac
+					_sway_session_static '--socket --json -h --help'
+					;;
+				list)
+					_sway_session_static '--json -h --help'
+					;;
+				rebind-focused)
+					case ${arguments[-1]-} in --socket) _sway_session_files; return 0;; esac
+					[[ ${arguments[-1]-} == --desktop-id ]] && return 0
+					if _sway_session_context_pending app-rebind "${arguments[@]:2}"; then
+						_sway_session_static '--socket --desktop-id --yes --json -h --help'
+					else
+						_sway_session_static '--json -h --help'
+					fi
+					;;
+				reapprove)
+					if _sway_session_context_pending app-reapprove "${arguments[@]:2}"; then
+						_sway_session_static '--yes --json -h --help'
+					else
+						_sway_session_static '--json -h --help'
+					fi
+					;;
+				forget)
+					case ${arguments[-1]-} in --socket) _sway_session_files; return 0;; esac
+					if _sway_session_context_pending app-forget "${arguments[@]:2}"; then
+						_sway_session_static '--socket --yes --json -h --help'
+						[[ $cur == -* ]] || _sway_session_contexts app-forget "$cur"
+					else
+						_sway_session_static '--json -h --help'
+					fi
+					;;
+			esac
+			;;
+	esac
+	return 0
+}
+
+complete -F _sway_session sway-session

@@ -141,6 +141,9 @@ This installs:
 ~/.local/bin/sway-title-animator
 ~/.local/bin/sway-session
 ~/.local/bin/sway-herdr-init
+~/.local/share/bash-completion/completions/sway-session
+~/.local/share/zsh/site-functions/_sway-session
+~/.local/share/fish/vendor_completions.d/sway-session.fish
 ```
 
 Make sure `~/.local/bin` is in your `PATH`.
@@ -383,6 +386,39 @@ sway-session archive LAB-80
 sway-session activate LAB-80
 sway-session purge --yes LAB-80
 ```
+
+The release packages also install metadata-rich completion for Bash, Zsh, and
+Fish. Commands, subcommands, and options remain available even when session
+state cannot be read. Context positions query a bounded read-only CLI endpoint
+and display the label, state, launcher, and other safe metadata while inserting
+only the canonical UUID. The adapters do not parse the private registry and do
+not require `jq` or another helper.
+
+System packages place the files in each shell's standard vendor directory;
+DEB packages use `/usr/share/zsh/vendor-completions`, while RPM and Arch
+packages use `/usr/share/zsh/site-functions`.
+After the default source install, Bash normally discovers its file through
+`bash-completion`. For Zsh, add the source-install directory to `fpath` before
+initializing completion:
+
+```zsh
+fpath=(~/.local/share/zsh/site-functions $fpath)
+autoload -Uz compinit
+compinit
+```
+
+Fish users can source the installed adapter directly or copy it to Fish's user
+completion directory:
+
+```fish
+source ~/.local/share/fish/vendor_completions.d/sway-session.fish
+```
+
+The public read-only interface used by these adapters is
+`sway-session completion contexts <archive|activate|restore|restore-active|purge|app-forget>`.
+It never creates or migrates session state. `purge` completion is deliberately
+limited to Herdr contexts, matching the command's current deletion semantics;
+desktop-application registrations use `app forget`.
 
 Archive excludes a context from automatic restore while retaining its Herdr
 state. Purge stops and deletes the exact named Herdr session before removing

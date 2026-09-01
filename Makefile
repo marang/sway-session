@@ -4,7 +4,7 @@ GO_BUILD_FLAGS := -trimpath -buildvcs=false
 GO_LDFLAGS := -s -w -buildid=
 GO_FILES := $(shell find . -name '*.go' -type f)
 
-.PHONY: build install clean fmt fmt-check test race vet lint apparmor-check packaging-check process-boundary-check diff-check verify
+.PHONY: build install clean fmt fmt-check test race vet lint apparmor-check completion-check packaging-check process-boundary-check diff-check verify
 
 fmt:
 	gofmt -w $(GO_FILES)
@@ -31,6 +31,9 @@ lint:
 apparmor-check:
 	sh scripts/check-apparmor-policy.sh
 
+completion-check:
+	sh scripts/check-completions.sh
+
 packaging-check:
 	sh scripts/check-packaging.sh
 
@@ -46,11 +49,17 @@ diff-check:
 	git diff --check
 	git diff --cached --check
 
-verify: fmt-check test race vet lint apparmor-check packaging-check process-boundary-check build diff-check
+verify: fmt-check test race vet lint apparmor-check completion-check packaging-check process-boundary-check build diff-check
 
 install: build
 	install -d $(PREFIX)/bin
 	for binary in $(BINARIES); do install -m755 $$binary $(PREFIX)/bin/$$binary; done
+	install -d $(PREFIX)/share/bash-completion/completions
+	install -d $(PREFIX)/share/zsh/site-functions
+	install -d $(PREFIX)/share/fish/vendor_completions.d
+	install -m644 contrib/completions/bash/sway-session $(PREFIX)/share/bash-completion/completions/sway-session
+	install -m644 contrib/completions/zsh/_sway-session $(PREFIX)/share/zsh/site-functions/_sway-session
+	install -m644 contrib/completions/fish/sway-session.fish $(PREFIX)/share/fish/vendor_completions.d/sway-session.fish
 
 clean:
 	rm -f $(BINARIES)

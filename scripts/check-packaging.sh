@@ -22,6 +22,25 @@ require_count() {
 	fi
 }
 
+require_sequence() {
+	file=$1
+	first=$2
+	second=$3
+	third=$4
+	if ! awk -v first="$first" -v second="$second" -v third="$third" '
+		$0 == first {
+			if ((getline next_line) > 0 && next_line == second &&
+			    (getline final_line) > 0 && final_line == third) {
+				found = 1
+			}
+		}
+		END { exit(found ? 0 : 1) }
+	' "$file"; then
+		echo "$file is missing required associated packaging block: $first / $second / $third" >&2
+		exit 1
+	fi
+}
+
 reject_fixed() {
 	file=$1
 	value=$2
@@ -63,6 +82,9 @@ require_fixed PKGBUILD 'CGO_ENABLED=0 go build "${_go_build_flags[@]}" -ldflags=
 require_fixed PKGBUILD 'CGO_ENABLED=0 go test "${_go_build_flags[@]}" -count=1 ./...'
 require_fixed PKGBUILD 'install -Dm755 sway-session "$pkgdir/usr/bin/sway-session"'
 require_fixed PKGBUILD 'install -Dm755 sway-herdr-init "$pkgdir/usr/bin/sway-herdr-init"'
+require_fixed PKGBUILD 'install -Dm644 contrib/completions/bash/sway-session "$pkgdir/usr/share/bash-completion/completions/sway-session"'
+require_fixed PKGBUILD 'install -Dm644 contrib/completions/zsh/_sway-session "$pkgdir/usr/share/zsh/site-functions/_sway-session"'
+require_fixed PKGBUILD 'install -Dm644 contrib/completions/fish/sway-session.fish "$pkgdir/usr/share/fish/vendor_completions.d/sway-session.fish"'
 require_count contrib/sway/45-title-animator.conf 'exec_always --no-startup-id /usr/bin/sway-title-animator --replace --fps 25' 1
 require_count contrib/sway/45-title-animator.conf 'exec --no-startup-id /usr/bin/sway-session daemon' 1
 require_count contrib/sway/45-title-animator.conf 'exec --no-startup-id /usr/bin/sway-session restore' 1
@@ -87,6 +109,30 @@ require_fixed .goreleaser.yaml '      - src: ./contrib/herdr/config.toml'
 require_fixed .goreleaser.yaml '        dst: /usr/share/doc/sway-title-animator/contrib/herdr/config.toml'
 require_fixed .goreleaser.yaml '      - src: ./contrib/codex/hooks-system.json'
 require_fixed .goreleaser.yaml '        dst: /usr/share/doc/sway-title-animator/contrib/codex/hooks.json'
+require_fixed .goreleaser.yaml '      - src: ./contrib/completions/bash/sway-session'
+require_fixed .goreleaser.yaml '        dst: /usr/share/bash-completion/completions/sway-session'
+require_fixed .goreleaser.yaml '      - src: ./contrib/completions/zsh/_sway-session'
+require_fixed .goreleaser.yaml '        dst: /usr/share/zsh/vendor-completions/_sway-session'
+require_fixed .goreleaser.yaml '        dst: /usr/share/zsh/site-functions/_sway-session'
+require_fixed .goreleaser.yaml '        packager: deb'
+require_fixed .goreleaser.yaml '        packager: rpm'
+require_fixed .goreleaser.yaml '      - src: ./contrib/completions/fish/sway-session.fish'
+require_fixed .goreleaser.yaml '        dst: /usr/share/fish/vendor_completions.d/sway-session.fish'
+require_count .goreleaser.yaml 'contrib/completions/bash/sway-session' 2
+require_count .goreleaser.yaml 'contrib/completions/zsh/_sway-session' 3
+require_count .goreleaser.yaml 'contrib/completions/fish/sway-session.fish' 2
+require_count .goreleaser.yaml '        dst: /usr/share/zsh/vendor-completions/_sway-session' 1
+require_count .goreleaser.yaml '        dst: /usr/share/zsh/site-functions/_sway-session' 1
+require_count .goreleaser.yaml '        packager: deb' 1
+require_count .goreleaser.yaml '        packager: rpm' 1
+require_sequence .goreleaser.yaml \
+	'      - src: ./contrib/completions/zsh/_sway-session' \
+	'        dst: /usr/share/zsh/vendor-completions/_sway-session' \
+	'        packager: deb'
+require_sequence .goreleaser.yaml \
+	'      - src: ./contrib/completions/zsh/_sway-session' \
+	'        dst: /usr/share/zsh/site-functions/_sway-session' \
+	'        packager: rpm'
 reject_fixed .goreleaser.yaml '      - src: ./contrib/codex/hooks.json'
 require_fixed .goreleaser.yaml '      - src: ./contrib/apparmor/codex-home-guard'
 require_fixed .goreleaser.yaml '        dst: /usr/share/doc/sway-title-animator/contrib/apparmor/codex-home-guard'
@@ -98,6 +144,9 @@ require_fixed PKGBUILD 'install -Dm644 contrib/codex/hooks-system.json "$pkgdir/
 require_fixed PKGBUILD 'install -Dm644 contrib/apparmor/codex-home-guard "$pkgdir/usr/share/doc/$pkgname/contrib/apparmor/codex-home-guard"'
 require_fixed .goreleaser.yaml 'mode: 0755'
 require_fixed PKGBUILD 'install -Dm755 scripts/verify-codex-boundary.sh'
+require_fixed Makefile 'install -m644 contrib/completions/bash/sway-session $(PREFIX)/share/bash-completion/completions/sway-session'
+require_fixed Makefile 'install -m644 contrib/completions/zsh/_sway-session $(PREFIX)/share/zsh/site-functions/_sway-session'
+require_fixed Makefile 'install -m644 contrib/completions/fish/sway-session.fish $(PREFIX)/share/fish/vendor_completions.d/sway-session.fish'
 require_fixed scripts/verify-codex-boundary.sh 'PATH=/usr/bin'
 require_fixed scripts/verify-codex-boundary.sh 'session_binary=/usr/bin/sway-session'
 require_fixed scripts/verify-codex-boundary.sh 'initializer_binary=/usr/bin/sway-herdr-init'

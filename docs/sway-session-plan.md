@@ -488,6 +488,7 @@ sway-session app rebind-focused [--desktop-id <id>] [--yes] <context>
 sway-session app reapprove [--yes] <context>
 sway-session app pin|unpin|archive|activate <context>
 sway-session app forget --yes <context>
+sway-session completion contexts <archive|activate|restore|restore-active|purge|app-forget>
 ```
 
 `sway-session --json app list` returns only desktop-application contexts in a
@@ -498,6 +499,18 @@ Commands accept an exact canonical UUID or an unambiguous exact human label.
 Human-readable output uses labels first and retains the full UUID so duplicate
 labels remain operable. Machine consumers receive an explicit structured-output
 option rather than parsing presentation text.
+
+The completion endpoint is a public, bounded, read-only projection. It reads
+one lock-free current-schema snapshot, never creates or migrates state, and
+does not contact Sway, Herdr, or the network. Each successful text record is a
+canonical UUID plus one presentation-only description separated by a tab.
+Bash, Zsh, and Fish adapters own only the static command grammar and native
+display integration; they never read the private registry or evaluate endpoint
+output. A missing, malformed, or unsupported registry silently removes dynamic
+candidates while leaving static completion available. Top-level `purge`
+candidates remain Herdr-only until launcher-specific deletion semantics exist;
+application registrations use `app forget`. `restore-active` is the adapter
+scope for `restore --require-active` and excludes every archived context.
 
 `restore` is idempotent. `archive` removes a context from automatic restore but
 keeps its registry record and Herdr state. `activate` reverses archive. `purge`
@@ -752,6 +765,16 @@ behavior, or stop configuring the daemon.
   diagnostics.
 - Validate the process split, packaging, AppArmor documentation, independent
   reviews, and real Sway behavior on disposable workspace 98 or higher.
+
+### Phase 9: Shell completion
+
+- Expose one bounded read-only completion projection from `sway-session`.
+- Install static Bash, Zsh, and Fish adapters in their standard package vendor
+  directories and include them in release archives and source installs.
+- Insert canonical context UUIDs while showing safe label, state, launcher,
+  provider, and Herdr-directory metadata through each shell's native UI.
+- Preserve static command and option completion when dynamic state is absent,
+  invalid, or unreadable; add syntax, injection, fallback, and packaging tests.
 
 ## Test matrix
 

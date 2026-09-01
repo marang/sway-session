@@ -95,6 +95,18 @@ func (store RegistryStore) LoadSnapshotInto(target *Registry) error {
 	return nil
 }
 
+// ReadRegistrySnapshot returns one validated current-schema snapshot without
+// waiting for the registry lock, creating state, or performing migration.
+// It is intended for stale-safe read-only presentation such as completion.
+func ReadRegistrySnapshot(root string) (Registry, error) {
+	registry := emptyRegistry()
+	err := RegistryFile(root).current.LoadSnapshotInto(&registry)
+	if errors.Is(err, os.ErrNotExist) {
+		return registry, nil
+	}
+	return registry, err
+}
+
 func (store RegistryStore) ensureCurrent(ctx context.Context) error {
 	var current Registry
 	err := store.current.LoadSnapshotInto(&current)

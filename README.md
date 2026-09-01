@@ -236,10 +236,12 @@ The command resolves exact Wayland, XWayland, or Flatpak identity evidence and
 opens a native `swaynag` approval for package installs. Source-only installs use
 the documented explicit `--yes` path. An ambiguous match presents explicit
 desktop entry choices and is never guessed. A repeat on an already registered
-window reports its status and repairs a missing stable mark; it is deliberately
-not a toggle. To preview one confirmation for all unregistered eligible apps on
-the focused workspace, use `sway-session app register-workspace`. `--yes` is
-available for deliberate noninteractive use.
+application reports its status without moving a healthy anchor. A missing mark
+is repaired only when compositor-wide evidence identifies exactly one matching
+top-level; ambiguous groups fail without changing Sway. The command is
+deliberately not a toggle. To preview one confirmation for all unregistered
+eligible apps on the focused workspace, use `sway-session app
+register-workspace`. `--yes` is available for deliberate noninteractive use.
 
 After the first successful desktop registration, eligible normal top-levels
 show one application-persistence indicator immediately before the app icon:

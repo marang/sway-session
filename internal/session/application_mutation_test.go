@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/marang/sway-title-animator/internal/swayipc"
 )
@@ -67,6 +68,63 @@ func TestRegisterRollsBackAttemptedMarkWhenUnknownOutcomeCannotBeObserved(t *tes
 	mark, _ := context.ID.Mark()
 	if containsMark(window.Marks, mark) {
 		t.Fatalf("attempted mark was orphaned after registry rollback: %q", window.Marks)
+	}
+}
+
+func TestRepairApplicationMarkHoldsRegistryLockAcrossSwayMutation(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state")
+	registered := flatpakApplicationContext("org.example.App", "org.example.App")
+	registered.ID = testContextID
+	if err := RegistryFile(root).Save(Registry{Version: ContextsSchemaVersion, Contexts: []Context{registered}}); err != nil {
+		t.Fatal(err)
+	}
+	commandStarted := make(chan struct{})
+	releaseCommand := make(chan struct{})
+	client := &mutationSwayClient{
+		tree: applicationTree(appWindow(42, true, "org.example.App", "", "", "org.example.App")),
+		beforeCommand: func() {
+			close(commandStarted)
+			<-releaseCommand
+		},
+	}
+	repairDone := make(chan error, 1)
+	go func() {
+		repairDone <- RepairApplicationMark(root, client, 42, registered)
+	}()
+	<-commandStarted
+
+	updateAttempted := make(chan struct{})
+	updateEntered := make(chan struct{})
+	updateDone := make(chan error, 1)
+	go func() {
+		close(updateAttempted)
+		_, err := UpdateRegistry(root, func(registry *Registry) error {
+			close(updateEntered)
+			registry.Contexts[0].Label = "Concurrent update"
+			return registry.Validate()
+		})
+		updateDone <- err
+	}()
+	<-updateAttempted
+	select {
+	case <-updateEntered:
+		close(releaseCommand)
+		<-repairDone
+		t.Fatal("concurrent registry mutation crossed the in-flight Sway repair boundary")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(releaseCommand)
+	if err := <-repairDone; err != nil {
+		t.Fatalf("repair failed: %v", err)
+	}
+	select {
+	case <-updateEntered:
+	case <-time.After(time.Second):
+		t.Fatal("concurrent registry mutation did not resume after repair")
+	}
+	if err := <-updateDone; err != nil {
+		t.Fatalf("concurrent registry mutation failed: %v", err)
 	}
 }
 
@@ -201,6 +259,7 @@ type mutationSwayClient struct {
 	unknownAfterApply bool
 	observeFailures   int
 	commandCalls      int
+	beforeCommand     func()
 }
 
 func (client *mutationSwayClient) Request(messageType swayipc.MessageType, payload []byte) (swayipc.Message, error) {
@@ -216,6 +275,9 @@ func (client *mutationSwayClient) Request(messageType swayipc.MessageType, paylo
 		return swayipc.Message{}, errors.New("unexpected request")
 	}
 	client.commandCalls++
+	if client.beforeCommand != nil {
+		client.beforeCommand()
+	}
 	command := string(payload)
 	mark := command[strings.LastIndex(command, " ")+1:]
 	node, err := findContainer(client.tree, 42)

@@ -205,15 +205,48 @@ func ReapproveApplicationContext(root string, id ContextID, expectedRevision str
 
 // RepairApplicationMark is the safe no-op/status behavior for an already
 // registered focused application whose stable mark was lost.
-func RepairApplicationMark(client SwayRequestClient, containerID int64, id ContextID) error {
-	hasMark, err := containerHasContextMark(client, containerID, id)
+func RepairApplicationMark(root string, client SwayRequestClient, containerID int64, registered Context) error {
+	if registered.App == nil {
+		return errors.New("registered context is not a desktop application")
+	}
+	return InspectRegistryLocked(root, func(registry Registry) error {
+		index, err := ResolveContext(registry, string(registered.ID))
+		if err != nil || !reflect.DeepEqual(registry.Contexts[index], registered) {
+			return errors.New("application context changed while mark repair was pending")
+		}
+		return repairApplicationMark(client, containerID, registered)
+	})
+}
+
+func repairApplicationMark(client SwayRequestClient, containerID int64, registered Context) error {
+	root, err := requestApplicationTree(client)
 	if err != nil {
 		return err
 	}
-	if hasMark {
-		return nil
+	markedContainerID, err := findMarkedContainerInTree(root, registered.ID)
+	if err != nil {
+		return err
 	}
-	return SetContextMark(client, containerID, id, true)
+	matches := make([]WindowApplication, 0, 1)
+	if err := walkApplicationWindowsIncludingTransient(root, "", func(window WindowApplication, _ bool) {
+		if applicationIdentitiesOverlap(registered.App.Identity, window.Identity) {
+			matches = append(matches, window)
+		}
+	}); err != nil {
+		return err
+	}
+	if markedContainerID != 0 {
+		for _, match := range matches {
+			if match.ContainerID == markedContainerID {
+				return nil
+			}
+		}
+		return fmt.Errorf("application anchor mark on container %d does not match the registered application identity", markedContainerID)
+	}
+	if len(matches) != 1 || matches[0].ContainerID != containerID {
+		return fmt.Errorf("application anchor mark is missing and %d matching windows make repair ambiguous", len(matches))
+	}
+	return SetContextMark(client, containerID, registered.ID, true)
 }
 
 // ForgetApplicationContext removes the live mark before committing removal
@@ -325,13 +358,19 @@ func findMarkedContainer(client SwayRequestClient, id ContextID) (int64, error) 
 	if err != nil {
 		return 0, err
 	}
+	return findMarkedContainerInTree(root, id)
+}
+
+func findMarkedContainerInTree(root *swayipc.TreeNode, id ContextID) (int64, error) {
 	mark, _ := id.Mark()
 	matches := make([]int64, 0, 1)
-	_ = walkTreeNodes(root, func(node *swayipc.TreeNode) {
+	if err := walkTreeNodes(root, func(node *swayipc.TreeNode) {
 		if slices.Contains(node.Marks, mark) {
 			matches = append(matches, node.ID)
 		}
-	})
+	}); err != nil {
+		return 0, err
+	}
 	if len(matches) > 1 {
 		return 0, fmt.Errorf("context %q mark is present on multiple Sway containers", id)
 	}

@@ -67,7 +67,7 @@ func executeAppRegisterFocused(arguments []string, deps dependencies) (commandRe
 		return commandResult{}, failure("app_resolution", "resolve focused application", err.Error())
 	}
 	if resolution.Registered != nil {
-		if err := sessionstate.RepairApplicationMark(environment.client, resolution.Window.ContainerID, resolution.Registered.ID); err != nil {
+		if err := sessionstate.RepairApplicationMark(environment.root, environment.client, resolution.Window.ContainerID, *resolution.Registered); err != nil {
 			return commandResult{}, failure("sway_mark", "repair registered application mark", err.Error())
 		}
 		return commandResult{Command: "app status", Contexts: []sessionstate.Context{*resolution.Registered}, Message: "Focused application is already registered; its mark is healthy."}, nil

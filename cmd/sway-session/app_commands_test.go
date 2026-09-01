@@ -50,6 +50,310 @@ func TestAppRegisterFocusedFlatpakIsExplicitMarkedAndIdempotent(t *testing.T) {
 	}
 }
 
+func TestAppRegisterFocusedDoesNotMoveHealthyAnchorToSameApplicationSibling(t *testing.T) {
+	deps := testDependencies(t)
+	registered := sessionstate.Context{
+		ID: testContextID, Label: "Example", Provider: "desktop", State: sessionstate.ContextActive,
+		Launcher: sessionstate.Launcher{Kind: sessionstate.LauncherFlatpak, FlatpakID: "org.example.App", FlatpakInstallation: sessionstate.FlatpakUser},
+		App: &sessionstate.Application{
+			Identity:      sessionstate.ApplicationIdentity{Protocol: sessionstate.WindowWayland, WaylandAppID: "org.example.App", SandboxAppID: "org.example.App"},
+			DesiredOpen:   true,
+			RestorePolicy: sessionstate.ApplicationRestoreFollow,
+		},
+	}
+	root, _ := deps.stateRoot()
+	if _, err := sessionstate.UpdateRegistry(root, func(registry *sessionstate.Registry) error {
+		return sessionstate.AddContext(registry, registered)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	mark, _ := registered.ID.Mark()
+	appID, sandbox := "org.example.App", "org.example.App"
+	anchor := &swayipc.TreeNode{ID: 42, Type: "con", AppID: &appID, SandboxAppID: &sandbox, Marks: []string{mark}}
+	sibling := &swayipc.TreeNode{ID: 43, Type: "con", Focused: true, AppID: &appID, SandboxAppID: &sandbox}
+	tree := applicationCommandTree(anchor)
+	tree.Nodes[0].Nodes[0].Nodes = append(tree.Nodes[0].Nodes[0].Nodes, sibling)
+	client := &appCommandClient{tree: tree}
+	deps.newSwayClient = func(string) swayRequester { return client }
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	code := runWith([]string{"app", "register-focused", "--yes", "--socket", "/run/user/1000/sway.sock"}, strings.NewReader(""), &stdout, &stderr, deps)
+	if code != exitSuccess || stderr.Len() != 0 || !strings.Contains(stdout.String(), "already registered") {
+		t.Fatalf("registered sibling status failed: code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if len(client.commands) != 0 || !containsString(anchor.Marks, mark) || containsString(sibling.Marks, mark) {
+		t.Fatalf("registered sibling moved the healthy anchor: commands=%q anchor=%q sibling=%q", client.commands, anchor.Marks, sibling.Marks)
+	}
+}
+
+func TestAppRegisterFocusedRejectsRegistryChangeAfterObservation(t *testing.T) {
+	deps := testDependencies(t)
+	registered := sessionstate.Context{
+		ID: testContextID, Label: "Example", Provider: "desktop", State: sessionstate.ContextActive,
+		Launcher: sessionstate.Launcher{Kind: sessionstate.LauncherFlatpak, FlatpakID: "org.example.App", FlatpakInstallation: sessionstate.FlatpakUser},
+		App: &sessionstate.Application{
+			Identity:      sessionstate.ApplicationIdentity{Protocol: sessionstate.WindowWayland, WaylandAppID: "org.example.App", SandboxAppID: "org.example.App"},
+			DesiredOpen:   true,
+			RestorePolicy: sessionstate.ApplicationRestoreFollow,
+		},
+	}
+	root, _ := deps.stateRoot()
+	if _, err := sessionstate.UpdateRegistry(root, func(registry *sessionstate.Registry) error {
+		return sessionstate.AddContext(registry, registered)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	appID, sandbox := "org.example.App", "org.example.App"
+	focused := &swayipc.TreeNode{ID: 42, Type: "con", Focused: true, AppID: &appID, SandboxAppID: &sandbox}
+	client := &appCommandClient{tree: applicationCommandTree(focused)}
+	client.afterGetTree = func(call int) {
+		if call != 1 {
+			return
+		}
+		if _, err := sessionstate.UpdateRegistry(root, func(registry *sessionstate.Registry) error {
+			_, err := sessionstate.RemoveContext(registry, string(registered.ID))
+			return err
+		}); err != nil {
+			t.Fatalf("remove context between observations: %v", err)
+		}
+	}
+	deps.newSwayClient = func(string) swayRequester { return client }
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	code := runWith([]string{"app", "register-focused", "--yes", "--socket", "/run/user/1000/sway.sock"}, strings.NewReader(""), &stdout, &stderr, deps)
+	if code != exitOperation || !strings.Contains(stderr.String(), "changed") {
+		t.Fatalf("stale registry observation was not rejected: code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if len(client.commands) != 0 {
+		t.Fatalf("stale registry observation mutated Sway: commands=%q", client.commands)
+	}
+}
+
+func TestAppRegisterFocusedRejectsMarkOnUnrelatedContainer(t *testing.T) {
+	deps := testDependencies(t)
+	registered := sessionstate.Context{
+		ID: testContextID, Label: "Example", Provider: "desktop", State: sessionstate.ContextActive,
+		Launcher: sessionstate.Launcher{Kind: sessionstate.LauncherFlatpak, FlatpakID: "org.example.App", FlatpakInstallation: sessionstate.FlatpakUser},
+		App: &sessionstate.Application{
+			Identity:      sessionstate.ApplicationIdentity{Protocol: sessionstate.WindowWayland, WaylandAppID: "org.example.App", SandboxAppID: "org.example.App"},
+			DesiredOpen:   true,
+			RestorePolicy: sessionstate.ApplicationRestoreFollow,
+		},
+	}
+	root, _ := deps.stateRoot()
+	if _, err := sessionstate.UpdateRegistry(root, func(registry *sessionstate.Registry) error {
+		return sessionstate.AddContext(registry, registered)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	mark, _ := registered.ID.Mark()
+	unrelatedAppID, unrelatedSandbox := "org.example.Other", "org.example.Other"
+	unrelated := &swayipc.TreeNode{ID: 42, Type: "con", AppID: &unrelatedAppID, SandboxAppID: &unrelatedSandbox, Marks: []string{mark}}
+	appID, sandbox := "org.example.App", "org.example.App"
+	focused := &swayipc.TreeNode{ID: 43, Type: "con", Focused: true, AppID: &appID, SandboxAppID: &sandbox}
+	tree := applicationCommandTree(unrelated)
+	tree.Nodes[0].Nodes[0].Nodes = append(tree.Nodes[0].Nodes[0].Nodes, focused)
+	client := &appCommandClient{tree: tree}
+	deps.newSwayClient = func(string) swayRequester { return client }
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	code := runWith([]string{"app", "register-focused", "--yes", "--socket", "/run/user/1000/sway.sock"}, strings.NewReader(""), &stdout, &stderr, deps)
+	if code != exitOperation || !strings.Contains(stderr.String(), "does not match") {
+		t.Fatalf("unrelated marked container was not rejected: code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if len(client.commands) != 0 || !containsString(unrelated.Marks, mark) || containsString(focused.Marks, mark) {
+		t.Fatalf("unrelated mark was moved: commands=%q unrelated=%q focused=%q", client.commands, unrelated.Marks, focused.Marks)
+	}
+}
+
+func TestAppRegisterFocusedRepairsGloballyMissingApplicationAnchor(t *testing.T) {
+	deps := testDependencies(t)
+	registered := sessionstate.Context{
+		ID: testContextID, Label: "Example", Provider: "desktop", State: sessionstate.ContextActive,
+		Launcher: sessionstate.Launcher{Kind: sessionstate.LauncherFlatpak, FlatpakID: "org.example.App", FlatpakInstallation: sessionstate.FlatpakUser},
+		App: &sessionstate.Application{
+			Identity:      sessionstate.ApplicationIdentity{Protocol: sessionstate.WindowWayland, WaylandAppID: "org.example.App", SandboxAppID: "org.example.App"},
+			DesiredOpen:   true,
+			RestorePolicy: sessionstate.ApplicationRestoreFollow,
+		},
+	}
+	root, _ := deps.stateRoot()
+	if _, err := sessionstate.UpdateRegistry(root, func(registry *sessionstate.Registry) error {
+		return sessionstate.AddContext(registry, registered)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	mark, _ := registered.ID.Mark()
+	appID, sandbox := "org.example.App", "org.example.App"
+	window := &swayipc.TreeNode{ID: 42, Type: "con", Focused: true, AppID: &appID, SandboxAppID: &sandbox}
+	client := &appCommandClient{tree: applicationCommandTree(window)}
+	deps.newSwayClient = func(string) swayRequester { return client }
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	code := runWith([]string{"app", "register-focused", "--yes", "--socket", "/run/user/1000/sway.sock"}, strings.NewReader(""), &stdout, &stderr, deps)
+	if code != exitSuccess || stderr.Len() != 0 {
+		t.Fatalf("missing anchor repair failed: code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if len(client.commands) != 1 || !strings.Contains(client.commands[0], "[con_id=42] mark --add "+mark) || !containsString(window.Marks, mark) {
+		t.Fatalf("globally missing anchor was not repaired: commands=%q marks=%q", client.commands, window.Marks)
+	}
+}
+
+func TestAppRegisterFocusedRefusesAmbiguousMissingApplicationAnchor(t *testing.T) {
+	deps := testDependencies(t)
+	registered := sessionstate.Context{
+		ID: testContextID, Label: "Example", Provider: "desktop", State: sessionstate.ContextActive,
+		Launcher: sessionstate.Launcher{Kind: sessionstate.LauncherFlatpak, FlatpakID: "org.example.App", FlatpakInstallation: sessionstate.FlatpakUser},
+		App: &sessionstate.Application{
+			Identity:      sessionstate.ApplicationIdentity{Protocol: sessionstate.WindowWayland, WaylandAppID: "org.example.App", SandboxAppID: "org.example.App"},
+			DesiredOpen:   true,
+			RestorePolicy: sessionstate.ApplicationRestoreFollow,
+		},
+	}
+	root, _ := deps.stateRoot()
+	if _, err := sessionstate.UpdateRegistry(root, func(registry *sessionstate.Registry) error {
+		return sessionstate.AddContext(registry, registered)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	appID, sandbox := "org.example.App", "org.example.App"
+	first := &swayipc.TreeNode{ID: 42, Type: "con", AppID: &appID, SandboxAppID: &sandbox}
+	focused := &swayipc.TreeNode{ID: 43, Type: "con", Focused: true, AppID: &appID, SandboxAppID: &sandbox}
+	tree := applicationCommandTree(first)
+	tree.Nodes[0].Nodes[0].Nodes = append(tree.Nodes[0].Nodes[0].Nodes, focused)
+	client := &appCommandClient{tree: tree}
+	deps.newSwayClient = func(string) swayRequester { return client }
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	code := runWith([]string{"app", "register-focused", "--yes", "--socket", "/run/user/1000/sway.sock"}, strings.NewReader(""), &stdout, &stderr, deps)
+	if code != exitOperation || !strings.Contains(stderr.String(), "ambiguous") {
+		t.Fatalf("ambiguous missing anchor was not rejected: code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if len(client.commands) != 0 {
+		t.Fatalf("ambiguous missing anchor mutated Sway: commands=%q", client.commands)
+	}
+}
+
+func TestAppRegisterFocusedRefusesMissingAnchorWithScratchpadSibling(t *testing.T) {
+	deps := testDependencies(t)
+	registered := sessionstate.Context{
+		ID: testContextID, Label: "Example", Provider: "desktop", State: sessionstate.ContextActive,
+		Launcher: sessionstate.Launcher{Kind: sessionstate.LauncherFlatpak, FlatpakID: "org.example.App", FlatpakInstallation: sessionstate.FlatpakUser},
+		App: &sessionstate.Application{
+			Identity:      sessionstate.ApplicationIdentity{Protocol: sessionstate.WindowWayland, WaylandAppID: "org.example.App", SandboxAppID: "org.example.App"},
+			DesiredOpen:   true,
+			RestorePolicy: sessionstate.ApplicationRestoreFollow,
+		},
+	}
+	root, _ := deps.stateRoot()
+	if _, err := sessionstate.UpdateRegistry(root, func(registry *sessionstate.Registry) error {
+		return sessionstate.AddContext(registry, registered)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	appID, sandbox := "org.example.App", "org.example.App"
+	focused := &swayipc.TreeNode{ID: 42, Type: "con", Focused: true, AppID: &appID, SandboxAppID: &sandbox}
+	scratchpadSibling := &swayipc.TreeNode{ID: 43, Type: "con", AppID: &appID, SandboxAppID: &sandbox}
+	tree := applicationCommandTree(focused)
+	tree.Nodes[0].Nodes = append(tree.Nodes[0].Nodes, &swayipc.TreeNode{
+		ID: 4, Type: "workspace", Name: "__i3_scratch", FloatingNodes: []*swayipc.TreeNode{scratchpadSibling},
+	})
+	client := &appCommandClient{tree: tree}
+	deps.newSwayClient = func(string) swayRequester { return client }
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	code := runWith([]string{"app", "register-focused", "--yes", "--socket", "/run/user/1000/sway.sock"}, strings.NewReader(""), &stdout, &stderr, deps)
+	if code != exitOperation || !strings.Contains(stderr.String(), "ambiguous") {
+		t.Fatalf("scratchpad ambiguity was not rejected: code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if len(client.commands) != 0 {
+		t.Fatalf("scratchpad ambiguity mutated Sway: commands=%q", client.commands)
+	}
+}
+
+func TestAppRegisterFocusedDoesNotMoveHealthyStagingAnchorToSibling(t *testing.T) {
+	deps := testDependencies(t)
+	registered := sessionstate.Context{
+		ID: testContextID, Label: "Example", Provider: "desktop", State: sessionstate.ContextActive,
+		Launcher: sessionstate.Launcher{Kind: sessionstate.LauncherFlatpak, FlatpakID: "org.example.App", FlatpakInstallation: sessionstate.FlatpakUser},
+		App: &sessionstate.Application{
+			Identity:      sessionstate.ApplicationIdentity{Protocol: sessionstate.WindowWayland, WaylandAppID: "org.example.App", SandboxAppID: "org.example.App"},
+			DesiredOpen:   true,
+			RestorePolicy: sessionstate.ApplicationRestoreFollow,
+		},
+	}
+	root, _ := deps.stateRoot()
+	if _, err := sessionstate.UpdateRegistry(root, func(registry *sessionstate.Registry) error {
+		return sessionstate.AddContext(registry, registered)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	mark, _ := registered.ID.Mark()
+	appID, sandbox := "org.example.App", "org.example.App"
+	focused := &swayipc.TreeNode{ID: 42, Type: "con", Focused: true, AppID: &appID, SandboxAppID: &sandbox}
+	stagingAnchor := &swayipc.TreeNode{ID: 43, Type: "con", AppID: &appID, SandboxAppID: &sandbox, Marks: []string{mark}}
+	tree := applicationCommandTree(focused)
+	tree.Nodes[0].Nodes = append(tree.Nodes[0].Nodes, &swayipc.TreeNode{
+		ID: 4, Type: "workspace", Name: sessionstate.RestoreStagingWorkspace, Nodes: []*swayipc.TreeNode{stagingAnchor},
+	})
+	client := &appCommandClient{tree: tree}
+	deps.newSwayClient = func(string) swayRequester { return client }
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	code := runWith([]string{"app", "register-focused", "--yes", "--socket", "/run/user/1000/sway.sock"}, strings.NewReader(""), &stdout, &stderr, deps)
+	if code != exitSuccess || stderr.Len() != 0 || !strings.Contains(stdout.String(), "already registered") {
+		t.Fatalf("healthy staging anchor status failed: code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if len(client.commands) != 0 || !containsString(stagingAnchor.Marks, mark) || containsString(focused.Marks, mark) {
+		t.Fatalf("healthy staging anchor moved: commands=%q staging=%q focused=%q", client.commands, stagingAnchor.Marks, focused.Marks)
+	}
+}
+
+func TestAppRegisterFocusedRefusesMissingAnchorWithStagingSibling(t *testing.T) {
+	deps := testDependencies(t)
+	registered := sessionstate.Context{
+		ID: testContextID, Label: "Example", Provider: "desktop", State: sessionstate.ContextActive,
+		Launcher: sessionstate.Launcher{Kind: sessionstate.LauncherFlatpak, FlatpakID: "org.example.App", FlatpakInstallation: sessionstate.FlatpakUser},
+		App: &sessionstate.Application{
+			Identity:      sessionstate.ApplicationIdentity{Protocol: sessionstate.WindowWayland, WaylandAppID: "org.example.App", SandboxAppID: "org.example.App"},
+			DesiredOpen:   true,
+			RestorePolicy: sessionstate.ApplicationRestoreFollow,
+		},
+	}
+	root, _ := deps.stateRoot()
+	if _, err := sessionstate.UpdateRegistry(root, func(registry *sessionstate.Registry) error {
+		return sessionstate.AddContext(registry, registered)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	appID, sandbox := "org.example.App", "org.example.App"
+	focused := &swayipc.TreeNode{ID: 42, Type: "con", Focused: true, AppID: &appID, SandboxAppID: &sandbox}
+	stagingSibling := &swayipc.TreeNode{ID: 43, Type: "con", AppID: &appID, SandboxAppID: &sandbox}
+	tree := applicationCommandTree(focused)
+	tree.Nodes[0].Nodes = append(tree.Nodes[0].Nodes, &swayipc.TreeNode{
+		ID: 4, Type: "workspace", Name: sessionstate.RestoreStagingWorkspace, Nodes: []*swayipc.TreeNode{stagingSibling},
+	})
+	client := &appCommandClient{tree: tree}
+	deps.newSwayClient = func(string) swayRequester { return client }
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	code := runWith([]string{"app", "register-focused", "--yes", "--socket", "/run/user/1000/sway.sock"}, strings.NewReader(""), &stdout, &stderr, deps)
+	if code != exitOperation || !strings.Contains(stderr.String(), "ambiguous") {
+		t.Fatalf("staging ambiguity was not rejected: code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if len(client.commands) != 0 {
+		t.Fatalf("staging ambiguity mutated Sway: commands=%q", client.commands)
+	}
+}
+
 func TestAppListJSONReturnsOnlyApplicationsSortedByContextID(t *testing.T) {
 	deps := testDependencies(t)
 	root, err := deps.stateRoot()
@@ -365,14 +669,20 @@ func applicationCommandTree(window *swayipc.TreeNode) *swayipc.TreeNode {
 }
 
 type appCommandClient struct {
-	tree     *swayipc.TreeNode
-	commands []string
+	tree         *swayipc.TreeNode
+	commands     []string
+	getTreeCalls int
+	afterGetTree func(int)
 }
 
 func (client *appCommandClient) Request(messageType swayipc.MessageType, payload []byte) (swayipc.Message, error) {
 	switch messageType {
 	case swayipc.GetTree:
 		data, err := json.Marshal(client.tree)
+		client.getTreeCalls++
+		if client.afterGetTree != nil {
+			client.afterGetTree(client.getTreeCalls)
+		}
 		return swayipc.Message{Type: swayipc.GetTree, Payload: data}, err
 	case swayipc.RunCommand:
 		command := string(payload)

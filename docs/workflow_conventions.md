@@ -55,8 +55,8 @@ Current explicit follow-ups:
 Normal work follows this loop:
 
 `Linear issue → In Progress → current main → focused branch → implementation
-and tests → local review → commit and push → draft PR → CI → ready PR and In
-Review → review feedback → merge → Done → sync main → cleanup`
+and tests → local review → commit and push → PR and In Review → CI → review
+feedback → merge → Done → sync main → cleanup`
 
 1. Select exactly one correctly routed Linear issue.
 2. Move it to `In Progress`.
@@ -69,11 +69,13 @@ Review → review feedback → merge → Done → sync main → cleanup`
 6. Run `make verify` plus any relevant manual Sway/audio check.
 7. Review the complete diff and run the `code-review` skill.
 8. Commit with a concise English Conventional Commit message and push.
-9. Open a draft PR against `main`, link the Linear issue, and include the
-   behavior, risk, fallback, and verification evidence.
+9. Open a ready-for-review PR against `main`, link the Linear issue, include the
+   behavior, risk, fallback, and verification evidence, and move the issue to
+   `In Review`.
 10. Inspect every CI job. Fix branch-owned failures on the same branch.
-11. Mark the PR ready only when the branch is locally complete and CI is
-    healthy; move the issue to `In Review`.
+11. Use a draft only for deliberately early collaboration on incomplete work;
+    keep its issue `In Progress` and mark it ready after the local implementation,
+    verification, and review gates pass.
 12. Inspect all review surfaces, address actionable findings, and repeat
     affected checks after every review-driven push.
 13. Merge only when the gate in section 6 is satisfied.

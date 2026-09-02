@@ -374,32 +374,10 @@ func executeRestore(ctx context.Context, arguments []string, deps dependencies) 
 		if len(waiting) == 0 {
 			return nil
 		}
-		paths, err := deps.herdrPaths()
-		if err != nil {
-			appendAllRestoreFailures(&operationDiagnostics, waiting, "herdr_path", err, "")
-			return nil
-		}
-		if err := deps.validateHistory(paths); err != nil {
-			appendAllRestoreFailures(&operationDiagnostics, waiting, "pane_history", err, "Set [experimental] pane_history = true and keep Herdr state owner-only.")
-			return nil
-		}
-		herdr, err := deps.resolveProgram("herdr")
-		if err != nil {
-			appendAllRestoreFailures(&operationDiagnostics, waiting, "missing_executable", err, "Install Herdr and ensure it is on PATH.")
-			return nil
-		}
 		for _, id := range sortedWaitingIDs(waiting) {
 			target := waiting[id]
 			if target.Launcher.Terminal == nil {
 				operationDiagnostics = append(operationDiagnostics, diagnosticForContext("terminal_adapter", target, errors.New("herdr context has no terminal adapter"), "Reset the invalid session state and recreate the context."))
-				delete(waiting, id)
-				continue
-			}
-			if err := sessionstate.ValidateHerdrSessionSocketPaths(paths.Root, target.Launcher.Session); err != nil {
-				operationDiagnostics = append(operationDiagnostics, diagnosticForContext(
-					"herdr_path", target, err,
-					"Shorten XDG_CONFIG_HOME, or purge this context and create a fresh terminal with sway-session terminal --new.",
-				))
 				delete(waiting, id)
 				continue
 			}
@@ -415,9 +393,28 @@ func executeRestore(ctx context.Context, arguments []string, deps dependencies) 
 				delete(waiting, id)
 				continue
 			}
-			spec, err := sessionstate.BuildTerminalProcessSpec(target, terminalExecutable, herdr, paths.ConfigFile)
+			sessionManager, err := terminalSessionManagerForContext(target, deps)
 			if err != nil {
-				operationDiagnostics = append(operationDiagnostics, diagnosticForContext("terminal_adapter", target, err, ""))
+				operationDiagnostics = append(operationDiagnostics, diagnosticForContext("session_manager", target, err, "Use a supported typed terminal session manager."))
+				delete(waiting, id)
+				continue
+			}
+			spec, err := sessionManager.BuildProcessSpec(target, terminalExecutable)
+			if err != nil {
+				code := "session_manager"
+				hint := "Verify the selected terminal session manager and its private state configuration."
+				switch {
+				case errors.Is(err, errHerdrSessionPath):
+					code = "herdr_path"
+					hint = "Shorten XDG_CONFIG_HOME, or purge this context and create a fresh terminal with sway-session terminal --new."
+				case errors.Is(err, errHerdrPaneHistory):
+					code = "pane_history"
+					hint = "Set [experimental] pane_history = true and keep Herdr state owner-only."
+				case errors.Is(err, errHerdrExecutable):
+					code = "missing_executable"
+					hint = "Install Herdr and ensure it is on PATH."
+				}
+				operationDiagnostics = append(operationDiagnostics, diagnosticForContext(code, target, err, hint))
 				delete(waiting, id)
 				continue
 			}

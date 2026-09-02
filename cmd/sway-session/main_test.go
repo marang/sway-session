@@ -251,7 +251,7 @@ func TestTerminalHelpDocumentsExplicitFreshAndReusableModes(t *testing.T) {
 	if code != exitSuccess || stderr.Len() != 0 {
 		t.Fatalf("terminal help failed code=%d stderr=%q", code, stderr.String())
 	}
-	for _, expected := range []string{"--new | --project NAME | --ephemeral", "--cwd PATH"} {
+	for _, expected := range []string{"--new | --context UUID | --project NAME | --ephemeral", "--cwd PATH", "--role LEFT --role RIGHT"} {
 		if !strings.Contains(stdout.String(), expected) {
 			t.Fatalf("terminal help missing %q: %s", expected, stdout.String())
 		}

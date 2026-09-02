@@ -7,13 +7,9 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"os/user"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
-
-	sessionstate "github.com/marang/sway-title-animator/internal/session"
 )
 
 const (
@@ -21,52 +17,9 @@ const (
 	outputLimit    = 64 * 1024
 )
 
-type UserPaths struct {
-	Home       string
-	Name       string
-	UID        int
-	ConfigHome string
-	StateHome  string
-	RuntimeDir string
-}
-
-// CurrentUserPaths derives the helper's filesystem boundary from the account
-// database instead of caller-controlled HOME and XDG environment variables.
-func CurrentUserPaths() (UserPaths, error) {
-	uid := os.Getuid()
-	account, err := user.LookupId(strconv.Itoa(uid))
-	if err != nil {
-		return UserPaths{}, fmt.Errorf("resolve current account: %w", err)
-	}
-	home := filepath.Clean(account.HomeDir)
-	if !filepath.IsAbs(home) || home == string(filepath.Separator) {
-		return UserPaths{}, errors.New("current account has an unsafe home directory")
-	}
-	name := account.Username
-	if name == "" || strings.ContainsAny(name, "\x00\r\n") {
-		return UserPaths{}, errors.New("current account has an unsafe username")
-	}
-	return UserPaths{
-		Home:       home,
-		Name:       name,
-		UID:        uid,
-		ConfigHome: filepath.Join(home, ".config"),
-		StateHome:  filepath.Join(home, ".local", "state"),
-		RuntimeDir: filepath.Join("/run/user", strconv.Itoa(uid)),
-	}, nil
-}
-
-func (paths UserPaths) SessionStateRoot() string {
-	return filepath.Join(paths.StateHome, "sway-session")
-}
-
-func ResolveSystemExecutable(name string) (string, error) {
-	return sessionstate.ResolveRootOwnedSystemExecutable(name)
-}
-
 type ExecRunner struct {
 	Executable string
-	User       UserPaths
+	ConfigFile string
 }
 
 func (runner ExecRunner) Run(ctx context.Context, session string, cwd string, arguments ...string) ([]byte, error) {
@@ -91,7 +44,11 @@ func (runner ExecRunner) Run(ctx context.Context, session string, cwd string, ar
 	commandArguments = append(commandArguments, arguments...)
 	command := exec.CommandContext(commandContext, runner.Executable, commandArguments...)
 	command.Dir = cwd
-	command.Env = runner.environment()
+	environment, err := runner.environment()
+	if err != nil {
+		return nil, err
+	}
+	command.Env = environment
 	stdout := &limitedBuffer{limit: outputLimit}
 	stderr := &limitedBuffer{limit: outputLimit}
 	command.Stdout = stdout
@@ -109,18 +66,19 @@ func (runner ExecRunner) Run(ctx context.Context, session string, cwd string, ar
 	return stdout.Bytes(), nil
 }
 
-func (runner ExecRunner) environment() []string {
-	return []string{
-		"HOME=" + runner.User.Home,
-		"USER=" + runner.User.Name,
-		"LOGNAME=" + runner.User.Name,
-		"PATH=/usr/bin",
-		"LANG=C.UTF-8",
-		"NO_COLOR=1",
-		"XDG_CONFIG_HOME=" + runner.User.ConfigHome,
-		"XDG_STATE_HOME=" + runner.User.StateHome,
-		"XDG_RUNTIME_DIR=" + runner.User.RuntimeDir,
+func (runner ExecRunner) environment() ([]string, error) {
+	if !filepath.IsAbs(runner.ConfigFile) || filepath.Clean(runner.ConfigFile) != runner.ConfigFile || strings.ContainsAny(runner.ConfigFile, "\x00\r\n") {
+		return nil, errors.New("herdr config path must be a clean absolute path")
 	}
+	environment := make([]string, 0, len(os.Environ())+1)
+	for _, value := range os.Environ() {
+		name, _, found := strings.Cut(value, "=")
+		if !found || name == "CODEX_THREAD_ID" || strings.HasPrefix(name, "HERDR_") || strings.HasPrefix(name, "LD_") {
+			continue
+		}
+		environment = append(environment, value)
+	}
+	return append(environment, "HERDR_CONFIG_PATH="+runner.ConfigFile), nil
 }
 
 type limitedBuffer struct {

@@ -256,6 +256,38 @@ or a single-digit workspace.
   validated disposable roots. The real session state was never opened or
   changed.
 
+### LAB-110 session-manager evidence (2026-09-02)
+
+The source worktree was built with Go 1.26.5 and exercised against the real
+Sway 1.12 compositor, Alacritty, and Herdr 0.8.2 using isolated XDG config,
+state, and broker-runtime roots. All created or restored windows stayed on
+disposable workspaces 98 and 99; no single-digit workspace received a test
+window.
+
+- A fresh `terminal --new --role codex --role shell` created one typed Herdr
+  context, two panes, and exactly one agent. The live run exposed a startup
+  race where the first shell process inspection could precede Zsh becoming
+  idle. A bounded readiness poll and regression test were added, and the fresh
+  run then converged.
+- `terminal --context UUID` reused the same window and context. Once the layout
+  existed, the manager returned its documented safe no-op instead of splitting
+  or starting another agent.
+- With the animator stopped, the isolated session daemon captured the context
+  on workspace 98. Closing its exact window and running one-shot `restore`
+  reopened it on workspace 98 with the same two panes and one agent.
+- The owner-only request broker created a second fixed Codex-plus-shell
+  context on workspace 99. Repeating the identical request returned the same
+  UUID and created no duplicate context, window, pane, or agent.
+- A config selecting unsupported `session_manager = "tmux"` failed with the
+  actionable `terminal_config` diagnostic before contacting Sway or mutating
+  state; the registry hash remained byte-identical.
+
+Cleanup closed only the two exact test application IDs, stopped and deleted
+the three isolated Herdr sessions, stopped the isolated daemon, removed the
+two validated temporary roots, returned to workspace 1, and restarted the
+installed animator. The real sway-session registry was never opened or
+changed.
+
 This document records the manual LAB-80 evidence gathered on 2026-08-29. It
 separates the outer Sway restore from components which were not available in
 the verification environment.

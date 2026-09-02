@@ -29,6 +29,10 @@ type RestoreRunner interface {
 	Restore(context.Context, sessionstate.ContextID) error
 }
 
+type SessionInitializer interface {
+	Initialize(context.Context, sessionstate.Context) error
+}
+
 type ExecRestoreRunner struct {
 	Executable string
 	SwaySocket string
@@ -95,6 +99,7 @@ type Service struct {
 	NewContextID func() (sessionstate.ContextID, error)
 	NewSway      func() SwayRequester
 	Restore      RestoreRunner
+	Initializer  SessionInitializer
 
 	mu sync.Mutex
 }
@@ -141,7 +146,8 @@ func (service *Service) Handle(ctx context.Context, request Request) (Response, 
 		if window, mapped, err := observeRequestedContext(tree, registry, contextValue.ID); err != nil {
 			return Response{}, err
 		} else if mapped {
-			return service.focusMappedActiveContext(ctx, request, client, window.Workspace)
+			response, focusErr := service.focusMappedActiveContext(ctx, request, client, window.Workspace)
+			return service.initializeResponse(ctx, response, focusErr)
 		}
 		if err := requireCompatibleSavedWorkspace(ctx, service.StateRoot, contextValue.ID, request.Workspace); err != nil {
 			return Response{}, err
@@ -179,7 +185,18 @@ func (service *Service) Handle(ctx context.Context, request Request) (Response, 
 	if err := service.Restore.Restore(ctx, contextValue.ID); err != nil {
 		return Response{}, err
 	}
-	return service.finalizeRestoredContext(ctx, request, client, contextValue.ID, created)
+	response, finalizeErr := service.finalizeRestoredContext(ctx, request, client, contextValue.ID, created)
+	return service.initializeResponse(ctx, response, finalizeErr)
+}
+
+func (service *Service) initializeResponse(ctx context.Context, response Response, prior error) (Response, error) {
+	if prior != nil || service.Initializer == nil || response.Context == nil {
+		return response, prior
+	}
+	if err := service.Initializer.Initialize(ctx, *response.Context); err != nil {
+		return response, fmt.Errorf("initialize requested terminal session: %w", err)
+	}
+	return response, nil
 }
 
 func (service *Service) focusMappedActiveContext(ctx context.Context, request Request, client SwayRequester, observedWorkspace string) (Response, error) {

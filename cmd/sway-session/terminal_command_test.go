@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/marang/sway-title-animator/internal/herdrinit"
 	sessionstate "github.com/marang/sway-title-animator/internal/session"
 	"github.com/marang/sway-title-animator/internal/swayipc"
 )
@@ -90,6 +91,83 @@ func TestTerminalCommandNewCreatesIndependentAgentAddressableSessions(t *testing
 		if terminal.Identity.Kind != sessionstate.TerminalIdentityKind("instance") || terminal.Identity.ContextID != terminal.ContextID {
 			t.Fatalf("fresh terminal inventory lost instance identity: %+v", terminal)
 		}
+	}
+}
+
+func TestTerminalCommandNewInitializesRolesAndExactRetryConverges(t *testing.T) {
+	deps := testDependencies(t)
+	client := &terminalCommandClient{id: testContextID}
+	starter := &terminalCommandStarter{onStart: func() { client.setMapped(true) }}
+	deps.newSwayClient = func(string) swayRequester { return client }
+	deps.processStarter = starter
+	attempts := 0
+	deps.initializeHerdr = func(_ context.Context, contextValue sessionstate.Context, roles []string, runner herdrinit.Runner) (herdrinit.Result, error) {
+		attempts++
+		if contextValue.ID != testContextID || !reflect.DeepEqual(roles, []string{"codex", "shell"}) || runner == nil {
+			t.Fatalf("unexpected initialization context=%+v roles=%v runner=%T", contextValue, roles, runner)
+		}
+		result := herdrinit.Result{ContextID: contextValue.ID, Session: contextValue.Launcher.Session, Roles: append([]string(nil), roles...)}
+		if attempts == 1 {
+			return result, errors.New("agent trust required")
+		}
+		result.Initialized = true
+		return result, nil
+	}
+
+	var firstOut bytes.Buffer
+	var firstErr bytes.Buffer
+	code := runWith([]string{
+		"--json", "terminal", "--new", "--socket", "/run/user/1000/sway.sock",
+		"--role", "codex", "--role", "shell",
+	}, strings.NewReader(""), &firstOut, &firstErr, deps)
+	if code != exitOperation || !strings.Contains(firstErr.String(), "agent trust required") {
+		t.Fatalf("partial initialization code=%d stdout=%q stderr=%q", code, firstOut.String(), firstErr.String())
+	}
+	var partial commandResult
+	if err := json.Unmarshal(firstOut.Bytes(), &partial); err != nil || partial.Terminal == nil ||
+		partial.Terminal.ContextID != testContextID || partial.Terminal.Initialization == nil ||
+		partial.Terminal.Initialization.Initialized {
+		t.Fatalf("partial initialization lost retry identity: result=%+v err=%v", partial, err)
+	}
+
+	deps.newContextID = func() (sessionstate.ContextID, error) {
+		t.Fatal("exact retry generated another context ID")
+		return "", nil
+	}
+	retried := runTerminalJSON(t, deps,
+		"--json", "terminal", "--context", string(testContextID), "--socket", "/run/user/1000/sway.sock",
+		"--role", "codex", "--role", "shell",
+	)
+	if attempts != 2 || retried.Terminal == nil || retried.Terminal.Initialization == nil ||
+		!retried.Terminal.Initialization.Initialized || retried.Terminal.ContextID != testContextID ||
+		!reflect.DeepEqual(retried.Terminal.Actions, []sessionstate.TerminalOpenAction{
+			sessionstate.TerminalActionReused, sessionstate.TerminalActionNoChange,
+		}) {
+		t.Fatalf("exact retry did not converge: attempts=%d result=%+v", attempts, retried)
+	}
+	if len(starter.specs) != 1 {
+		t.Fatalf("exact retry launched %d terminals", len(starter.specs))
+	}
+}
+
+func TestTerminalCommandRejectsManagerRoleBeforeStateOrSway(t *testing.T) {
+	deps := testDependencies(t)
+	deps.stateRoot = func() (string, error) {
+		t.Fatal("invalid role accessed session state")
+		return "", nil
+	}
+	deps.newSwayClient = func(string) swayRequester {
+		t.Fatal("invalid role opened Sway")
+		return nil
+	}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := runWith([]string{
+		"--json", "terminal", "--new", "--socket", "/run/user/1000/sway.sock",
+		"--role", "codex", "--role", "sh -c",
+	}, strings.NewReader(""), &stdout, &stderr, deps)
+	if code != exitOperation || stdout.Len() != 0 || !strings.Contains(stderr.String(), `"code":"terminal_roles"`) {
+		t.Fatalf("invalid role code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
 }
 
@@ -326,7 +404,7 @@ func TestTerminalCommandProjectIdentityRejectsConflictingCwd(t *testing.T) {
 func TestTerminalCommandGlobalConfigUsesClosedAdapterAndEphemeralModeDoesNotPersist(t *testing.T) {
 	deps := testDependencies(t)
 	configPath := filepath.Join(t.TempDir(), "config.toml")
-	if err := writePrivate(configPath, "version = 1\n[terminal]\nadapter = \"foot\"\n"); err != nil {
+	if err := writePrivate(configPath, "version = 2\n[terminal]\nadapter = \"foot\"\nsession_manager = \"herdr\"\n"); err != nil {
 		t.Fatal(err)
 	}
 	starter := &terminalCommandStarter{}
@@ -350,7 +428,7 @@ func TestTerminalCommandGlobalConfigUsesClosedAdapterAndEphemeralModeDoesNotPers
 func TestTerminalCommandRejectsUnsupportedConfiguredAdapterWithoutEffects(t *testing.T) {
 	deps := testDependencies(t)
 	configPath := filepath.Join(t.TempDir(), "config.toml")
-	if err := writePrivate(configPath, "version = 1\n[terminal]\nadapter = \"kitty\"\n"); err != nil {
+	if err := writePrivate(configPath, "version = 2\n[terminal]\nadapter = \"kitty\"\nsession_manager = \"herdr\"\n"); err != nil {
 		t.Fatal(err)
 	}
 	starter := &terminalCommandStarter{}
@@ -486,7 +564,7 @@ func TestTerminalReconfigureChangesOnlyClosedArchivedAdapter(t *testing.T) {
 		t.Fatal(err)
 	}
 	configPath := filepath.Join(t.TempDir(), "config.toml")
-	if err := writePrivate(configPath, "version = 1\n[terminal]\nadapter = \"foot\"\n"); err != nil {
+	if err := writePrivate(configPath, "version = 2\n[terminal]\nadapter = \"foot\"\nsession_manager = \"herdr\"\n"); err != nil {
 		t.Fatal(err)
 	}
 	deps.newSwayClient = func(string) swayRequester { return &terminalCommandClient{id: archived.ID} }
@@ -521,7 +599,7 @@ func TestTerminalReconfigureReportsMappedArchivedIdentityAsInUse(t *testing.T) {
 		t.Fatal(err)
 	}
 	configPath := filepath.Join(t.TempDir(), "config.toml")
-	if err := writePrivate(configPath, "version = 1\n[terminal]\nadapter = \"foot\"\n"); err != nil {
+	if err := writePrivate(configPath, "version = 2\n[terminal]\nadapter = \"foot\"\nsession_manager = \"herdr\"\n"); err != nil {
 		t.Fatal(err)
 	}
 	deps.newSwayClient = func(string) swayRequester {
@@ -550,7 +628,7 @@ func TestTerminalCommandReportsActionableAdapterMismatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	configPath := filepath.Join(t.TempDir(), "config.toml")
-	if err := writePrivate(configPath, "version = 1\n[terminal]\nadapter = \"foot\"\n"); err != nil {
+	if err := writePrivate(configPath, "version = 2\n[terminal]\nadapter = \"foot\"\nsession_manager = \"herdr\"\n"); err != nil {
 		t.Fatal(err)
 	}
 	deps.newSwayClient = func(string) swayRequester { return &terminalCommandClient{id: active.ID} }

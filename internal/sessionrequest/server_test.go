@@ -127,6 +127,35 @@ func TestServerRejectsUnknownFieldsBeforeHandler(t *testing.T) {
 	}
 }
 
+func TestServerRejectsSessionRoleExtensionBeforeHandler(t *testing.T) {
+	socketPath := filepath.Join(t.TempDir(), "runtime", SocketFilename)
+	called := false
+	server, err := StartServer(socketPath, func(context.Context, Request) (Response, error) {
+		called = true
+		return Response{}, nil
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	connection, err := net.Dial("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	_ = connection.SetDeadline(time.Now().Add(time.Second))
+	payload, _ := json.Marshal(testRequest(t))
+	payload = append(payload[:len(payload)-1], []byte(`,"roles":["codex","shell"]}`)...)
+	_, _ = connection.Write(append(payload, '\n'))
+	var response Response
+	if err := json.NewDecoder(connection).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if response.OK || response.Error != "request rejected" || called {
+		t.Fatalf("role-bearing request was not rejected: response=%+v called=%v", response, called)
+	}
+}
+
 func TestServerRejectsMalformedOversizedAndTrailingRequestsBeforeHandler(t *testing.T) {
 	valid, err := json.Marshal(testRequest(t))
 	if err != nil {

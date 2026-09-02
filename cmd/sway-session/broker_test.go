@@ -7,10 +7,89 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	sessionstate "github.com/marang/sway-title-animator/internal/session"
 )
+
+func TestBrokerTerminalManagerRejectsUserOwnedExecutableFromPath(t *testing.T) {
+	directory := t.TempDir()
+	name := "lab110-user-owned-herdr-probe"
+	path := filepath.Join(directory, name)
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", directory)
+	manager := brokerTerminalSessionManager()
+	if resolved, err := manager.resolveProgram(name); err == nil {
+		t.Fatalf("broker accepted user-owned executable %q", resolved)
+	}
+}
+
+type blockingBrokerSessionManager struct {
+	started chan struct{}
+	release chan struct{}
+	roles   []string
+}
+
+func (*blockingBrokerSessionManager) Kind() sessionstate.TerminalSessionManagerKind {
+	return sessionstate.TerminalSessionManagerHerdr
+}
+func (*blockingBrokerSessionManager) ValidateContext(sessionstate.Context) error { return nil }
+func (*blockingBrokerSessionManager) BuildProcessSpec(sessionstate.Context, string) (sessionstate.ProcessSpec, error) {
+	return sessionstate.ProcessSpec{}, nil
+}
+func (*blockingBrokerSessionManager) ValidateRoles([]string) error { return nil }
+func (manager *blockingBrokerSessionManager) Initialize(_ context.Context, _ sessionstate.Context, roles []string) (sessionstate.TerminalSessionInitialization, error) {
+	manager.roles = append([]string(nil), roles...)
+	close(manager.started)
+	<-manager.release
+	return sessionstate.TerminalSessionInitialization{Manager: manager.Kind(), Roles: roles, Initialized: true}, nil
+}
+
+func TestSessionRequestInitializationSerializesArchiveAndUsesFixedCodexLayout(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state")
+	contextValue := sessionstate.Context{
+		ID:       sessionstate.ContextID("8f33d6d0-7c54-4da1-9e38-2bd290ef85ca"),
+		State:    sessionstate.ContextActive,
+		Launcher: sessionstate.Launcher{Kind: sessionstate.LauncherHerdr, Session: "lab-110", Cwd: t.TempDir(), Terminal: &sessionstate.TerminalLauncher{Adapter: sessionstate.TerminalAdapterAlacritty}},
+	}
+	if err := sessionstate.RegistryFile(root).Save(sessionstate.Registry{Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{contextValue}}); err != nil {
+		t.Fatal(err)
+	}
+	manager := &blockingBrokerSessionManager{started: make(chan struct{}), release: make(chan struct{})}
+	initializer := sessionRequestTerminalInitializer{stateRoot: root, manager: manager}
+	initialized := make(chan error, 1)
+	go func() { initialized <- initializer.Initialize(t.Context(), contextValue) }()
+	<-manager.started
+
+	archived := make(chan error, 1)
+	go func() {
+		_, err := sessionstate.UpdateRegistry(root, func(registry *sessionstate.Registry) error {
+			_, err := sessionstate.SetContextState(registry, string(contextValue.ID), sessionstate.ContextArchived)
+			return err
+		})
+		archived <- err
+	}()
+	select {
+	case err := <-archived:
+		t.Fatalf("archive bypassed terminal initialization lock: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(manager.release)
+	if err := <-initialized; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-archived; err != nil {
+		t.Fatal(err)
+	}
+	if len(manager.roles) != 2 || manager.roles[0] != "codex" || manager.roles[1] != "shell" {
+		t.Fatalf("unexpected broker roles: %v", manager.roles)
+	}
+}
 
 func TestSwayShutdownMonitorStopsOnShutdownEvent(t *testing.T) {
 	socket, closeServer := fakeSwayShutdownServer(t, true)

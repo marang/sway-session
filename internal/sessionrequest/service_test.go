@@ -24,6 +24,18 @@ type fakeRestoreRunner struct {
 	afterRestore func() error
 }
 
+type fakeSessionInitializer struct {
+	calls []sessionstate.Context
+	err   error
+}
+
+func (initializer *fakeSessionInitializer) Initialize(_ context.Context, contextValue sessionstate.Context) error {
+	initializer.calls = append(initializer.calls, contextValue)
+	err := initializer.err
+	initializer.err = nil
+	return err
+}
+
 func (runner *fakeRestoreRunner) Restore(_ context.Context, id sessionstate.ContextID) error {
 	runner.calls = append(runner.calls, id)
 	if runner.err == nil && runner.mapped != nil {
@@ -205,6 +217,28 @@ func TestServiceRepeatedRequestReusesMappedContext(t *testing.T) {
 	}
 	if !reflect.DeepEqual(client.commands, []string{"workspace number 7", "workspace number 7"}) {
 		t.Fatalf("unexpected focus commands: %v", client.commands)
+	}
+}
+
+func TestServiceInitializationFailureKeepsExactContextAndRetryConverges(t *testing.T) {
+	service, request, _, runner := testService(t)
+	request.Workspace = 98
+	initializer := &fakeSessionInitializer{err: errors.New("agent trust required")}
+	service.Initializer = initializer
+
+	partial, err := service.Handle(context.Background(), request)
+	if err == nil || !strings.Contains(err.Error(), "agent trust required") || partial.Context == nil || partial.Context.ID != testContextID {
+		t.Fatalf("partial initialization response=%+v err=%v", partial, err)
+	}
+	retried, err := service.Handle(context.Background(), request)
+	if err != nil || retried.Context == nil || retried.Context.ID != testContextID || retried.Created {
+		t.Fatalf("initialization retry response=%+v err=%v", retried, err)
+	}
+	if len(initializer.calls) != 2 || initializer.calls[0].ID != testContextID || initializer.calls[1].ID != testContextID {
+		t.Fatalf("initializer did not retry exact context: %+v", initializer.calls)
+	}
+	if !reflect.DeepEqual(runner.calls, []sessionstate.ContextID{testContextID}) {
+		t.Fatalf("initialization retry restored another window: %v", runner.calls)
 	}
 }
 

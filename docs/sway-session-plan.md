@@ -311,12 +311,22 @@ is never launched outside daemon management while still archived.
 
 `--ephemeral` opens an ordinary terminal through the same closed adapter
 contract but has no identity and does not read or write terminal registry
-state. It accepts only optional cwd selection. The strict version-1 terminal
+state. It accepts only optional cwd selection. The strict version-2 terminal
 configuration lives at
 `${XDG_CONFIG_HOME:-$HOME/.config}/sway-session/config.toml`; an absent default
-file selects compiled `alacritty`. Its sole setting is `terminal.adapter`, with
-the closed values `alacritty` and `foot`. It has no executable, argument,
-template, environment, or shell configuration fields.
+file selects compiled `alacritty` and `herdr`. `terminal.adapter` has the closed
+values `alacritty` and `foot`; `terminal.session_manager` initially has only the
+closed value `herdr`. It has no executable, argument, template, environment, or
+shell configuration fields. Version-1 pre-release config files are rejected
+rather than migrated and must be replaced with the current template.
+
+The terminal lifecycle depends on the small `TerminalSessionManager` interface
+rather than Herdr argv. The selected compiled adapter validates its context,
+builds the manager process spec, validates requested roles, and performs
+idempotent initialization. `--role` is either absent or repeated exactly twice
+with one shell and one supported logical agent. A partial initialization result
+retains the context UUID; `terminal --context UUID` retries that exact context
+without allocating another window or session.
 
 `terminal list`, `terminal status`, and `terminal cleanup
 --archived-before YYYY-MM-DD` are registry-only, read-only inventory and
@@ -702,25 +712,25 @@ boundary. The agreed Agent Sandbox follow-up, threat model, and exit criteria
 are tracked in
 [LAB-89](https://linear.app/riotbox/issue/LAB-89/harden-broker-created-herdr-sessions-with-agent-sandbox-integration).
 
-Pane initialization remains outside the animator. The separately packaged,
-root-owned `sway-herdr-init` loads one exact active context from the protected
-registry, holds the registry mutation lock through initialization, derives the
-named Herdr session and cwd, and calls the ordinary Herdr CLI with fixed
+Pane initialization remains outside the animator and behind `sway-session`'s
+typed terminal-session-manager seam. The Herdr adapter loads one exact active
+context under the registry lock, derives the named Herdr session and cwd, and
+calls the ordinary Herdr CLI with fixed
 `snapshot`, `pane split`, and typed `agent start` argument shapes. It mutates
 only a session proven to use the supported snapshot protocol and to have one
 workspace, one tab, one pane, and no agent; every other existing or ambiguous
-session is a no-op. A dedicated capital-`P` AppArmor transition scrubs unsafe
-loader variables such as `LD_PRELOAD` before exposing this fixed helper's child
-profile. It keeps registry files inaccessible to the parent, but it does not
-repair the separately documented pathname socket-connect gap.
+session is a no-op. The existing request-start protocol remains byte-for-byte
+unchanged and still accepts no roles or command text. Its trusted daemon side
+uses the fixed `codex` + `shell` layout after placement, so confined Codex does
+not need a privileged general-purpose `sway-session` transition.
 
-The live boundary verifier invokes only `/usr/bin/sway-session` and
-`/usr/bin/sway-herdr-init` after checking that both are regular root-owned
-mode-0755 files belonging to the installed `sway-title-animator` package. A
+The live boundary verifier invokes only `/usr/bin/sway-session` after checking
+that it is a regular root-owned mode-0755 file belonging to the installed
+`sway-title-animator` package. A
 user-writable client found earlier in `PATH` must never stand in for the
 production integration.
 
-Initializer roles are logical Herdr agent kinds rather than executable paths
+Session-manager roles are logical Herdr agent kinds rather than executable paths
 or runtime selections. Alternate trusted launchers, including containerized
 agent execution, remain an integration concern outside the persisted Sway
 context and do not expand the request broker protocol.
@@ -820,7 +830,8 @@ behavior, or stop configuring the daemon.
 - Add the typed terminal-adapter/Herdr launcher and duplicate detection.
 - Enforce registry-wide uniqueness of typed launcher identities.
 - Enable and validate Herdr pane history.
-- Add safe startup configuration and packaging for all three binaries.
+- Add safe startup configuration and packaging for the session and animator
+  binaries.
 
 ### Phase 5: Secure Codex resume
 
@@ -876,8 +887,9 @@ behavior, or stop configuring the daemon.
 
 ### Phase 10: Reusable typed terminals (LAB-105)
 
-Implemented: add the closed Alacritty/Foot adapter contract, strict version-1
-terminal configuration, stable default and hashed project identities, the
+Implemented: add the closed Alacritty/Foot adapter contract, the initial strict
+terminal configuration schema (superseded by version 2 in LAB-110), stable
+default and hashed project identities, the
 non-persistent ephemeral terminal path, and read-only terminal inventory and
 cleanup preview. The release registry contract is schema 5 only; older
 pre-release state is reset rather than interpreted.
@@ -918,6 +930,23 @@ Only the schema-5 short spelling is supported by the release. Pre-release
 registries use the one-time state reset described above rather than retaining
 an alternate terminal-instance identity.
 
+### Phase 12: Configurable terminal session manager (LAB-110)
+
+Implemented: add the closed `terminal.session_manager` configuration choice
+and the `TerminalSessionManager` seam. `herdr` is the initial manager; raw
+executables, argv templates, environment fragments, and shell evaluation remain
+forbidden. `terminal --new` and exact `terminal --context UUID` invocations can
+request one agent plus one shell with repeated typed `--role` options.
+
+The Herdr adapter owns launch preflight and rollback-safe empty-session
+initialization. Initialization runs while the registry lock proves the context
+active, so archive and purge cannot race the dependent Herdr mutations. A
+failed agent start retains the context UUID and rolls back to a retryable single
+shell. The separately installed `sway-herdr-init` binary and its AppArmor child
+profile are removed. The unchanged request-start broker performs the fixed
+Codex+shell layout internally and therefore does not gain role or command
+fields.
+
 ## Test matrix
 
 Automated tests must cover:
@@ -956,6 +985,9 @@ Automated tests must cover:
   stable default/project identity reuse, cwd conflict rejection, ephemeral
   non-persistence, JSON terminal actions and session identity, inventory
   ordering, and read-only archive cleanup previews;
+- closed terminal-session-manager selection, role rejection before state/Sway
+  access, bounded fresh-shell readiness, exact-context initialization retry,
+  broker-fixed Codex/shell roles, and registry-serialized Herdr mutation;
 - per-context and per-workspace failure isolation;
 - IPC reconnects, bounded payload handling, and no replay of ambiguous
   mutating commands; and

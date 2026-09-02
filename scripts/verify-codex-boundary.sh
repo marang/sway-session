@@ -18,7 +18,6 @@ state_file=$5
 herdr_socket=$6
 profile=${CODEX_APPARMOR_PROFILE:-codex-home-guard}
 session_binary=/usr/bin/sway-session
-initializer_binary=/usr/bin/sway-herdr-init
 
 require_packaged_binary() {
   binary=$1
@@ -55,27 +54,6 @@ test -r "$history_file"
 test -r "$state_file"
 test -S "$herdr_socket"
 require_packaged_binary "$session_binary"
-require_packaged_binary "$initializer_binary"
-
-# The Capital-P AppArmor transition must scrub loader injection variables
-# before the helper gains access to Herdr and the protected registry.
-preload_probe="${XDG_RUNTIME_DIR:?}/sway-herdr-init-apparmor-probe-$$.so"
-if [ -e "$preload_probe" ]; then
-  echo "Refusing to reuse unexpected preload probe path: $preload_probe" >&2
-  exit 1
-fi
-if ! loader_output=$(aa-exec -p "$profile" -- env LD_PRELOAD="$preload_probe" "$initializer_binary" --help 2>&1); then
-  printf '%s\n' "$loader_output" >&2
-  echo "AppArmor initializer transition probe failed" >&2
-  exit 1
-fi
-case $loader_output in
-  *LD_PRELOAD* | *preload*)
-    printf '%s\n' "$loader_output" >&2
-    echo "AppArmor initializer transition did not scrub LD_PRELOAD" >&2
-    exit 1
-    ;;
-esac
 
 # Positive path: the confined hook can reach only the narrow broker.
 printf '{"hook_event_name":"SessionStart","session_id":"%s"}\n' "$codex_session_id" |

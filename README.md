@@ -140,7 +140,6 @@ This installs:
 ```text
 ~/.local/bin/sway-title-animator
 ~/.local/bin/sway-session
-~/.local/bin/sway-herdr-init
 ~/.local/share/bash-completion/completions/sway-session
 ~/.local/share/zsh/site-functions/_sway-session
 ~/.local/share/fish/vendor_completions.d/sway-session.fish
@@ -274,6 +273,8 @@ launches. An archived identity is never launched implicitly.
 
 ```sh
 sway-session --json terminal --new
+sway-session --json terminal --new --role codex --role shell
+sway-session --json terminal --context 8f33d6d0-7c54-4da1-9e38-2bd290ef85ca --role codex --role shell
 sway-session --json terminal
 sway-session --json terminal --project LAB-105
 sway-session --json terminal --project LAB-105 --cwd "$PWD"
@@ -287,17 +288,21 @@ typed terminal, and never creates or changes registry state:
 sway-session --json terminal --ephemeral --cwd "$PWD"
 ```
 
-The session-terminal configuration is a strict version-1 TOML file at
+The session-terminal configuration is a strict version-2 TOML file at
 `${XDG_CONFIG_HOME:-$HOME/.config}/sway-session/config.toml`. If that default
-file is absent, the compiled `alacritty` default applies. The only supported
-adapter values are `alacritty` and `foot`; configuration cannot supply an
-executable path, command template, or shell snippet.
+file is absent, the compiled `alacritty` + `herdr` defaults apply. The only
+supported adapter values are `alacritty` and `foot`; the initial and currently
+only session-manager value is `herdr`. Both are closed typed choices:
+configuration cannot supply an executable path, command template, or shell
+snippet. Pre-release version-1 config files are rejected rather than migrated;
+replace them with the current packaged template.
 
 ```toml
-version = 1
+version = 2
 
 [terminal]
 adapter = "foot"
+session_manager = "herdr"
 ```
 
 These are the intended optional Sway bindings; packaging supplies the matching
@@ -313,6 +318,12 @@ is suited to agents: `terminal list` returns typed-terminal records in stable
 context-ID order, `terminal status [context]` or `terminal status --project
 NAME` returns one record (the default identity when omitted), and cleanup is a
 read-only candidate preview.
+Inventory and open results expose `session_manager` explicitly. A requested
+Herdr layout uses exactly two `--role` values containing one `shell` and one
+compiled-in Herdr agent kind. If agent startup fails after the terminal was
+created, the partial JSON result retains the exact context UUID; retry with
+`terminal --context UUID` and the same roles. That retry reuses the window and
+the rollback-safe empty session instead of allocating a duplicate.
 These commands use a current-schema snapshot. An unsupported or invalid
 registry returns the stable `unsupported_version` or state diagnostic without
 changing bytes; reset pre-release session state before retrying.
@@ -470,35 +481,28 @@ without accepting pane roles or commands:
   --workspace 98
 ```
 
-Pass the returned `.contexts[0].id` to the packaged initializer:
-
-```sh
-/usr/bin/sway-herdr-init --json \
-  --context 8f33d6d0-7c54-4da1-9e38-2bd290ef85ca \
-  --role codex \
-  --role shell
-```
-
-The initializer derives the named Herdr session and working directory from the
-protected registry and holds its mutation lock through the dependent Herdr
-operation, so `archive` and `purge` cannot race initialization. It only splits
-a session proven to contain exactly one empty pane with the supported snapshot
-protocol. The current integration targets Herdr 0.8.2 protocol 20 and rejects
-other protocol versions before mutation. It invokes Herdr's normal typed
-`agent start` operation and otherwise
-returns a safe no-op. Existing Herdr layouts are never reshaped. The AppArmor
-transition intentionally recognizes only the root-owned
-`/usr/bin/sway-herdr-init` from a distribution package. The broker likewise
-launches only a root-owned system `sway-session` with a system-only executable
-search path. The outer Herdr launcher removes inherited `HERDR_*` pane metadata
+The existing broker protocol still accepts no roles or commands. Its trusted
+daemon side now runs the same typed terminal-session manager after placement,
+with the fixed `codex` + `shell` layout expected by this Codex workflow. The
+manager holds the registry lock through the dependent Herdr operation, so
+`archive` and `purge` cannot race initialization. It only splits a session
+proven to contain exactly one empty pane with the supported snapshot protocol.
+The current integration targets Herdr 0.8.2 protocol 20 and rejects other
+protocol versions before mutation. A partial failure is rolled back to one idle
+shell and the same `request-start` can be retried safely. Existing Herdr layouts
+are never reshaped. The broker launches only root-owned system `sway-session`
+and Herdr binaries through a system-only executable search path. The outer
+Herdr launcher removes inherited `HERDR_*` pane metadata
 and `CODEX_THREAD_ID` before starting a distinct context, then injects its new
 registered context ID and the validated `HERDR_CONFIG_PATH` resolved for that
 context. Do not allow-list a user-writable source-install copy.
 
-Pane roles are logical Herdr agent kinds such as `codex`, not executable paths
-or runtime definitions. A future trusted wrapper or container launcher belongs
-to the Herdr/agent integration layer; `sway-session` deliberately does not
-persist direct-versus-sandbox execution details.
+For other agent roles, invoke the unconfined typed terminal command directly,
+for example `sway-session terminal --new --role opencode --role shell`. Pane
+roles are logical Herdr agent kinds, not executable paths or runtime
+definitions. A future trusted wrapper or container launcher belongs to the
+session-manager adapter; `sway-session` deliberately does not persist
+direct-versus-sandbox execution details.
 
 Lifecycle commands accept an exact UUID or an unambiguous exact label:
 
@@ -612,23 +616,18 @@ For a distribution-package install, use
 source path in the first command.
 
 The template assumes the default XDG paths under `~/.config` and
-`~/.local/state`. The narrow initializer deliberately derives those defaults
-from the account database instead of trusting caller-provided XDG variables;
-custom XDG roots are not supported by this narrow helper yet. The policy denies
+`~/.local/state`. The policy denies
 direct Herdr history and `sway-session` state access and protects the relevant
 socket pathnames from ordinary file operations. On kernels where AppArmor does
 not mediate pathname socket connections through those file rules, it does not
 enforce the intended direct Sway, Herdr, or container API connection deny; the
 typed `codex-report.sock` and `session-start.sock` workflow remains the only
-supported integration path. The root-owned
-`sway-herdr-init` receives a separate constrained profile for the fixed Herdr
-initialization described above. Its `Px` transition scrubs unsafe dynamic
-loader variables such as `LD_PRELOAD` before granting the child profile's
-permissions. The parent Codex profile intentionally leaves GitHub CLI
+supported integration path. Session initialization now occurs inside the
+already trusted long-running broker; no separately privileged initializer
+binary or profile exists. All ordinary Codex children stay in the parent
+profile. The parent Codex profile intentionally leaves GitHub CLI
 configuration accessible so `gh` can use credentials stored in the desktop
-keyring; do not use file-backed GitHub tokens with this policy. The initializer
-child profile does not need GitHub access and continues to deny it. From the
-matching Herdr pane, run the packaged
+keyring; do not use file-backed GitHub tokens with this policy. From the matching Herdr pane, run the packaged
 `/usr/share/doc/sway-title-animator/scripts/verify-codex-boundary.sh` for a live
 positive/negative enforcement check after the profile, Herdr, and one
 registered context are active. A checkout copy can invoke the same script, but

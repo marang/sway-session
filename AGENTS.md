@@ -49,9 +49,10 @@ project checkpoint, whichever comes first.
 - `cmd/sway-session`: persistent work-session CLI and its explicit long-running
   `daemon`, including desktop-app presence/lifecycle, bounded launch adoption,
   capture, marking, placement, layout restore, typed terminal launch
-  and inventory, and the existing narrow broker endpoints.
-- `cmd/sway-herdr-init` / `internal/herdrinit`: fixed, registry-locked
-  initialization of one empty Herdr session without general pane control.
+  and inventory, the closed `TerminalSessionManager` adapters, and the existing
+  narrow broker endpoints.
+- `internal/herdrinit`: fixed initialization logic used only behind the typed
+  Herdr terminal-session-manager adapter; it has no standalone executable.
 - `internal/sessionrequest`: owner-only typed session-start protocol and broker
   service.
 - `internal/swayipc`: bounded i3/Sway IPC framing and reconnect behavior shared

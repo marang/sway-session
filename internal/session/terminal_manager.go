@@ -25,17 +25,53 @@ const (
 
 type TerminalOpenRequest struct {
 	New         bool
+	ContextID   ContextID
 	Identity    TerminalIdentity
 	Adapter     TerminalAdapter
 	Cwd         string
 	CwdExplicit bool
 	Label       string
 	Focus       bool
+	Roles       []string
 }
 
 type TerminalOpenResult struct {
-	Context Context
-	Actions []TerminalOpenAction
+	Context        Context
+	Actions        []TerminalOpenAction
+	Manager        TerminalSessionManagerKind
+	Initialization *TerminalSessionInitialization
+}
+
+type TerminalSessionManagerKind string
+
+const TerminalSessionManagerHerdr TerminalSessionManagerKind = "herdr"
+
+func (kind TerminalSessionManagerKind) Validate() error {
+	switch kind {
+	case TerminalSessionManagerHerdr:
+		return nil
+	default:
+		return fmt.Errorf("unsupported terminal session manager %q; supported values: herdr", kind)
+	}
+}
+
+// TerminalSessionManager hides the manager-specific process and initialization
+// protocol from the registry/Sway terminal lifecycle. Implementations remain a
+// compiled allowlist; configuration selects a kind, never an executable or
+// command template.
+type TerminalSessionManager interface {
+	Kind() TerminalSessionManagerKind
+	ValidateContext(Context) error
+	BuildProcessSpec(Context, string) (ProcessSpec, error)
+	ValidateRoles([]string) error
+	Initialize(context.Context, Context, []string) (TerminalSessionInitialization, error)
+}
+
+type TerminalSessionInitialization struct {
+	Manager     TerminalSessionManagerKind `json:"manager"`
+	Roles       []string                   `json:"roles"`
+	Initialized bool                       `json:"initialized"`
+	Reason      string                     `json:"reason,omitempty"`
 }
 
 type ContextSwayRequestClient interface {
@@ -51,8 +87,7 @@ type TerminalManager struct {
 	Client          ContextSwayRequestClient
 	NewContextID    func() (ContextID, error)
 	ResolveProgram  func(string) (string, error)
-	HerdrPaths      func() (HerdrPaths, error)
-	ValidateHistory func(HerdrPaths) error
+	SessionManager  TerminalSessionManager
 	FindPending     func(string, ProcessSpec) ([]int, error)
 	Starter         ProcessStarter
 	Now             func() time.Time
@@ -151,7 +186,7 @@ func (manager TerminalManager) Open(ctx context.Context, request TerminalOpenReq
 		return TerminalOpenResult{}, errors.New("terminal state root must be a clean absolute path")
 	}
 	if manager.Client == nil || manager.NewContextID == nil || manager.ResolveProgram == nil ||
-		manager.HerdrPaths == nil || manager.ValidateHistory == nil || manager.Starter == nil {
+		manager.SessionManager == nil || manager.Starter == nil {
 		return TerminalOpenResult{}, errors.New("terminal manager dependencies are incomplete")
 	}
 	if manager.ProcRoot == "" {
@@ -169,8 +204,21 @@ func (manager TerminalManager) Open(ctx context.Context, request TerminalOpenReq
 	if manager.SettleTimeout <= 0 {
 		manager.SettleTimeout = 10 * time.Second
 	}
-	if request.New && request.Identity != (TerminalIdentity{}) {
+	if request.New && (request.ContextID != "" || request.Identity != (TerminalIdentity{})) {
 		return TerminalOpenResult{}, errors.New("new terminal must not contain a reusable identity")
+	}
+	if request.ContextID != "" && request.Identity != (TerminalIdentity{}) {
+		return TerminalOpenResult{}, errors.New("exact terminal context must not contain a reusable identity")
+	}
+	if request.ContextID != "" {
+		if err := request.ContextID.Validate(); err != nil {
+			return TerminalOpenResult{}, fmt.Errorf("invalid terminal context ID: %w", err)
+		}
+	}
+	if len(request.Roles) != 0 {
+		if err := manager.SessionManager.ValidateRoles(request.Roles); err != nil {
+			return TerminalOpenResult{}, err
+		}
 	}
 	if err := ValidateContextLabel(request.Label); err != nil {
 		return TerminalOpenResult{}, err
@@ -187,6 +235,20 @@ func (manager TerminalManager) Open(ctx context.Context, request TerminalOpenReq
 		updateRegistry = UpdateRegistryContext
 	}
 	_, err := updateRegistry(ctx, manager.StateRoot, func(registry *Registry) error {
+		if request.ContextID != "" {
+			index, resolveErr := ResolveContext(*registry, string(request.ContextID))
+			if resolveErr != nil {
+				return resolveErr
+			}
+			target = registry.Contexts[index]
+			if target.State != ContextActive {
+				return fmt.Errorf("%w: activate context %s before opening it", ErrTerminalIdentityArchived, target.ID)
+			}
+			if target.Launcher.Terminal == nil {
+				return errors.New("selected context is not a typed terminal")
+			}
+			return manager.SessionManager.ValidateContext(target)
+		}
 		if request.New {
 			var createErr error
 			target, createErr = CreateTerminalInstanceContext(registry, TerminalInstanceRequest{
@@ -202,7 +264,7 @@ func (manager TerminalManager) Open(ctx context.Context, request TerminalOpenReq
 			if createErr != nil {
 				return createErr
 			}
-			return manager.validateHerdrSessionSocketPaths(target.Launcher.Session)
+			return manager.SessionManager.ValidateContext(target)
 		}
 		var ensureErr error
 		target, created, ensureErr = EnsureTerminalContext(registry, TerminalContextRequest{
@@ -220,7 +282,7 @@ func (manager TerminalManager) Open(ctx context.Context, request TerminalOpenReq
 			return ensureErr
 		}
 		if created {
-			return manager.validateHerdrSessionSocketPaths(target.Launcher.Session)
+			return manager.SessionManager.ValidateContext(target)
 		}
 		return nil
 	})
@@ -231,7 +293,9 @@ func (manager TerminalManager) Open(ctx context.Context, request TerminalOpenReq
 		}
 		var resolved Context
 		var loadErr error
-		if request.New {
+		if request.ContextID != "" {
+			resolved, loadErr = terminalContextByID(ctx, manager.StateRoot, request.ContextID)
+		} else if request.New {
 			resolved, loadErr = terminalContextByID(ctx, manager.StateRoot, newID)
 		} else {
 			resolved, loadErr = terminalContextByIdentity(ctx, manager.StateRoot, request.Identity)
@@ -248,7 +312,7 @@ func (manager TerminalManager) Open(ctx context.Context, request TerminalOpenReq
 		created = newID != "" && target.ID == newID
 	}
 
-	result := TerminalOpenResult{Context: target}
+	result := TerminalOpenResult{Context: target, Manager: manager.SessionManager.Kind()}
 	if created {
 		result.Actions = append(result.Actions, TerminalActionCreated)
 	} else {
@@ -270,7 +334,11 @@ func (manager TerminalManager) Open(ctx context.Context, request TerminalOpenReq
 		if current.State != ContextActive {
 			return fmt.Errorf("%w: activate context %s before opening it", ErrTerminalIdentityArchived, current.ID)
 		}
-		if request.New {
+		if request.ContextID != "" {
+			if current.ID != request.ContextID || current.Launcher.Terminal == nil {
+				return errors.New("selected terminal context changed during open")
+			}
+		} else if request.New {
 			sessionName, nameErr := DeriveTerminalInstanceSessionName(newID)
 			if nameErr != nil {
 				return nameErr
@@ -281,26 +349,28 @@ func (manager TerminalManager) Open(ctx context.Context, request TerminalOpenReq
 		} else if current.Launcher.Terminal.Identity == nil || *current.Launcher.Terminal.Identity != request.Identity {
 			return errors.New("terminal context identity changed during open")
 		}
-		if current.Launcher.Terminal.Adapter != request.Adapter {
+		if request.ContextID == "" && current.Launcher.Terminal.Adapter != request.Adapter {
 			return fmt.Errorf("%w: context %s uses %s, config selects %s", ErrTerminalAdapterConflict, current.ID, current.Launcher.Terminal.Adapter, request.Adapter)
 		}
-		if request.CwdExplicit && current.Launcher.Cwd != request.Cwd {
+		if request.ContextID == "" && request.CwdExplicit && current.Launcher.Cwd != request.Cwd {
 			return fmt.Errorf("%w: persisted cwd is %q, requested %q", ErrTerminalIdentityConflict, current.Launcher.Cwd, request.Cwd)
 		}
-		return manager.ensureWindow(ctx, registry, current, request.Focus, &result)
+		if err := manager.ensureWindow(ctx, registry, current, request.Focus, &result); err != nil {
+			return err
+		}
+		if len(request.Roles) != 0 {
+			initialized, initializeErr := manager.SessionManager.Initialize(ctx, current, request.Roles)
+			result.Initialization = &initialized
+			if initializeErr != nil {
+				return initializeErr
+			}
+		}
+		return nil
 	})
 	if err != nil {
 		return result, err
 	}
 	return result, nil
-}
-
-func (manager TerminalManager) validateHerdrSessionSocketPaths(sessionName string) error {
-	paths, err := manager.HerdrPaths()
-	if err != nil {
-		return fmt.Errorf("resolve Herdr paths: %w", err)
-	}
-	return ValidateHerdrSessionSocketPaths(paths.Root, sessionName)
 }
 
 func (manager TerminalManager) ensureWindow(ctx context.Context, registry Registry, target Context, focus bool, result *TerminalOpenResult) error {
@@ -335,18 +405,7 @@ func (manager TerminalManager) ensureWindow(ctx context.Context, registry Regist
 	if err != nil {
 		return fmt.Errorf("resolve %s terminal adapter: %w", target.Launcher.Terminal.Adapter, err)
 	}
-	herdrPaths, err := manager.HerdrPaths()
-	if err != nil {
-		return fmt.Errorf("resolve Herdr paths: %w", err)
-	}
-	if err := ValidateHerdrSessionSocketPaths(herdrPaths.Root, target.Launcher.Session); err != nil {
-		return err
-	}
-	herdrExecutable, err := manager.ResolveProgram("herdr")
-	if err != nil {
-		return fmt.Errorf("resolve Herdr executable: %w", err)
-	}
-	spec, err := BuildTerminalProcessSpec(target, terminalExecutable, herdrExecutable, herdrPaths.ConfigFile)
+	spec, err := manager.SessionManager.BuildProcessSpec(target, terminalExecutable)
 	if err != nil {
 		return err
 	}
@@ -359,9 +418,6 @@ func (manager TerminalManager) ensureWindow(ctx context.Context, registry Regist
 	}
 	launched := false
 	if len(pending) == 0 {
-		if err := manager.ValidateHistory(herdrPaths); err != nil {
-			return fmt.Errorf("validate Herdr pane history: %w", err)
-		}
 		if err := manager.Starter.Start(spec); err != nil {
 			return fmt.Errorf("start terminal adapter: %w", err)
 		}

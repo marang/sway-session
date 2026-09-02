@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	SessionConfigVersion = 1
+	SessionConfigVersion = 2
 	maxSessionConfigSize = 64 * 1024
 )
 
@@ -23,14 +23,16 @@ type SessionConfig struct {
 }
 
 type SessionTerminalConfig struct {
-	Adapter TerminalAdapter `toml:"adapter"`
+	Adapter        TerminalAdapter            `toml:"adapter"`
+	SessionManager TerminalSessionManagerKind `toml:"session_manager"`
 }
 
 func DefaultSessionConfig() SessionConfig {
 	return SessionConfig{
 		Version: SessionConfigVersion,
 		Terminal: SessionTerminalConfig{
-			Adapter: TerminalAdapterAlacritty,
+			Adapter:        TerminalAdapterAlacritty,
+			SessionManager: TerminalSessionManagerHerdr,
 		},
 	}
 }
@@ -91,6 +93,9 @@ func (config SessionConfig) Validate() error {
 		return fmt.Errorf("unsupported session config version %d; expected %d", config.Version, SessionConfigVersion)
 	}
 	if _, err := TerminalAdapterExecutableName(config.Terminal.Adapter); err != nil {
+		return err
+	}
+	if err := config.Terminal.SessionManager.Validate(); err != nil {
 		return err
 	}
 	return nil

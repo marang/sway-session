@@ -38,9 +38,7 @@ func TestTerminalManagerCreatesAttachesThenReusesFocusedDefault(t *testing.T) {
 	}) {
 		t.Fatalf("unexpected first open: %+v", first)
 	}
-	manager.HerdrPaths = func() (HerdrPaths, error) {
-		return HerdrPaths{}, errors.New("visible terminal must not resolve Herdr paths")
-	}
+	manager.SessionManager = failingTerminalSessionManager{err: errors.New("visible terminal must not resolve session manager")}
 	second, err := manager.Open(context.Background(), request)
 	if err != nil {
 		t.Fatal(err)
@@ -217,9 +215,7 @@ func TestTerminalManagerNewRejectsOverlongHerdrSocketBeforePersistOrStart(t *tes
 	starter := &terminalManagerStarter{}
 	manager := terminalTestManager(root, &terminalManagerClient{id: testContextID}, starter)
 	longHerdrRoot := "/" + strings.Repeat("a", 39)
-	manager.HerdrPaths = func() (HerdrPaths, error) {
-		return HerdrPaths{Root: longHerdrRoot, ConfigFile: filepath.Join(longHerdrRoot, "config.toml")}, nil
-	}
+	manager.SessionManager = testTerminalSessionManager{root: longHerdrRoot, configFile: filepath.Join(longHerdrRoot, "config.toml")}
 
 	_, err := manager.Open(context.Background(), TerminalOpenRequest{
 		New: true, Adapter: TerminalAdapterAlacritty, Cwd: t.TempDir(), Focus: true,
@@ -489,16 +485,62 @@ func terminalTestManager(root string, client *terminalManagerClient, starter *te
 			return testContextID, nil
 		},
 		ResolveProgram: func(name string) (string, error) { return "/usr/bin/" + name, nil },
-		HerdrPaths: func() (HerdrPaths, error) {
-			return HerdrPaths{Root: "/tmp/herdr-test", ConfigFile: "/tmp/herdr-test/config.toml"}, nil
-		},
-		ValidateHistory: func(HerdrPaths) error { return nil },
-		FindPending:     func(string, ProcessSpec) ([]int, error) { return nil, nil },
-		Starter:         starter,
-		Now:             time.Now,
-		Sleep:           func(time.Duration) {},
-		SettleTimeout:   time.Second,
+		SessionManager: testTerminalSessionManager{root: "/tmp/herdr-test", configFile: "/tmp/herdr-test/config.toml"},
+		FindPending:    func(string, ProcessSpec) ([]int, error) { return nil, nil },
+		Starter:        starter,
+		Now:            time.Now,
+		Sleep:          func(time.Duration) {},
+		SettleTimeout:  time.Second,
 	}
+}
+
+type testTerminalSessionManager struct {
+	root       string
+	configFile string
+	initialize func(context.Context, Context, []string) (TerminalSessionInitialization, error)
+}
+
+func (testTerminalSessionManager) Kind() TerminalSessionManagerKind {
+	return TerminalSessionManagerHerdr
+}
+
+func (manager testTerminalSessionManager) ValidateContext(contextValue Context) error {
+	return ValidateHerdrSessionSocketPaths(manager.root, contextValue.Launcher.Session)
+}
+
+func (manager testTerminalSessionManager) BuildProcessSpec(contextValue Context, terminalExecutable string) (ProcessSpec, error) {
+	if err := manager.ValidateContext(contextValue); err != nil {
+		return ProcessSpec{}, err
+	}
+	return BuildTerminalProcessSpec(contextValue, terminalExecutable, "/usr/bin/herdr", manager.configFile)
+}
+
+func (testTerminalSessionManager) ValidateRoles(roles []string) error {
+	if len(roles) != 2 {
+		return errors.New("exactly two roles required")
+	}
+	return nil
+}
+
+func (manager testTerminalSessionManager) Initialize(ctx context.Context, contextValue Context, roles []string) (TerminalSessionInitialization, error) {
+	if manager.initialize != nil {
+		return manager.initialize(ctx, contextValue, roles)
+	}
+	return TerminalSessionInitialization{Manager: manager.Kind(), Roles: append([]string(nil), roles...), Initialized: true}, nil
+}
+
+type failingTerminalSessionManager struct{ err error }
+
+func (failingTerminalSessionManager) Kind() TerminalSessionManagerKind {
+	return TerminalSessionManagerHerdr
+}
+func (manager failingTerminalSessionManager) ValidateContext(Context) error { return manager.err }
+func (manager failingTerminalSessionManager) BuildProcessSpec(Context, string) (ProcessSpec, error) {
+	return ProcessSpec{}, manager.err
+}
+func (manager failingTerminalSessionManager) ValidateRoles([]string) error { return manager.err }
+func (manager failingTerminalSessionManager) Initialize(context.Context, Context, []string) (TerminalSessionInitialization, error) {
+	return TerminalSessionInitialization{}, manager.err
 }
 
 type terminalManagerStarter struct {

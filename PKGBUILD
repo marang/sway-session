@@ -36,7 +36,6 @@ build() {
 
   CGO_ENABLED=0 go build "${_go_build_flags[@]}" -ldflags="${_go_ldflags[*]}" -o sway-title-animator ./cmd/sway-title-animator
   CGO_ENABLED=0 go build "${_go_build_flags[@]}" -ldflags="${_go_ldflags[*]}" -o sway-session ./cmd/sway-session
-  CGO_ENABLED=0 go build "${_go_build_flags[@]}" -ldflags="${_go_ldflags[*]}" -o sway-herdr-init ./cmd/sway-herdr-init
 }
 
 check() {
@@ -52,7 +51,6 @@ package() {
   cd "sway-title-animator-$pkgver"
   install -Dm755 sway-title-animator "$pkgdir/usr/bin/sway-title-animator"
   install -Dm755 sway-session "$pkgdir/usr/bin/sway-session"
-  install -Dm755 sway-herdr-init "$pkgdir/usr/bin/sway-herdr-init"
   install -Dm644 contrib/completions/bash/sway-session "$pkgdir/usr/share/bash-completion/completions/sway-session"
   install -Dm644 contrib/completions/zsh/_sway-session "$pkgdir/usr/share/zsh/site-functions/_sway-session"
   install -Dm644 contrib/completions/fish/sway-session.fish "$pkgdir/usr/share/fish/vendor_completions.d/sway-session.fish"

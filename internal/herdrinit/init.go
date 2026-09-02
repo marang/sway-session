@@ -20,6 +20,8 @@ const (
 	supportedHerdrSnapshotProtocol = 20
 	snapshotAttempts               = 24
 	snapshotRetryDelay             = 250 * time.Millisecond
+	shellReadinessAttempts         = 12
+	shellReadinessRetryDelay       = 100 * time.Millisecond
 )
 
 type Runner interface {
@@ -34,48 +36,6 @@ type Result struct {
 	Reason      string                 `json:"reason,omitempty"`
 }
 
-// InspectActiveContext keeps the registry lock for the complete dependent
-// operation, preventing archive or purge from racing Herdr mutations.
-func InspectActiveContext(root string, id sessionstate.ContextID, inspect func(sessionstate.Context) error) error {
-	return InspectActiveContextContext(context.Background(), root, id, inspect)
-}
-
-// InspectActiveContextContext is InspectActiveContext with cancelable registry
-// lock acquisition and inspection.
-func InspectActiveContextContext(ctx context.Context, root string, id sessionstate.ContextID, inspect func(sessionstate.Context) error) error {
-	if ctx == nil {
-		return errors.New("active context inspection context is nil")
-	}
-	if err := id.Validate(); err != nil {
-		return err
-	}
-	if inspect == nil {
-		return errors.New("active context inspector is nil")
-	}
-	return sessionstate.InspectRegistryLockedContext(ctx, root, func(registry sessionstate.Registry) error {
-		contextValue, err := activeContext(registry, id)
-		if err != nil {
-			return err
-		}
-		return inspect(contextValue)
-	})
-}
-
-func activeContext(registry sessionstate.Registry, id sessionstate.ContextID) (sessionstate.Context, error) {
-	for _, current := range registry.Contexts {
-		if current.ID == id {
-			if current.State != sessionstate.ContextActive {
-				return sessionstate.Context{}, fmt.Errorf("context %q is not active", id)
-			}
-			if current.Launcher.Kind != sessionstate.LauncherHerdr {
-				return sessionstate.Context{}, fmt.Errorf("context %q is not backed by Herdr", id)
-			}
-			return current, nil
-		}
-	}
-	return sessionstate.Context{}, fmt.Errorf("context %q is not registered", id)
-}
-
 func Initialize(ctx context.Context, contextValue sessionstate.Context, roles []string, runner Runner) (Result, error) {
 	result := Result{ContextID: contextValue.ID, Session: contextValue.Launcher.Session, Roles: append([]string(nil), roles...)}
 	if err := contextValue.Validate(); err != nil {
@@ -87,7 +47,7 @@ func Initialize(ctx context.Context, contextValue sessionstate.Context, roles []
 	if runner == nil {
 		return result, errors.New("herdr command runner is nil")
 	}
-	if err := validateRoles(roles); err != nil {
+	if err := ValidateRoles(roles); err != nil {
 		return result, err
 	}
 	info, err := os.Stat(contextValue.Launcher.Cwd)
@@ -110,12 +70,7 @@ func Initialize(ctx context.Context, contextValue sessionstate.Context, roles []
 		result.Reason = "Herdr session was not proven empty and was left unchanged"
 		return result, nil
 	}
-	output, err = runner.Run(ctx, contextValue.Launcher.Session, contextValue.Launcher.Cwd,
-		"pane", "process-info", "--pane", rootPane)
-	if err != nil {
-		return result, fmt.Errorf("inspect Herdr root pane process: %w", err)
-	}
-	ready, err := parseReadyShell(output, rootPane, contextValue.Launcher.Cwd)
+	ready, err := waitForReadyShell(ctx, contextValue, rootPane, runner)
 	if err != nil {
 		return result, err
 	}
@@ -154,6 +109,27 @@ func Initialize(ctx context.Context, contextValue sessionstate.Context, roles []
 	}
 	result.Initialized = true
 	return result, nil
+}
+
+func waitForReadyShell(ctx context.Context, contextValue sessionstate.Context, pane string, runner Runner) (bool, error) {
+	for attempt := 0; attempt < shellReadinessAttempts; attempt++ {
+		output, err := runner.Run(ctx, contextValue.Launcher.Session, contextValue.Launcher.Cwd,
+			"pane", "process-info", "--pane", pane)
+		if err != nil {
+			return false, fmt.Errorf("inspect Herdr root pane process: %w", err)
+		}
+		ready, err := parseReadyShell(output, pane, contextValue.Launcher.Cwd)
+		if err != nil || ready {
+			return ready, err
+		}
+		if attempt+1 == shellReadinessAttempts {
+			break
+		}
+		if err := waitForRetry(ctx, shellReadinessRetryDelay); err != nil {
+			return false, err
+		}
+	}
+	return false, nil
 }
 
 func parseReadyShell(output []byte, pane string, cwd string) (bool, error) {
@@ -196,23 +172,28 @@ func waitForSnapshot(ctx context.Context, contextValue sessionstate.Context, run
 		if attempt+1 == snapshotAttempts {
 			break
 		}
-		timer := time.NewTimer(snapshotRetryDelay)
-		select {
-		case <-ctx.Done():
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
-			return nil, ctx.Err()
-		case <-timer.C:
+		if err := waitForRetry(ctx, snapshotRetryDelay); err != nil {
+			return nil, err
 		}
 	}
 	return nil, lastErr
 }
 
-func validateRoles(roles []string) error {
+func waitForRetry(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+// ValidateRoles accepts only the fixed Herdr layout vocabulary used by the
+// typed terminal session manager. Values are logical agent kinds, never
+// executable names or command fragments.
+func ValidateRoles(roles []string) error {
 	if len(roles) != RequiredRoles {
 		return fmt.Errorf("exactly %d pane roles are required", RequiredRoles)
 	}

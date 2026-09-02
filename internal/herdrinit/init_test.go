@@ -4,12 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
-	"time"
 
 	sessionstate "github.com/marang/sway-title-animator/internal/session"
 )
@@ -87,6 +84,26 @@ func TestInitializeCreatesOnlyRequestedEmptyLayout(t *testing.T) {
 	}
 }
 
+func TestInitializeWaitsForFreshShellToBecomeIdle(t *testing.T) {
+	contextValue := testContext(t)
+	busy := []byte(`{"result":{"type":"pane_process_info","process_info":{"pane_id":"w1:p1","shell_pid":42,"foreground_process_group_id":99,"foreground_processes":[{"pid":99,"name":"zsh","cwd":"/tmp"}]}}}`)
+	runner := &fakeRunner{outputs: [][]byte{
+		[]byte(emptySnapshot),
+		busy,
+		readyShell(contextValue.Launcher.Cwd),
+		[]byte(`{"result":{"type":"pane_info","pane":{"pane_id":"w1:p2"}}}`),
+		[]byte(`{"result":{"type":"agent_info"}}`),
+	}}
+
+	result, err := Initialize(context.Background(), contextValue, []string{"codex", "shell"}, runner)
+	if err != nil || !result.Initialized {
+		t.Fatalf("transiently busy shell did not converge: result=%+v err=%v", result, err)
+	}
+	if len(runner.calls) != 5 || !reflect.DeepEqual(runner.calls[2].arguments, []string{"pane", "process-info", "--pane", "w1:p1"}) {
+		t.Fatalf("shell readiness was not re-observed before mutation: %#v", runner.calls)
+	}
+}
+
 func TestInitializeStartsRightAgentInCreatedPane(t *testing.T) {
 	contextValue := testContext(t)
 	runner := &fakeRunner{outputs: [][]byte{
@@ -158,7 +175,11 @@ func TestInitializeRequiresOneShellAndOneAgent(t *testing.T) {
 func TestInitializeLeavesBusyOrDifferentDirectoryPaneUnchanged(t *testing.T) {
 	contextValue := testContext(t)
 	busy := []byte(`{"result":{"type":"pane_process_info","process_info":{"pane_id":"w1:p1","shell_pid":42,"foreground_process_group_id":99,"foreground_processes":[{"pid":99,"name":"vim","cwd":"/tmp"}]}}}`)
-	runner := &fakeRunner{outputs: [][]byte{[]byte(emptySnapshot), busy}}
+	outputs := [][]byte{[]byte(emptySnapshot)}
+	for range shellReadinessAttempts {
+		outputs = append(outputs, busy)
+	}
+	runner := &fakeRunner{outputs: outputs}
 	result, err := Initialize(context.Background(), contextValue, []string{"codex", "shell"}, runner)
 	if err != nil {
 		t.Fatalf("Initialize returned error: %v", err)
@@ -166,7 +187,7 @@ func TestInitializeLeavesBusyOrDifferentDirectoryPaneUnchanged(t *testing.T) {
 	if result.Initialized || !strings.Contains(result.Reason, "idle project shell") {
 		t.Fatalf("unexpected result: %+v", result)
 	}
-	if len(runner.calls) != 2 {
+	if len(runner.calls) != 1+shellReadinessAttempts {
 		t.Fatalf("busy pane was mutated: %#v", runner.calls)
 	}
 }
@@ -294,113 +315,5 @@ func TestInitializeLeavesAmbiguousSplitStateUnchanged(t *testing.T) {
 	}
 	if len(runner.calls) != 4 {
 		t.Fatalf("ambiguous split state was mutated: %#v", runner.calls)
-	}
-}
-
-func TestInspectActiveContextUsesExactRegisteredID(t *testing.T) {
-	root := t.TempDir()
-	if err := os.Chmod(root, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	contextValue := testContext(t)
-	contextValue.Launcher.Cwd = filepath.Join(root, "project")
-	if err := os.Mkdir(contextValue.Launcher.Cwd, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	registry := sessionstate.Registry{Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{contextValue}}
-	if err := sessionstate.RegistryFile(root).Save(registry); err != nil {
-		t.Fatal(err)
-	}
-	var loaded sessionstate.Context
-	err := InspectActiveContext(root, contextValue.ID, func(got sessionstate.Context) error {
-		loaded = got
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("InspectActiveContext returned error: %v", err)
-	}
-	if !reflect.DeepEqual(loaded, contextValue) {
-		t.Fatalf("unexpected context: got %+v want %+v", loaded, contextValue)
-	}
-}
-
-func TestInspectActiveContextHonorsCanceledContext(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "state")
-	contextValue := sessionstate.Context{
-		ID:       sessionstate.ContextID("8f33d6d0-7c54-4da1-9e38-2bd290ef85ca"),
-		State:    sessionstate.ContextActive,
-		Launcher: sessionstate.Launcher{Kind: sessionstate.LauncherHerdr, Session: "lab-109", Cwd: root, Terminal: &sessionstate.TerminalLauncher{Adapter: sessionstate.TerminalAdapterAlacritty}},
-	}
-	if _, err := sessionstate.UpdateRegistry(root, func(registry *sessionstate.Registry) error {
-		registry.Contexts = append(registry.Contexts, contextValue)
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	called := false
-	err := InspectActiveContextContext(ctx, root, contextValue.ID, func(sessionstate.Context) error {
-		called = true
-		return nil
-	})
-	if !errors.Is(err, context.Canceled) || called {
-		t.Fatalf("canceled inspection returned err=%v called=%t", err, called)
-	}
-}
-
-func TestInspectActiveContextSerializesArchiveWithDependentOperation(t *testing.T) {
-	root := t.TempDir()
-	if err := os.Chmod(root, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	contextValue := testContext(t)
-	registry := sessionstate.Registry{Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{contextValue}}
-	if err := sessionstate.RegistryFile(root).Save(registry); err != nil {
-		t.Fatal(err)
-	}
-	inspectionStarted := make(chan struct{})
-	releaseInspection := make(chan struct{})
-	inspectionDone := make(chan error, 1)
-	go func() {
-		inspectionDone <- InspectActiveContext(root, contextValue.ID, func(got sessionstate.Context) error {
-			if got.ID != contextValue.ID || got.State != sessionstate.ContextActive {
-				return fmt.Errorf("unexpected inspected context: %+v", got)
-			}
-			close(inspectionStarted)
-			<-releaseInspection
-			return nil
-		})
-	}()
-	<-inspectionStarted
-	updateAttempted := make(chan struct{})
-	updateDone := make(chan error, 1)
-	go func() {
-		close(updateAttempted)
-		_, err := sessionstate.UpdateRegistry(root, func(registry *sessionstate.Registry) error {
-			_, err := sessionstate.SetContextState(registry, string(contextValue.ID), sessionstate.ContextArchived)
-			return err
-		})
-		updateDone <- err
-	}()
-	<-updateAttempted
-	select {
-	case err := <-updateDone:
-		t.Fatalf("archive bypassed active-context inspection lock: %v", err)
-	case <-time.After(50 * time.Millisecond):
-	}
-	close(releaseInspection)
-	if err := <-inspectionDone; err != nil {
-		t.Fatal(err)
-	}
-	if err := <-updateDone; err != nil {
-		t.Fatal(err)
-	}
-	err := InspectActiveContext(root, contextValue.ID, func(sessionstate.Context) error {
-		t.Fatal("archived context reached inspector")
-		return nil
-	})
-	if err == nil || !strings.Contains(err.Error(), "not active") {
-		t.Fatalf("archive did not commit after inspection: err=%v", err)
 	}
 }

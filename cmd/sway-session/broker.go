@@ -9,10 +9,46 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/marang/sway-title-animator/internal/herdrinit"
 	sessionstate "github.com/marang/sway-title-animator/internal/session"
 	"github.com/marang/sway-title-animator/internal/sessionrequest"
 	"github.com/marang/sway-title-animator/internal/swayipc"
 )
+
+func codexSessionRoles() []string { return []string{"codex", "shell"} }
+
+func brokerTerminalSessionManager() herdrTerminalSessionManager {
+	return herdrTerminalSessionManager{
+		paths:           sessionstate.DefaultHerdrPaths,
+		validateHistory: sessionstate.ValidateHerdrPaneHistory,
+		resolveProgram:  sessionstate.ResolveRootOwnedSystemExecutable,
+		initialize:      herdrinit.Initialize,
+	}
+}
+
+type sessionRequestTerminalInitializer struct {
+	stateRoot string
+	manager   sessionstate.TerminalSessionManager
+}
+
+func (initializer sessionRequestTerminalInitializer) Initialize(ctx context.Context, requested sessionstate.Context) error {
+	if initializer.manager == nil {
+		return errors.New("terminal session initializer is unavailable")
+	}
+	return sessionstate.InspectRegistryLockedContext(ctx, initializer.stateRoot, func(registry sessionstate.Registry) error {
+		index, err := sessionstate.ResolveContext(registry, string(requested.ID))
+		if err != nil {
+			return err
+		}
+		current := registry.Contexts[index]
+		if current.State != sessionstate.ContextActive || current.Launcher.Kind != sessionstate.LauncherHerdr ||
+			current.Launcher.Session != requested.Launcher.Session || current.Launcher.Cwd != requested.Launcher.Cwd {
+			return errors.New("requested terminal context changed before initialization")
+		}
+		_, err = initializer.manager.Initialize(ctx, current, codexSessionRoles())
+		return err
+	})
+}
 
 func executeBroker(ctx context.Context, arguments []string, stderr io.Writer, structured bool, deps dependencies) (commandResult, *commandFailure) {
 	set := newFlagSet("broker")
@@ -73,6 +109,10 @@ func startSessionRequestBroker(swaySocket string, reportError func(error)) (*ses
 		NewContextID: sessionstate.NewContextID,
 		NewSway:      func() sessionrequest.SwayRequester { return swayipc.NewClient(swaySocket) },
 		Restore:      sessionrequest.ExecRestoreRunner{Executable: restoreExecutable, SwaySocket: swaySocket},
+		Initializer: sessionRequestTerminalInitializer{
+			stateRoot: stateRoot,
+			manager:   brokerTerminalSessionManager(),
+		},
 	}
 	return sessionrequest.StartServer(socketPath, service.Handle, reportError)
 }

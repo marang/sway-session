@@ -17,6 +17,7 @@ import (
 
 	"github.com/marang/sway-title-animator/internal/codexreport"
 	"github.com/marang/sway-title-animator/internal/diagnostic"
+	"github.com/marang/sway-title-animator/internal/herdrinit"
 	sessionstate "github.com/marang/sway-title-animator/internal/session"
 	"github.com/marang/sway-title-animator/internal/sessionrequest"
 	"github.com/marang/sway-title-animator/internal/swayipc"
@@ -48,7 +49,7 @@ var commandSpecs = map[string]commandSpec{
 	"request-start":        {usage: "request-start --session <name> --workspace <number> [options]", summary: "Request a typed ensure-and-start operation"},
 	"report-codex-session": {usage: "report-codex-session", summary: "Report a managed Codex SessionStart event to the narrow broker"},
 	"app":                  {usage: "app <subcommand> [options]", summary: "Manage explicitly registered desktop applications"},
-	"terminal":             {usage: "terminal [--new | --project <name> | --ephemeral] [--cwd <path>]", summary: "Open a typed terminal"},
+	"terminal":             {usage: "terminal [--new | --context <uuid> | --project <name> | --ephemeral] [options]", summary: "Open a typed terminal"},
 	"completion":           {usage: "completion contexts <command>", summary: "Emit read-only shell completion candidates"},
 }
 
@@ -76,6 +77,7 @@ type dependencies struct {
 	newSwayClient      func(string) swayRequester
 	processStarter     sessionstate.ProcessStarter
 	herdrRunner        sessionstate.HerdrCommandRunner
+	initializeHerdr    func(context.Context, sessionstate.Context, []string, herdrinit.Runner) (herdrinit.Result, error)
 	findPendingProcess func(string, sessionstate.ProcessSpec) ([]int, error)
 	now                func() time.Time
 	sleep              func(time.Duration)
@@ -111,6 +113,7 @@ func defaultDependencies(stdin io.Reader) dependencies {
 		},
 		processStarter:     sessionstate.ExecProcessStarter{},
 		herdrRunner:        sessionstate.ExecCommandRunner{},
+		initializeHerdr:    herdrinit.Initialize,
 		findPendingProcess: sessionstate.FindPendingProcessLaunches,
 		now:                time.Now,
 		sleep:              time.Sleep,
@@ -243,12 +246,14 @@ type commandResult struct {
 }
 
 type terminalCommandResult struct {
-	ContextID sessionstate.ContextID            `json:"context_id,omitempty"`
-	Identity  *terminalIdentityResult           `json:"identity,omitempty"`
-	Adapter   sessionstate.TerminalAdapter      `json:"adapter"`
-	Session   string                            `json:"session,omitempty"`
-	Actions   []sessionstate.TerminalOpenAction `json:"actions"`
-	Ephemeral bool                              `json:"ephemeral,omitempty"`
+	ContextID      sessionstate.ContextID                      `json:"context_id,omitempty"`
+	Identity       *terminalIdentityResult                     `json:"identity,omitempty"`
+	Adapter        sessionstate.TerminalAdapter                `json:"adapter"`
+	Session        string                                      `json:"session,omitempty"`
+	Actions        []sessionstate.TerminalOpenAction           `json:"actions"`
+	Manager        sessionstate.TerminalSessionManagerKind     `json:"session_manager,omitempty"`
+	Initialization *sessionstate.TerminalSessionInitialization `json:"initialization,omitempty"`
+	Ephemeral      bool                                        `json:"ephemeral,omitempty"`
 }
 
 type terminalIdentityResult struct {
@@ -258,13 +263,14 @@ type terminalIdentityResult struct {
 }
 
 type terminalInventoryResult struct {
-	ContextID  sessionstate.ContextID       `json:"context_id"`
-	Identity   terminalIdentityResult       `json:"identity"`
-	Adapter    sessionstate.TerminalAdapter `json:"adapter"`
-	State      sessionstate.ContextState    `json:"state"`
-	Session    string                       `json:"session"`
-	Cwd        string                       `json:"cwd"`
-	ArchivedAt *time.Time                   `json:"archived_at,omitempty"`
+	ContextID  sessionstate.ContextID                  `json:"context_id"`
+	Identity   terminalIdentityResult                  `json:"identity"`
+	Adapter    sessionstate.TerminalAdapter            `json:"adapter"`
+	Manager    sessionstate.TerminalSessionManagerKind `json:"session_manager"`
+	State      sessionstate.ContextState               `json:"state"`
+	Session    string                                  `json:"session"`
+	Cwd        string                                  `json:"cwd"`
+	ArchivedAt *time.Time                              `json:"archived_at,omitempty"`
 }
 
 type commandFailure struct {
@@ -459,7 +465,7 @@ func writeCommandUsage(writer io.Writer, name string, spec commandSpec) {
 		_, _ = fmt.Fprintln(writer, "Options: --session NAME [--cwd PATH] [--label LABEL] [--provider NAME] [--id UUID]")
 	}
 	if name == "terminal" {
-		_, _ = fmt.Fprintln(writer, "Options: [--new | --project NAME | --ephemeral] [--cwd PATH] [--label LABEL] [--socket PATH]")
+		_, _ = fmt.Fprintln(writer, "Options: [--new | --context UUID | --project NAME | --ephemeral] [--cwd PATH] [--label LABEL] [--socket PATH] [--role LEFT --role RIGHT]")
 		_, _ = fmt.Fprintln(writer, "Subcommands: list, status, cleanup, reconfigure [--project NAME] [--socket PATH]")
 	}
 	if name == "request-start" {

@@ -102,7 +102,7 @@ function __sway_session_marker_value_open
     set -l bool_options
     switch $command[1]
         case terminal
-            set value_options --project --cwd --label --socket
+            set value_options --project --context --cwd --label --socket --role
             set bool_options --new --ephemeral
         case register
             set value_options --session --cwd --label --provider --id
@@ -542,9 +542,11 @@ complete -c sway-session -n '__sway_session_is_command request-start; and __sway
 complete -c sway-session -n '__sway_session_is_command request-start; and __sway_session_options_open' -l workspace -x
 
 complete -c sway-session -n '__sway_session_is_command terminal; and __sway_session_options_open; and not __sway_session_terminal_subcommand list; and not __sway_session_terminal_subcommand status; and not __sway_session_terminal_subcommand cleanup; and not __sway_session_terminal_subcommand reconfigure' -l project -x
+complete -c sway-session -n '__sway_session_is_command terminal; and __sway_session_options_open; and not __sway_session_terminal_subcommand list; and not __sway_session_terminal_subcommand status; and not __sway_session_terminal_subcommand cleanup; and not __sway_session_terminal_subcommand reconfigure' -l context -x -a '(__sway_session_contexts terminal-status)'
 complete -c sway-session -n '__sway_session_is_command terminal; and __sway_session_options_open; and not __sway_session_terminal_subcommand list; and not __sway_session_terminal_subcommand status; and not __sway_session_terminal_subcommand cleanup; and not __sway_session_terminal_subcommand reconfigure' -l cwd -r -F
 complete -c sway-session -n '__sway_session_is_command terminal; and __sway_session_options_open; and not __sway_session_terminal_subcommand list; and not __sway_session_terminal_subcommand status; and not __sway_session_terminal_subcommand cleanup; and not __sway_session_terminal_subcommand reconfigure' -l label -x
 complete -c sway-session -n '__sway_session_is_command terminal; and __sway_session_options_open; and not __sway_session_terminal_subcommand list; and not __sway_session_terminal_subcommand status; and not __sway_session_terminal_subcommand cleanup; and not __sway_session_terminal_subcommand reconfigure' -l socket -r -F
+complete -c sway-session -n '__sway_session_is_command terminal; and __sway_session_options_open; and not __sway_session_terminal_subcommand list; and not __sway_session_terminal_subcommand status; and not __sway_session_terminal_subcommand cleanup; and not __sway_session_terminal_subcommand reconfigure' -l role -x -a 'shell agy amp claude cline codex copilot cursor devin droid gemini grok hermes kilo kimi kiro maki mastracode omp opencode pi qodercli qwen'
 complete -c sway-session -n '__sway_session_is_command terminal; and __sway_session_options_open; and not __sway_session_terminal_subcommand list; and not __sway_session_terminal_subcommand status; and not __sway_session_terminal_subcommand cleanup; and not __sway_session_terminal_subcommand reconfigure' -l new
 complete -c sway-session -n '__sway_session_is_command terminal; and __sway_session_options_open; and not __sway_session_terminal_subcommand list; and not __sway_session_terminal_subcommand status; and not __sway_session_terminal_subcommand cleanup; and not __sway_session_terminal_subcommand reconfigure' -l ephemeral
 complete -c sway-session -n '__sway_session_is_command terminal; and __sway_session_options_open' -a 'list status cleanup reconfigure'

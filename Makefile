@@ -1,4 +1,4 @@
-BINARIES := sway-title-animator sway-session sway-herdr-init
+BINARIES := sway-title-animator sway-session
 PREFIX ?= $(HOME)/.local
 GO_BUILD_FLAGS := -trimpath -buildvcs=false
 GO_LDFLAGS := -s -w -buildid=
@@ -43,7 +43,6 @@ process-boundary-check:
 build:
 	CGO_ENABLED=0 go build $(GO_BUILD_FLAGS) -ldflags='$(GO_LDFLAGS)' -o sway-title-animator ./cmd/sway-title-animator
 	CGO_ENABLED=0 go build $(GO_BUILD_FLAGS) -ldflags='$(GO_LDFLAGS)' -o sway-session ./cmd/sway-session
-	CGO_ENABLED=0 go build $(GO_BUILD_FLAGS) -ldflags='$(GO_LDFLAGS)' -o sway-herdr-init ./cmd/sway-herdr-init
 
 diff-check:
 	git diff --check

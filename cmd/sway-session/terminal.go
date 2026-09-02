@@ -14,6 +14,14 @@ import (
 	sessionstate "github.com/marang/sway-title-animator/internal/session"
 )
 
+type terminalRoleFlags []string
+
+func (roles *terminalRoleFlags) String() string { return fmt.Sprint([]string(*roles)) }
+func (roles *terminalRoleFlags) Set(value string) error {
+	*roles = append(*roles, value)
+	return nil
+}
+
 func executeTerminal(ctx context.Context, arguments []string, _ bool, configPath string, deps dependencies) (commandResult, *commandFailure) {
 	if len(arguments) > 0 {
 		switch arguments[0] {
@@ -29,11 +37,14 @@ func executeTerminal(ctx context.Context, arguments []string, _ bool, configPath
 	}
 	set := newFlagSet("terminal")
 	project := set.String("project", "", "stable project identity")
+	contextFlag := set.String("context", "", "exact registered terminal context UUID")
 	cwdFlag := set.String("cwd", "", "initial working directory")
 	label := set.String("label", "", "presentation label")
 	socketFlag := set.String("socket", "", "Sway IPC socket")
 	newTerminal := set.Bool("new", false, "create a fresh persistent terminal context")
 	ephemeral := set.Bool("ephemeral", false, "open an ordinary terminal without persistence")
+	var roles terminalRoleFlags
+	set.Var(&roles, "role", "session-manager role; repeat exactly twice (for example codex and shell)")
 	if err := set.Parse(arguments); err != nil || set.NArg() != 0 {
 		return commandResult{}, usageFailure("terminal", "terminal accepts only typed terminal options and no positional arguments")
 	}
@@ -41,8 +52,11 @@ func executeTerminal(ctx context.Context, arguments []string, _ bool, configPath
 	set.Visit(func(option *flag.Flag) {
 		provided[option.Name] = true
 	})
-	if *newTerminal && (provided["project"] || provided["ephemeral"]) {
-		return commandResult{}, usageFailure("terminal", "--new cannot be combined with --project or --ephemeral")
+	if *newTerminal && (provided["project"] || provided["context"] || provided["ephemeral"]) {
+		return commandResult{}, usageFailure("terminal", "--new cannot be combined with --project, --context, or --ephemeral")
+	}
+	if provided["context"] && (*contextFlag == "" || provided["project"] || provided["cwd"] || provided["label"] || provided["ephemeral"]) {
+		return commandResult{}, usageFailure("terminal", "--context requires an exact UUID and cannot be combined with --project, --cwd, --label, or --ephemeral")
 	}
 	if provided["project"] && *project == "" {
 		return commandResult{}, usageFailure("terminal", "--project requires a non-empty name")
@@ -50,14 +64,17 @@ func executeTerminal(ctx context.Context, arguments []string, _ bool, configPath
 	if provided["cwd"] && *cwdFlag == "" {
 		return commandResult{}, failure("terminal_cwd", "validate terminal working directory", "--cwd requires a non-empty path")
 	}
-	if *ephemeral && (provided["new"] || provided["project"] || provided["label"] || provided["socket"]) {
+	if *ephemeral && (provided["new"] || provided["project"] || provided["context"] || provided["label"] || provided["socket"] || provided["role"]) {
 		return commandResult{}, usageFailure("terminal", "--ephemeral accepts only --cwd")
+	}
+	if len(roles) != 0 && len(roles) != 2 {
+		return commandResult{}, usageFailure("terminal", "--role must be omitted or repeated exactly twice")
 	}
 	if err := sessionstate.ValidateContextLabel(*label); err != nil {
 		return commandResult{}, failure("terminal_label", "validate terminal label", err.Error())
 	}
 	var identity sessionstate.TerminalIdentity
-	if !*newTerminal {
+	if !*newTerminal && *contextFlag == "" {
 		identity = sessionstate.TerminalIdentity{Kind: sessionstate.TerminalIdentityDefault}
 	}
 	if *project != "" {
@@ -68,12 +85,22 @@ func executeTerminal(ctx context.Context, arguments []string, _ bool, configPath
 		}
 	}
 	cwdExplicit := provided["cwd"]
-	cwd, err := terminalWorkingDirectory(*cwdFlag, *project, deps)
-	if err != nil {
-		return commandResult{}, failure("terminal_cwd", "resolve terminal working directory", err.Error())
+	cwd := "/"
+	var err error
+	if *contextFlag == "" {
+		cwd, err = terminalWorkingDirectory(*cwdFlag, *project, deps)
+		if err != nil {
+			return commandResult{}, failure("terminal_cwd", "resolve terminal working directory", err.Error())
+		}
+		if err := sessionstate.ValidateTerminalCwd(cwd); err != nil {
+			return commandResult{}, failure("terminal_cwd", "validate terminal working directory", err.Error())
+		}
 	}
-	if err := sessionstate.ValidateTerminalCwd(cwd); err != nil {
-		return commandResult{}, failure("terminal_cwd", "validate terminal working directory", err.Error())
+	contextID := sessionstate.ContextID(*contextFlag)
+	if contextID != "" {
+		if err := contextID.Validate(); err != nil {
+			return commandResult{}, failure("terminal_context", "validate terminal context UUID", err.Error())
+		}
 	}
 	socket := *socketFlag
 	if !*ephemeral && provided["socket"] && (socket == "" || !filepath.IsAbs(socket) || filepath.Clean(socket) != socket) {
@@ -114,6 +141,15 @@ func executeTerminal(ctx context.Context, arguments []string, _ bool, configPath
 			},
 		}, nil
 	}
+	sessionManager, err := terminalSessionManager(config.Terminal.SessionManager, deps)
+	if err != nil {
+		return commandResult{}, failure("terminal_session_manager", "select terminal session manager", err.Error())
+	}
+	if len(roles) != 0 {
+		if err := sessionManager.ValidateRoles(roles); err != nil {
+			return commandResult{}, failure("terminal_roles", "validate terminal session roles", err.Error())
+		}
+	}
 	if socket == "" {
 		socket = os.Getenv("SWAYSOCK")
 	}
@@ -135,21 +171,20 @@ func executeTerminal(ctx context.Context, arguments []string, _ bool, configPath
 		return commandResult{}, failure("sway_socket", "open Sway IPC client", "Sway client does not support cancelable requests")
 	}
 	manager := sessionstate.TerminalManager{
-		StateRoot:       root,
-		ProcRoot:        "/proc",
-		Client:          contextClient,
-		NewContextID:    deps.newContextID,
-		ResolveProgram:  deps.resolveProgram,
-		HerdrPaths:      deps.herdrPaths,
-		ValidateHistory: deps.validateHistory,
-		FindPending:     deps.findPendingProcess,
-		Starter:         deps.processStarter,
-		Now:             deps.now,
-		Sleep:           deps.sleep,
-		SettleTimeout:   deps.settleTimeout,
+		StateRoot:      root,
+		ProcRoot:       "/proc",
+		Client:         contextClient,
+		NewContextID:   deps.newContextID,
+		ResolveProgram: deps.resolveProgram,
+		SessionManager: sessionManager,
+		FindPending:    deps.findPendingProcess,
+		Starter:        deps.processStarter,
+		Now:            deps.now,
+		Sleep:          deps.sleep,
+		SettleTimeout:  deps.settleTimeout,
 	}
 	opened, err := manager.Open(ctx, sessionstate.TerminalOpenRequest{
-		New: *newTerminal, Identity: identity, Adapter: config.Terminal.Adapter, Cwd: cwd, CwdExplicit: cwdExplicit, Label: *label, Focus: true,
+		New: *newTerminal, ContextID: contextID, Identity: identity, Adapter: config.Terminal.Adapter, Cwd: cwd, CwdExplicit: cwdExplicit, Label: *label, Focus: true, Roles: roles,
 	})
 	result := terminalOpenCommandResult(opened)
 	if err != nil {
@@ -171,6 +206,9 @@ func executeTerminal(ctx context.Context, arguments []string, _ bool, configPath
 		actions[index] = string(action)
 	}
 	result.Message = fmt.Sprintf("Terminal %s: %s.", opened.Context.ID, strings.Join(actions, ", "))
+	if opened.Initialization != nil && !opened.Initialization.Initialized && opened.Initialization.Reason != "" {
+		result.Message += " Session layout unchanged: " + opened.Initialization.Reason + "."
+	}
 	return result, nil
 }
 
@@ -262,11 +300,13 @@ func terminalOpenCommandResult(opened sessionstate.TerminalOpenResult) commandRe
 	result.Contexts = []sessionstate.Context{opened.Context}
 	identity := terminalResultIdentity(opened.Context)
 	result.Terminal = &terminalCommandResult{
-		ContextID: opened.Context.ID,
-		Identity:  identity,
-		Adapter:   opened.Context.Launcher.Terminal.Adapter,
-		Session:   opened.Context.Launcher.Session,
-		Actions:   opened.Actions,
+		ContextID:      opened.Context.ID,
+		Identity:       identity,
+		Adapter:        opened.Context.Launcher.Terminal.Adapter,
+		Session:        opened.Context.Launcher.Session,
+		Actions:        opened.Actions,
+		Manager:        opened.Manager,
+		Initialization: opened.Initialization,
 	}
 	return result
 }
@@ -439,6 +479,7 @@ func terminalInventory(contexts []sessionstate.Context) []terminalInventoryResul
 			ContextID:  context.ID,
 			Identity:   identity,
 			Adapter:    context.Launcher.Terminal.Adapter,
+			Manager:    sessionstate.TerminalSessionManagerHerdr,
 			State:      context.State,
 			Session:    context.Launcher.Session,
 			Cwd:        context.Launcher.Cwd,

@@ -4,6 +4,11 @@ set -eu
 animator=./cmd/sway-title-animator
 module=github.com/marang/sway-title-animator
 
+if [ -e ./cmd/sway-herdr-init ]; then
+	echo 'Standalone sway-herdr-init command must remain retired' >&2
+	exit 1
+fi
+
 for removed in session_state.go session_state_test.go codex_broker.go codex_broker_test.go; do
 	if [ -e "$animator/$removed" ]; then
 		echo "Session runtime remains under sway-title-animator: $animator/$removed" >&2
@@ -33,5 +38,10 @@ done
 
 grep -Fq '"daemon"' cmd/sway-session/main.go || {
 	echo 'sway-session daemon command is not wired into the CLI' >&2
+	exit 1
+}
+
+grep -Fq 'resolveProgram:  sessionstate.ResolveRootOwnedSystemExecutable' cmd/sway-session/broker.go || {
+	echo 'session request broker must resolve Herdr from root-owned system paths' >&2
 	exit 1
 }

@@ -25,7 +25,7 @@ func TestCompletionContextsArchiveEmitsOnlyActiveCanonicalIDs(t *testing.T) {
 		Label:    "Archived Work",
 		Provider: "linear",
 		State:    sessionstate.ContextArchived,
-		Launcher: sessionstate.Launcher{Kind: sessionstate.LauncherHerdr, Session: "archived-work", Cwd: active.Launcher.Cwd},
+		Launcher: sessionstate.Launcher{Kind: sessionstate.LauncherHerdr, Session: "archived-work", Cwd: active.Launcher.Cwd, Terminal: &sessionstate.TerminalLauncher{Adapter: sessionstate.TerminalAdapterAlacritty}},
 	}
 	if _, err := sessionstate.UpdateRegistry(root, func(registry *sessionstate.Registry) error {
 		return sessionstate.AddContext(registry, archived)
@@ -179,7 +179,7 @@ func TestCompletionContextDescriptionShowsUsefulMetadataWithoutPrivateLauncherPa
 	contexts := []sessionstate.Context{
 		{
 			ID: "11111111-1111-4111-8111-111111111111", Label: "Sway Title Animator", Provider: "linear", State: sessionstate.ContextActive,
-			Launcher: sessionstate.Launcher{Kind: sessionstate.LauncherHerdr, Session: "sway-title-animator", Cwd: filepath.Join(home, "Dev", "sway-title-animator")},
+			Launcher: sessionstate.Launcher{Kind: sessionstate.LauncherHerdr, Session: "sway-title-animator", Cwd: filepath.Join(home, "Dev", "sway-title-animator"), Terminal: &sessionstate.TerminalLauncher{Adapter: sessionstate.TerminalAdapterAlacritty}},
 		},
 		{
 			ID: "22222222-2222-4222-8222-222222222222", Label: "Calculator", Provider: "desktop", State: sessionstate.ContextActive,
@@ -219,11 +219,11 @@ func TestCompletionContextsFollowCommandEligibility(t *testing.T) {
 	contexts := []sessionstate.Context{
 		{
 			ID: "11111111-1111-4111-8111-111111111111", Label: "Active Herdr", State: sessionstate.ContextActive,
-			Launcher: sessionstate.Launcher{Kind: sessionstate.LauncherHerdr, Session: "active-herdr", Cwd: project},
+			Launcher: sessionstate.Launcher{Kind: sessionstate.LauncherHerdr, Session: "active-herdr", Cwd: project, Terminal: &sessionstate.TerminalLauncher{Adapter: sessionstate.TerminalAdapterAlacritty}},
 		},
 		{
 			ID: "22222222-2222-4222-8222-222222222222", Label: "Archived Herdr", State: sessionstate.ContextArchived,
-			Launcher: sessionstate.Launcher{Kind: sessionstate.LauncherHerdr, Session: "archived-herdr", Cwd: project},
+			Launcher: sessionstate.Launcher{Kind: sessionstate.LauncherHerdr, Session: "archived-herdr", Cwd: project, Terminal: &sessionstate.TerminalLauncher{Adapter: sessionstate.TerminalAdapterAlacritty}},
 		},
 		{
 			ID: "33333333-3333-4333-8333-333333333333", Label: "Active Desktop", State: sessionstate.ContextActive,
@@ -241,12 +241,13 @@ func TestCompletionContextsFollowCommandEligibility(t *testing.T) {
 	}
 
 	tests := map[string][]string{
-		"archive":        {string(contexts[0].ID), string(contexts[2].ID)},
-		"activate":       {string(contexts[1].ID), string(contexts[3].ID)},
-		"restore":        {string(contexts[0].ID), string(contexts[1].ID), string(contexts[2].ID)},
-		"restore-active": {string(contexts[0].ID), string(contexts[2].ID)},
-		"purge":          {string(contexts[0].ID), string(contexts[1].ID)},
-		"app-forget":     {string(contexts[2].ID), string(contexts[3].ID)},
+		"archive":         {string(contexts[0].ID), string(contexts[2].ID)},
+		"activate":        {string(contexts[1].ID), string(contexts[3].ID)},
+		"restore":         {string(contexts[0].ID), string(contexts[1].ID), string(contexts[2].ID)},
+		"restore-active":  {string(contexts[0].ID), string(contexts[2].ID)},
+		"purge":           {string(contexts[0].ID), string(contexts[1].ID)},
+		"terminal-status": {string(contexts[0].ID), string(contexts[1].ID)},
+		"app-forget":      {string(contexts[2].ID), string(contexts[3].ID)},
 	}
 	for command, want := range tests {
 		t.Run(command, func(t *testing.T) {

@@ -66,6 +66,7 @@ archives:
       - config.example.toml
       - contrib/sway/45-title-animator.conf
       - contrib/herdr/config.toml
+      - contrib/sway-session/config.toml
       - contrib/codex/hooks.json
       - contrib/codex/hooks-system.json
       - contrib/apparmor/codex-home-guard
@@ -91,13 +92,19 @@ nfpms:
       - sway
     recommends:
       - pulseaudio-utils
+      - alacritty
+      - herdr
       - flatpak
       - apparmor
       - python3
+    suggests:
+      - foot
     overrides:
       deb:
         recommends:
           - pulseaudio-utils
+          - alacritty
+          - herdr
           - flatpak
           - apparmor
           - python3
@@ -106,6 +113,8 @@ nfpms:
       rpm:
         recommends:
           - pulseaudio-utils
+          - alacritty
+          - herdr
           - flatpak
           - apparmor
           - python3
@@ -122,6 +131,8 @@ nfpms:
         dst: /usr/share/doc/sway-title-animator/45-title-animator.conf
       - src: ./contrib/herdr/config.toml
         dst: /usr/share/doc/sway-title-animator/contrib/herdr/config.toml
+      - src: ./contrib/sway-session/config.toml
+        dst: /usr/share/doc/sway-title-animator/contrib/sway-session/config.toml
       - src: ./contrib/codex/hooks-system.json
         dst: /usr/share/doc/sway-title-animator/contrib/codex/hooks.json
       - src: ./contrib/apparmor/codex-home-guard

@@ -27,6 +27,8 @@ const (
 	exitSuccess   = 0
 	exitUsage     = 2
 	exitOperation = 3
+
+	commandResultVersion = 1
 )
 
 type commandSpec struct {
@@ -46,10 +48,11 @@ var commandSpecs = map[string]commandSpec{
 	"request-start":        {usage: "request-start --session <name> --workspace <number> [options]", summary: "Request a typed ensure-and-start operation"},
 	"report-codex-session": {usage: "report-codex-session", summary: "Report a managed Codex SessionStart event to the narrow broker"},
 	"app":                  {usage: "app <subcommand> [options]", summary: "Manage explicitly registered desktop applications"},
+	"terminal":             {usage: "terminal [--project <name>] [--cwd <path>] [--ephemeral]", summary: "Open a reusable typed Herdr terminal"},
 	"completion":           {usage: "completion contexts <command>", summary: "Emit read-only shell completion candidates"},
 }
 
-var commandOrder = []string{"register", "restore", "list", "archive", "activate", "purge", "app", "daemon", "broker", "request-start", "report-codex-session", "completion"}
+var commandOrder = []string{"terminal", "register", "restore", "list", "archive", "activate", "purge", "app", "daemon", "broker", "request-start", "report-codex-session", "completion"}
 
 type swayRequester interface {
 	Request(swayipc.MessageType, []byte) (swayipc.Message, error)
@@ -57,40 +60,44 @@ type swayRequester interface {
 }
 
 type dependencies struct {
-	stateRoot       func() (string, error)
-	workingDir      func() (string, error)
-	newContextID    func() (sessionstate.ContextID, error)
-	herdrPaths      func() (sessionstate.HerdrPaths, error)
-	validateHistory func(sessionstate.HerdrPaths) error
-	resolveProgram  func(string) (string, error)
-	resolveSystem   func(string) (string, error)
-	desktopCatalog  func() (sessionstate.DesktopCatalog, error)
-	operationStore  func() (sessionstate.ApplicationOperationStore, error)
-	presentApproval func(string, []sessionstate.ApprovalChoice) error
-	verifyFlatpak   func(sessionstate.Launcher) error
-	newSwayClient   func(string) swayRequester
-	processStarter  sessionstate.ProcessStarter
-	herdrRunner     sessionstate.HerdrCommandRunner
-	findPending     func(string, sessionstate.Context, string, string) ([]int, error)
-	now             func() time.Time
-	sleep           func(time.Duration)
-	settleTimeout   time.Duration
-	stdinTerminal   func() bool
-	reportCodexHook func(context.Context, io.Reader, func(string) string) error
-	requestStart    func(context.Context, sessionrequest.Request) (sessionrequest.Response, error)
-	runBroker       func(context.Context, string, func(error)) error
-	runDaemon       func(context.Context, string, func(error)) error
+	stateRoot          func() (string, error)
+	workingDir         func() (string, error)
+	homeDir            func() (string, error)
+	newContextID       func() (sessionstate.ContextID, error)
+	loadSessionConfig  func(string) (sessionstate.SessionConfig, string, error)
+	herdrPaths         func() (sessionstate.HerdrPaths, error)
+	validateHistory    func(sessionstate.HerdrPaths) error
+	resolveProgram     func(string) (string, error)
+	resolveSystem      func(string) (string, error)
+	desktopCatalog     func() (sessionstate.DesktopCatalog, error)
+	operationStore     func() (sessionstate.ApplicationOperationStore, error)
+	presentApproval    func(string, []sessionstate.ApprovalChoice) error
+	verifyFlatpak      func(sessionstate.Launcher) error
+	newSwayClient      func(string) swayRequester
+	processStarter     sessionstate.ProcessStarter
+	herdrRunner        sessionstate.HerdrCommandRunner
+	findPendingProcess func(string, sessionstate.ProcessSpec) ([]int, error)
+	now                func() time.Time
+	sleep              func(time.Duration)
+	settleTimeout      time.Duration
+	stdinTerminal      func() bool
+	reportCodexHook    func(context.Context, io.Reader, func(string) string) error
+	requestStart       func(context.Context, sessionrequest.Request) (sessionrequest.Response, error)
+	runBroker          func(context.Context, string, func(error)) error
+	runDaemon          func(context.Context, string, func(error)) error
 }
 
 func defaultDependencies(stdin io.Reader) dependencies {
 	deps := dependencies{
-		stateRoot:       sessionstate.DefaultStateRoot,
-		workingDir:      os.Getwd,
-		newContextID:    sessionstate.NewContextID,
-		herdrPaths:      sessionstate.DefaultHerdrPaths,
-		validateHistory: sessionstate.ValidateHerdrPaneHistory,
-		resolveProgram:  sessionstate.ResolveTrustedExecutable,
-		resolveSystem:   sessionstate.ResolveRootOwnedSystemExecutable,
+		stateRoot:         sessionstate.DefaultStateRoot,
+		workingDir:        os.Getwd,
+		homeDir:           os.UserHomeDir,
+		newContextID:      sessionstate.NewContextID,
+		loadSessionConfig: sessionstate.LoadSessionConfig,
+		herdrPaths:        sessionstate.DefaultHerdrPaths,
+		validateHistory:   sessionstate.ValidateHerdrPaneHistory,
+		resolveProgram:    sessionstate.ResolveTrustedExecutable,
+		resolveSystem:     sessionstate.ResolveRootOwnedSystemExecutable,
 		desktopCatalog: func() (sessionstate.DesktopCatalog, error) {
 			search, err := sessionstate.DefaultDesktopSearchPath()
 			if err != nil {
@@ -102,12 +109,12 @@ func defaultDependencies(stdin io.Reader) dependencies {
 		newSwayClient: func(socket string) swayRequester {
 			return swayipc.NewClient(socket)
 		},
-		processStarter: sessionstate.ExecProcessStarter{},
-		herdrRunner:    sessionstate.ExecCommandRunner{},
-		findPending:    sessionstate.FindPendingAlacrittyLaunches,
-		now:            time.Now,
-		sleep:          time.Sleep,
-		settleTimeout:  10 * time.Second,
+		processStarter:     sessionstate.ExecProcessStarter{},
+		herdrRunner:        sessionstate.ExecCommandRunner{},
+		findPendingProcess: sessionstate.FindPendingProcessLaunches,
+		now:                time.Now,
+		sleep:              time.Sleep,
+		settleTimeout:      10 * time.Second,
 		stdinTerminal: func() bool {
 			file, ok := stdin.(*os.File)
 			return ok && term.IsTerminal(int(file.Fd()))
@@ -161,7 +168,11 @@ func runWith(arguments []string, stdin io.Reader, stdout io.Writer, stderr io.Wr
 }
 
 func runWithContext(ctx context.Context, arguments []string, stdin io.Reader, stdout io.Writer, stderr io.Writer, deps dependencies) int {
-	arguments, structured, help := globalOptions(arguments)
+	arguments, structured, help, configPath, optionFailure := globalOptions(arguments)
+	if optionFailure != nil {
+		writeFailure(stderr, structured, optionFailure)
+		return exitUsage
+	}
 	if len(arguments) == 0 {
 		if help {
 			writeUsage(stdout)
@@ -191,11 +202,11 @@ func runWithContext(ctx context.Context, arguments []string, stdin io.Reader, st
 		return exitUsage
 	}
 	if help {
-		writeCommandUsage(stdout, name, spec)
+		writeCommandUsageForArguments(stdout, name, spec, arguments[1:])
 		return exitSuccess
 	}
 
-	result, commandFailure := executeCommand(ctx, name, arguments[1:], stdin, stderr, structured, deps)
+	result, commandFailure := executeCommand(ctx, name, arguments[1:], stdin, stderr, structured, configPath, deps)
 	if commandFailure != nil {
 		if len(result.Contexts) != 0 || result.Message != "" {
 			if err := writeResult(stdout, structured, result); err != nil {
@@ -218,12 +229,40 @@ func runWithContext(ctx context.Context, arguments []string, stdin io.Reader, st
 }
 
 type commandResult struct {
-	Command              string                 `json:"command"`
-	Contexts             []sessionstate.Context `json:"contexts"`
-	CompletionCandidates []completionCandidate  `json:"completion_candidates,omitempty"`
-	Message              string                 `json:"message,omitempty"`
-	Workspace            int                    `json:"workspace,omitempty"`
-	Created              bool                   `json:"created,omitempty"`
+	Version              int                        `json:"version"`
+	Command              string                     `json:"command"`
+	Contexts             []sessionstate.Context     `json:"contexts"`
+	CompletionCandidates []completionCandidate      `json:"completion_candidates,omitempty"`
+	Message              string                     `json:"message,omitempty"`
+	Workspace            int                        `json:"workspace,omitempty"`
+	Created              bool                       `json:"created,omitempty"`
+	Actions              []string                   `json:"actions,omitempty"`
+	Terminal             *terminalCommandResult     `json:"terminal,omitempty"`
+	Terminals            *[]terminalInventoryResult `json:"terminals,omitempty"`
+	Preview              bool                       `json:"preview,omitempty"`
+}
+
+type terminalCommandResult struct {
+	ContextID sessionstate.ContextID            `json:"context_id,omitempty"`
+	Identity  *terminalIdentityResult           `json:"identity,omitempty"`
+	Adapter   sessionstate.TerminalAdapter      `json:"adapter"`
+	Actions   []sessionstate.TerminalOpenAction `json:"actions"`
+	Ephemeral bool                              `json:"ephemeral,omitempty"`
+}
+
+type terminalIdentityResult struct {
+	Kind    sessionstate.TerminalIdentityKind `json:"kind"`
+	Project string                            `json:"project,omitempty"`
+}
+
+type terminalInventoryResult struct {
+	ContextID  sessionstate.ContextID       `json:"context_id"`
+	Identity   terminalIdentityResult       `json:"identity"`
+	Adapter    sessionstate.TerminalAdapter `json:"adapter"`
+	State      sessionstate.ContextState    `json:"state"`
+	Session    string                       `json:"session"`
+	Cwd        string                       `json:"cwd"`
+	ArchivedAt *time.Time                   `json:"archived_at,omitempty"`
 }
 
 type commandFailure struct {
@@ -256,7 +295,13 @@ func writeFailure(writer io.Writer, structured bool, item *commandFailure) {
 }
 
 func writeResult(writer io.Writer, structured bool, result commandResult) error {
+	if result.Version == 0 {
+		result.Version = commandResultVersion
+	}
 	if structured {
+		if result.Contexts == nil {
+			result.Contexts = []sessionstate.Context{}
+		}
 		return json.NewEncoder(writer).Encode(result)
 	}
 	if len(result.CompletionCandidates) != 0 {
@@ -264,6 +309,22 @@ func writeResult(writer io.Writer, structured bool, result commandResult) error 
 			if _, err := fmt.Fprintf(writer, "%s\t%s\n", candidate.Value, candidate.Description); err != nil {
 				return err
 			}
+		}
+		return nil
+	}
+	if result.Terminals != nil {
+		for _, terminal := range *result.Terminals {
+			identity := string(terminal.Identity.Kind)
+			if terminal.Identity.Project != "" {
+				identity += ":" + terminal.Identity.Project
+			}
+			if _, err := fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\n", terminal.ContextID, identity, terminal.Adapter, terminal.State, terminal.Cwd); err != nil {
+				return err
+			}
+		}
+		if result.Message != "" {
+			_, err := fmt.Fprintln(writer, result.Message)
+			return err
 		}
 		return nil
 	}
@@ -301,12 +362,14 @@ func launcherOutput(launcher sessionstate.Launcher) (string, string) {
 	}
 }
 
-func globalOptions(arguments []string) ([]string, bool, bool) {
+func globalOptions(arguments []string) ([]string, bool, bool, string, *commandFailure) {
 	filtered := make([]string, 0, len(arguments))
 	structured := false
 	help := false
+	configPath := ""
 	optionsEnded := false
-	for _, argument := range arguments {
+	for index := 0; index < len(arguments); index++ {
+		argument := arguments[index]
 		if optionsEnded {
 			filtered = append(filtered, argument)
 			continue
@@ -321,11 +384,30 @@ func globalOptions(arguments []string) ([]string, bool, bool) {
 			structured = true
 		case "--help", "-h":
 			help = true
+		case "--config":
+			if configPath != "" {
+				return filtered, structured, help, configPath, usageFailure("terminal", "--config may be provided only once")
+			}
+			index++
+			if index >= len(arguments) {
+				return filtered, structured, help, configPath, usageFailure("terminal", "--config requires an absolute path")
+			}
+			configPath = arguments[index]
 		default:
-			filtered = append(filtered, argument)
+			if strings.HasPrefix(argument, "--config=") {
+				if configPath != "" {
+					return filtered, structured, help, configPath, usageFailure("terminal", "--config may be provided only once")
+				}
+				configPath = strings.TrimPrefix(argument, "--config=")
+				if configPath == "" {
+					return filtered, structured, help, configPath, usageFailure("terminal", "--config requires an absolute path")
+				}
+			} else {
+				filtered = append(filtered, argument)
+			}
 		}
 	}
-	return filtered, structured, help
+	return filtered, structured, help, configPath, nil
 }
 
 func newFlagSet(name string) *flag.FlagSet {
@@ -347,6 +429,7 @@ func writeUsage(writer io.Writer) {
 	_, _ = fmt.Fprintln(writer)
 	_, _ = fmt.Fprintln(writer, "Options:")
 	_, _ = fmt.Fprintln(writer, "  --json               Emit machine-readable results and diagnostics")
+	_, _ = fmt.Fprintln(writer, "  --config PATH        Use an explicit typed sway-session configuration")
 	_, _ = fmt.Fprintln(writer, "  -h, --help           Show help")
 	_, _ = fmt.Fprintln(writer)
 	_, _ = fmt.Fprintln(writer, "Exit status:")
@@ -373,6 +456,10 @@ func writeCommandUsage(writer io.Writer, name string, spec commandSpec) {
 	if name == "register" {
 		_, _ = fmt.Fprintln(writer, "Options: --session NAME [--cwd PATH] [--label LABEL] [--provider NAME] [--id UUID]")
 	}
+	if name == "terminal" {
+		_, _ = fmt.Fprintln(writer, "Options: [--project NAME] [--cwd PATH] [--label LABEL] [--socket PATH] [--ephemeral]")
+		_, _ = fmt.Fprintln(writer, "Subcommands: list, status, cleanup, reconfigure [--project NAME] [--socket PATH]")
+	}
 	if name == "request-start" {
 		_, _ = fmt.Fprintln(writer, "Options: --session NAME --workspace NUMBER [--cwd PATH] [--label LABEL] [--provider NAME]")
 	}
@@ -382,13 +469,45 @@ func writeCommandUsage(writer io.Writer, name string, spec commandSpec) {
 		_, _ = fmt.Fprintln(writer, "Indicators after first registration: ○ unregistered, ◔ pending, ● registered/follow, ▲ pinned/autostart")
 	}
 	if name == "completion" {
-		_, _ = fmt.Fprintln(writer, "Commands: archive, activate, restore, restore-active, purge, app-forget")
+		_, _ = fmt.Fprintln(writer, "Commands: archive, activate, restore, restore-active, purge, terminal-status, app-forget")
 		_, _ = fmt.Fprintln(writer, "Output: one canonical UUID and presentation-only description per tab-separated line.")
 	}
 }
 
-func executeCommand(ctx context.Context, name string, arguments []string, stdin io.Reader, stderr io.Writer, structured bool, deps dependencies) (commandResult, *commandFailure) {
+func writeCommandUsageForArguments(writer io.Writer, name string, spec commandSpec, arguments []string) {
+	if name != "terminal" || len(arguments) == 0 {
+		writeCommandUsage(writer, name, spec)
+		return
+	}
+	var usage string
+	var summary string
+	switch arguments[0] {
+	case "list":
+		usage = "terminal list"
+		summary = "List typed terminal contexts without changing state"
+	case "status":
+		usage = "terminal status [context] [--project NAME]"
+		summary = "Show one typed terminal context without changing state"
+	case "cleanup":
+		usage = "terminal cleanup [--archived-before YYYY-MM-DD]"
+		summary = "Preview archived typed terminal cleanup candidates"
+	case "reconfigure":
+		usage = "[--config PATH] terminal reconfigure [--project NAME] [--socket PATH]"
+		summary = "Change the closed adapter of one archived and stopped terminal identity"
+	default:
+		writeCommandUsage(writer, name, spec)
+		return
+	}
+	_, _ = fmt.Fprintf(writer, "Usage: sway-session [--json] %s\n\n%s.\n", usage, summary)
+}
+
+func executeCommand(ctx context.Context, name string, arguments []string, stdin io.Reader, stderr io.Writer, structured bool, configPath string, deps dependencies) (commandResult, *commandFailure) {
+	if configPath != "" && name != "terminal" {
+		return commandResult{}, usageFailure(name, "--config is only valid with the terminal command")
+	}
 	switch name {
+	case "terminal":
+		return executeTerminal(ctx, arguments, structured, configPath, deps)
 	case "register":
 		return executeRegister(arguments, deps)
 	case "list":
@@ -398,7 +517,7 @@ func executeCommand(ctx context.Context, name string, arguments []string, stdin 
 	case "activate":
 		return executeStateChange(name, arguments, sessionstate.ContextActive, deps)
 	case "purge":
-		return executePurge(ctx, arguments, stdin, stderr, deps)
+		return executePurge(ctx, arguments, stdin, stderr, structured, deps)
 	case "restore":
 		return executeRestore(ctx, arguments, deps)
 	case "app":
@@ -444,7 +563,10 @@ func stateRoot(deps dependencies) (string, *commandFailure) {
 
 func classifyStateError(action string, err error) *commandFailure {
 	code := "state"
-	if errors.Is(err, sessionstate.ErrContextNotFound) {
+	var unsupported *sessionstate.UnsupportedVersionError
+	if errors.As(err, &unsupported) {
+		code = "unsupported_version"
+	} else if errors.Is(err, sessionstate.ErrContextNotFound) {
 		code = "context_not_found"
 	} else if errors.Is(err, sessionstate.ErrContextAmbiguous) {
 		code = "context_ambiguous"

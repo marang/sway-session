@@ -13,6 +13,7 @@ depends=('sway')
 optdepends=(
   'libpulse: sound-reactive animation presets via parec'
   'alacritty: persistent work-session windows'
+  'foot: optional typed terminal adapter for persistent work-session windows'
   'herdr>=0.8.2: persistent terminal panes, history, and agent sessions'
   'flatpak: restore explicitly registered Flatpak desktop applications'
   'glib2: restore desktop-entry applications through gio'
@@ -60,6 +61,7 @@ package() {
   install -Dm644 config.example.toml "$pkgdir/usr/share/doc/$pkgname/config.example.toml"
   install -Dm644 contrib/sway/45-title-animator.conf "$pkgdir/usr/share/doc/$pkgname/45-title-animator.conf"
   install -Dm644 contrib/herdr/config.toml "$pkgdir/usr/share/doc/$pkgname/contrib/herdr/config.toml"
+  install -Dm644 contrib/sway-session/config.toml "$pkgdir/usr/share/doc/$pkgname/contrib/sway-session/config.toml"
   install -Dm644 contrib/codex/hooks-system.json "$pkgdir/usr/share/doc/$pkgname/contrib/codex/hooks.json"
   install -Dm644 contrib/apparmor/codex-home-guard "$pkgdir/usr/share/doc/$pkgname/contrib/apparmor/codex-home-guard"
   install -Dm755 scripts/verify-codex-boundary.sh "$pkgdir/usr/share/doc/$pkgname/scripts/verify-codex-boundary.sh"

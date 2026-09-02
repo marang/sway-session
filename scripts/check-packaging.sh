@@ -71,6 +71,8 @@ require_fixed PKGBUILD '# Release template:'
 require_fixed PKGBUILD "makedepends=('go>=1.26.5')"
 require_fixed PKGBUILD "options=('!debug')"
 require_fixed PKGBUILD 'flatpak: restore explicitly registered Flatpak desktop applications'
+require_fixed PKGBUILD 'foot: optional typed terminal adapter for persistent work-session windows'
+require_fixed .SRCINFO 'optdepends = foot: optional typed terminal adapter for persistent work-session windows'
 require_fixed PKGBUILD 'glib2: restore desktop-entry applications through gio'
 require_fixed PKGBUILD 'noto-fonts: recommended Noto Sans Mono glyph coverage for desktop-app indicators'
 require_fixed PKGBUILD 'apparmor: secure Codex resume boundary'
@@ -90,6 +92,8 @@ require_count contrib/sway/45-title-animator.conf 'exec --no-startup-id /usr/bin
 require_count contrib/sway/45-title-animator.conf 'exec --no-startup-id /usr/bin/sway-session restore' 1
 require_fixed contrib/sway/45-title-animator.conf '# exec, not exec_always: a config reload must not request another restore.'
 require_count contrib/sway/45-title-animator.conf '# bindsym $mod+Ctrl+p exec --no-startup-id /usr/bin/sway-session app register-focused' 1
+require_count contrib/sway/45-title-animator.conf 'bindsym $mod+Return exec --no-startup-id /usr/bin/sway-session terminal' 1
+require_count contrib/sway/45-title-animator.conf 'bindsym $mod+Shift+Return exec --no-startup-id /usr/bin/sway-session terminal --ephemeral' 1
 reject_fixed contrib/sway/45-title-animator.conf 'exec_always --no-startup-id /usr/bin/sway-session daemon'
 reject_fixed contrib/sway/45-title-animator.conf 'exec_always --no-startup-id /usr/bin/sway-session restore'
 reject_regex contrib/sway/45-title-animator.conf '^[[:space:]]*bindsym \$mod\+Ctrl\+p exec --no-startup-id /usr/bin/sway-session app register-focused[[:space:]]*$'
@@ -107,6 +111,10 @@ require_fixed .goreleaser.yaml '      - src: ./contrib/sway/45-title-animator.co
 require_fixed .goreleaser.yaml '        dst: /usr/share/doc/sway-title-animator/45-title-animator.conf'
 require_fixed .goreleaser.yaml '      - src: ./contrib/herdr/config.toml'
 require_fixed .goreleaser.yaml '        dst: /usr/share/doc/sway-title-animator/contrib/herdr/config.toml'
+require_fixed .goreleaser.yaml '      - src: ./contrib/sway-session/config.toml'
+require_fixed .goreleaser.yaml '        dst: /usr/share/doc/sway-title-animator/contrib/sway-session/config.toml'
+require_fixed .goreleaser.yaml '    suggests:'
+require_fixed .goreleaser.yaml '      - foot'
 require_fixed .goreleaser.yaml '      - src: ./contrib/codex/hooks-system.json'
 require_fixed .goreleaser.yaml '        dst: /usr/share/doc/sway-title-animator/contrib/codex/hooks.json'
 require_fixed .goreleaser.yaml '      - src: ./contrib/completions/bash/sway-session'
@@ -140,6 +148,7 @@ require_fixed .goreleaser.yaml '      - src: ./scripts/verify-codex-boundary.sh'
 require_fixed .goreleaser.yaml '        dst: /usr/share/doc/sway-title-animator/scripts/verify-codex-boundary.sh'
 require_fixed PKGBUILD 'install -Dm644 contrib/sway/45-title-animator.conf "$pkgdir/usr/share/doc/$pkgname/45-title-animator.conf"'
 require_fixed PKGBUILD 'install -Dm644 contrib/herdr/config.toml "$pkgdir/usr/share/doc/$pkgname/contrib/herdr/config.toml"'
+require_fixed PKGBUILD 'install -Dm644 contrib/sway-session/config.toml "$pkgdir/usr/share/doc/$pkgname/contrib/sway-session/config.toml"'
 require_fixed PKGBUILD 'install -Dm644 contrib/codex/hooks-system.json "$pkgdir/usr/share/doc/$pkgname/contrib/codex/hooks.json"'
 require_fixed PKGBUILD 'install -Dm644 contrib/apparmor/codex-home-guard "$pkgdir/usr/share/doc/$pkgname/contrib/apparmor/codex-home-guard"'
 require_fixed .goreleaser.yaml 'mode: 0755'
@@ -147,6 +156,7 @@ require_fixed PKGBUILD 'install -Dm755 scripts/verify-codex-boundary.sh'
 require_fixed Makefile 'install -m644 contrib/completions/bash/sway-session $(PREFIX)/share/bash-completion/completions/sway-session'
 require_fixed Makefile 'install -m644 contrib/completions/zsh/_sway-session $(PREFIX)/share/zsh/site-functions/_sway-session'
 require_fixed Makefile 'install -m644 contrib/completions/fish/sway-session.fish $(PREFIX)/share/fish/vendor_completions.d/sway-session.fish'
+require_fixed Makefile 'install -m644 contrib/sway-session/config.toml $(PREFIX)/share/doc/sway-title-animator/contrib/sway-session/config.toml'
 require_fixed scripts/verify-codex-boundary.sh 'PATH=/usr/bin'
 require_fixed scripts/verify-codex-boundary.sh 'session_binary=/usr/bin/sway-session'
 require_fixed scripts/verify-codex-boundary.sh 'initializer_binary=/usr/bin/sway-herdr-init'
@@ -182,6 +192,7 @@ fi
 for asset in \
 	contrib/sway/45-title-animator.conf \
 	contrib/herdr/config.toml \
+	contrib/sway-session/config.toml \
 	contrib/apparmor/codex-home-guard \
 	scripts/verify-codex-boundary.sh
 do

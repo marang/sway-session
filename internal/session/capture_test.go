@@ -393,9 +393,10 @@ func TestPlanPlacementActionsRejectsUnboundedCommandBatch(t *testing.T) {
 			ID:    id,
 			State: ContextActive,
 			Launcher: Launcher{
-				Kind:    LauncherHerdr,
-				Session: fmt.Sprintf("session-%d", index),
-				Cwd:     "/work",
+				Kind:     LauncherHerdr,
+				Session:  fmt.Sprintf("session-%d", index),
+				Cwd:      "/work",
+				Terminal: &TerminalLauncher{Adapter: TerminalAdapterAlacritty},
 			},
 		})
 		appID, err := id.AppID()
@@ -511,9 +512,10 @@ func registryWithContexts(ids ...ContextID) Registry {
 			ID:    id,
 			State: ContextActive,
 			Launcher: Launcher{
-				Kind:    LauncherHerdr,
-				Session: "session-" + string(rune('a'+index)),
-				Cwd:     "/work",
+				Kind:     LauncherHerdr,
+				Session:  "session-" + string(rune('a'+index)),
+				Cwd:      "/work",
+				Terminal: &TerminalLauncher{Adapter: TerminalAdapterAlacritty},
 			},
 		})
 	}

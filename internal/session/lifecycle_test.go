@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"testing"
+	"time"
 )
 
 func TestNewContextIDSetsRFC4122VersionAndVariant(t *testing.T) {
@@ -58,6 +59,59 @@ func TestLifecycleMutationsValidateStateAndLauncherIdentity(t *testing.T) {
 	}
 }
 
+func TestSetContextStateAtRecordsAndClearsArchiveTime(t *testing.T) {
+	context := testValidContext(testContextID)
+	registry := Registry{Version: ContextsSchemaVersion, Contexts: []Context{context}}
+	local := time.Date(2026, 9, 2, 12, 34, 56, 123456789, time.FixedZone("CEST", 2*60*60))
+
+	archived, err := SetContextStateAt(&registry, string(context.ID), ContextArchived, local)
+	if err != nil {
+		t.Fatalf("archive context: %v", err)
+	}
+	want := time.Date(2026, 9, 2, 10, 34, 56, 123456789, time.UTC)
+	if archived.ArchivedAt == nil || !archived.ArchivedAt.Equal(want) || archived.ArchivedAt.Location() != time.UTC {
+		t.Fatalf("unexpected archive timestamp: %+v", archived.ArchivedAt)
+	}
+	repeated, err := SetContextStateAt(&registry, string(context.ID), ContextArchived, local.Add(24*time.Hour))
+	if err != nil || repeated.ArchivedAt == nil || !repeated.ArchivedAt.Equal(want) {
+		t.Fatalf("repeated archive changed its original timestamp: context=%+v err=%v", repeated, err)
+	}
+
+	active, err := SetContextStateAt(&registry, string(context.ID), ContextActive, time.Time{})
+	if err != nil {
+		t.Fatalf("activate context: %v", err)
+	}
+	if active.ArchivedAt != nil {
+		t.Fatalf("activation retained archive timestamp: %+v", active.ArchivedAt)
+	}
+}
+
+func TestSetContextStateAtRejectsMissingArchiveTimeWithoutMutation(t *testing.T) {
+	context := testValidContext(testContextID)
+	registry := Registry{Version: ContextsSchemaVersion, Contexts: []Context{context}}
+	if _, err := SetContextStateAt(&registry, string(context.ID), ContextArchived, time.Time{}); err == nil {
+		t.Fatal("archive accepted a missing time")
+	}
+	if registry.Contexts[0].State != ContextActive || registry.Contexts[0].ArchivedAt != nil {
+		t.Fatalf("failed archive mutated registry: %+v", registry.Contexts[0])
+	}
+}
+
+func TestAddContextRejectsDuplicateTerminalIdentityWithoutMutation(t *testing.T) {
+	first := testValidContext(testContextID)
+	first.Launcher.Terminal.Identity = &TerminalIdentity{Kind: TerminalIdentityDefault}
+	registry := Registry{Version: ContextsSchemaVersion, Contexts: []Context{first}}
+	second := testValidContext(ContextID("6ba7b810-9dad-41d1-80b4-00c04fd430c8"))
+	second.Launcher.Terminal.Identity = &TerminalIdentity{Kind: TerminalIdentityDefault}
+
+	if err := AddContext(&registry, second); err == nil {
+		t.Fatal("duplicate terminal identity was accepted")
+	}
+	if len(registry.Contexts) != 1 || registry.Contexts[0].ID != first.ID {
+		t.Fatalf("failed add mutated registry: %+v", registry.Contexts)
+	}
+}
+
 func TestAddContextRejectsOverlappingApplicationIdentityWithoutMutation(t *testing.T) {
 	first := Context{
 		ID:    testContextID,
@@ -96,6 +150,11 @@ func TestAddContextRejectsOverlappingApplicationIdentityWithoutMutation(t *testi
 func testValidContext(id ContextID) Context {
 	return Context{
 		ID: id, State: ContextActive,
-		Launcher: Launcher{Kind: LauncherHerdr, Session: "test-" + string(id[:8]), Cwd: "/work"},
+		Launcher: Launcher{
+			Kind:     LauncherHerdr,
+			Session:  "test-" + string(id[:8]),
+			Cwd:      "/work",
+			Terminal: &TerminalLauncher{Adapter: TerminalAdapterAlacritty},
+		},
 	}
 }

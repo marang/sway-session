@@ -94,7 +94,7 @@ COMP_WORDS=(sway-session '')
 COMP_CWORD=1
 COMP_TYPE=9
 _sway_session
-if [[ " ${COMPREPLY[*]} " != *' restore '* ]]; then
+if [[ " ${COMPREPLY[*]} " != *' restore '* ]] || [[ " ${COMPREPLY[*]} " != *' terminal '* ]]; then
 	printf 'bash static completion did not survive dynamic failure: %q\n' "${COMPREPLY[*]-}" >&2
 	exit 1
 fi
@@ -107,7 +107,67 @@ if [[ " ${COMPREPLY[*]} " != *' --socket '* ]] || [[ " ${COMPREPLY[*]} " != *' -
 	exit 1
 fi
 
+COMP_WORDS=(sway-session terminal '')
+COMP_CWORD=2
+_sway_session
+for expected in list status cleanup reconfigure --project --cwd --label --socket --ephemeral; do
+	if [[ " ${COMPREPLY[*]} " != *" $expected "* ]]; then
+		printf 'bash terminal completion omitted %s: %q\n' "$expected" "${COMPREPLY[*]-}" >&2
+		exit 1
+	fi
+done
+
+COMP_WORDS=(sway-session terminal reconfigure '')
+COMP_CWORD=3
+_sway_session
+for expected in --project --socket; do
+	if [[ " ${COMPREPLY[*]} " != *" $expected "* ]]; then
+		printf 'bash terminal reconfigure completion omitted %s: %q\n' "$expected" "${COMPREPLY[*]-}" >&2
+		exit 1
+	fi
+done
+
+COMP_WORDS=(sway-session terminal status '')
+COMP_CWORD=3
+_sway_session
+if [[ " ${COMPREPLY[*]} " != *' --project '* ]]; then
+	printf 'bash terminal status completion omitted --project: %q\n' "${COMPREPLY[*]-}" >&2
+	exit 1
+fi
+
+COMP_WORDS=(sway-session --config /tmp terminal '')
+COMP_CWORD=4
+_sway_session
+if [[ " ${COMPREPLY[*]} " != *' --project '* ]] || [[ " ${COMPREPLY[*]} " != *' --ephemeral '* ]]; then
+	printf 'bash completion failed to skip global --config value: %q\n' "${COMPREPLY[*]-}" >&2
+	exit 1
+fi
+
+COMP_WORDS=(sway-session terminal cleanup '')
+COMP_CWORD=3
+_sway_session
+if [[ " ${COMPREPLY[*]} " != *' --archived-before '* ]]; then
+	printf 'bash terminal cleanup completion omitted --archived-before: %q\n' "${COMPREPLY[*]-}" >&2
+	exit 1
+fi
+
+COMP_WORDS=(sway-session completion contexts '')
+COMP_CWORD=3
+_sway_session
+if [[ " ${COMPREPLY[*]} " != *' terminal-status '* ]]; then
+	printf 'bash completion scope omitted terminal-status: %q\n' "${COMPREPLY[*]-}" >&2
+	exit 1
+fi
+
 unset SWAY_SESSION_COMPLETION_FAIL
+COMP_WORDS=(sway-session terminal status 111)
+COMP_CWORD=3
+_sway_session
+if [ "${#COMPREPLY[@]}" -ne 1 ] || [ "${COMPREPLY[0]}" != 11111111-1111-4111-8111-111111111111 ]; then
+	printf 'bash terminal status completion did not insert the canonical UUID: %q\n' "${COMPREPLY[*]-}" >&2
+	exit 1
+fi
+
 COMP_WORDS=(sway-session -- '')
 COMP_CWORD=2
 _sway_session

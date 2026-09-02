@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sync"
 	"testing"
 )
 
@@ -45,7 +46,7 @@ func TestRegistryFileRoundTripAndVersionRejectionPreserveCurrentState(t *testing
 		t.Fatalf("unexpected registry: got=%+v want=%+v", loaded, want)
 	}
 
-	unsupported := []byte(`{"version":3,"preferences":{"desktop_indicators":false},"contexts":[]}`)
+	unsupported := []byte(`{"version":4,"preferences":{"desktop_indicators":false},"contexts":[]}`)
 	if err := os.WriteFile(filepath.Join(root, ContextsFilename), unsupported, 0o600); err != nil {
 		t.Fatalf("write unsupported registry: %v", err)
 	}
@@ -145,6 +146,72 @@ func TestRegistryStoreMigratesV1AndPreservesExactRollbackCopy(t *testing.T) {
 	}
 }
 
+func TestRegistryStoreMigratesV2ConcurrentlyWithExactRollbackCopy(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sway-session")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	legacy := []byte("{\n" +
+		"  \"version\": 2,\n" +
+		"  \"preferences\": {\"desktop_indicators\": true},\n" +
+		"  \"contexts\": [{\n" +
+		"    \"id\": \"123e4567-e89b-12d3-a456-426614174000\",\n" +
+		"    \"state\": \"archived\",\n" +
+		"    \"launcher\": {\"kind\": \"herdr\", \"session\": \"lab-105\", \"cwd\": \"/home/example/work\"}\n" +
+		"  }]\n" +
+		"}\n")
+	if err := os.WriteFile(filepath.Join(root, ContextsFilename), legacy, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	const readers = 8
+	results := make(chan Registry, readers)
+	errorsFound := make(chan error, readers)
+	var start sync.WaitGroup
+	start.Add(1)
+	var workers sync.WaitGroup
+	workers.Add(readers)
+	for range readers {
+		go func() {
+			defer workers.Done()
+			start.Wait()
+			var registry Registry
+			if err := RegistryFile(root).LoadInto(&registry); err != nil {
+				errorsFound <- err
+				return
+			}
+			results <- registry
+		}()
+	}
+	start.Done()
+	workers.Wait()
+	close(results)
+	close(errorsFound)
+	for err := range errorsFound {
+		t.Fatalf("concurrent migration failed: %v", err)
+	}
+	for registry := range results {
+		if registry.Version != ContextsSchemaVersion || len(registry.Contexts) != 1 {
+			t.Fatalf("unexpected migrated registry: %+v", registry)
+		}
+		context := registry.Contexts[0]
+		if context.ArchivedAt != nil {
+			t.Fatalf("migration invented archive time: %+v", context.ArchivedAt)
+		}
+		if context.Launcher.Terminal == nil || context.Launcher.Terminal.Adapter != TerminalAdapterAlacritty || context.Launcher.Terminal.Identity != nil {
+			t.Fatalf("migration did not pin legacy terminal adapter: %+v", context.Launcher.Terminal)
+		}
+	}
+
+	backup, err := os.ReadFile(filepath.Join(root, ContextsV2BackupFilename))
+	if err != nil || !bytes.Equal(backup, legacy) {
+		t.Fatalf("v2 rollback copy differs: got=%q err=%v", backup, err)
+	}
+	if _, err := os.Lstat(filepath.Join(root, ContextsV1BackupFilename)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("v2 migration created v1 rollback copy: %v", err)
+	}
+}
+
 func TestUpdateRegistryMigratesBeforeMutation(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "sway-session")
 	if err := os.Mkdir(root, 0o700); err != nil {
@@ -205,6 +272,55 @@ func TestRegistryMigrationRejectsUnknownOrMalformedV1WithoutBackup(t *testing.T)
 	}
 }
 
+func TestRegistryStrictlyRejectsUnknownTerminalFieldsInCurrentAndV2State(t *testing.T) {
+	tests := []struct {
+		name       string
+		contents   string
+		backupName string
+	}{
+		{
+			name: "current terminal",
+			contents: `{"version":3,"preferences":{"desktop_indicators":false},"contexts":[{` +
+				`"id":"123e4567-e89b-12d3-a456-426614174000","state":"active",` +
+				`"launcher":{"kind":"herdr","session":"work","cwd":"/work",` +
+				`"terminal":{"adapter":"alacritty","command":"sh"}}}]}`,
+		},
+		{
+			name: "v2 launcher",
+			contents: `{"version":2,"preferences":{"desktop_indicators":false},"contexts":[{` +
+				`"id":"123e4567-e89b-12d3-a456-426614174000","state":"active",` +
+				`"launcher":{"kind":"herdr","session":"work","cwd":"/work","terminal":"alacritty"}}]}`,
+			backupName: ContextsV2BackupFilename,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "sway-session")
+			if err := os.Mkdir(root, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(root, ContextsFilename)
+			before := []byte(test.contents)
+			if err := os.WriteFile(path, before, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			var registry Registry
+			if err := RegistryFile(root).LoadInto(&registry); err == nil {
+				t.Fatal("unknown field passed strict registry load")
+			}
+			after, err := os.ReadFile(path)
+			if err != nil || !bytes.Equal(after, before) {
+				t.Fatalf("rejected state changed: got=%q err=%v", after, err)
+			}
+			if test.backupName != "" {
+				if _, err := os.Lstat(filepath.Join(root, test.backupName)); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("rejected state created backup: %v", err)
+				}
+			}
+		})
+	}
+}
+
 func TestRegistryMigrationRejectsConflictingRollbackCopy(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "sway-session")
 	if err := os.Mkdir(root, 0o700); err != nil {
@@ -228,7 +344,7 @@ func TestRegistryMigrationRejectsConflictingRollbackCopy(t *testing.T) {
 }
 
 func TestRegistryWritesRefuseUnknownExistingSchemaWithoutMutation(t *testing.T) {
-	unknown := []byte(`{"version":3,"preferences":{"desktop_indicators":false},"contexts":[]}`)
+	unknown := []byte(`{"version":4,"preferences":{"desktop_indicators":false},"contexts":[]}`)
 	for name, operation := range map[string]func(string, *bool) error{
 		"save": func(root string, _ *bool) error {
 			return RegistryFile(root).Save(validRegistry())

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"time"
 )
 
 var (
@@ -75,6 +76,11 @@ func AddContext(registry *Registry, context Context) error {
 		if current.Launcher.identity() == context.Launcher.identity() {
 			return fmt.Errorf("launcher identity %q is already registered by context %q", context.Launcher.identity().value, current.ID)
 		}
+		currentTerminal, currentHasTerminal := current.Launcher.terminalIdentity()
+		newTerminal, newHasTerminal := context.Launcher.terminalIdentity()
+		if currentHasTerminal && newHasTerminal && currentTerminal == newTerminal {
+			return fmt.Errorf("terminal identity %q is already registered by context %q", newTerminal.String(), current.ID)
+		}
 		if current.App != nil && context.App != nil && applicationIdentitiesOverlap(current.App.Identity, context.App.Identity) {
 			return fmt.Errorf("application identity is already registered by context %q", current.ID)
 		}
@@ -84,6 +90,12 @@ func AddContext(registry *Registry, context Context) error {
 }
 
 func SetContextState(registry *Registry, selector string, state ContextState) (Context, error) {
+	return SetContextStateAt(registry, selector, state, time.Now())
+}
+
+// SetContextStateAt changes lifecycle state while recording an injected archive
+// time. Activation ignores now and clears any previous archive timestamp.
+func SetContextStateAt(registry *Registry, selector string, state ContextState, now time.Time) (Context, error) {
 	if registry == nil {
 		return Context{}, errors.New("context registry is nil")
 	}
@@ -94,8 +106,23 @@ func SetContextState(registry *Registry, selector string, state ContextState) (C
 	if err != nil {
 		return Context{}, err
 	}
+	if registry.Contexts[index].State == state {
+		return registry.Contexts[index], nil
+	}
+	previous := registry.Contexts[index]
 	registry.Contexts[index].State = state
+	if state == ContextArchived {
+		if now.IsZero() {
+			registry.Contexts[index] = previous
+			return Context{}, errors.New("archive time must be non-zero")
+		}
+		archivedAt := now.UTC()
+		registry.Contexts[index].ArchivedAt = &archivedAt
+	} else {
+		registry.Contexts[index].ArchivedAt = nil
+	}
 	if err := registry.Validate(); err != nil {
+		registry.Contexts[index] = previous
 		return Context{}, err
 	}
 	return registry.Contexts[index], nil

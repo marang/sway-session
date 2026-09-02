@@ -69,6 +69,7 @@ _sway_session_marker_is_value() {
 	local command=${arguments[1]-} app_command=${arguments[2]-} start=1 word pending=0 parsing=1
 	local value_options=''
 	case $command in
+		terminal) value_options=' --project --cwd --label --socket ' ;;
 		register) value_options=' --session --cwd --label --provider --id ' ;;
 		restore|daemon|broker) value_options=' --socket ' ;;
 		request-start) value_options=' --session --cwd --label --provider --workspace ' ;;
@@ -104,17 +105,23 @@ _sway_session_marker_is_value() {
 }
 
 _sway-session() {
-	local cur=${words[CURRENT]} word command='' app_command='' context_scope='' index options_ended=0 terminator_arguments=0 global_options_ended=0 invalid_command_option=0
+	local cur=${words[CURRENT]} word command='' app_command='' context_scope='' index options_ended=0 terminator_arguments=0 global_options_ended=0 invalid_command_option=0 global_value_pending=0
 	local -a arguments
 
 	for (( index = 2; index < CURRENT; index++ )); do
 		word=${words[index]}
+		if (( global_value_pending )); then
+			global_value_pending=0
+			continue
+		fi
 		if (( options_ended )); then
 			arguments+=("$word")
 			(( terminator_arguments += 1 ))
 			continue
 		fi
 		case $word in
+			--config) global_value_pending=1; continue ;;
+			--config=*) continue ;;
 			--json|-h|--help)
 				if (( global_options_ended )); then
 					_sway_session_marker_is_value || invalid_command_option=1
@@ -136,10 +143,18 @@ _sway-session() {
 	done
 
 	command=${arguments[1]-}
+	if [[ ${words[CURRENT-1]-} == --config ]]; then
+		_files
+		return
+	fi
+	if [[ $command == --config ]]; then
+		_files
+		return
+	fi
 	(( invalid_command_option )) && return 0
 	if [[ -z $command ]]; then
 		(( options_ended )) && return 0
-		_sway_session_add register restore list archive activate purge app daemon broker request-start report-codex-session completion --json -h --help
+		_sway_session_add terminal register restore list archive activate purge app daemon broker request-start report-codex-session completion --config --json -h --help
 		return
 	fi
 	app_command=${arguments[2]-}
@@ -165,6 +180,28 @@ _sway-session() {
 	fi
 
 	case $command in
+		terminal)
+			case ${arguments[-1]-} in
+				--cwd) _files; return ;;
+				--project|--label|--socket) return ;;
+			esac
+			if [[ ${arguments[2]-} == list ]]; then
+				_sway_session_add --json -h --help
+			elif [[ ${arguments[2]-} == status ]]; then
+				_sway_session_add --project --json -h --help
+				if [[ $cur != -* ]] && _sway_session_context_pending terminal-status "${arguments[@]:2}"; then
+					_sway_session_contexts terminal-status "$cur"
+				fi
+			elif [[ ${arguments[2]-} == cleanup ]]; then
+				[[ ${arguments[-1]-} == --archived-before ]] && return
+				_sway_session_add --archived-before --json -h --help
+			elif [[ ${arguments[2]-} == reconfigure ]]; then
+				[[ ${arguments[-1]-} == --project || ${arguments[-1]-} == --socket ]] && return
+				_sway_session_add --project --socket --json -h --help
+			else
+				_sway_session_add list status cleanup reconfigure --project --cwd --label --socket --ephemeral --json -h --help
+			fi
+			;;
 		register)
 			if [[ ${arguments[-1]-} == --cwd ]]; then
 				_files
@@ -223,7 +260,7 @@ _sway-session() {
 				'') _sway_session_add contexts --json -h --help ;;
 				contexts)
 					if [[ -z ${arguments[3]-} ]]; then
-						_sway_session_add archive activate restore restore-active purge app-forget
+						_sway_session_add archive activate restore restore-active purge terminal-status app-forget
 					elif [[ $cur == -* ]]; then
 						_sway_session_add --json -h --help
 					fi

@@ -7,11 +7,12 @@ import (
 	"math"
 	"path/filepath"
 	"strings"
+	"time"
 	"unicode"
 )
 
 const (
-	ContextsSchemaVersion = 2
+	ContextsSchemaVersion = 3
 	LayoutSchemaVersion   = 1
 	MaxContexts           = 128
 )
@@ -30,6 +31,37 @@ const (
 	LauncherDesktop LauncherKind = "desktop"
 	LauncherFlatpak LauncherKind = "flatpak"
 )
+
+type TerminalAdapter string
+
+const (
+	TerminalAdapterAlacritty TerminalAdapter = "alacritty"
+	TerminalAdapterFoot      TerminalAdapter = "foot"
+)
+
+type TerminalIdentityKind string
+
+const (
+	TerminalIdentityDefault TerminalIdentityKind = "default"
+	TerminalIdentityProject TerminalIdentityKind = "project"
+)
+
+type TerminalLauncher struct {
+	Adapter  TerminalAdapter   `json:"adapter"`
+	Identity *TerminalIdentity `json:"identity,omitempty"`
+}
+
+type TerminalIdentity struct {
+	Kind    TerminalIdentityKind `json:"kind"`
+	Project string               `json:"project,omitempty"`
+}
+
+func (identity TerminalIdentity) String() string {
+	if identity.Kind == TerminalIdentityProject {
+		return string(identity.Kind) + ":" + identity.Project
+	}
+	return string(identity.Kind)
+}
 
 type DesktopEntryOrigin string
 
@@ -71,12 +103,13 @@ type RegistryPreferences struct {
 }
 
 type Context struct {
-	ID       ContextID    `json:"id"`
-	Label    string       `json:"label,omitempty"`
-	Provider string       `json:"provider,omitempty"`
-	State    ContextState `json:"state"`
-	Launcher Launcher     `json:"launcher"`
-	App      *Application `json:"app,omitempty"`
+	ID         ContextID    `json:"id"`
+	Label      string       `json:"label,omitempty"`
+	Provider   string       `json:"provider,omitempty"`
+	State      ContextState `json:"state"`
+	ArchivedAt *time.Time   `json:"archived_at,omitempty"`
+	Launcher   Launcher     `json:"launcher"`
+	App        *Application `json:"app,omitempty"`
 }
 
 // Launcher is a validated tagged union. Fields for launcher kinds other than
@@ -85,8 +118,9 @@ type Context struct {
 type Launcher struct {
 	Kind LauncherKind `json:"kind"`
 
-	Session string `json:"session,omitempty"`
-	Cwd     string `json:"cwd,omitempty"`
+	Session  string            `json:"session,omitempty"`
+	Cwd      string            `json:"cwd,omitempty"`
+	Terminal *TerminalLauncher `json:"terminal,omitempty"`
 
 	DesktopID                string             `json:"desktop_id,omitempty"`
 	DesktopOrigin            DesktopEntryOrigin `json:"desktop_origin,omitempty"`
@@ -205,6 +239,7 @@ func (registry *Registry) Validate() error {
 	}
 	seen := make(map[ContextID]struct{}, len(registry.Contexts))
 	seenLaunchers := make(map[launcherIdentity]int, len(registry.Contexts))
+	seenTerminals := make(map[terminalIdentity]int, len(registry.Contexts))
 	seenApplications := make([]applicationIdentityRecord, 0, len(registry.Contexts))
 	for index := range registry.Contexts {
 		context := &registry.Contexts[index]
@@ -226,6 +261,17 @@ func (registry *Registry) Validate() error {
 			)
 		}
 		seenLaunchers[identity] = index
+		if identity, ok := context.Launcher.terminalIdentity(); ok {
+			if previous, exists := seenTerminals[identity]; exists {
+				return fmt.Errorf(
+					"contexts[%d]: terminal identity %q is already used by contexts[%d]",
+					index,
+					identity.String(),
+					previous,
+				)
+			}
+			seenTerminals[identity] = index
+		}
 		if context.App != nil {
 			for _, previous := range seenApplications {
 				if applicationIdentitiesOverlap(context.App.Identity, previous.identity) {
@@ -241,6 +287,18 @@ func (registry *Registry) Validate() error {
 type launcherIdentity struct {
 	kind  LauncherKind
 	value string
+}
+
+type terminalIdentity struct {
+	kind    TerminalIdentityKind
+	project string
+}
+
+func (identity terminalIdentity) String() string {
+	if identity.kind == TerminalIdentityProject {
+		return string(identity.kind) + ":" + identity.project
+	}
+	return string(identity.kind)
 }
 
 type applicationIdentityRecord struct {
@@ -275,6 +333,16 @@ func (launcher Launcher) identity() launcherIdentity {
 	}
 }
 
+func (launcher Launcher) terminalIdentity() (terminalIdentity, bool) {
+	if launcher.Terminal == nil || launcher.Terminal.Identity == nil {
+		return terminalIdentity{}, false
+	}
+	return terminalIdentity{
+		kind:    launcher.Terminal.Identity.Kind,
+		project: launcher.Terminal.Identity.Project,
+	}, true
+}
+
 func (context *Context) validate() error {
 	if err := context.ID.Validate(); err != nil {
 		return fmt.Errorf("invalid ID: %w", err)
@@ -287,6 +355,14 @@ func (context *Context) validate() error {
 	}
 	if context.State != ContextActive && context.State != ContextArchived {
 		return fmt.Errorf("invalid state %q", context.State)
+	}
+	if context.ArchivedAt != nil {
+		if context.State != ContextArchived {
+			return errors.New("only archived contexts may contain archived_at")
+		}
+		if context.ArchivedAt.IsZero() || context.ArchivedAt.Location() != time.UTC {
+			return errors.New("archived_at must be a non-zero canonical UTC timestamp")
+		}
 	}
 	if err := context.Launcher.validate(); err != nil {
 		return err
@@ -358,11 +434,17 @@ func (launcher *Launcher) validateHerdr() error {
 	if launcher.hasDesktopFields() || launcher.hasFlatpakFields() {
 		return errors.New("herdr launcher must not contain desktop or Flatpak fields")
 	}
+	if launcher.Terminal == nil {
+		return errors.New("herdr launcher requires terminal configuration")
+	}
+	if err := launcher.Terminal.validate(); err != nil {
+		return fmt.Errorf("invalid terminal configuration: %w", err)
+	}
 	return nil
 }
 
 func (launcher *Launcher) validateDesktop() error {
-	if launcher.Session != "" || launcher.Cwd != "" || launcher.hasFlatpakFields() {
+	if launcher.Session != "" || launcher.Cwd != "" || launcher.Terminal != nil || launcher.hasFlatpakFields() {
 		return errors.New("desktop launcher must not contain Herdr or Flatpak fields")
 	}
 	if err := validateDesktopID(launcher.DesktopID); err != nil {
@@ -401,7 +483,7 @@ func (launcher *Launcher) validateDesktop() error {
 }
 
 func (launcher *Launcher) validateFlatpak() error {
-	if launcher.Session != "" || launcher.Cwd != "" || launcher.hasDesktopFields() {
+	if launcher.Session != "" || launcher.Cwd != "" || launcher.Terminal != nil || launcher.hasDesktopFields() {
 		return errors.New("flatpak launcher must not contain Herdr or desktop fields")
 	}
 	if !validFlatpakID(launcher.FlatpakID) {
@@ -411,6 +493,33 @@ func (launcher *Launcher) validateFlatpak() error {
 	case FlatpakSystem, FlatpakUser:
 	default:
 		return fmt.Errorf("unsupported Flatpak installation %q", launcher.FlatpakInstallation)
+	}
+	return nil
+}
+
+func (terminal *TerminalLauncher) validate() error {
+	if terminal == nil {
+		return errors.New("terminal configuration is nil")
+	}
+	switch terminal.Adapter {
+	case TerminalAdapterAlacritty, TerminalAdapterFoot:
+	default:
+		return fmt.Errorf("unsupported terminal adapter %q", terminal.Adapter)
+	}
+	if terminal.Identity == nil {
+		return nil
+	}
+	switch terminal.Identity.Kind {
+	case TerminalIdentityDefault:
+		if terminal.Identity.Project != "" {
+			return errors.New("default terminal identity must not contain a project name")
+		}
+	case TerminalIdentityProject:
+		if !validSessionName(terminal.Identity.Project) {
+			return errors.New("terminal project name must start with an ASCII letter or digit and contain at most 64 ASCII letters, digits, dots, underscores, or hyphens")
+		}
+	default:
+		return fmt.Errorf("unsupported terminal identity kind %q", terminal.Identity.Kind)
 	}
 	return nil
 }

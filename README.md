@@ -144,6 +144,7 @@ This installs:
 ~/.local/share/bash-completion/completions/sway-session
 ~/.local/share/zsh/site-functions/_sway-session
 ~/.local/share/fish/vendor_completions.d/sway-session.fish
+~/.local/share/doc/sway-title-animator/contrib/sway-session/config.toml
 ```
 
 Make sure `~/.local/bin` is in your `PATH`.
@@ -154,10 +155,10 @@ install. A source-only install must make the same explicit decision from a
 trusted terminal with `sway-session app ... --yes`; it must not silently route
 an approval token into a user-writable executable.
 
-Release archives and distribution packages also contain all three programs and the
-Sway, Herdr, Codex-hook, and AppArmor integration templates. Archives retain
-the repository-relative template paths; distribution packages install them
-under `/usr/share/doc/sway-title-animator`. The differing paths are called out
+Release archives and distribution packages also contain all three programs and
+the Sway, sway-session, Herdr, Codex-hook, and AppArmor integration templates.
+Archives retain the repository-relative template paths; distribution packages
+install them under `/usr/share/doc/sway-title-animator`. The differing paths are called out
 below.
 
 ## Sway Setup
@@ -184,16 +185,31 @@ swaymsg reload
 
 ## Persistent Work Sessions
 
-The optional `sway-session` CLI gives one explicitly registered work context
-one Alacritty window backed by one named [Herdr](https://herdr.dev/) session.
+The optional `sway-session` CLI gives explicitly registered work contexts and
+reusable typed terminal contexts one terminal-adapter window backed by one
+named [Herdr](https://herdr.dev/) session. Alacritty is the default adapter.
 Sway restores the outer workspace and layout; Herdr restores the terminal tabs,
 panes, supported agent sessions, and pane screen history.
 
-On first access, valid version-1 context registries are atomically upgraded to
-version 2. The exact old bytes remain owner-only in `contexts.v1.json` beside
-the active registry as manual rollback evidence. Malformed or unknown-version
-state is never migrated, and the rollback file is never loaded automatically.
-Version 2 also supports explicit normal desktop-application registrations.
+On first access, valid version-1 and version-2 context registries are
+atomically upgraded to version 3. The exact old bytes remain owner-only in
+`contexts.v1.json` or `contexts.v2.json`, respectively, beside the active
+registry as manual rollback evidence. Malformed or unknown-version state is
+never migrated, and rollback files are never loaded automatically. Version 3
+adds typed terminal adapter data, an optional stable terminal identity, and an
+`archived_at` timestamp. Migrated legacy Herdr contexts use the Alacritty
+adapter with a manual (unidentified) terminal identity. Version 2 also supports
+explicit normal desktop-application registrations.
+
+Migration is coordinated with the daemon's exclusive runtime lock. A current
+daemon publishes its registry-schema compatibility together with its PID and
+process start time. If an older daemon is still running after a package
+upgrade, commands refuse to migrate instead of stranding that process on an
+unreadable registry. Restart the complete Sway session once after such an
+upgrade, then retry the command; the new daemon performs or accepts the v3
+migration. The error is safe to retry and leaves both `contexts.json` and its
+rollback evidence untouched.
+
 The independent session daemon groups every matching top-level window into one
 application presence, adopts one unambiguous window as the optional layout
 anchor, and restores missing desired-open applications after a five-second
@@ -202,7 +218,8 @@ their first window is still pending and records launch intent before starting
 the process, so a daemon restart or ambiguous launcher outcome cannot duplicate
 the attempt in the same real Sway compositor session.
 
-Install Alacritty and Herdr, then enable Herdr pane history in
+Install Herdr and the selected terminal adapter (Alacritty by default), then
+enable Herdr pane history in
 `${XDG_CONFIG_HOME:-$HOME/.config}/herdr/config.toml`:
 
 ```toml
@@ -217,6 +234,91 @@ output, paths, and tokens:
 chmod 700 "${XDG_CONFIG_HOME:-$HOME/.config}/herdr"
 chmod 600 "${XDG_CONFIG_HOME:-$HOME/.config}/herdr/config.toml"
 ```
+
+### Reusable terminals
+
+`sway-session terminal` opens or reuses one stable default typed terminal
+identity. It starts or attaches its Herdr session and focuses the existing
+window instead of creating another one. The default identity uses the home
+directory when first created.
+
+Use `--project NAME` for one stable named identity. The Herdr session name is
+derived from a hash of `NAME`, and a newly created project identity uses the
+current working directory by default. Once created, an explicit `--cwd` must
+match the persisted directory; a conflicting directory is rejected rather than
+silently repointing the project terminal.
+The selected adapter is persisted per identity. Changing the config affects new
+identities; opening an existing identity with a different configured adapter
+returns a typed conflict instead of silently changing its launcher. To switch
+without deleting Herdr history, archive the returned UUID, close its terminal
+window, run `sway-session terminal reconfigure` (or `terminal reconfigure
+--project NAME`), then activate the same UUID. Reconfigure uses Sway and an
+exact process observation to reject mapped windows and pending old-adapter
+launches. An archived identity is never launched implicitly.
+
+```sh
+sway-session --json terminal
+sway-session --json terminal --project LAB-105
+sway-session --json terminal --project LAB-105 --cwd "$PWD"
+```
+
+For a normal, non-persistent terminal, use the deliberately separate
+`--ephemeral` form. It accepts only an optional `--cwd`, opens an ordinary
+typed terminal, and never creates or changes registry state:
+
+```sh
+sway-session --json terminal --ephemeral --cwd "$PWD"
+```
+
+The session-terminal configuration is a strict version-1 TOML file at
+`${XDG_CONFIG_HOME:-$HOME/.config}/sway-session/config.toml`. If that default
+file is absent, the compiled `alacritty` default applies. The only supported
+adapter values are `alacritty` and `foot`; configuration cannot supply an
+executable path, command template, or shell snippet.
+
+```toml
+version = 1
+
+[terminal]
+adapter = "foot"
+```
+
+These are the intended optional Sway bindings; packaging supplies the matching
+template separately:
+
+```conf
+bindsym $mod+Return exec --no-startup-id /usr/bin/sway-session terminal
+bindsym $mod+Shift+Return exec --no-startup-id /usr/bin/sway-session terminal --ephemeral
+```
+
+Terminal inventory does not launch a terminal or contact Sway. The JSON form
+is suited to agents: `terminal list` returns typed-terminal records in stable
+context-ID order, `terminal status [context]` or `terminal status --project
+NAME` returns one record (the default identity when omitted), and cleanup is a
+read-only candidate preview.
+These commands use a non-migrating current-schema snapshot. If they encounter a
+legacy v1/v2 registry, they return the stable `migration_required` diagnostic
+without changing bytes; run `sway-session --json list` once to perform the
+validated migration and retry.
+
+```sh
+sway-session --json terminal list
+sway-session --json terminal status
+sway-session --json terminal status --project LAB-105
+sway-session --json terminal cleanup --archived-before 2026-09-02
+sway-session --json terminal reconfigure --project LAB-105
+```
+
+`terminal cleanup` only lists archived terminal contexts before the supplied
+UTC date; it does not delete anything. To delete a reviewed context and its
+Herdr state, use its exact UUID with `sway-session --json purge --yes UUID`.
+All `--json` results carry the stable result version; terminal-open results
+also expose their actions. In JSON mode, omission of `--yes` produces a preview
+and confirmation diagnostic; it never prompts on standard input.
+
+Reusable terminal identity applies only to terminals launched through
+`sway-session terminal`. Persistence of separate but otherwise identical
+arbitrary application windows remains deferred to LAB-93.
 
 Register the current project and start or attach its named Herdr session:
 
@@ -386,8 +488,14 @@ Lifecycle commands accept an exact UUID or an unambiguous exact label:
 sway-session list
 sway-session archive LAB-80
 sway-session activate LAB-80
-sway-session purge --yes LAB-80
+sway-session --json purge LAB-80
+sway-session purge --yes 8f33d6d0-7c54-4da1-9e38-2bd290ef85ca
 ```
+
+Archive and activate accept an exact UUID or an unambiguous exact label. A
+purge preview accepts either selector and returns the canonical UUID; `purge
+--yes` accepts only that exact UUID so agents cannot delete through mutable
+presentation metadata.
 
 The release packages also install metadata-rich completion for Bash, Zsh, and
 Fish. Commands, subcommands, and options remain available even when session
@@ -417,7 +525,7 @@ source ~/.local/share/fish/vendor_completions.d/sway-session.fish
 ```
 
 The public read-only interface used by these adapters is
-`sway-session completion contexts <archive|activate|restore|restore-active|purge|app-forget>`.
+`sway-session completion contexts <archive|activate|restore|restore-active|purge|terminal-status|app-forget>`.
 It never creates or migrates session state. `purge` completion is deliberately
 limited to Herdr contexts, matching the command's current deletion semantics;
 desktop-application registrations use `app forget`.
@@ -436,8 +544,8 @@ independent title-animation/audio process and never opens the registry, layout
 state, Herdr state, or session sockets. The daemon and restore lines
 intentionally use `exec`, not `exec_always`, so reloading the Sway config does
 not launch duplicates; the daemon also holds an exclusive runtime lock. The
-one-shot restore checks Sway and already-started typed Alacritty processes
-before launching Herdr contexts. Desktop applications are restored only by the
+one-shot restore checks Sway and already-started typed terminal-adapter
+processes before launching Herdr contexts. Desktop applications are restored only by the
 daemon, which distinguishes a Sway config reload from a replaced compositor
 socket and never treats reload as a new launch session.
 
@@ -468,7 +576,7 @@ After a source `make install`, merge the `SessionStart` entry from
 `/usr/bin/sway-session`. When installing from a release archive into another
 location, change the hook command to that exact absolute binary path. Do not
 retain Herdr's stock Codex SessionStart hook: it connects directly to the
-general Herdr socket and defeats this boundary. The managed Alacritty launch
+general Herdr socket and defeats this boundary. The managed typed-terminal launch
 injects `SWAY_SESSION_CONTEXT_ID`; Herdr supplies `HERDR_PANE_ID`, so the hook
 is a silent no-op in other terminals.
 On the next Codex start, review this exact command in the Hooks prompt and trust

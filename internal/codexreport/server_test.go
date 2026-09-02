@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -77,7 +78,7 @@ func TestRegistryServiceMapsAtomicContextSnapshotToFixedLauncher(t *testing.T) {
 	contextID, _ := sessionstate.ParseContextID(testContextID)
 	registered := sessionstate.Context{
 		ID: contextID, State: sessionstate.ContextActive,
-		Launcher: sessionstate.Launcher{Kind: sessionstate.LauncherHerdr, Session: "lab-80", Cwd: t.TempDir()},
+		Launcher: sessionstate.Launcher{Kind: sessionstate.LauncherHerdr, Session: "lab-80", Cwd: t.TempDir(), Terminal: &sessionstate.TerminalLauncher{Adapter: sessionstate.TerminalAdapterAlacritty}},
 	}
 	if _, err := sessionstate.UpdateRegistry(stateRoot, func(registry *sessionstate.Registry) error {
 		return sessionstate.AddContext(registry, registered)
@@ -89,7 +90,7 @@ func TestRegistryServiceMapsAtomicContextSnapshotToFixedLauncher(t *testing.T) {
 		StateRoot: stateRoot, HerdrPaths: sessionstate.HerdrPaths{Root: "/fixed/herdr"}, Now: func() time.Time { return time.Unix(10, 0) },
 		Report: func(_ context.Context, paths sessionstate.HerdrPaths, launcher sessionstate.Launcher, paneID string, sessionID string, peerPID int, now time.Time) error {
 			called = true
-			if paths.Root != "/fixed/herdr" || launcher != registered.Launcher || paneID != "work:p1" || sessionID != testSessionID || peerPID != 4242 || now != time.Unix(10, 0) {
+			if paths.Root != "/fixed/herdr" || !reflect.DeepEqual(launcher, registered.Launcher) || paneID != "work:p1" || sessionID != testSessionID || peerPID != 4242 || now != time.Unix(10, 0) {
 				t.Fatalf("broker changed or exposed routing data: paths=%+v launcher=%+v pane=%q session=%q now=%v", paths, launcher, paneID, sessionID, now)
 			}
 			return nil
@@ -274,7 +275,7 @@ func TestNarrowReportEndToEndReachesOnlyFixedHerdrMethods(t *testing.T) {
 	contextID, _ := sessionstate.ParseContextID(testContextID)
 	registered := sessionstate.Context{
 		ID: contextID, State: sessionstate.ContextActive,
-		Launcher: sessionstate.Launcher{Kind: sessionstate.LauncherHerdr, Session: "lab-80", Cwd: t.TempDir()},
+		Launcher: sessionstate.Launcher{Kind: sessionstate.LauncherHerdr, Session: "lab-80", Cwd: t.TempDir(), Terminal: &sessionstate.TerminalLauncher{Adapter: sessionstate.TerminalAdapterAlacritty}},
 	}
 	if _, err := sessionstate.UpdateRegistry(stateRoot, func(registry *sessionstate.Registry) error {
 		return sessionstate.AddContext(registry, registered)

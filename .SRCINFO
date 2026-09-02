@@ -10,6 +10,7 @@ pkgbase = sway-title-animator
 	depends = sway
 	optdepends = libpulse: sound-reactive animation presets via parec
 	optdepends = alacritty: persistent work-session windows
+	optdepends = foot: optional typed terminal adapter for persistent work-session windows
 	optdepends = herdr>=0.8.2: persistent terminal panes, history, and agent sessions
 	optdepends = flatpak: restore explicitly registered Flatpak desktop applications
 	optdepends = glib2: restore desktop-entry applications through gio

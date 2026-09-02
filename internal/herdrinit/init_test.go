@@ -48,7 +48,7 @@ func testContext(t *testing.T) sessionstate.Context {
 		Label:    "test",
 		Provider: "codex",
 		State:    sessionstate.ContextActive,
-		Launcher: sessionstate.Launcher{Kind: sessionstate.LauncherHerdr, Session: "lab-88-e2e", Cwd: t.TempDir()},
+		Launcher: sessionstate.Launcher{Kind: sessionstate.LauncherHerdr, Session: "lab-88-e2e", Cwd: t.TempDir(), Terminal: &sessionstate.TerminalLauncher{Adapter: sessionstate.TerminalAdapterAlacritty}},
 	}
 }
 

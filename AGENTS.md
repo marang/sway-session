@@ -48,8 +48,8 @@ project checkpoint, whichever comes first.
 - `preview.go`: terminal preview and terminal-width handling.
 - `cmd/sway-session`: persistent work-session CLI and its explicit long-running
   `daemon`, including desktop-app presence/lifecycle, bounded launch adoption,
-  capture, marking, placement, layout restore, and the existing narrow broker
-  endpoints.
+  capture, marking, placement, layout restore, reusable typed terminal launch
+  and inventory, and the existing narrow broker endpoints.
 - `cmd/sway-herdr-init` / `internal/herdrinit`: fixed, registry-locked
   initialization of one empty Herdr session without general pane control.
 - `internal/sessionrequest`: owner-only typed session-start protocol and broker
@@ -59,8 +59,9 @@ project checkpoint, whichever comes first.
 - `internal/titleindicator`: versioned presentation-only Sway mark protocol
   shared by the session daemon and animator; it contains no registry or restore
   state.
-- `internal/session`: validated context/application identity, versioned session
-  state, and the pure desktop-app restore coordinator.
+- `internal/session`: validated context/application and terminal identity,
+  strict typed terminal-adapter configuration (`alacritty` or `foot` only),
+  versioned session state, and the pure desktop-app restore coordinator.
 - `internal/statefile`: owner-only, bounded, transactional JSON state
   persistence.
 - `internal/diagnostic`: structured and human-readable CLI diagnostics.

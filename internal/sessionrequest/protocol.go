@@ -51,9 +51,10 @@ func (request Request) Validate() error {
 		Provider: request.Provider,
 		State:    sessionstate.ContextActive,
 		Launcher: sessionstate.Launcher{
-			Kind:    sessionstate.LauncherHerdr,
-			Session: request.Session,
-			Cwd:     request.Cwd,
+			Kind:     sessionstate.LauncherHerdr,
+			Session:  request.Session,
+			Cwd:      request.Cwd,
+			Terminal: &sessionstate.TerminalLauncher{Adapter: sessionstate.TerminalAdapterAlacritty},
 		},
 	}
 	if err := candidate.Validate(); err != nil {

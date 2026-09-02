@@ -319,10 +319,37 @@ func TestServiceRejectsContextMetadataConflictsWithoutEffects(t *testing.T) {
 	}
 }
 
+func TestServiceV1RejectsStableOrNonAlacrittyTerminalContexts(t *testing.T) {
+	for name, terminal := range map[string]*sessionstate.TerminalLauncher{
+		"stable identity": {
+			Adapter:  sessionstate.TerminalAdapterAlacritty,
+			Identity: &sessionstate.TerminalIdentity{Kind: sessionstate.TerminalIdentityDefault},
+		},
+		"foot adapter": {Adapter: sessionstate.TerminalAdapterFoot},
+	} {
+		t.Run(name, func(t *testing.T) {
+			service, request, client, runner := testService(t)
+			contextValue := registeredContext(request)
+			contextValue.Launcher.Terminal = terminal
+			if err := sessionstate.RegistryFile(service.StateRoot).Save(sessionstate.Registry{
+				Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{contextValue},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := service.Handle(context.Background(), request); err == nil || !strings.Contains(err.Error(), "conflicting context metadata") {
+				t.Fatalf("protocol-v1-incompatible context was reused: %v", err)
+			}
+			if len(client.commands) != 0 || len(runner.calls) != 0 {
+				t.Fatalf("protocol-v1-incompatible context caused effects: commands=%v restores=%v", client.commands, runner.calls)
+			}
+		})
+	}
+}
+
 func registeredContext(request Request) sessionstate.Context {
 	return sessionstate.Context{
 		ID: testContextID, Label: request.Label, Provider: request.Provider, State: sessionstate.ContextActive,
-		Launcher: sessionstate.Launcher{Kind: sessionstate.LauncherHerdr, Session: request.Session, Cwd: request.Cwd},
+		Launcher: sessionstate.Launcher{Kind: sessionstate.LauncherHerdr, Session: request.Session, Cwd: request.Cwd, Terminal: &sessionstate.TerminalLauncher{Adapter: sessionstate.TerminalAdapterAlacritty}},
 	}
 }
 

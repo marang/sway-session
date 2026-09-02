@@ -351,7 +351,10 @@ func (service *Service) ensureContext(ctx context.Context, request Request) (ses
 		}
 		selected = sessionstate.Context{
 			ID: id, Label: request.Label, Provider: request.Provider, State: sessionstate.ContextActive,
-			Launcher: sessionstate.Launcher{Kind: sessionstate.LauncherHerdr, Session: request.Session, Cwd: request.Cwd},
+			Launcher: sessionstate.Launcher{
+				Kind: sessionstate.LauncherHerdr, Session: request.Session, Cwd: request.Cwd,
+				Terminal: &sessionstate.TerminalLauncher{Adapter: sessionstate.TerminalAdapterAlacritty},
+			},
 		}
 		if err := sessionstate.AddContext(registry, selected); err != nil {
 			return err
@@ -422,7 +425,11 @@ func rollbackCreatedRegistration(root string, request Request, contextValue sess
 }
 
 func requestMatchesContext(request Request, contextValue sessionstate.Context) bool {
-	return contextValue.Label == request.Label && contextValue.Provider == request.Provider && contextValue.Launcher.Kind == sessionstate.LauncherHerdr && contextValue.Launcher.Session == request.Session && contextValue.Launcher.Cwd == request.Cwd
+	return contextValue.Label == request.Label && contextValue.Provider == request.Provider &&
+		contextValue.Launcher.Kind == sessionstate.LauncherHerdr && contextValue.Launcher.Session == request.Session &&
+		contextValue.Launcher.Cwd == request.Cwd && contextValue.Launcher.Terminal != nil &&
+		contextValue.Launcher.Terminal.Adapter == sessionstate.TerminalAdapterAlacritty &&
+		contextValue.Launcher.Terminal.Identity == nil
 }
 
 func acceptedResponse(contextValue sessionstate.Context, workspace int, created bool) Response {

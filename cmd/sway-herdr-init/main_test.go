@@ -37,7 +37,7 @@ func testDependencies(t *testing.T) (dependencies, *int) {
 			}
 			return inspect(sessionstate.Context{
 				ID: id, State: sessionstate.ContextActive,
-				Launcher: sessionstate.Launcher{Kind: sessionstate.LauncherHerdr, Session: "lab-88", Cwd: "/repo"},
+				Launcher: sessionstate.Launcher{Kind: sessionstate.LauncherHerdr, Session: "lab-88", Cwd: "/repo", Terminal: &sessionstate.TerminalLauncher{Adapter: sessionstate.TerminalAdapterAlacritty}},
 			})
 		},
 		initialize: func(_ context.Context, contextValue sessionstate.Context, roles []string, runner herdrinit.Runner) (herdrinit.Result, error) {

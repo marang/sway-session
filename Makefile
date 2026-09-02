@@ -57,9 +57,11 @@ install: build
 	install -d $(PREFIX)/share/bash-completion/completions
 	install -d $(PREFIX)/share/zsh/site-functions
 	install -d $(PREFIX)/share/fish/vendor_completions.d
+	install -d $(PREFIX)/share/doc/sway-title-animator/contrib/sway-session
 	install -m644 contrib/completions/bash/sway-session $(PREFIX)/share/bash-completion/completions/sway-session
 	install -m644 contrib/completions/zsh/_sway-session $(PREFIX)/share/zsh/site-functions/_sway-session
 	install -m644 contrib/completions/fish/sway-session.fish $(PREFIX)/share/fish/vendor_completions.d/sway-session.fish
+	install -m644 contrib/sway-session/config.toml $(PREFIX)/share/doc/sway-title-animator/contrib/sway-session/config.toml
 
 clean:
 	rm -f $(BINARIES)

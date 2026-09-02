@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -376,7 +377,7 @@ func TestAppListJSONReturnsOnlyApplicationsSortedByContextID(t *testing.T) {
 	}
 	registry := sessionstate.Registry{Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{
 		application(secondID, "org.example.Second"),
-		{ID: "33333333-3333-4333-8333-333333333333", State: sessionstate.ContextActive, Launcher: sessionstate.Launcher{Kind: sessionstate.LauncherHerdr, Session: "work", Cwd: "/work"}},
+		{ID: "33333333-3333-4333-8333-333333333333", State: sessionstate.ContextActive, Launcher: sessionstate.Launcher{Kind: sessionstate.LauncherHerdr, Session: "work", Cwd: "/work", Terminal: &sessionstate.TerminalLauncher{Adapter: sessionstate.TerminalAdapterAlacritty}}},
 		application(firstID, "org.example.First"),
 	}}
 	if err := sessionstate.RegistryFile(root).Save(registry); err != nil {
@@ -713,6 +714,13 @@ func (client *appCommandClient) Request(messageType swayipc.MessageType, payload
 	default:
 		return swayipc.Message{}, errors.New("unexpected Sway request")
 	}
+}
+
+func (client *appCommandClient) RequestContext(ctx context.Context, messageType swayipc.MessageType, payload []byte) (swayipc.Message, error) {
+	if err := ctx.Err(); err != nil {
+		return swayipc.Message{}, err
+	}
+	return client.Request(messageType, payload)
 }
 
 func (*appCommandClient) Close() {}

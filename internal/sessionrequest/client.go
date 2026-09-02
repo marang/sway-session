@@ -2,7 +2,6 @@ package sessionrequest
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -55,15 +54,9 @@ func Send(ctx context.Context, socketPath string, request Request) (Response, er
 	if len(line) > maxProtocolMessage {
 		return Response{}, fmt.Errorf("session start response exceeds %d bytes", maxProtocolMessage)
 	}
-	decoder := json.NewDecoder(bytes.NewReader(line))
-	decoder.DisallowUnknownFields()
-	var response Response
-	if err := decoder.Decode(&response); err != nil {
+	response, err := decodeResponseV1(line)
+	if err != nil {
 		return Response{}, fmt.Errorf("decode session start response: %w", err)
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		return Response{}, errors.New("session start response contains trailing data")
 	}
 	if response.Version != ProtocolVersion {
 		return Response{}, fmt.Errorf("unsupported session start response version %d", response.Version)

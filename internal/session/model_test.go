@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRegistryValidatesTypedHerdrContext(t *testing.T) {
@@ -15,12 +16,114 @@ func TestRegistryValidatesTypedHerdrContext(t *testing.T) {
 	}
 }
 
+func TestHerdrTerminalConfigurationIsTypedAndRequired(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Context)
+	}{
+		{name: "missing terminal", mutate: func(context *Context) { context.Launcher.Terminal = nil }},
+		{name: "unsupported adapter", mutate: func(context *Context) { context.Launcher.Terminal.Adapter = "shell" }},
+		{name: "default with project", mutate: func(context *Context) {
+			context.Launcher.Terminal.Identity = &TerminalIdentity{Kind: TerminalIdentityDefault, Project: "unexpected"}
+		}},
+		{name: "project without name", mutate: func(context *Context) {
+			context.Launcher.Terminal.Identity = &TerminalIdentity{Kind: TerminalIdentityProject}
+		}},
+		{name: "project with unstable name", mutate: func(context *Context) {
+			context.Launcher.Terminal.Identity = &TerminalIdentity{Kind: TerminalIdentityProject, Project: "two words"}
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			context := validRegistry().Contexts[0]
+			terminal := *context.Launcher.Terminal
+			context.Launcher.Terminal = &terminal
+			test.mutate(&context)
+			if err := context.Validate(); err == nil {
+				t.Fatal("expected invalid terminal configuration")
+			}
+		})
+	}
+
+	for _, identity := range []*TerminalIdentity{
+		nil,
+		{Kind: TerminalIdentityDefault},
+		{Kind: TerminalIdentityProject, Project: "project-1.core"},
+	} {
+		context := validRegistry().Contexts[0]
+		terminal := *context.Launcher.Terminal
+		terminal.Identity = identity
+		context.Launcher.Terminal = &terminal
+		if err := context.Validate(); err != nil {
+			t.Errorf("expected terminal identity %+v to validate: %v", identity, err)
+		}
+	}
+}
+
+func TestDesktopLaunchersRejectTerminalConfiguration(t *testing.T) {
+	context := desktopApplicationContext("example.desktop", "example.app")
+	context.Launcher.Terminal = &TerminalLauncher{Adapter: TerminalAdapterAlacritty}
+	if err := context.Validate(); err == nil {
+		t.Fatal("desktop launcher accepted terminal configuration")
+	}
+}
+
+func TestRegistryRejectsDuplicateTerminalIdentity(t *testing.T) {
+	first := validRegistry().Contexts[0]
+	first.Launcher.Terminal.Identity = &TerminalIdentity{Kind: TerminalIdentityProject, Project: "shared"}
+	second := first
+	second.ID = ContextID("6ba7b810-9dad-41d1-80b4-00c04fd430c8")
+	second.Launcher.Session = "different-session"
+	secondTerminal := *first.Launcher.Terminal
+	secondIdentity := *first.Launcher.Terminal.Identity
+	secondTerminal.Identity = &secondIdentity
+	second.Launcher.Terminal = &secondTerminal
+
+	registry := Registry{Version: ContextsSchemaVersion, Contexts: []Context{first, second}}
+	if err := registry.Validate(); err == nil || !strings.Contains(err.Error(), "terminal identity") {
+		t.Fatalf("expected duplicate terminal identity rejection, got %v", err)
+	}
+}
+
+func TestContextArchivedAtIsOptionalCanonicalUTC(t *testing.T) {
+	context := validRegistry().Contexts[0]
+	context.State = ContextArchived
+	if err := context.Validate(); err != nil {
+		t.Fatalf("legacy archived context without timestamp was rejected: %v", err)
+	}
+
+	archivedAt := time.Date(2026, 9, 2, 10, 34, 56, 123456789, time.UTC)
+	context.ArchivedAt = &archivedAt
+	if err := context.Validate(); err != nil {
+		t.Fatalf("UTC archived timestamp was rejected: %v", err)
+	}
+	encoded, err := json.Marshal(context)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"archived_at":"2026-09-02T10:34:56.123456789Z"`) {
+		t.Fatalf("timestamp is not canonical UTC JSON: %s", encoded)
+	}
+
+	nonUTC := archivedAt.In(time.FixedZone("test", 60*60))
+	context.ArchivedAt = &nonUTC
+	if err := context.Validate(); err == nil {
+		t.Fatal("non-UTC archived timestamp passed validation")
+	}
+
+	context.State = ContextActive
+	context.ArchivedAt = &archivedAt
+	if err := context.Validate(); err == nil {
+		t.Fatal("active context retained archived timestamp")
+	}
+}
+
 func TestRegistryJSONSchema(t *testing.T) {
 	encoded, err := json.Marshal(validRegistry())
 	if err != nil {
 		t.Fatalf("encode registry: %v", err)
 	}
-	want := `{"version":2,"preferences":{"desktop_indicators":false},"contexts":[{"id":"123e4567-e89b-12d3-a456-426614174000","label":"LAB-80","provider":"linear","state":"active","launcher":{"kind":"herdr","session":"lab-80","cwd":"/home/example/work"}}]}`
+	want := `{"version":3,"preferences":{"desktop_indicators":false},"contexts":[{"id":"123e4567-e89b-12d3-a456-426614174000","label":"LAB-80","provider":"linear","state":"active","launcher":{"kind":"herdr","session":"lab-80","cwd":"/home/example/work","terminal":{"adapter":"alacritty"}}}]}`
 	if string(encoded) != want {
 		t.Fatalf("unexpected registry schema:\n got: %s\nwant: %s", encoded, want)
 	}
@@ -55,7 +158,7 @@ func TestDesktopApplicationJSONSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode desktop registry: %v", err)
 	}
-	want := `{"version":2,"preferences":{"desktop_indicators":true},"contexts":[{"id":"6ba7b811-9dad-41d1-80b4-00c04fd430c8","label":"Slack","state":"active","launcher":{"kind":"flatpak","flatpak_id":"com.slack.Slack","flatpak_installation":"user"},"app":{"identity":{"protocol":"xwayland","x11_class":"Slack","x11_instance":"slack","sandbox_app_id":"com.slack.Slack"},"desired_open":true,"restore_policy":"pinned"}}]}`
+	want := `{"version":3,"preferences":{"desktop_indicators":true},"contexts":[{"id":"6ba7b811-9dad-41d1-80b4-00c04fd430c8","label":"Slack","state":"active","launcher":{"kind":"flatpak","flatpak_id":"com.slack.Slack","flatpak_installation":"user"},"app":{"identity":{"protocol":"xwayland","x11_class":"Slack","x11_instance":"slack","sandbox_app_id":"com.slack.Slack"},"desired_open":true,"restore_policy":"pinned"}}]}`
 	if string(encoded) != want {
 		t.Fatalf("unexpected desktop registry schema:\n got: %s\nwant: %s", encoded, want)
 	}
@@ -70,7 +173,7 @@ func TestRegistryRejectsUnsupportedVersion(t *testing.T) {
 	if !errors.As(err, &versionError) {
 		t.Fatalf("expected UnsupportedVersionError, got %v", err)
 	}
-	if versionError.Got != 3 || versionError.Want != ContextsSchemaVersion {
+	if versionError.Got != 4 || versionError.Want != ContextsSchemaVersion {
 		t.Fatalf("unexpected version error: %+v", versionError)
 	}
 }
@@ -697,6 +800,9 @@ func validRegistry() Registry {
 					Kind:    LauncherHerdr,
 					Session: "lab-80",
 					Cwd:     "/home/example/work",
+					Terminal: &TerminalLauncher{
+						Adapter: TerminalAdapterAlacritty,
+					},
 				},
 			},
 		},

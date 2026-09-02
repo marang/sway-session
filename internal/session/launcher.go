@@ -106,79 +106,14 @@ func mergeEnvironment(base []string, overrides []string, unset []string, unsetPr
 	return result, nil
 }
 
-type AlacrittyHerdrLauncher struct {
-	Alacritty string
-	Herdr     string
-	Starter   ProcessStarter
-}
-
-func AlacrittyHerdrArguments(context Context, herdrExecutable string) ([]string, error) {
-	if err := context.Validate(); err != nil {
-		return nil, fmt.Errorf("validate context: %w", err)
+// FindPendingProcessLaunches recognizes an in-flight launch only when its
+// executable and complete typed argument vector match. Environment and display
+// text are deliberately not treated as process identity.
+func FindPendingProcessLaunches(procRoot string, spec ProcessSpec) ([]int, error) {
+	if !filepath.IsAbs(procRoot) || !filepath.IsAbs(spec.Name) {
+		return nil, errors.New("process root and executable must be absolute paths")
 	}
-	if context.Launcher.Kind != LauncherHerdr {
-		return nil, fmt.Errorf("herdr launcher does not support context launcher kind %q", context.Launcher.Kind)
-	}
-	if !filepath.IsAbs(herdrExecutable) {
-		return nil, errors.New("herdr executable must be an absolute path")
-	}
-	appID, err := context.ID.AppID()
-	if err != nil {
-		return nil, err
-	}
-	title := context.Label
-	if title == "" {
-		title = context.Launcher.Session
-	}
-	return []string{
-		"--class=" + appID,
-		"--working-directory=" + context.Launcher.Cwd,
-		"--title=" + title,
-		"-e", herdrExecutable, "--session", context.Launcher.Session,
-	}, nil
-}
-
-// Launch creates one terminal with a stable Wayland app ID and a typed Herdr
-// session attachment. No registry value is interpreted by a shell.
-func (launcher AlacrittyHerdrLauncher) Launch(context Context) error {
-	if launcher.Starter == nil {
-		return errors.New("process starter is nil")
-	}
-	if !filepath.IsAbs(launcher.Alacritty) || !filepath.IsAbs(launcher.Herdr) {
-		return errors.New("launcher executables must be absolute paths")
-	}
-	arguments, err := AlacrittyHerdrArguments(context, launcher.Herdr)
-	if err != nil {
-		return err
-	}
-	info, err := os.Stat(context.Launcher.Cwd)
-	if err != nil {
-		return fmt.Errorf("inspect project directory %s: %w", context.Launcher.Cwd, err)
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("project path %s is not a directory", context.Launcher.Cwd)
-	}
-	return launcher.Starter.Start(ProcessSpec{
-		Name:                     launcher.Alacritty,
-		Arguments:                arguments,
-		Environment:              []string{"SWAY_SESSION_CONTEXT_ID=" + string(context.ID)},
-		UnsetEnvironment:         []string{"CODEX_THREAD_ID"},
-		UnsetEnvironmentPrefixes: []string{"HERDR_"},
-	})
-}
-
-// FindPendingAlacrittyLaunches recognizes not-yet-mapped launches by their
-// complete typed argv. This closes the idempotency gap after a successful
-// process start but before its Wayland window appears in GET_TREE.
-func FindPendingAlacrittyLaunches(procRoot string, context Context, alacritty string, herdr string) ([]int, error) {
-	if !filepath.IsAbs(procRoot) || !filepath.IsAbs(alacritty) || !filepath.IsAbs(herdr) {
-		return nil, errors.New("process root and executables must be absolute paths")
-	}
-	arguments, err := AlacrittyHerdrArguments(context, herdr)
-	if err != nil {
-		return nil, err
-	}
-	want := append([]string{alacritty}, arguments...)
+	want := append([]string{spec.Name}, spec.Arguments...)
 	entries, err := os.ReadDir(procRoot)
 	if err != nil {
 		return nil, fmt.Errorf("read process table: %w", err)

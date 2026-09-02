@@ -1350,9 +1350,10 @@ func sessionRegistryIDs(ids ...sessionstate.ContextID) sessionstate.Registry {
 			ID:    id,
 			State: sessionstate.ContextActive,
 			Launcher: sessionstate.Launcher{
-				Kind:    sessionstate.LauncherHerdr,
-				Session: fmt.Sprintf("test-session-%d", index),
-				Cwd:     "/work",
+				Kind:     sessionstate.LauncherHerdr,
+				Session:  fmt.Sprintf("test-session-%d", index),
+				Cwd:      "/work",
+				Terminal: &sessionstate.TerminalLauncher{Adapter: sessionstate.TerminalAdapterAlacritty},
 			},
 		})
 	}

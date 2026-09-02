@@ -104,7 +104,7 @@ func TestPlanApplicationIndicatorsSuppressesHerdrAndKeepsArchivedRegistration(t 
 		Version:     ContextsSchemaVersion,
 		Preferences: RegistryPreferences{DesktopIndicators: true},
 		Contexts: []Context{
-			{ID: herdrID, State: ContextActive, Launcher: Launcher{Kind: LauncherHerdr, Session: "work", Cwd: "/work"}},
+			{ID: herdrID, State: ContextActive, Launcher: Launcher{Kind: LauncherHerdr, Session: "work", Cwd: "/work", Terminal: &TerminalLauncher{Adapter: TerminalAdapterAlacritty}}},
 			applicationIndicatorContext(archivedID, "org.example.Archived", ApplicationRestoreFollow),
 		},
 	}

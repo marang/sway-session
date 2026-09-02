@@ -1,15 +1,17 @@
 # Persistent Sway Work Sessions
 
 Status: Core Herdr work-session restore, the dedicated session-daemon process,
-explicit desktop application group restore, and its visible integration are
-implemented through LAB-99.
+explicit desktop application group restore and visible integration, shell
+completion, and the reusable typed terminal adapter contract are implemented
+through LAB-105.
 
 Tracking issue: [LAB-80](https://linear.app/riotbox/issue/LAB-80/add-persistent-sway-work-session-restoration)
 
 ## Purpose
 
 Add opt-in persistence for explicitly registered Sway work contexts. A work
-context owns one outer Alacritty window backed by one named Herdr session.
+context owns one outer typed terminal-adapter window backed by one named Herdr
+session; Alacritty is the compiled default adapter.
 Sway restores the outer window's workspace and layout, while Herdr restores
 the terminal panes, pane history, and resumable agents inside that window.
 
@@ -73,14 +75,18 @@ or window recorder.
    `swaymsg reload`.
 7. Restore is best effort per workspace until Sway ships a stable declarative
    layout-restore interface.
-8. The first version supports exactly one outer Alacritty/Herdr window per
-   context. Repeated restore operations reuse that window instead of creating
-   duplicates.
+8. The first version supports exactly one outer terminal-adapter/Herdr window
+   per context. Repeated restore operations reuse that window instead of
+   creating duplicates. LAB-105 additionally gives `sway-session terminal`
+   its own stable default identity and hashed named project identities; it does
+   not solve arbitrary per-window application identity, which remains LAB-93.
 9. Launch metadata is a validated tagged union. Registry schema version 1
    contained only `herdr`; version 2 also models system desktop entries,
-   approved user-local desktop entries, and Flatpak application IDs. No state
-   file contains a generic command, argument vector, environment, or value
-   interpreted by a shell.
+   approved user-local desktop entries, and Flatpak application IDs. Schema
+   version 3 adds a closed terminal adapter (`alacritty` or `foot`), optional
+   stable terminal identity, and `archived_at`. No state file contains a
+   generic command, argument vector, environment, or value interpreted by a
+   shell.
 10. Codex does not receive access to the general Herdr control socket. Native
     resume metadata crosses a narrow, validated reporting boundary.
 11. A workspace containing both managed and unregistered tiled windows
@@ -115,7 +121,7 @@ or window recorder.
                                              |
                                       XDG session state
                                              |
-                                      Alacritty + Herdr
+                                 terminal adapter + Herdr
                                              |
                                   panes, history, Codex resume
 ```
@@ -173,11 +179,12 @@ ${XDG_STATE_HOME:-$HOME/.local/state}/sway-session/
 ```
 
 It contains three active documents with separate purposes and, after migration,
-one dedicated rollback document:
+one or two dedicated rollback documents:
 
 ```text
 contexts.json   # written by sway-session lifecycle commands and brokers
-contexts.v1.json # exact rollback evidence after the v1 -> v2 migration
+contexts.v1.json # exact rollback evidence after the v1 -> v3 migration
+contexts.v2.json # exact rollback evidence after the v2 -> v3 migration
 layout.json     # written by sway-session daemon
 application-runtime/
   application-session.json # per-compositor conservative launch attempts
@@ -215,22 +222,36 @@ performing dependent external side effects.
 
 "Preserve the last valid version" has a deliberately fail-closed meaning: an
 invalid new candidate never replaces the valid on-disk file, and a failed load
-never replaces a caller's already loaded in-memory value. The one supported
-registry migration preserves the exact valid version-1 bytes as owner-only
-`contexts.v1.json` before atomically installing version 2. That rollback file
-is evidence for deliberate manual recovery and is never an automatic fallback.
-Malformed or unknown-version input is left byte-for-byte untouched and does not
-create a rollback file. A general disk-recovery design would require generations
-or tombstones so an old backup cannot resurrect an archived or purged context.
+never replaces a caller's already loaded in-memory value. Supported migrations
+preserve the exact valid version-1 bytes as owner-only `contexts.v1.json` and
+the exact valid version-2 bytes as owner-only `contexts.v2.json` before
+atomically installing version 3. These rollback files are evidence for
+deliberate manual recovery and are never automatic fallbacks. Malformed or
+unknown-version input is left byte-for-byte untouched and does not create a
+rollback file. A general disk-recovery design would require generations or
+tombstones so an old backup cannot resurrect an archived or purged context.
 
 ### Context registry
 
-The registry schema is version 2. Existing valid version-1 Herdr registries are
-migrated automatically as described above. Its Herdr-compatible shape is:
+The registry schema is version 3. Existing valid version-1 and version-2
+registries are migrated automatically as described above. Legacy Herdr
+contexts receive `alacritty` and no stable terminal identity (reported as
+manual inventory), and no migration invents an archive time.
+
+Migration first checks the exclusive
+`${XDG_RUNTIME_DIR}/sway-session/daemon.lock`.
+The schema-v3 daemon writes a bounded marker containing its PID, process start
+time, and supported registry schema while it owns that lock. A held legacy or
+otherwise unverifiable lock blocks migration without modifying the registry;
+the diagnostic tells the user to restart the complete Sway session with the
+upgraded daemon and retry. This prevents a new one-shot CLI from replacing a
+v2 registry underneath a still-running v2 daemon.
+
+The registry's Herdr-compatible shape is:
 
 ```json
 {
-  "version": 2,
+  "version": 3,
   "preferences": {
     "desktop_indicators": false
   },
@@ -243,7 +264,14 @@ migrated automatically as described above. Its Herdr-compatible shape is:
       "launcher": {
         "kind": "herdr",
         "session": "lab-123",
-        "cwd": "/home/markus/Dev/example"
+        "cwd": "/home/markus/Dev/example",
+        "terminal": {
+          "adapter": "alacritty",
+          "identity": {
+            "kind": "project",
+            "project": "LAB-123"
+          }
+        }
       }
     }
   ]
@@ -258,6 +286,52 @@ two placement operations per context under the 256-action planner limit.
 `desktop_indicators` is a durable activation latch: it starts false, becomes
 true in the first successful desktop-registration transaction, and is not reset
 by later archive or forget operations.
+
+### Reusable typed terminal identities
+
+`sway-session terminal` is a narrow terminal launch surface, separate from
+manual `register` contexts. With no options it creates or reuses one default
+stable identity. `--project NAME` creates or reuses a project identity and
+derives a bounded Herdr session name from a hash of the validated name; the
+project text is never used as a Herdr argument or filesystem name. A new
+project identity defaults to the caller's current directory, while a new
+default identity defaults to the caller's home directory. An explicit cwd must
+exist and, on reuse, match the persisted cwd exactly; a mismatch is an identity
+conflict. The adapter is persisted with a new identity. A different configured
+adapter produces a typed conflict rather than a silent launcher change. The
+non-destructive switch sequence is archive, close the mapped terminal,
+`terminal reconfigure` (optionally with `--project NAME`), then activate;
+context ID, Herdr session, cwd, and pane history remain unchanged. Reconfigure
+holds the registry transaction while it proves through Sway and exact process
+observation that no window or pending old-adapter launch remains. Reusing an
+archived identity fails with its UUID and requires an explicit `activate`; it
+is never launched outside daemon management while still archived.
+
+`--ephemeral` opens an ordinary terminal through the same closed adapter
+contract but has no identity and does not read or write terminal registry
+state. It accepts only optional cwd selection. The strict version-1 terminal
+configuration lives at
+`${XDG_CONFIG_HOME:-$HOME/.config}/sway-session/config.toml`; an absent default
+file selects compiled `alacritty`. Its sole setting is `terminal.adapter`, with
+the closed values `alacritty` and `foot`. It has no executable, argument,
+template, environment, or shell configuration fields.
+
+`terminal list`, `terminal status`, and `terminal cleanup
+--archived-before YYYY-MM-DD` are registry-only, read-only inventory and
+preview operations. They use a non-migrating current-schema snapshot and
+return `migration_required` without modifying a legacy v1/v2 registry; the
+existing top-level `list` command is the explicit validated migration path.
+The cleanup command returns only archived typed-terminal
+contexts before the UTC date and never purges. All global `--json` results have
+a stable version; terminal-open results expose terminal actions. A JSON purge
+without `--yes` returns a preview and diagnostic rather than prompting. Actual deletion still
+requires the exact selected UUID and `--yes` for noninteractive automation.
+
+The intended Sway bindings are `$mod+Return` for the persistent default and
+`$mod+Shift+Return` for an ephemeral terminal. Their packaging template is
+maintained separately. LAB-105 guarantees stable identity only for terminals
+launched by this command; per-window persistence for arbitrary identical
+application windows remains deferred to LAB-93.
 
 ### Explicit desktop application identities
 
@@ -488,14 +562,24 @@ sway-session app rebind-focused [--desktop-id <id>] [--yes] <context>
 sway-session app reapprove [--yes] <context>
 sway-session app pin|unpin|archive|activate <context>
 sway-session app forget --yes <context>
-sway-session completion contexts <archive|activate|restore|restore-active|purge|app-forget>
+sway-session terminal [--project <name>] [--cwd <path>] [--ephemeral]
+sway-session terminal list
+sway-session terminal status [context] [--project <name>]
+sway-session terminal cleanup [--archived-before YYYY-MM-DD]
+sway-session terminal reconfigure [--project <name>] [--socket <path>]
+sway-session completion contexts <archive|activate|restore|restore-active|purge|terminal-status|app-forget>
 ```
 
 `sway-session --json app list` returns only desktop-application contexts in a
-stable UUID order. Its records can include machine-local launcher paths and
-approval checksums, so the output remains private operational state.
+stable UUID order. `sway-session --json terminal list` returns typed terminal
+inventory in stable context-ID order; `terminal status` and `terminal cleanup`
+are similarly machine-friendly read-only projections. These records can
+include machine-local paths and session metadata, so treat output as private
+operational state.
 
-Commands accept an exact canonical UUID or an unambiguous exact human label.
+Non-destructive context selectors and purge previews accept an exact canonical
+UUID or an unambiguous exact human label. Confirmed `purge --yes` accepts only
+the canonical UUID returned by preview.
 Human-readable output uses labels first and retains the full UUID so duplicate
 labels remain operable. Machine consumers receive an explicit structured-output
 option rather than parsing presentation text.
@@ -515,7 +599,9 @@ scope for `restore --require-active` and excludes every archived context.
 `restore` is idempotent. `archive` removes a context from automatic restore but
 keeps its registry record and Herdr state. `activate` reverses archive. `purge`
 requires deliberate confirmation in an interactive terminal, with an explicit
-non-interactive confirmation flag for automation.
+`--yes` non-interactive confirmation flag and exact canonical UUID for automation. In `--json` mode it
+never prompts: without `--yes`, it emits a preview plus confirmation
+diagnostic.
 
 Desktop registration is explicit and applies an optimistic stable mark only as
 part of the serialized registry transaction. A rejected mark or failed state
@@ -529,9 +615,9 @@ similar wrappers) are rejected; privileged launch support remains LAB-94.
 Herdr session names follow Herdr's 64-byte ASCII name contract. The reserved
 name `default` is rejected because Herdr maps it to non-deletable default state.
 Concurrent restores hold the registry lock across observation and launch.
-They also recognize an exact pending Alacritty argument vector in `/proc`, so
-a process which started before its Wayland window mapped is not launched again
-after a mapping timeout.
+They also recognize an exact pending typed terminal-adapter argument vector in
+`/proc`, so a process which started before its Wayland window mapped is not
+launched again after a mapping timeout.
 
 ## Herdr integration
 
@@ -552,7 +638,7 @@ The Codex AppArmor profile must therefore deny direct access to Herdr history
 and session state in addition to protecting the control socket.
 
 The Herdr launcher uses a fixed executable and argument structure to attach to
-a validated named session. The stable Alacritty application ID is generic and
+a validated named session. The stable terminal application ID is generic and
 derived from the context UUID, not from Linear or another provider.
 Before launch, `sway-session` validates owner-only, symlink-free Herdr state
 and config paths and the pane-history opt-in. Purge independently validates the
@@ -664,7 +750,8 @@ behavior, or stop configuring the daemon.
 
 - A malformed registry or layout file produces one actionable diagnostic and
   never triggers partial interpretation as executable input.
-- A missing Herdr or Alacritty executable fails the affected context only.
+- A missing Herdr or selected terminal-adapter executable fails the affected
+  context only.
 - A missing project directory is reported and not silently replaced with the
   home directory.
 - A newly launched outer context removes inherited `HERDR_*` pane metadata and
@@ -719,7 +806,7 @@ behavior, or stop configuring the daemon.
 ### Phase 4: Context lifecycle and Herdr
 
 - Implement register, list, restore, archive, activate, and purge.
-- Add the typed Alacritty/Herdr launcher and duplicate detection.
+- Add the typed terminal-adapter/Herdr launcher and duplicate detection.
 - Enforce registry-wide uniqueness of typed launcher identities.
 - Enable and validate Herdr pane history.
 - Add safe startup configuration and packaging for all three binaries.
@@ -776,6 +863,22 @@ behavior, or stop configuring the daemon.
 - Preserve static command and option completion when dynamic state is absent,
   invalid, or unreadable; add syntax, injection, fallback, and packaging tests.
 
+### Phase 10: Reusable typed terminals (LAB-105)
+
+Implemented: add the closed Alacritty/Foot adapter contract, strict version-1
+terminal configuration, stable default and hashed project identities, the
+non-persistent ephemeral terminal path, and read-only terminal inventory and
+cleanup preview. Migrate valid v1/v2 registries to schema v3 with exact
+version-matched backups, preserving legacy Herdr contexts as Alacritty/manual
+identities and never inventing `archived_at`.
+
+Automated verification covers adapter/config validation, identity reuse and cwd
+conflicts, ephemeral non-persistence, stable JSON actions, read-only inventory,
+cleanup date filtering, archive timestamps, and v1/v2 migration. A real Sway
+end-to-end run completed on 2026-09-02 with isolated state and configuration on
+workspaces 98 and 99. It verified persistent create/reuse/focus/status,
+archive/cleanup/purge, and an ephemeral launch that left the registry unchanged.
+
 ## Test matrix
 
 Automated tests must cover:
@@ -797,8 +900,10 @@ Automated tests must cover:
 - floating geometry clamping;
 - one-window-per-context duplicate prevention;
 - registry-wide typed launcher-identity uniqueness;
-- version-1 to version-2 registry migration with exact owner-only rollback
-  evidence and no fallback for malformed or unknown input;
+- version-1 and version-2 to version-3 registry migration with exact
+  version-matched owner-only rollback evidence, Alacritty/manual legacy Herdr
+  terminal data, no invented archive time, and no fallback for malformed or
+  unknown input;
 - mixed Herdr, system-desktop, approved user-local, and Flatpak identities;
 - Wayland, XWayland, sandbox, and ambiguous application-identity fixtures;
 - application-group adoption, profile-picker transitions, last-window close
@@ -810,6 +915,9 @@ Automated tests must cover:
   fail-closed behavior, and explicit catalog invalidation;
 - archive, activate, and purge transitions;
 - typed launcher validation and absence of shell evaluation;
+- closed terminal-adapter configuration, stable default/project identity reuse,
+  cwd conflict rejection, ephemeral non-persistence, JSON terminal actions,
+  inventory ordering, and read-only archive cleanup previews;
 - per-context and per-workspace failure isolation;
 - IPC reconnects, bounded payload handling, and no replay of ambiguous
   mutating commands; and
@@ -821,8 +929,10 @@ Manual evidence must distinguish:
 - Sway config reload from a real Sway restart;
 - one-monitor behavior from unplugging and reconnecting a second monitor;
 - outer Sway layout restoration from inner Herdr pane restoration;
-- pane-history display from a genuinely resumed shell or Codex process; and
-- exact restore from explicitly reported best-effort degradation.
+- pane-history display from a genuinely resumed shell or Codex process;
+- exact restore from explicitly reported best-effort degradation; and
+- persistent/default and ephemeral terminal bindings in a real Sway session,
+  including adapter selection, project reuse, and focus behavior.
 
 ## Deferred extensions
 

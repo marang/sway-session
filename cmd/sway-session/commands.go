@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -92,7 +93,10 @@ func executeRegister(arguments []string, deps dependencies) (commandResult, *com
 	}
 	created := sessionstate.Context{
 		ID: id, Label: *label, Provider: *provider, State: sessionstate.ContextActive,
-		Launcher: sessionstate.Launcher{Kind: sessionstate.LauncherHerdr, Session: *sessionName, Cwd: directory},
+		Launcher: sessionstate.Launcher{
+			Kind: sessionstate.LauncherHerdr, Session: *sessionName, Cwd: directory,
+			Terminal: &sessionstate.TerminalLauncher{Adapter: sessionstate.TerminalAdapterAlacritty},
+		},
 	}
 	if err := created.Validate(); err != nil {
 		return commandResult{}, failure("invalid_context", "invalid context registration", err.Error())
@@ -147,21 +151,33 @@ func executeStateChange(name string, arguments []string, state sessionstate.Cont
 		return commandResult{}, commandFailure
 	}
 	var changed sessionstate.Context
+	action := "no_change"
 	_, err := sessionstate.UpdateRegistry(root, func(registry *sessionstate.Registry) error {
+		index, resolveErr := sessionstate.ResolveContext(*registry, arguments[0])
+		if resolveErr != nil {
+			return resolveErr
+		}
+		previous := registry.Contexts[index]
 		var mutationErr error
-		changed, mutationErr = sessionstate.SetContextState(registry, arguments[0], state)
+		changed, mutationErr = sessionstate.SetContextStateAt(registry, arguments[0], state, deps.now())
+		if mutationErr == nil && !reflect.DeepEqual(previous, changed) {
+			action = name + "d"
+			if name == "activate" {
+				action = "activated"
+			}
+		}
 		return mutationErr
 	})
 	if err != nil {
-		if changed.ID != "" && committedContext(root, changed.ID, func(context sessionstate.Context) bool { return context.State == state }, err) {
-			return commandResult{Command: name, Contexts: []sessionstate.Context{changed}}, nil
+		if changed.ID != "" && committedContext(root, changed.ID, func(context sessionstate.Context) bool { return contextsEqual(context, changed) }, err) {
+			return commandResult{Command: name, Contexts: []sessionstate.Context{changed}, Actions: []string{action}}, nil
 		}
 		return commandResult{}, classifyStateError(name+" context", err)
 	}
-	return commandResult{Command: name, Contexts: []sessionstate.Context{changed}}, nil
+	return commandResult{Command: name, Contexts: []sessionstate.Context{changed}, Actions: []string{action}}, nil
 }
 
-func executePurge(ctx context.Context, arguments []string, stdin io.Reader, stderr io.Writer, deps dependencies) (commandResult, *commandFailure) {
+func executePurge(ctx context.Context, arguments []string, stdin io.Reader, stderr io.Writer, structured bool, deps dependencies) (commandResult, *commandFailure) {
 	set := newFlagSet("purge")
 	yes := set.Bool("yes", false, "confirm non-interactively")
 	if err := set.Parse(arguments); err != nil || set.NArg() != 1 {
@@ -180,9 +196,24 @@ func executePurge(ctx context.Context, arguments []string, stdin io.Reader, stde
 		return commandResult{}, classifyStateError("select context to purge", err)
 	}
 	target := registry.Contexts[index]
+	if *yes && set.Arg(0) != string(target.ID) {
+		return commandResult{
+			Command:  "purge",
+			Contexts: []sessionstate.Context{target},
+			Preview:  true,
+			Actions:  []string{"preview"},
+			Message:  "Preview only; re-run with --yes and the exact context UUID returned here.",
+		}, failure("confirmation_required", "purge --yes requires the exact context UUID", "Use the context ID from this preview; labels are not accepted for noninteractive deletion.")
+	}
 	if !*yes {
-		if !deps.stdinTerminal() {
-			return commandResult{}, failure("confirmation_required", "purge requires an interactive terminal or --yes", "Re-run with --yes only after verifying the selected context.")
+		if structured || !deps.stdinTerminal() {
+			return commandResult{
+				Command:  "purge",
+				Contexts: []sessionstate.Context{target},
+				Preview:  true,
+				Actions:  []string{"preview"},
+				Message:  "Preview only; re-run with --yes after verifying the exact context UUID.",
+			}, failure("confirmation_required", "purge requires an interactive terminal or --yes", "Re-run with --yes only after verifying the selected context.")
 		}
 		_, _ = fmt.Fprintf(stderr, "Type the full context ID %s to permanently delete its Herdr state: ", target.ID)
 		reader := bufio.NewReader(io.LimitReader(stdin, 1025))
@@ -208,7 +239,7 @@ func executePurge(ctx context.Context, arguments []string, stdin io.Reader, stde
 			return err
 		}
 		current := registry.Contexts[index]
-		if current.Launcher != target.Launcher {
+		if !reflect.DeepEqual(current.Launcher, target.Launcher) {
 			return errors.New("context launcher changed while purge confirmation was pending")
 		}
 		rootExists, err := sessionstate.HerdrStateRootExists(paths.Root)
@@ -264,7 +295,7 @@ func executePurge(ctx context.Context, arguments []string, stdin io.Reader, stde
 		}
 		return commandResult{}, classifyStateError("purge context", err)
 	}
-	return commandResult{Command: "purge", Contexts: []sessionstate.Context{target}}, nil
+	return commandResult{Command: "purge", Contexts: []sessionstate.Context{target}, Actions: []string{"purged"}}, nil
 }
 
 func executeRestore(ctx context.Context, arguments []string, deps dependencies) (commandResult, *commandFailure) {
@@ -352,34 +383,56 @@ func executeRestore(ctx context.Context, arguments []string, deps dependencies) 
 			appendAllRestoreFailures(&operationDiagnostics, waiting, "pane_history", err, "Set [experimental] pane_history = true and keep Herdr state owner-only.")
 			return nil
 		}
-		alacritty, err := deps.resolveProgram("alacritty")
-		if err != nil {
-			appendAllRestoreFailures(&operationDiagnostics, waiting, "missing_executable", err, "Install Alacritty and ensure it is on PATH.")
-			return nil
-		}
 		herdr, err := deps.resolveProgram("herdr")
 		if err != nil {
 			appendAllRestoreFailures(&operationDiagnostics, waiting, "missing_executable", err, "Install Herdr and ensure it is on PATH.")
 			return nil
 		}
-		launcher := sessionstate.AlacrittyHerdrLauncher{Alacritty: alacritty, Herdr: herdr, Starter: deps.processStarter}
 		for _, id := range sortedWaitingIDs(waiting) {
 			target := waiting[id]
-			pending, err := deps.findPending("/proc", target, alacritty, herdr)
+			if target.Launcher.Terminal == nil {
+				operationDiagnostics = append(operationDiagnostics, diagnosticForContext("terminal_adapter", target, errors.New("herdr context has no terminal adapter"), "Migrate the context registry before retrying."))
+				delete(waiting, id)
+				continue
+			}
+			programName, err := sessionstate.TerminalAdapterExecutableName(target.Launcher.Terminal.Adapter)
+			if err != nil {
+				operationDiagnostics = append(operationDiagnostics, diagnosticForContext("terminal_adapter", target, err, "Use a supported typed terminal adapter."))
+				delete(waiting, id)
+				continue
+			}
+			terminalExecutable, err := deps.resolveProgram(programName)
+			if err != nil {
+				operationDiagnostics = append(operationDiagnostics, diagnosticForContext("missing_executable", target, err, fmt.Sprintf("Install the %s terminal adapter and ensure it is on PATH.", target.Launcher.Terminal.Adapter)))
+				delete(waiting, id)
+				continue
+			}
+			spec, err := sessionstate.BuildTerminalProcessSpec(target, terminalExecutable, herdr)
+			if err != nil {
+				operationDiagnostics = append(operationDiagnostics, diagnosticForContext("terminal_adapter", target, err, ""))
+				delete(waiting, id)
+				continue
+			}
+			pending, err := deps.findPendingProcess("/proc", spec)
 			if err != nil {
 				operationDiagnostics = append(operationDiagnostics, diagnosticForContext("process_observation", target, err, ""))
 				delete(waiting, id)
 				continue
 			}
 			if len(pending) > 1 {
-				operationDiagnostics = append(operationDiagnostics, diagnosticForContext("duplicate_launch", target, fmt.Errorf("multiple pending Alacritty processes %v", pending), "Stop the duplicate processes before retrying."))
+				operationDiagnostics = append(operationDiagnostics, diagnosticForContext("duplicate_launch", target, fmt.Errorf("multiple pending %s terminal processes %v", target.Launcher.Terminal.Adapter, pending), "Stop the duplicate processes before retrying."))
 				delete(waiting, id)
 				continue
 			}
 			if len(pending) == 1 {
 				continue
 			}
-			if err := launcher.Launch(target); err != nil {
+			if err := sessionstate.ValidateTerminalCwd(target.Launcher.Cwd); err != nil {
+				operationDiagnostics = append(operationDiagnostics, diagnosticForContext("project_path", target, err, "Restore or update the persisted terminal working directory before retrying."))
+				delete(waiting, id)
+				continue
+			}
+			if err := deps.processStarter.Start(spec); err != nil {
 				operationDiagnostics = append(operationDiagnostics, diagnosticForContext("launch", target, err, ""))
 				delete(waiting, id)
 			}
@@ -457,7 +510,7 @@ func queueDesktopRestore(root string, selector string) (sessionstate.Context, bo
 	}
 	if err != nil {
 		if queued.ID != "" && committedContext(root, queued.ID, func(context sessionstate.Context) bool {
-			return context.App != nil && context.App.DesiredOpen
+			return contextsEqual(context, queued)
 		}, err) {
 			return queued, true, nil
 		}
@@ -521,12 +574,16 @@ func sortedWaitingIDs(waiting map[sessionstate.ContextID]sessionstate.Context) [
 }
 
 func committedContext(root string, id sessionstate.ContextID, predicate func(sessionstate.Context) bool, updateErr error) bool {
+	return committedContextContext(context.Background(), root, id, predicate, updateErr)
+}
+
+func committedContextContext(ctx context.Context, root string, id sessionstate.ContextID, predicate func(sessionstate.Context) bool, updateErr error) bool {
 	var unknown *statefile.CommitOutcomeUnknownError
 	if !errors.As(updateErr, &unknown) {
 		return false
 	}
 	registry := sessionstate.Registry{}
-	if err := sessionstate.RegistryFile(root).LoadInto(&registry); err != nil {
+	if err := sessionstate.RegistryFile(root).LoadIntoContext(ctx, &registry); err != nil {
 		return false
 	}
 	for _, context := range registry.Contexts {
@@ -555,5 +612,5 @@ func registryMissingContext(root string, id sessionstate.ContextID, updateErr er
 }
 
 func contextsEqual(left sessionstate.Context, right sessionstate.Context) bool {
-	return left == right
+	return reflect.DeepEqual(left, right)
 }

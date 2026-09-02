@@ -1,0 +1,6 @@
+# sway-session accepts only compiled terminal adapters. This value selects the
+# typed argv shape; it is not an executable path or a shell command template.
+version = 1
+
+[terminal]
+adapter = "alacritty"

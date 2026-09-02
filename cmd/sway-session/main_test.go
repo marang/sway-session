@@ -18,6 +18,7 @@ import (
 	"github.com/marang/sway-title-animator/internal/codexreport"
 	sessionstate "github.com/marang/sway-title-animator/internal/session"
 	"github.com/marang/sway-title-animator/internal/sessionrequest"
+	"github.com/marang/sway-title-animator/internal/statefile"
 	"github.com/marang/sway-title-animator/internal/swayipc"
 )
 
@@ -71,7 +72,7 @@ func TestCompletionHelpDocumentsStableReadOnlyRecordContract(t *testing.T) {
 		t.Fatalf("completion help failed code=%d stderr=%q", exitCode, stderr.String())
 	}
 	for _, expected := range []string{
-		"archive, activate, restore, restore-active, purge, app-forget",
+		"archive, activate, restore, restore-active, purge, terminal-status, app-forget",
 		"canonical UUID",
 		"tab-separated line",
 	} {
@@ -111,6 +112,16 @@ func TestDaemonRunsIndependentlyOfTitleAnimator(t *testing.T) {
 	}
 	if result.Command != "daemon" || len(result.Contexts) != 0 {
 		t.Fatalf("unexpected daemon result: %+v", result)
+	}
+}
+
+func TestJSONResultsUseAnEmptyArrayInsteadOfNullContexts(t *testing.T) {
+	var output bytes.Buffer
+	if err := writeResult(&output, true, commandResult{Command: "terminal"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), `"contexts":[]`) || strings.Contains(output.String(), `"contexts":null`) {
+		t.Fatalf("agent-facing result has an unstable empty contexts shape: %s", output.String())
 	}
 }
 
@@ -204,6 +215,35 @@ func TestCommandHelpWorksAfterCommand(t *testing.T) {
 	}
 }
 
+func TestTerminalSubcommandHelpIsSpecificAndAgentAddressable(t *testing.T) {
+	for _, test := range []struct {
+		subcommand string
+		want       []string
+		reject     string
+	}{
+		{subcommand: "status", want: []string{"terminal status [context] [--project NAME]"}, reject: "--ephemeral"},
+		{subcommand: "cleanup", want: []string{"terminal cleanup [--archived-before YYYY-MM-DD]", "Preview"}, reject: "--cwd"},
+		{subcommand: "reconfigure", want: []string{"terminal reconfigure [--project NAME] [--socket PATH]", "archived and stopped"}, reject: "--label"},
+	} {
+		t.Run(test.subcommand, func(t *testing.T) {
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			code := run([]string{"terminal", test.subcommand, "--help"}, &stdout, &stderr)
+			if code != exitSuccess || stderr.Len() != 0 {
+				t.Fatalf("help failed code=%d stderr=%q", code, stderr.String())
+			}
+			for _, want := range test.want {
+				if !strings.Contains(stdout.String(), want) {
+					t.Fatalf("help missing %q: %s", want, stdout.String())
+				}
+			}
+			if strings.Contains(stdout.String(), test.reject) {
+				t.Fatalf("help included unrelated option %q: %s", test.reject, stdout.String())
+			}
+		})
+	}
+}
+
 func TestInvalidArityHasActionableTextDiagnostic(t *testing.T) {
 	deps := testDependencies(t)
 	var stdout bytes.Buffer
@@ -282,9 +322,76 @@ func TestPurgeRequiresExplicitNonInteractiveConfirmation(t *testing.T) {
 	}
 }
 
+func TestPurgeJSONReturnsMachineReadablePreviewBeforeConfirmation(t *testing.T) {
+	deps := testDependencies(t)
+	registered := registerTestContext(t, deps)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	code := runWith([]string{"--json", "purge", string(registered.ID)}, strings.NewReader(""), &stdout, &stderr, deps)
+
+	if code != exitOperation || !strings.Contains(stderr.String(), `"code":"confirmation_required"`) {
+		t.Fatalf("JSON purge confirmation code=%d stderr=%q", code, stderr.String())
+	}
+	var result commandResult
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("purge preview is not JSON: %v\n%s", err, stdout.String())
+	}
+	if !result.Preview || result.Command != "purge" || len(result.Contexts) != 1 || result.Contexts[0].ID != registered.ID {
+		t.Fatalf("purge preview is incomplete: %+v", result)
+	}
+	if len(loadTestRegistry(t, deps).Contexts) != 1 {
+		t.Fatal("purge preview modified registry")
+	}
+}
+
+func TestLifecycleJSONReportsStableIdempotentActions(t *testing.T) {
+	deps := testDependencies(t)
+	registered := registerTestContext(t, deps)
+
+	archived := runTerminalJSON(t, deps, "--json", "archive", string(registered.ID))
+	if !reflect.DeepEqual(archived.Actions, []string{"archived"}) {
+		t.Fatalf("first archive action=%v", archived.Actions)
+	}
+	repeated := runTerminalJSON(t, deps, "--json", "archive", string(registered.ID))
+	if !reflect.DeepEqual(repeated.Actions, []string{"no_change"}) {
+		t.Fatalf("repeated archive action=%v", repeated.Actions)
+	}
+	activated := runTerminalJSON(t, deps, "--json", "activate", string(registered.ID))
+	if !reflect.DeepEqual(activated.Actions, []string{"activated"}) {
+		t.Fatalf("activate action=%v", activated.Actions)
+	}
+}
+
+func TestUnknownArchiveCommitRejectsAConcurrentArchiveGeneration(t *testing.T) {
+	deps := testDependencies(t)
+	expected := registerTestContext(t, deps)
+	root, err := deps.stateRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected.State = sessionstate.ContextArchived
+	first := time.Date(2026, time.September, 1, 12, 0, 0, 0, time.UTC)
+	expected.ArchivedAt = &first
+	visible := expected
+	second := first.Add(time.Minute)
+	visible.ArchivedAt = &second
+	if err := sessionstate.RegistryFile(root).Save(sessionstate.Registry{
+		Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{visible},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	unknown := &statefile.CommitOutcomeUnknownError{Cause: errors.New("directory sync failed")}
+	if committedContext(root, expected.ID, func(context sessionstate.Context) bool {
+		return contextsEqual(context, expected)
+	}, unknown) {
+		t.Fatal("unknown commit reported a stale archive timestamp after concurrent lifecycle changes")
+	}
+}
+
 func TestPurgeStopsDeletesAndThenRemovesRegistryEntry(t *testing.T) {
 	deps := testDependencies(t)
-	registerTestContext(t, deps)
+	registered := registerTestContext(t, deps)
 	paths, _ := deps.herdrPaths()
 	sessionPath := filepath.Join(paths.Root, "sessions", "lab-80")
 	if err := os.MkdirAll(sessionPath, 0o700); err != nil {
@@ -297,7 +404,7 @@ func TestPurgeStopsDeletesAndThenRemovesRegistryEntry(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 
-	code := runWith([]string{"purge", "--yes", "LAB-80", "--json"}, strings.NewReader(""), &stdout, &stderr, deps)
+	code := runWith([]string{"purge", "--yes", string(registered.ID), "--json"}, strings.NewReader(""), &stdout, &stderr, deps)
 
 	if code != exitSuccess || stderr.Len() != 0 {
 		t.Fatalf("purge failed code=%d stderr=%q", code, stderr.String())
@@ -334,7 +441,7 @@ func TestPurgeAcceptsFullIDFromInteractiveTerminal(t *testing.T) {
 
 func TestPurgeNeverStartedContextWithoutHerdrInstallation(t *testing.T) {
 	deps := testDependencies(t)
-	registerTestContext(t, deps)
+	registered := registerTestContext(t, deps)
 	paths, _ := deps.herdrPaths()
 	if err := os.Remove(paths.Root); err != nil {
 		t.Fatal(err)
@@ -343,10 +450,33 @@ func TestPurgeNeverStartedContextWithoutHerdrInstallation(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 
-	code := runWith([]string{"purge", "--yes", "LAB-80"}, strings.NewReader(""), &stdout, &stderr, deps)
+	code := runWith([]string{"purge", "--yes", string(registered.ID)}, strings.NewReader(""), &stdout, &stderr, deps)
 
 	if code != exitSuccess || len(loadTestRegistry(t, deps).Contexts) != 0 {
 		t.Fatalf("purge without Herdr state failed code=%d stderr=%q", code, stderr.String())
+	}
+}
+
+func TestPurgeYesRejectsLabelWithCanonicalUUIDPreview(t *testing.T) {
+	deps := testDependencies(t)
+	registered := registerTestContext(t, deps)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	code := runWith([]string{"--json", "purge", "--yes", "LAB-80"}, strings.NewReader(""), &stdout, &stderr, deps)
+
+	if code != exitOperation || !strings.Contains(stderr.String(), `"code":"confirmation_required"`) {
+		t.Fatalf("label purge code=%d stderr=%q", code, stderr.String())
+	}
+	var result commandResult
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("label purge did not return a JSON preview: %v\n%s", err, stdout.String())
+	}
+	if !result.Preview || len(result.Contexts) != 1 || result.Contexts[0].ID != registered.ID {
+		t.Fatalf("label purge preview omitted canonical UUID: %+v", result)
+	}
+	if len(loadTestRegistry(t, deps).Contexts) != 1 {
+		t.Fatal("rejected label purge modified registry")
 	}
 }
 
@@ -402,10 +532,31 @@ func TestRestoreLaunchesMissingContextWithTypedArgumentsAndWaitsForMapping(t *te
 	}
 }
 
+func TestRestoreRejectsMissingTerminalCwdBeforeProcessStart(t *testing.T) {
+	deps := testDependencies(t)
+	registered := registerTestContext(t, deps)
+	if err := os.RemoveAll(registered.Launcher.Cwd); err != nil {
+		t.Fatal(err)
+	}
+	deps.newSwayClient = func(string) swayRequester {
+		return &fakeSwayClient{trees: []*swayipc.TreeNode{treeWithContexts()}}
+	}
+	starter := &recordingStarter{}
+	deps.processStarter = starter
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	code := runWith([]string{"--json", "restore", "--socket", "/run/user/1000/sway.sock"}, strings.NewReader(""), &stdout, &stderr, deps)
+
+	if code != exitOperation || len(starter.calls) != 0 || !strings.Contains(stderr.String(), `"code":"project_path"`) {
+		t.Fatalf("missing cwd restore code=%d starts=%v stderr=%q", code, starter.calls, stderr.String())
+	}
+}
+
 func TestRestorePendingProcessPreventsDuplicateLaunch(t *testing.T) {
 	deps := testDependencies(t)
 	registered := registerTestContext(t, deps)
-	deps.findPending = func(string, sessionstate.Context, string, string) ([]int, error) { return []int{1234}, nil }
+	deps.findPendingProcess = func(string, sessionstate.ProcessSpec) ([]int, error) { return []int{1234}, nil }
 	deps.newSwayClient = func(string) swayRequester {
 		return &fakeSwayClient{trees: []*swayipc.TreeNode{treeWithContexts(), treeWithContexts(registered.ID)}}
 	}
@@ -549,7 +700,10 @@ func TestRestoreDuplicateContextDoesNotPreventIndependentLaunch(t *testing.T) {
 	first := registerTestContext(t, deps)
 	second := sessionstate.Context{
 		ID: "22222222-2222-4222-8222-222222222222", Label: "LAB-81", State: sessionstate.ContextActive,
-		Launcher: sessionstate.Launcher{Kind: sessionstate.LauncherHerdr, Session: "lab-81", Cwd: first.Launcher.Cwd},
+		Launcher: sessionstate.Launcher{
+			Kind: sessionstate.LauncherHerdr, Session: "lab-81", Cwd: first.Launcher.Cwd,
+			Terminal: &sessionstate.TerminalLauncher{Adapter: sessionstate.TerminalAdapterAlacritty},
+		},
 	}
 	root, _ := deps.stateRoot()
 	if _, err := sessionstate.UpdateRegistry(root, func(registry *sessionstate.Registry) error {
@@ -666,7 +820,14 @@ func testDependencies(t *testing.T) dependencies {
 	return dependencies{
 		stateRoot:    func() (string, error) { return root, nil },
 		workingDir:   func() (string, error) { return project, nil },
+		homeDir:      func() (string, error) { return base, nil },
 		newContextID: func() (sessionstate.ContextID, error) { return testContextID, nil },
+		loadSessionConfig: func(path string) (sessionstate.SessionConfig, string, error) {
+			if path == "" {
+				return sessionstate.DefaultSessionConfig(), filepath.Join(base, "config", "sway-session", "config.toml"), nil
+			}
+			return sessionstate.LoadSessionConfig(path)
+		},
 		herdrPaths: func() (sessionstate.HerdrPaths, error) {
 			return sessionstate.HerdrPaths{Root: herdrRoot, ConfigFile: filepath.Join(herdrRoot, "config.toml")}, nil
 		},
@@ -681,16 +842,16 @@ func testDependencies(t *testing.T) dependencies {
 		operationStore: func() (sessionstate.ApplicationOperationStore, error) {
 			return sessionstate.ApplicationOperationStore{RuntimeRoot: filepath.Join(base, "runtime")}, nil
 		},
-		presentApproval: func(string, []sessionstate.ApprovalChoice) error { return nil },
-		verifyFlatpak:   func(sessionstate.Launcher) error { return nil },
-		newSwayClient:   func(string) swayRequester { return &fakeSwayClient{trees: []*swayipc.TreeNode{treeWithContexts()}} },
-		processStarter:  &recordingStarter{},
-		herdrRunner:     &recordingHerdrRunner{},
-		findPending:     func(string, sessionstate.Context, string, string) ([]int, error) { return nil, nil },
-		now:             time.Now,
-		sleep:           func(time.Duration) {},
-		settleTimeout:   time.Second,
-		stdinTerminal:   func() bool { return false },
+		presentApproval:    func(string, []sessionstate.ApprovalChoice) error { return nil },
+		verifyFlatpak:      func(sessionstate.Launcher) error { return nil },
+		newSwayClient:      func(string) swayRequester { return &fakeSwayClient{trees: []*swayipc.TreeNode{treeWithContexts()}} },
+		processStarter:     &recordingStarter{},
+		herdrRunner:        &recordingHerdrRunner{},
+		findPendingProcess: func(string, sessionstate.ProcessSpec) ([]int, error) { return nil, nil },
+		now:                time.Now,
+		sleep:              func(time.Duration) {},
+		settleTimeout:      time.Second,
+		stdinTerminal:      func() bool { return false },
 	}
 }
 
@@ -759,6 +920,13 @@ func (client *fakeSwayClient) Request(messageType swayipc.MessageType, _ []byte)
 	return swayipc.Message{Type: swayipc.GetTree, Payload: payload}, err
 }
 
+func (client *fakeSwayClient) RequestContext(ctx context.Context, messageType swayipc.MessageType, payload []byte) (swayipc.Message, error) {
+	if err := ctx.Err(); err != nil {
+		return swayipc.Message{}, err
+	}
+	return client.Request(messageType, payload)
+}
+
 func (client *fakeSwayClient) Close() { client.closed = true }
 
 type sharedTreeClient struct {
@@ -777,6 +945,13 @@ func (client *sharedTreeClient) Request(messageType swayipc.MessageType, _ []byt
 	}
 	payload, err := json.Marshal(tree)
 	return swayipc.Message{Type: swayipc.GetTree, Payload: payload}, err
+}
+
+func (client *sharedTreeClient) RequestContext(ctx context.Context, messageType swayipc.MessageType, payload []byte) (swayipc.Message, error) {
+	if err := ctx.Err(); err != nil {
+		return swayipc.Message{}, err
+	}
+	return client.Request(messageType, payload)
 }
 
 func (*sharedTreeClient) Close() {}

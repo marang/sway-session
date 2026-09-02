@@ -22,7 +22,7 @@ func testRequest(t *testing.T) Request {
 }
 
 func testResponse(request Request, created bool) Response {
-	contextValue := sessionstate.Context{ID: testContextID, Label: request.Label, Provider: request.Provider, State: sessionstate.ContextActive, Launcher: sessionstate.Launcher{Kind: sessionstate.LauncherHerdr, Session: request.Session, Cwd: request.Cwd}}
+	contextValue := sessionstate.Context{ID: testContextID, Label: request.Label, Provider: request.Provider, State: sessionstate.ContextActive, Launcher: sessionstate.Launcher{Kind: sessionstate.LauncherHerdr, Session: request.Session, Cwd: request.Cwd, Terminal: &sessionstate.TerminalLauncher{Adapter: sessionstate.TerminalAdapterAlacritty}}}
 	return Response{Context: &contextValue, Workspace: request.Workspace, Created: created}
 }
 

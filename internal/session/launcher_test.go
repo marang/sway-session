@@ -4,77 +4,13 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"slices"
 	"testing"
 
 	"github.com/marang/sway-title-animator/internal/swayipc"
 )
 
-func TestAlacrittyHerdrLauncherPassesMetadataWithoutShellEvaluation(t *testing.T) {
-	context := testValidContext(testContextID)
-	context.Label = "--help; $(touch nope)"
-	context.Launcher.Cwd = t.TempDir()
-	starter := &launcherRecordingStarter{}
-	launcher := AlacrittyHerdrLauncher{Alacritty: "/usr/bin/alacritty", Herdr: "/usr/bin/herdr", Starter: starter}
-
-	if err := launcher.Launch(context); err != nil {
-		t.Fatal(err)
-	}
-	wantArguments, err := AlacrittyHerdrArguments(context, "/usr/bin/herdr")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if starter.spec.Name != "/usr/bin/alacritty" || !reflect.DeepEqual(starter.spec.Arguments, wantArguments) {
-		t.Fatalf("unexpected typed launch name=%q arguments=%q", starter.spec.Name, starter.spec.Arguments)
-	}
-	if !slices.Contains(starter.spec.Arguments, "--title=--help; $(touch nope)") {
-		t.Fatalf("leading-hyphen title was not encoded as data: %q", starter.spec.Arguments)
-	}
-	if !reflect.DeepEqual(starter.spec.Environment, []string{"SWAY_SESSION_CONTEXT_ID=" + string(context.ID)}) {
-		t.Fatalf("context identity was not injected as typed environment: %q", starter.spec.Environment)
-	}
-	if !reflect.DeepEqual(starter.spec.UnsetEnvironment, []string{"CODEX_THREAD_ID"}) ||
-		!reflect.DeepEqual(starter.spec.UnsetEnvironmentPrefixes, []string{"HERDR_"}) {
-		t.Fatalf("pane-local environment was not removed: unset=%q prefixes=%q", starter.spec.UnsetEnvironment, starter.spec.UnsetEnvironmentPrefixes)
-	}
-}
-
-func TestAlacrittyHerdrLauncherRejectsOtherTypedLauncherKinds(t *testing.T) {
-	context := Context{
-		ID:    testContextID,
-		State: ContextActive,
-		Launcher: Launcher{
-			Kind:          LauncherDesktop,
-			DesktopID:     "org.example.App.desktop",
-			DesktopOrigin: DesktopEntrySystem,
-			DesktopPath:   "/usr/share/applications/org.example.App.desktop",
-		},
-		App: &Application{
-			Identity:      ApplicationIdentity{Protocol: WindowWayland, WaylandAppID: "org.example.App"},
-			RestorePolicy: ApplicationRestoreFollow,
-		},
-	}
-	starter := &launcherRecordingStarter{}
-	launcher := AlacrittyHerdrLauncher{Alacritty: "/usr/bin/alacritty", Herdr: "/usr/bin/herdr", Starter: starter}
-
-	if _, err := AlacrittyHerdrArguments(context, "/usr/bin/herdr"); err == nil {
-		t.Fatal("Herdr argument adapter accepted a desktop launcher")
-	}
-	if err := launcher.Launch(context); err == nil {
-		t.Fatal("Herdr process adapter accepted a desktop launcher")
-	}
-	if starter.spec.Name != "" {
-		t.Fatalf("rejected desktop context started a process: %+v", starter.spec)
-	}
-}
-
-func TestFindPendingAlacrittyLaunchesMatchesOnlyCompleteTypedArgv(t *testing.T) {
+func TestFindPendingProcessLaunchesUsesTheExactTypedProcessSpec(t *testing.T) {
 	procRoot := t.TempDir()
-	context := testValidContext(testContextID)
-	arguments, err := AlacrittyHerdrArguments(context, "/usr/bin/herdr")
-	if err != nil {
-		t.Fatal(err)
-	}
 	writeCmdline := func(pid string, values []string) {
 		t.Helper()
 		directory := filepath.Join(procRoot, pid)
@@ -90,15 +26,19 @@ func TestFindPendingAlacrittyLaunchesMatchesOnlyCompleteTypedArgv(t *testing.T) 
 			t.Fatal(err)
 		}
 	}
-	writeCmdline("4242", append([]string{"/usr/bin/alacritty"}, arguments...))
-	writeCmdline("4243", []string{"/usr/bin/alacritty", "--class", "other"})
+	spec := ProcessSpec{Name: "/usr/bin/foot", Arguments: []string{"--app-id=sway-session.example", "--", "/usr/bin/herdr", "--session", "example"}}
+	writeCmdline("5252", append([]string{spec.Name}, spec.Arguments...))
+	writeCmdline("5253", []string{spec.Name, "--app-id=sway-session.other", "--", "/usr/bin/herdr", "--session", "example"})
 
-	pids, err := FindPendingAlacrittyLaunches(procRoot, context, "/usr/bin/alacritty", "/usr/bin/herdr")
+	pids, err := FindPendingProcessLaunches(procRoot, spec)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(pids, []int{4242}) {
+	if !reflect.DeepEqual(pids, []int{5252}) {
 		t.Fatalf("unexpected matching PIDs: %v", pids)
+	}
+	if _, err := FindPendingProcessLaunches(procRoot, ProcessSpec{Name: "foot"}); err == nil {
+		t.Fatal("relative executable was accepted")
 	}
 }
 

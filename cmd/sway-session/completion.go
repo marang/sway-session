@@ -44,7 +44,7 @@ func executeCompletion(arguments []string, deps dependencies) (commandResult, *c
 
 func supportedCompletionContextCommand(command string) bool {
 	switch command {
-	case "archive", "activate", "restore", "restore-active", "purge", "app-forget":
+	case "archive", "activate", "restore", "restore-active", "purge", "terminal-status", "app-forget":
 		return true
 	default:
 		return false
@@ -63,6 +63,8 @@ func completionContextEligible(context sessionstate.Context, command string) boo
 		return context.State == sessionstate.ContextActive
 	case "purge":
 		return context.Launcher.Kind == sessionstate.LauncherHerdr
+	case "terminal-status":
+		return context.Launcher.Kind == sessionstate.LauncherHerdr && context.Launcher.Terminal != nil
 	case "app-forget":
 		return context.App != nil
 	default:

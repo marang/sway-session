@@ -1,0 +1,424 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+
+	sessionstate "github.com/marang/sway-title-animator/internal/session"
+)
+
+func executeTerminal(ctx context.Context, arguments []string, _ bool, configPath string, deps dependencies) (commandResult, *commandFailure) {
+	if len(arguments) > 0 {
+		switch arguments[0] {
+		case "list":
+			return executeTerminalList(arguments[1:], deps)
+		case "status":
+			return executeTerminalStatus(arguments[1:], deps)
+		case "cleanup":
+			return executeTerminalCleanup(arguments[1:], deps)
+		case "reconfigure":
+			return executeTerminalReconfigure(ctx, arguments[1:], configPath, deps)
+		}
+	}
+	set := newFlagSet("terminal")
+	project := set.String("project", "", "stable project identity")
+	cwdFlag := set.String("cwd", "", "initial working directory")
+	label := set.String("label", "", "presentation label")
+	socketFlag := set.String("socket", "", "Sway IPC socket")
+	ephemeral := set.Bool("ephemeral", false, "open an ordinary terminal without persistence")
+	if err := set.Parse(arguments); err != nil || set.NArg() != 0 {
+		return commandResult{}, usageFailure("terminal", "terminal accepts only typed terminal options and no positional arguments")
+	}
+	if deps.loadSessionConfig == nil {
+		return commandResult{}, failure("terminal_config", "load terminal configuration", "session config dependency is unavailable")
+	}
+	config, _, err := deps.loadSessionConfig(configPath)
+	if err != nil {
+		return commandResult{}, failure("terminal_config", "load terminal configuration", err.Error())
+	}
+	cwdExplicit := *cwdFlag != ""
+	cwd, err := terminalWorkingDirectory(*cwdFlag, *project, deps)
+	if err != nil {
+		return commandResult{}, failure("terminal_cwd", "resolve terminal working directory", err.Error())
+	}
+	if err := validateTerminalWorkingDirectory(cwd); err != nil {
+		return commandResult{}, failure("terminal_cwd", "validate terminal working directory", err.Error())
+	}
+
+	if *ephemeral {
+		if *project != "" || *label != "" || *socketFlag != "" {
+			return commandResult{}, usageFailure("terminal", "--ephemeral accepts only --cwd")
+		}
+		program, err := sessionstate.TerminalAdapterExecutableName(config.Terminal.Adapter)
+		if err != nil {
+			return commandResult{}, failure("terminal_adapter", "select terminal adapter", err.Error())
+		}
+		executable, err := deps.resolveProgram(program)
+		if err != nil {
+			return commandResult{}, failure("missing_executable", "resolve terminal executable", err.Error())
+		}
+		spec, err := sessionstate.BuildEphemeralTerminalProcessSpec(config.Terminal.Adapter, cwd, executable)
+		if err != nil {
+			return commandResult{}, failure("terminal_adapter", "build terminal process", err.Error())
+		}
+		if deps.processStarter == nil {
+			return commandResult{}, failure("terminal_launch", "start ephemeral terminal", "process starter is unavailable")
+		}
+		if err := deps.processStarter.Start(spec); err != nil {
+			return commandResult{}, failure("terminal_launch", "start ephemeral terminal", err.Error())
+		}
+		return commandResult{
+			Command: "terminal",
+			Message: "Ephemeral terminal opened.",
+			Terminal: &terminalCommandResult{
+				Adapter: config.Terminal.Adapter, Actions: []sessionstate.TerminalOpenAction{sessionstate.TerminalActionOpened}, Ephemeral: true,
+			},
+		}, nil
+	}
+
+	identity := sessionstate.TerminalIdentity{Kind: sessionstate.TerminalIdentityDefault}
+	if *project != "" {
+		identity, err = sessionstate.ParseTerminalIdentity(*project)
+		if err != nil {
+			return commandResult{}, failure("terminal_identity", "validate terminal project identity", err.Error())
+		}
+	}
+	socket := *socketFlag
+	if socket == "" {
+		socket = os.Getenv("SWAYSOCK")
+	}
+	if socket == "" || !filepath.IsAbs(socket) || filepath.Clean(socket) != socket {
+		return commandResult{}, failure("sway_socket", "a valid absolute Sway IPC socket is required", "Run inside Sway or pass --socket PATH.")
+	}
+	root, commandFailure := stateRoot(deps)
+	if commandFailure != nil {
+		return commandResult{}, commandFailure
+	}
+	client := deps.newSwayClient(socket)
+	if client == nil {
+		return commandResult{}, failure("sway_socket", "open Sway IPC client", "Sway client dependency is unavailable")
+	}
+	defer client.Close()
+	contextClient, ok := client.(sessionstate.ContextSwayRequestClient)
+	if !ok {
+		return commandResult{}, failure("sway_socket", "open Sway IPC client", "Sway client does not support cancelable requests")
+	}
+	manager := sessionstate.TerminalManager{
+		StateRoot:       root,
+		ProcRoot:        "/proc",
+		Client:          contextClient,
+		NewContextID:    deps.newContextID,
+		ResolveProgram:  deps.resolveProgram,
+		HerdrPaths:      deps.herdrPaths,
+		ValidateHistory: deps.validateHistory,
+		FindPending:     deps.findPendingProcess,
+		Starter:         deps.processStarter,
+		Now:             deps.now,
+		Sleep:           deps.sleep,
+		SettleTimeout:   deps.settleTimeout,
+	}
+	opened, err := manager.Open(ctx, sessionstate.TerminalOpenRequest{
+		Identity: identity, Adapter: config.Terminal.Adapter, Cwd: cwd, CwdExplicit: cwdExplicit, Label: *label, Focus: true,
+	})
+	result := terminalOpenCommandResult(opened, identity)
+	if err != nil {
+		code := "terminal_open"
+		switch {
+		case errors.Is(err, sessionstate.ErrTerminalIdentityConflict):
+			code = "terminal_identity_conflict"
+		case errors.Is(err, sessionstate.ErrTerminalIdentityArchived):
+			code = "terminal_identity_archived"
+		case errors.Is(err, sessionstate.ErrTerminalAdapterConflict):
+			code = "terminal_adapter_conflict"
+		case errors.Is(err, sessionstate.ErrTerminalSessionCollision):
+			code = "terminal_session_collision"
+		}
+		return result, failure(code, "open persistent terminal", err.Error())
+	}
+	actions := make([]string, len(opened.Actions))
+	for index, action := range opened.Actions {
+		actions[index] = string(action)
+	}
+	result.Message = fmt.Sprintf("Terminal %s: %s.", opened.Context.ID, strings.Join(actions, ", "))
+	return result, nil
+}
+
+func executeTerminalReconfigure(ctx context.Context, arguments []string, configPath string, deps dependencies) (commandResult, *commandFailure) {
+	set := newFlagSet("terminal reconfigure")
+	project := set.String("project", "", "stable project identity")
+	socketFlag := set.String("socket", "", "Sway IPC socket")
+	if err := set.Parse(arguments); err != nil || set.NArg() != 0 {
+		return commandResult{}, usageFailure("terminal", "terminal reconfigure accepts only --project NAME and --socket PATH")
+	}
+	if deps.loadSessionConfig == nil {
+		return commandResult{}, failure("terminal_config", "load terminal configuration", "session config dependency is unavailable")
+	}
+	config, _, err := deps.loadSessionConfig(configPath)
+	if err != nil {
+		return commandResult{}, failure("terminal_config", "load terminal configuration", err.Error())
+	}
+	identity := sessionstate.TerminalIdentity{Kind: sessionstate.TerminalIdentityDefault}
+	if *project != "" {
+		identity, err = sessionstate.ParseTerminalIdentity(*project)
+		if err != nil {
+			return commandResult{}, failure("terminal_identity", "validate terminal project identity", err.Error())
+		}
+	}
+	root, commandFailure := stateRoot(deps)
+	if commandFailure != nil {
+		return commandResult{}, commandFailure
+	}
+	socket := *socketFlag
+	if socket == "" {
+		socket = os.Getenv("SWAYSOCK")
+	}
+	if socket == "" || !filepath.IsAbs(socket) || filepath.Clean(socket) != socket {
+		return commandResult{}, failure("sway_socket", "a valid absolute Sway IPC socket is required", "Run inside Sway or pass --socket PATH.")
+	}
+	client := deps.newSwayClient(socket)
+	if client == nil {
+		return commandResult{}, failure("sway_socket", "open Sway IPC client", "Sway client dependency is unavailable")
+	}
+	defer client.Close()
+	contextClient, ok := client.(sessionstate.ContextSwayRequestClient)
+	if !ok {
+		return commandResult{}, failure("sway_socket", "open Sway IPC client", "Sway client does not support cancelable requests")
+	}
+	reconfigurer := sessionstate.TerminalAdapterReconfigurer{
+		StateRoot: root, ProcRoot: "/proc", Client: contextClient,
+		FindProcesses: sessionstate.FindTerminalAdapterProcesses,
+	}
+	changed, reconfigured, err := reconfigurer.Reconfigure(ctx, identity, config.Terminal.Adapter)
+	if err != nil {
+		if changed.ID != "" && committedContextContext(ctx, root, changed.ID, func(context sessionstate.Context) bool {
+			return contextsEqual(context, changed)
+		}, err) {
+			return terminalReconfigureResult(changed, reconfigured), nil
+		}
+		switch {
+		case errors.Is(err, sessionstate.ErrTerminalAdapterActive):
+			return commandResult{}, failure("terminal_adapter_active", "reconfigure terminal adapter", err.Error())
+		case errors.Is(err, sessionstate.ErrTerminalAdapterInUse):
+			return commandResult{}, failure("terminal_adapter_in_use", "reconfigure terminal adapter", err.Error())
+		case errors.Is(err, sessionstate.ErrContextNotFound):
+			return commandResult{}, failure("context_not_found", "select terminal identity", err.Error())
+		default:
+			return commandResult{}, classifyStateError("reconfigure terminal adapter", err)
+		}
+	}
+	return terminalReconfigureResult(changed, reconfigured), nil
+}
+
+func terminalReconfigureResult(context sessionstate.Context, changed bool) commandResult {
+	action := "no_change"
+	message := fmt.Sprintf("Terminal %s already uses adapter %s.", context.ID, context.Launcher.Terminal.Adapter)
+	if changed {
+		action = "reconfigured"
+		message = fmt.Sprintf("Terminal %s will use adapter %s after activation.", context.ID, context.Launcher.Terminal.Adapter)
+	}
+	items := terminalInventory([]sessionstate.Context{context})
+	return commandResult{
+		Command: "terminal reconfigure", Contexts: []sessionstate.Context{context}, Terminals: &items,
+		Actions: []string{action}, Message: message,
+	}
+}
+
+func terminalOpenCommandResult(opened sessionstate.TerminalOpenResult, identity sessionstate.TerminalIdentity) commandResult {
+	result := commandResult{Command: "terminal"}
+	if opened.Context.ID == "" || opened.Context.Launcher.Terminal == nil {
+		return result
+	}
+	result.Contexts = []sessionstate.Context{opened.Context}
+	result.Terminal = &terminalCommandResult{
+		ContextID: opened.Context.ID,
+		Identity:  &terminalIdentityResult{Kind: identity.Kind, Project: identity.Project},
+		Adapter:   opened.Context.Launcher.Terminal.Adapter,
+		Actions:   opened.Actions,
+	}
+	return result
+}
+
+func terminalWorkingDirectory(value string, project string, deps dependencies) (string, error) {
+	if value != "" {
+		return filepath.Abs(value)
+	}
+	if project != "" {
+		if deps.workingDir == nil {
+			return "", errors.New("working directory dependency is unavailable")
+		}
+		return deps.workingDir()
+	}
+	if deps.homeDir == nil {
+		return "", errors.New("home directory dependency is unavailable")
+	}
+	return deps.homeDir()
+}
+
+func validateTerminalWorkingDirectory(path string) error {
+	if path == "" || !filepath.IsAbs(path) || filepath.Clean(path) != path {
+		return errors.New("terminal working directory must be a clean absolute path")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return errors.New("terminal working directory is not a directory")
+	}
+	return nil
+}
+
+func executeTerminalList(arguments []string, deps dependencies) (commandResult, *commandFailure) {
+	if len(arguments) != 0 {
+		return commandResult{}, usageFailure("terminal", "terminal list accepts no arguments")
+	}
+	registry, commandFailure := loadTerminalRegistry(deps)
+	if commandFailure != nil {
+		return commandResult{}, commandFailure
+	}
+	items := terminalInventory(registry.Contexts)
+	return commandResult{Command: "terminal list", Terminals: &items}, nil
+}
+
+func executeTerminalStatus(arguments []string, deps dependencies) (commandResult, *commandFailure) {
+	set := newFlagSet("terminal status")
+	project := set.String("project", "", "stable project identity")
+	if err := set.Parse(arguments); err != nil || set.NArg() > 1 || (*project != "" && set.NArg() != 0) {
+		return commandResult{}, usageFailure("terminal", "terminal status accepts one context UUID or exact label, or --project NAME")
+	}
+	registry, commandFailure := loadTerminalRegistry(deps)
+	if commandFailure != nil {
+		return commandResult{}, commandFailure
+	}
+	var selected sessionstate.Context
+	if *project != "" {
+		identity, err := sessionstate.ParseTerminalIdentity(*project)
+		if err != nil {
+			return commandResult{}, failure("terminal_identity", "validate terminal project identity", err.Error())
+		}
+		found := false
+		for _, context := range registry.Contexts {
+			if context.Launcher.Terminal == nil || context.Launcher.Terminal.Identity == nil || *context.Launcher.Terminal.Identity != identity {
+				continue
+			}
+			selected = context
+			found = true
+			break
+		}
+		if !found {
+			return commandResult{}, failure("context_not_found", "select terminal project identity", "No terminal context uses project identity "+*project+".")
+		}
+	} else if set.NArg() == 1 {
+		index, err := sessionstate.ResolveContext(registry, set.Arg(0))
+		if err != nil {
+			return commandResult{}, classifyStateError("select terminal context", err)
+		}
+		selected = registry.Contexts[index]
+	} else {
+		found := false
+		for _, context := range registry.Contexts {
+			if context.Launcher.Terminal == nil || context.Launcher.Terminal.Identity == nil ||
+				context.Launcher.Terminal.Identity.Kind != sessionstate.TerminalIdentityDefault {
+				continue
+			}
+			selected = context
+			found = true
+			break
+		}
+		if !found {
+			return commandResult{}, failure("context_not_found", "select default terminal context", "Run sway-session terminal to create it.")
+		}
+	}
+	items := terminalInventory([]sessionstate.Context{selected})
+	if len(items) != 1 {
+		return commandResult{}, failure("terminal_context", "selected context is not a Herdr terminal", string(selected.ID))
+	}
+	return commandResult{Command: "terminal status", Terminals: &items}, nil
+}
+
+func executeTerminalCleanup(arguments []string, deps dependencies) (commandResult, *commandFailure) {
+	set := newFlagSet("terminal cleanup")
+	beforeValue := set.String("archived-before", "", "UTC date YYYY-MM-DD")
+	if err := set.Parse(arguments); err != nil || set.NArg() != 0 {
+		return commandResult{}, usageFailure("terminal", "terminal cleanup accepts only --archived-before YYYY-MM-DD")
+	}
+	var cutoff time.Time
+	if *beforeValue != "" {
+		var err error
+		cutoff, err = time.Parse("2006-01-02", *beforeValue)
+		if err != nil {
+			return commandResult{}, usageFailure("terminal", "--archived-before must be an exact UTC date in YYYY-MM-DD form")
+		}
+	}
+	registry, commandFailure := loadTerminalRegistry(deps)
+	if commandFailure != nil {
+		return commandResult{}, commandFailure
+	}
+	candidates := make([]sessionstate.Context, 0)
+	for _, context := range registry.Contexts {
+		if context.State != sessionstate.ContextArchived || context.Launcher.Kind != sessionstate.LauncherHerdr || context.Launcher.Terminal == nil {
+			continue
+		}
+		if *beforeValue != "" && (context.ArchivedAt == nil || !context.ArchivedAt.Before(cutoff)) {
+			continue
+		}
+		candidates = append(candidates, context)
+	}
+	items := terminalInventory(candidates)
+	return commandResult{
+		Command: "terminal cleanup", Terminals: &items, Preview: true, Actions: []string{"preview"},
+		Message: "Preview only; use sway-session purge --yes <context-uuid> after reviewing each candidate.",
+	}, nil
+}
+
+func loadTerminalRegistry(deps dependencies) (sessionstate.Registry, *commandFailure) {
+	root, commandFailure := stateRoot(deps)
+	if commandFailure != nil {
+		return sessionstate.Registry{}, commandFailure
+	}
+	registry, err := sessionstate.ReadRegistrySnapshot(root)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		var unsupported *sessionstate.UnsupportedVersionError
+		if errors.As(err, &unsupported) && (unsupported.Got == 1 || unsupported.Got == 2) {
+			return sessionstate.Registry{}, failure(
+				"migration_required",
+				"load terminal contexts",
+				"Run sway-session --json list once with the current binary to perform the validated registry migration, then retry.",
+			)
+		}
+		return sessionstate.Registry{}, classifyStateError("load terminal contexts", err)
+	}
+	return registry, nil
+}
+
+func terminalInventory(contexts []sessionstate.Context) []terminalInventoryResult {
+	items := make([]terminalInventoryResult, 0, len(contexts))
+	for _, context := range contexts {
+		if context.Launcher.Kind != sessionstate.LauncherHerdr || context.Launcher.Terminal == nil {
+			continue
+		}
+		identity := terminalIdentityResult{Kind: sessionstate.TerminalIdentityKind("manual")}
+		if context.Launcher.Terminal.Identity != nil {
+			identity = terminalIdentityResult{
+				Kind: context.Launcher.Terminal.Identity.Kind, Project: context.Launcher.Terminal.Identity.Project,
+			}
+		}
+		items = append(items, terminalInventoryResult{
+			ContextID:  context.ID,
+			Identity:   identity,
+			Adapter:    context.Launcher.Terminal.Adapter,
+			State:      context.State,
+			Session:    context.Launcher.Session,
+			Cwd:        context.Launcher.Cwd,
+			ArchivedAt: context.ArchivedAt,
+		})
+	}
+	sort.Slice(items, func(left int, right int) bool { return items[left].ContextID < items[right].ContextID })
+	return items
+}

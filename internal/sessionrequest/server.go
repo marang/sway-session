@@ -279,7 +279,7 @@ func (server *Server) reject(connection net.Conn, cause error) {
 }
 
 func (server *Server) writeResponse(connection net.Conn, response Response) {
-	encoded, err := json.Marshal(response)
+	encoded, err := encodeResponseV1(response)
 	if err != nil {
 		server.report(fmt.Errorf("encode session start response: %w", err))
 		return

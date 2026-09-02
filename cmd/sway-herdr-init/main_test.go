@@ -31,7 +31,7 @@ func testDependencies(t *testing.T) (dependencies, *int) {
 			}
 			return "/usr/bin/herdr", nil
 		},
-		inspectContext: func(root string, id sessionstate.ContextID, inspect func(sessionstate.Context) error) error {
+		inspectContext: func(_ context.Context, root string, id sessionstate.ContextID, inspect func(sessionstate.Context) error) error {
 			if root != "/home/test/.local/state/sway-session" {
 				t.Fatalf("unexpected state root: %s", root)
 			}
@@ -92,7 +92,7 @@ func TestRunRequiresRolesWithoutChangingState(t *testing.T) {
 
 func TestRunDoesNotInitializeUnknownContext(t *testing.T) {
 	deps, initialized := testDependencies(t)
-	deps.inspectContext = func(string, sessionstate.ContextID, func(sessionstate.Context) error) error {
+	deps.inspectContext = func(context.Context, string, sessionstate.ContextID, func(sessionstate.Context) error) error {
 		return errors.New("context is not registered")
 	}
 	var stderr bytes.Buffer
@@ -111,7 +111,7 @@ func TestRunStopsBeforeRegistryReadWhenContextLockIsBusy(t *testing.T) {
 	deps.acquireContextLock = func(string, sessionstate.ContextID) (io.Closer, error) {
 		return nil, herdrinit.ErrInitializationRunning
 	}
-	deps.inspectContext = func(string, sessionstate.ContextID, func(sessionstate.Context) error) error {
+	deps.inspectContext = func(context.Context, string, sessionstate.ContextID, func(sessionstate.Context) error) error {
 		loaded = true
 		return nil
 	}
@@ -140,8 +140,33 @@ func TestRunPropagatesCancellationToInitialization(t *testing.T) {
 		"--role", "codex", "--role", "shell",
 	}, &bytes.Buffer{}, &stderr, deps)
 
-	if exit != 3 || *initialized != 1 || !strings.Contains(stderr.String(), context.Canceled.Error()) {
+	if exit != 3 || *initialized != 0 || !strings.Contains(stderr.String(), context.Canceled.Error()) {
 		t.Fatalf("cancellation was not propagated: exit=%d initialized=%d stderr=%s", exit, *initialized, stderr.String())
+	}
+}
+
+func TestRunPropagatesCancellationToRegistryInspection(t *testing.T) {
+	deps, initialized := testDependencies(t)
+	inspectionStarted := make(chan struct{})
+	deps.inspectContext = func(ctx context.Context, _ string, _ sessionstate.ContextID, _ func(sessionstate.Context) error) error {
+		close(inspectionStarted)
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan int, 1)
+	var stderr bytes.Buffer
+	go func() {
+		done <- runWithContext(ctx, []string{
+			"--context", "8f33d6d0-7c54-4da1-9e38-2bd290ef85ca",
+			"--role", "codex", "--role", "shell",
+		}, &bytes.Buffer{}, &stderr, deps)
+	}()
+	<-inspectionStarted
+	cancel()
+
+	if exit := <-done; exit != 3 || *initialized != 0 || !strings.Contains(stderr.String(), context.Canceled.Error()) {
+		t.Fatalf("inspection cancellation was not propagated: exit=%d initialized=%d stderr=%s", exit, *initialized, stderr.String())
 	}
 }
 

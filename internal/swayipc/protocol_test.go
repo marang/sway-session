@@ -124,6 +124,63 @@ func TestClientRequestContextInterruptsUnresponsivePeer(t *testing.T) {
 	}
 }
 
+func TestConnReadContextInterruptsQuietSubscription(t *testing.T) {
+	clientSide, peerSide := net.Pipe()
+	defer peerSide.Close()
+	connection := &Conn{conn: clientSide}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+
+	_, err := connection.ReadContext(ctx)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("quiet subscription returned %v, want context deadline", err)
+	}
+	if connection.current() != nil {
+		t.Fatal("canceled subscription connection remained open")
+	}
+}
+
+func TestClientRequestHasFiniteDefaultDeadline(t *testing.T) {
+	socket := filepath.Join(t.TempDir(), "sway.sock")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		if errors.Is(err, syscall.EPERM) {
+			t.Skipf("unix sockets are not permitted in this sandbox: %v", err)
+		}
+		t.Fatalf("listen unix socket: %v", err)
+	}
+	defer listener.Close()
+
+	requestRead := make(chan error, 1)
+	peerReleased := make(chan struct{})
+	go func() {
+		connection, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			requestRead <- acceptErr
+			return
+		}
+		defer connection.Close()
+		_, readErr := readMessage(connection)
+		requestRead <- readErr
+		<-peerReleased
+	}()
+	defer close(peerReleased)
+
+	client := NewClient(socket)
+	client.requestTimeout = 50 * time.Millisecond
+	defer client.Close()
+	_, err = client.Request(GetTree, nil)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("unbounded request returned %v, want finite default deadline", err)
+	}
+	if err := <-requestRead; err != nil {
+		t.Fatalf("peer did not receive request: %v", err)
+	}
+	if client.conn != nil {
+		t.Fatal("timed-out request connection remained cached")
+	}
+}
+
 func TestConnCloseInterruptsBlockedRead(t *testing.T) {
 	socket := filepath.Join(t.TempDir(), "sway.sock")
 	listener, err := net.Listen("unix", socket)
@@ -341,6 +398,21 @@ func TestCheckSubscribeResponseRequiresMatchingSuccess(t *testing.T) {
 	} {
 		if err := CheckSubscribeResponse(message); err == nil {
 			t.Fatalf("expected subscription response to be rejected: %+v", message)
+		}
+	}
+}
+
+func TestCheckSendTickResponseRequiresMatchingSuccess(t *testing.T) {
+	if err := CheckSendTickResponse(Message{Type: SendTick, Payload: []byte(`{"success":true}`)}); err != nil {
+		t.Fatalf("expected successful send-tick response: %v", err)
+	}
+	for _, message := range []Message{
+		{Type: RunCommand, Payload: []byte(`{"success":true}`)},
+		{Type: SendTick, Payload: []byte(`{"success":false}`)},
+		{Type: SendTick, Payload: []byte(`not-json`)},
+	} {
+		if err := CheckSendTickResponse(message); err == nil {
+			t.Fatalf("expected send-tick response to be rejected: %+v", message)
 		}
 	}
 }

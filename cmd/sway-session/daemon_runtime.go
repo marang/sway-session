@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"reflect"
+	"strconv"
 	"strings"
 	"time"
 
@@ -21,14 +23,18 @@ const (
 	applicationAdoptionGrace  = 5 * time.Second
 	applicationCloseGrace     = 2 * time.Second
 	applicationLaunchTimeout  = 10 * time.Second
-	expectedMoveLifetime      = 500 * time.Millisecond
 	maxApplicationPreflights  = 2
+	moveBarrierPrefix         = "_sway_session_move_v1:"
 )
 
 type Node = swayipc.TreeNode
 
 type applicationContextLauncher interface {
-	Prepare(sessionstate.Context) (preparedApplicationLaunch, error)
+	Prepare(context.Context, sessionstate.Context) (preparedApplicationLaunch, error)
+}
+
+type eventStreamGuard interface {
+	Snapshot() (uint64, bool)
 }
 
 type preparedApplicationLaunch interface {
@@ -36,6 +42,8 @@ type preparedApplicationLaunch interface {
 }
 
 type sessionRuntimeOptions struct {
+	Context             context.Context
+	EventStreamState    eventStreamGuard
 	Root                string
 	CompositorID        string
 	StartedAt           time.Time
@@ -46,6 +54,7 @@ type sessionRuntimeOptions struct {
 }
 
 type sessionRuntime struct {
+	ctx                 context.Context
 	client              swayRequester
 	root                string
 	persisted           sessionstate.LayoutSnapshot
@@ -68,14 +77,20 @@ type sessionRuntime struct {
 	applications        *sessionstate.ApplicationRestoreCoordinator
 	applicationLauncher applicationContextLauncher
 	applicationCursor   sessionstate.ContextID
-	expectedMoves       map[int64]expectedMove
+	expectedMoves       map[int64][]uint64
+	nextMoveSequence    uint64
+	eventStreamReady    bool
+	eventStreamEpoch    uint64
+	eventStreamState    eventStreamGuard
 	indicatorCatalog    func() (sessionstate.DesktopCatalog, error)
 	indicatorOperations func() ([]sessionstate.ApplicationOperation, error)
 }
 
-type expectedMove struct {
-	count     int
-	expiresAt time.Time
+func (runtime *sessionRuntime) context() context.Context {
+	if runtime == nil || runtime.ctx == nil {
+		return context.Background()
+	}
+	return runtime.ctx
 }
 
 func newSessionRuntime(client swayRequester) (*sessionRuntime, error) {
@@ -87,6 +102,10 @@ func newSessionRuntime(client swayRequester) (*sessionRuntime, error) {
 }
 
 func newSessionRuntimeWithOptions(client swayRequester, options sessionRuntimeOptions) (*sessionRuntime, error) {
+	ctx := options.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	root := options.Root
 	if root == "" {
 		var err error
@@ -99,11 +118,11 @@ func newSessionRuntimeWithOptions(client swayRequester, options sessionRuntimeOp
 		Version:    sessionstate.LayoutSchemaVersion,
 		Workspaces: []sessionstate.WorkspaceLayout{},
 	}
-	if err := sessionstate.LayoutFile(root).LoadInto(&previous); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := sessionstate.LayoutFile(root).LoadIntoContext(ctx, &previous); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("load persistent Sway layout: %w", err)
 	}
 	registry := sessionstate.Registry{}
-	registryErr := sessionstate.RegistryFile(root).LoadInto(&registry)
+	registryErr := sessionstate.RegistryFile(root).LoadIntoContext(ctx, &registry)
 	registryPresent := registryErr == nil
 	if registryErr != nil && !errors.Is(registryErr, os.ErrNotExist) {
 		return nil, fmt.Errorf("load persistent context registry: %w", registryErr)
@@ -113,6 +132,7 @@ func newSessionRuntimeWithOptions(client swayRequester, options sessionRuntimeOp
 		return nil, fmt.Errorf("initialize Sway layout debounce: %w", err)
 	}
 	runtime := &sessionRuntime{
+		ctx:                 ctx,
 		client:              client,
 		root:                root,
 		persisted:           previous,
@@ -125,13 +145,14 @@ func newSessionRuntimeWithOptions(client swayRequester, options sessionRuntimeOp
 		restoreFailures:     make(map[string]error),
 		startupComplete:     len(previous.Workspaces) == 0,
 		applicationLauncher: options.ApplicationLauncher,
-		expectedMoves:       make(map[int64]expectedMove),
+		expectedMoves:       make(map[int64][]uint64),
+		eventStreamState:    options.EventStreamState,
 		indicatorCatalog:    options.IndicatorCatalog,
 		indicatorOperations: options.IndicatorOperations,
 	}
 	if options.CompositorID != "" {
 		applicationState := sessionstate.ApplicationSessionState{}
-		if err := sessionstate.ApplicationSessionFile(root).LoadInto(&applicationState); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := sessionstate.ApplicationSessionFile(root).LoadIntoContext(ctx, &applicationState); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return nil, fmt.Errorf("load desktop application restore state: %w", err)
 		}
 		startedAt := options.StartedAt
@@ -145,7 +166,7 @@ func newSessionRuntimeWithOptions(client swayRequester, options sessionRuntimeOp
 			return nil, fmt.Errorf("initialize desktop application restore: %w", err)
 		}
 		if applicationState.CompositorID != options.CompositorID {
-			if err := sessionstate.ApplicationSessionFile(root).Save(coordinator.State()); err != nil {
+			if err := sessionstate.ApplicationSessionFile(root).SaveContext(ctx, coordinator.State()); err != nil {
 				return nil, fmt.Errorf("persist new Sway compositor application session: %w", err)
 			}
 		}
@@ -215,8 +236,35 @@ func (runtime *sessionRuntime) ReconcileIndicators(root *Node) (bool, error) {
 // HandleEvent records live user intent before the next tree reconciliation.
 // Binding, focus, close, and non-daemon move activity supersede conflicting
 // startup reconstruction; application launch/adoption remains independent.
-func (runtime *sessionRuntime) HandleEvent(event swayipc.Event, now time.Time) {
+func (runtime *sessionRuntime) HandleEvent(event swayipc.Event, _ time.Time) {
 	if runtime == nil || runtime.shutdown {
+		return
+	}
+	if event.Type == swayipc.EventStream && event.Change == "ready" {
+		// A reconnect creates a new event-generation boundary. Any move whose
+		// event was lost with the old connection must be rediscovered through
+		// the fresh tree instead of consuming later user intent.
+		clear(runtime.expectedMoves)
+		if runtime.eventStreamReady && runtime.restoreMayConflictWithUserIntent() {
+			// Events may have been lost while disconnected. Continuing could
+			// overwrite user changes that the daemon never observed.
+			runtime.cancelConflictingRestore()
+		}
+		runtime.eventStreamReady = true
+		runtime.eventStreamEpoch = event.StreamEpoch
+		return
+	}
+	if event.Type == swayipc.EventStream && event.Change == "disconnected" {
+		clear(runtime.expectedMoves)
+		if runtime.eventStreamReady && runtime.restoreMayConflictWithUserIntent() {
+			runtime.cancelConflictingRestore()
+		}
+		return
+	}
+	if event.Type == swayipc.EventTick {
+		if sequence, ok := moveBarrierSequence(event.Payload); ok {
+			runtime.expireExpectedMoves(sequence)
+		}
 		return
 	}
 	interactiveFocus :=
@@ -229,12 +277,30 @@ func (runtime *sessionRuntime) HandleEvent(event swayipc.Event, now time.Time) {
 	if event.Type != swayipc.EventWindow || event.Change != "move" && event.Change != "close" {
 		return
 	}
-	if event.Change == "move" && event.Container != nil && runtime.consumeExpectedMove(event.Container.ID, now) {
+	if event.Change == "move" && event.Container != nil && runtime.consumeExpectedMove(event.Container.ID) {
 		return
 	}
 	if runtime.restoreProgress != nil || runtime.lateRestorePending {
 		runtime.cancelConflictingRestore()
 	}
+}
+
+func (runtime *sessionRuntime) restoreMayConflictWithUserIntent() bool {
+	return !runtime.startupComplete || runtime.restoreProgress != nil || runtime.lateRestorePending
+}
+
+func (runtime *sessionRuntime) requireCurrentEventStream() error {
+	if runtime == nil || runtime.eventStreamState == nil {
+		return nil
+	}
+	epoch, connected := runtime.eventStreamState.Snapshot()
+	if connected && runtime.eventStreamReady && epoch == runtime.eventStreamEpoch {
+		return nil
+	}
+	if runtime.restoreMayConflictWithUserIntent() {
+		runtime.cancelConflictingRestore()
+	}
+	return errors.New("sway event stream changed during session reconciliation")
 }
 
 func (runtime *sessionRuntime) cancelConflictingRestore() {
@@ -251,39 +317,106 @@ func (runtime *sessionRuntime) cancelConflictingRestore() {
 	}
 }
 
-func (runtime *sessionRuntime) consumeExpectedMove(containerID int64, now time.Time) bool {
-	expected, exists := runtime.expectedMoves[containerID]
-	if containerID <= 0 || !exists {
+func (runtime *sessionRuntime) consumeExpectedMove(containerID int64) bool {
+	sequences := runtime.expectedMoves[containerID]
+	if containerID <= 0 || len(sequences) == 0 {
 		return false
 	}
-	if !now.Before(expected.expiresAt) {
-		delete(runtime.expectedMoves, containerID)
-		return false
-	}
-	expected.count--
-	if expected.count == 0 {
+	sequences = sequences[1:]
+	if len(sequences) == 0 {
 		delete(runtime.expectedMoves, containerID)
 	} else {
-		runtime.expectedMoves[containerID] = expected
+		runtime.expectedMoves[containerID] = sequences
 	}
 	return true
 }
 
-func (runtime *sessionRuntime) expectMove(containerID int64) {
+func (runtime *sessionRuntime) expectMove(containerID int64) uint64 {
+	if containerID <= 0 {
+		return 0
+	}
+	if runtime.expectedMoves == nil {
+		runtime.expectedMoves = make(map[int64][]uint64)
+	}
+	runtime.nextMoveSequence++
+	sequence := runtime.nextMoveSequence
+	runtime.expectedMoves[containerID] = append(runtime.expectedMoves[containerID], sequence)
+	return sequence
+}
+
+func (runtime *sessionRuntime) discardExpectedMove(containerID int64, sequence uint64) {
+	sequences := runtime.expectedMoves[containerID]
+	for index, candidate := range sequences {
+		if candidate != sequence {
+			continue
+		}
+		sequences = append(sequences[:index], sequences[index+1:]...)
+		if len(sequences) == 0 {
+			delete(runtime.expectedMoves, containerID)
+		} else {
+			runtime.expectedMoves[containerID] = sequences
+		}
+		return
+	}
+}
+
+func (runtime *sessionRuntime) expireExpectedMoves(barrier uint64) {
+	for containerID, sequences := range runtime.expectedMoves {
+		remaining := sequences[:0]
+		for _, sequence := range sequences {
+			if sequence > barrier {
+				remaining = append(remaining, sequence)
+			}
+		}
+		if len(remaining) == 0 {
+			delete(runtime.expectedMoves, containerID)
+		} else {
+			runtime.expectedMoves[containerID] = remaining
+		}
+	}
+}
+
+func moveBarrierPayload(sequence uint64) string {
+	return moveBarrierPrefix + strconv.FormatUint(sequence, 10)
+}
+
+func moveBarrierSequence(payload string) (uint64, bool) {
+	value, ok := strings.CutPrefix(payload, moveBarrierPrefix)
+	if !ok || value == "" {
+		return 0, false
+	}
+	sequence, err := strconv.ParseUint(value, 10, 64)
+	return sequence, err == nil && sequence > 0
+}
+
+func (runtime *sessionRuntime) handleFailedMove(containerID int64, sequence uint64, err error) {
 	if containerID <= 0 {
 		return
 	}
-	if runtime.expectedMoves == nil {
-		runtime.expectedMoves = make(map[int64]expectedMove)
+	var unknown *swayipc.CommandOutcomeUnknownError
+	var invalid *swayipc.CommandResponseInvalidError
+	if errors.As(err, &unknown) || errors.As(err, &invalid) {
+		// The command connection and event connection are independent. An
+		// ambiguous command response therefore does not imply an event-stream
+		// reconnect that could invalidate this expectation. Stop the active
+		// restore and clear all expectations so a later user move can never be
+		// consumed as the missing daemon event.
+		clear(runtime.expectedMoves)
+		runtime.cancelConflictingRestore()
+		return
 	}
-	expected := runtime.expectedMoves[containerID]
-	expected.count++
-	expected.expiresAt = time.Now().Add(expectedMoveLifetime)
-	runtime.expectedMoves[containerID] = expected
+	runtime.discardExpectedMove(containerID, sequence)
 }
 
-func (runtime *sessionRuntime) discardExpectedMove(containerID int64) {
-	_ = runtime.consumeExpectedMove(containerID, time.Now())
+func (runtime *sessionRuntime) sendMoveBarrier(sequence uint64) error {
+	if err := runtime.requireCurrentEventStream(); err != nil {
+		return err
+	}
+	message, err := runtime.client.RequestContext(runtime.context(), swayipc.SendTick, []byte(moveBarrierPayload(sequence)))
+	if err != nil {
+		return err
+	}
+	return swayipc.CheckSendTickResponse(message)
 }
 
 // Reconcile applies placement for newly mapped stable application IDs. It
@@ -298,6 +431,9 @@ func (runtime *sessionRuntime) Reconcile(root *Node, now time.Time) (needsRefres
 	}()
 	if runtime == nil || runtime.shutdown {
 		return false, nil
+	}
+	if err := runtime.requireCurrentEventStream(); err != nil {
+		return false, err
 	}
 	registry, available, err := runtime.loadRegistry()
 	if err != nil {
@@ -478,7 +614,7 @@ func (runtime *sessionRuntime) reconcileApplications(root *Node, registry sessio
 				}
 			}
 		}
-		updated, err := sessionstate.UpdateRegistry(runtime.root, func(current *sessionstate.Registry) error {
+		updated, err := sessionstate.UpdateRegistryContext(runtime.context(), runtime.root, func(current *sessionstate.Registry) error {
 			for index := range current.Contexts {
 				change, exists := changes[current.Contexts[index].ID]
 				if !exists || current.Contexts[index].App == nil || current.Contexts[index].App.Identity != change.identity {
@@ -498,7 +634,7 @@ func (runtime *sessionRuntime) reconcileApplications(root *Node, registry sessio
 	}
 	refresh := false
 	var degradedErrors []error
-	err = sessionstate.InspectRegistryLocked(runtime.root, func(current sessionstate.Registry) error {
+	err = sessionstate.InspectRegistryLockedContext(runtime.context(), runtime.root, func(current sessionstate.Registry) error {
 		registry = current
 		currentGroups, err := sessionstate.ObserveApplicationGroups(root, current)
 		if err != nil {
@@ -559,7 +695,7 @@ func (runtime *sessionRuntime) reconcileApplications(root *Node, registry sessio
 				launchErrors = append(launchErrors, fmt.Errorf("launch desktop application %q: launcher is unavailable", context.ID))
 				continue
 			}
-			prepared, err := runtime.applicationLauncher.Prepare(context)
+			prepared, err := runtime.applicationLauncher.Prepare(runtime.context(), context)
 			if err != nil {
 				launchErrors = append(launchErrors, fmt.Errorf("prepare desktop application launch %q: %w", context.ID, err))
 				continue
@@ -570,11 +706,11 @@ func (runtime *sessionRuntime) reconcileApplications(root *Node, registry sessio
 				launchErrors = append(launchErrors, fmt.Errorf("begin desktop application launch %q: %w", context.ID, err))
 				continue
 			}
-			if saveErr := sessionstate.ApplicationSessionFile(runtime.root).Save(candidate); saveErr != nil {
+			if saveErr := sessionstate.ApplicationSessionFile(runtime.root).SaveContext(runtime.context(), candidate); saveErr != nil {
 				var unknown *statefile.CommitOutcomeUnknownError
 				var visible sessionstate.ApplicationSessionState
 				confirmed := errors.As(saveErr, &unknown) &&
-					sessionstate.ApplicationSessionFile(runtime.root).LoadInto(&visible) == nil &&
+					sessionstate.ApplicationSessionFile(runtime.root).LoadIntoContext(runtime.context(), &visible) == nil &&
 					reflect.DeepEqual(visible, candidate)
 				if !confirmed {
 					_ = runtime.applications.RestoreState(previousState)
@@ -802,7 +938,7 @@ func workspaceByName(snapshot sessionstate.LayoutSnapshot, name string) (session
 
 func (runtime *sessionRuntime) loadRegistry() (sessionstate.Registry, bool, error) {
 	registry := sessionstate.Registry{}
-	err := sessionstate.RegistryFile(runtime.root).LoadInto(&registry)
+	err := sessionstate.RegistryFile(runtime.root).LoadIntoContext(runtime.context(), &registry)
 	if errors.Is(err, os.ErrNotExist) {
 		return sessionstate.Registry{}, false, nil
 	}
@@ -832,16 +968,22 @@ func (runtime *sessionRuntime) applyPlacementAction(action sessionstate.Placemen
 	default:
 		return fmt.Errorf("unsupported placement action %q", action.Kind)
 	}
+	moveSequence := uint64(0)
 	if move {
-		runtime.expectMove(action.ContainerID)
+		moveSequence = runtime.expectMove(action.ContainerID)
 	}
 	if err := runtime.runSwayCommand(command); err != nil {
-		var unknown *swayipc.CommandOutcomeUnknownError
-		var invalid *swayipc.CommandResponseInvalidError
-		if move && !errors.As(err, &unknown) && !errors.As(err, &invalid) {
-			runtime.discardExpectedMove(action.ContainerID)
+		if move {
+			runtime.handleFailedMove(action.ContainerID, moveSequence, err)
 		}
 		return fmt.Errorf("apply %s for context %q: %w", action.Kind, action.ContextID, err)
+	}
+	if move {
+		if err := runtime.sendMoveBarrier(moveSequence); err != nil {
+			unknown := &swayipc.CommandOutcomeUnknownError{Cause: fmt.Errorf("establish move attribution barrier: %w", err)}
+			runtime.handleFailedMove(action.ContainerID, moveSequence, unknown)
+			return fmt.Errorf("apply %s for context %q: %w", action.Kind, action.ContextID, unknown)
+		}
 	}
 	return nil
 }
@@ -908,22 +1050,28 @@ func (runtime *sessionRuntime) applyRestoreAction(action sessionstate.RestoreAct
 	default:
 		return fmt.Errorf("unsupported restore action %q", action.Kind)
 	}
+	moveSequence := uint64(0)
 	if move {
-		runtime.expectMove(action.ContainerID)
+		moveSequence = runtime.expectMove(action.ContainerID)
 	}
 	err := runtime.runSwayCommand(command)
-	if err != nil {
-		var unknown *swayipc.CommandOutcomeUnknownError
-		var invalid *swayipc.CommandResponseInvalidError
-		if move && !errors.As(err, &unknown) && !errors.As(err, &invalid) {
-			runtime.discardExpectedMove(action.ContainerID)
+	if err != nil && move {
+		runtime.handleFailedMove(action.ContainerID, moveSequence, err)
+	}
+	if err == nil && move {
+		if barrierErr := runtime.sendMoveBarrier(moveSequence); barrierErr != nil {
+			err = &swayipc.CommandOutcomeUnknownError{Cause: fmt.Errorf("establish move attribution barrier: %w", barrierErr)}
+			runtime.handleFailedMove(action.ContainerID, moveSequence, err)
 		}
 	}
 	return err
 }
 
 func (runtime *sessionRuntime) runSwayCommand(command string) error {
-	message, err := runtime.client.Request(swayipc.RunCommand, []byte(command))
+	if err := runtime.requireCurrentEventStream(); err != nil {
+		return err
+	}
+	message, err := runtime.client.RequestContext(runtime.context(), swayipc.RunCommand, []byte(command))
 	if err != nil {
 		return fmt.Errorf("run Sway command: %w", err)
 	}
@@ -1028,7 +1176,7 @@ func (runtime *sessionRuntime) Flush(now time.Time) error {
 	if !due {
 		return nil
 	}
-	err := sessionstate.LayoutFile(runtime.root).Save(candidate)
+	err := sessionstate.LayoutFile(runtime.root).SaveContext(runtime.context(), candidate)
 	if err == nil {
 		runtime.persisted = candidate
 		return runtime.debouncer.MarkPersisted(candidate)
@@ -1037,7 +1185,7 @@ func (runtime *sessionRuntime) Flush(now time.Time) error {
 	var unknown *statefile.CommitOutcomeUnknownError
 	if errors.As(err, &unknown) {
 		var visible sessionstate.LayoutSnapshot
-		if loadErr := sessionstate.LayoutFile(runtime.root).LoadInto(&visible); loadErr != nil {
+		if loadErr := sessionstate.LayoutFile(runtime.root).LoadIntoContext(runtime.context(), &visible); loadErr != nil {
 			runtime.debouncer.Postpone(now)
 			return errors.Join(err, fmt.Errorf("reload layout after unknown commit outcome: %w", loadErr))
 		}
@@ -1095,7 +1243,8 @@ func reconcilePersistentSession(client swayRequester, runtime *sessionRuntime, r
 		runtime.ArmObservationRetry(time.Now())
 	}
 	for range maximumObservations {
-		root, err := requestTree(client)
+		ctx := runtime.context()
+		root, err := requestTree(ctx, client)
 		if err != nil {
 			// An IPC disconnect preserves the last snapshot. The normal event
 			// reconnect path will obtain another tree without turning a socket

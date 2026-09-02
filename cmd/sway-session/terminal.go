@@ -416,14 +416,6 @@ func loadTerminalRegistry(deps dependencies) (sessionstate.Registry, *commandFai
 	}
 	registry, err := sessionstate.ReadRegistrySnapshot(root)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		var unsupported *sessionstate.UnsupportedVersionError
-		if errors.As(err, &unsupported) && unsupported.Got >= 1 && unsupported.Got < sessionstate.ContextsSchemaVersion {
-			return sessionstate.Registry{}, failure(
-				"migration_required",
-				"load terminal contexts",
-				"Run sway-session --json list once with the current binary to perform the validated registry migration, then retry.",
-			)
-		}
 		return sessionstate.Registry{}, classifyStateError("load terminal contexts", err)
 	}
 	return registry, nil

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -16,11 +17,32 @@ import (
 type daemonLoopRequester struct {
 	trees    []*swayipc.TreeNode
 	commands []string
+	requests int
 	failAt   int
 	failure  error
 }
 
-func (requester *daemonLoopRequester) Request(messageType swayipc.MessageType, payload []byte) (swayipc.Message, error) {
+type blockingDaemonRequester struct {
+	entered chan struct{}
+}
+
+func (requester *blockingDaemonRequester) RequestContext(ctx context.Context, _ swayipc.MessageType, _ []byte) (swayipc.Message, error) {
+	select {
+	case <-requester.entered:
+	default:
+		close(requester.entered)
+	}
+	<-ctx.Done()
+	return swayipc.Message{}, ctx.Err()
+}
+
+func (*blockingDaemonRequester) Close() {}
+
+func (requester *daemonLoopRequester) RequestContext(ctx context.Context, messageType swayipc.MessageType, payload []byte) (swayipc.Message, error) {
+	if err := ctx.Err(); err != nil {
+		return swayipc.Message{}, err
+	}
+	requester.requests++
 	switch messageType {
 	case swayipc.GetTree:
 		if len(requester.trees) == 0 {
@@ -38,12 +60,56 @@ func (requester *daemonLoopRequester) Request(messageType swayipc.MessageType, p
 			return swayipc.Message{}, requester.failure
 		}
 		return swayipc.Message{Type: swayipc.RunCommand, Payload: []byte(`[{"success":true}]`)}, nil
+	case swayipc.SendTick:
+		return swayipc.Message{Type: swayipc.SendTick, Payload: []byte(`{"success":true}`)}, nil
 	default:
 		return swayipc.Message{}, errors.New("unexpected fake Sway request")
 	}
 }
 
 func (*daemonLoopRequester) Close() {}
+
+func TestSessionDaemonLoopWaitsForEventSubscriptionBeforeSwayRequests(t *testing.T) {
+	requester := &daemonLoopRequester{}
+	runtime := &sessionRuntime{ctx: t.Context()}
+	events := make(chan swayipc.Event, 1)
+	events <- swayipc.Event{Type: swayipc.EventShutdown, Change: "exit"}
+
+	if err := runSessionDaemonLoop(t.Context(), requester, runtime, events, nil); err != nil {
+		t.Fatalf("run session daemon loop: %v", err)
+	}
+	if requester.requests != 0 {
+		t.Fatalf("daemon made %d Sway requests before its event subscription was ready", requester.requests)
+	}
+}
+
+func TestSessionDaemonLoopCancellationInterruptsBlockedSwayRequest(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	requester := &blockingDaemonRequester{entered: make(chan struct{})}
+	runtime := &sessionRuntime{ctx: ctx}
+	events := make(chan swayipc.Event, 1)
+	events <- swayipc.Event{Type: swayipc.EventStream, Change: "ready"}
+	done := make(chan error, 1)
+	go func() {
+		done <- runSessionDaemonLoop(ctx, requester, runtime, events, nil)
+	}()
+
+	select {
+	case <-requester.entered:
+	case <-time.After(time.Second):
+		t.Fatal("daemon did not begin the Sway request")
+	}
+	cancel()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("canceled daemon returned error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("daemon did not stop after cancellation interrupted the Sway request")
+	}
+}
 
 func TestSessionDaemonLoopOwnsPlacementAndCaptureWithoutAnimator(t *testing.T) {
 	stateHome := filepath.Join(t.TempDir(), "state")
@@ -67,7 +133,8 @@ func TestSessionDaemonLoopOwnsPlacementAndCaptureWithoutAnimator(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create session runtime: %v", err)
 	}
-	events := make(chan swayipc.Event, 1)
+	events := make(chan swayipc.Event, 2)
+	events <- swayipc.Event{Type: swayipc.EventStream, Change: "ready"}
 	events <- swayipc.Event{Type: swayipc.EventShutdown, Change: "exit"}
 	if err := runSessionDaemonLoop(t.Context(), requester, runtime, events, nil); err != nil {
 		t.Fatalf("run session daemon loop: %v", err)
@@ -114,7 +181,8 @@ func TestSessionDaemonLoopPublishesIndicatorsWithoutAnimator(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	events := make(chan swayipc.Event, 1)
+	events := make(chan swayipc.Event, 2)
+	events <- swayipc.Event{Type: swayipc.EventStream, Change: "ready"}
 	events <- swayipc.Event{Type: swayipc.EventShutdown, Change: "exit"}
 
 	if err := runSessionDaemonLoop(t.Context(), requester, runtime, events, nil); err != nil {

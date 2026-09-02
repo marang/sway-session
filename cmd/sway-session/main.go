@@ -55,7 +55,7 @@ var commandSpecs = map[string]commandSpec{
 var commandOrder = []string{"terminal", "register", "restore", "list", "archive", "activate", "purge", "app", "daemon", "broker", "request-start", "report-codex-session", "completion"}
 
 type swayRequester interface {
-	Request(swayipc.MessageType, []byte) (swayipc.Message, error)
+	RequestContext(context.Context, swayipc.MessageType, []byte) (swayipc.Message, error)
 	Close()
 }
 
@@ -511,19 +511,19 @@ func executeCommand(ctx context.Context, name string, arguments []string, stdin 
 	case "terminal":
 		return executeTerminal(ctx, arguments, structured, configPath, deps)
 	case "register":
-		return executeRegister(arguments, deps)
+		return executeRegister(ctx, arguments, deps)
 	case "list":
-		return executeList(arguments, deps)
+		return executeList(ctx, arguments, deps)
 	case "archive":
-		return executeStateChange(name, arguments, sessionstate.ContextArchived, deps)
+		return executeStateChange(ctx, name, arguments, sessionstate.ContextArchived, deps)
 	case "activate":
-		return executeStateChange(name, arguments, sessionstate.ContextActive, deps)
+		return executeStateChange(ctx, name, arguments, sessionstate.ContextActive, deps)
 	case "purge":
 		return executePurge(ctx, arguments, stdin, stderr, structured, deps)
 	case "restore":
 		return executeRestore(ctx, arguments, deps)
 	case "app":
-		return executeApp(arguments, deps)
+		return executeApp(ctx, arguments, deps)
 	case "broker":
 		return executeBroker(ctx, arguments, stderr, structured, deps)
 	case "daemon":
@@ -546,7 +546,7 @@ func executeCommand(ctx context.Context, name string, arguments []string, stdin 
 		}
 		return commandResult{Command: name, Contexts: []sessionstate.Context{}}, nil
 	case "completion":
-		return executeCompletion(arguments, deps)
+		return executeCompletion(ctx, arguments, deps)
 	default:
 		return commandResult{}, failure("unknown_command", fmt.Sprintf("unknown command %q", name), "")
 	}

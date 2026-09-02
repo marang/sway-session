@@ -12,6 +12,7 @@ const (
 	windowEventMessage    MessageType = eventBit | 3
 	bindingEventMessage   MessageType = eventBit | 5
 	shutdownEventMessage  MessageType = eventBit | 6
+	tickEventMessage      MessageType = eventBit | 7
 )
 
 // Rect is an absolute Sway logical-pixel rectangle.
@@ -66,16 +67,24 @@ const (
 	EventWindow    EventType = "window"
 	EventBinding   EventType = "binding"
 	EventShutdown  EventType = "shutdown"
+	EventTick      EventType = "tick"
+	// EventStream is an internal lifecycle notification. It is never decoded
+	// from Sway; StreamSessionEvents emits it after each successful subscription
+	// so stateful consumers can discard assumptions made on an older stream.
+	EventStream EventType = "stream"
 )
 
 // Event retains the typed Sway event and the relevant tree fragments instead
 // of reducing every subscription notification to an empty wake-up.
 type Event struct {
-	Type      EventType
-	Change    string
-	Container *TreeNode
-	Current   *TreeNode
-	Old       *TreeNode
+	Type        EventType
+	Change      string
+	StreamEpoch uint64
+	Container   *TreeNode
+	Current     *TreeNode
+	Old         *TreeNode
+	Payload     string
+	First       bool
 }
 
 // AffectsSessionLayout excludes presentation-only notifications which may be
@@ -89,6 +98,10 @@ func (event Event) AffectsSessionLayout() bool {
 		return event.Change != "urgent"
 	case EventShutdown:
 		return false
+	case EventTick:
+		return false
+	case EventStream:
+		return event.Change == "ready"
 	case EventBinding:
 		return false
 	default:
@@ -103,6 +116,8 @@ func DecodeEvent(message Message) (Event, error) {
 		Container *TreeNode `json:"container"`
 		Current   *TreeNode `json:"current"`
 		Old       *TreeNode `json:"old"`
+		Payload   string    `json:"payload"`
+		First     bool      `json:"first"`
 	}
 	if err := json.Unmarshal(message.Payload, &payload); err != nil {
 		return Event{}, fmt.Errorf("decode sway event: %w", err)
@@ -118,10 +133,14 @@ func DecodeEvent(message Message) (Event, error) {
 		eventType = EventBinding
 	case shutdownEventMessage:
 		eventType = EventShutdown
+	case tickEventMessage:
+		eventType = EventTick
 	default:
 		return Event{}, fmt.Errorf("unsupported sway event message type %#x", uint32(message.Type))
 	}
-	if payload.Change == "" {
+	if eventType == EventTick {
+		payload.Change = "tick"
+	} else if payload.Change == "" {
 		return Event{}, fmt.Errorf("sway %s event has no change type", eventType)
 	}
 	return Event{
@@ -130,5 +149,7 @@ func DecodeEvent(message Message) (Event, error) {
 		Container: payload.Container,
 		Current:   payload.Current,
 		Old:       payload.Old,
+		Payload:   payload.Payload,
+		First:     payload.First,
 	}, nil
 }

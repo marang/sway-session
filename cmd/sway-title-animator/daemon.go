@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/signal"
@@ -12,6 +13,12 @@ import (
 )
 
 func runLoopWithFPS(socket string, fps float64) int {
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	return runLoopWithContext(ctx, socket, fps)
+}
+
+func runLoopWithContext(ctx context.Context, socket string, fps float64) int {
 	stopAudio := func() {}
 	if presetUsesAudio(animationPreset) {
 		stopAudio = startDefaultAudioMonitor()
@@ -21,15 +28,11 @@ func runLoopWithFPS(socket string, fps float64) int {
 	control := swayipc.NewClient(socket)
 	defer control.Close()
 
-	animator := NewTitleAnimator(control)
+	animator := NewTitleAnimatorWithContext(ctx, control)
 	events := make(chan swayipc.Event, 16)
 	done := make(chan struct{})
 	defer close(done)
 	go swayipc.StreamEvents(socket, events, done)
-
-	signals := make(chan os.Signal, 2)
-	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
-	defer signal.Stop(signals)
 
 	phase := 0
 	_, _ = animator.RefreshTree(phase)
@@ -43,9 +46,7 @@ func runLoopWithFPS(socket string, fps float64) int {
 		select {
 		case event := <-events:
 			if event.Type == swayipc.EventShutdown {
-				if err := animator.ResetAll(); err != nil {
-					fmt.Fprintf(os.Stderr, "Unable to reset all title formats: %v\n", err)
-				}
+				resetAnimatorForShutdown(animator)
 				return 0
 			}
 			_, _ = animator.RefreshTree(phase)
@@ -55,10 +56,8 @@ func runLoopWithFPS(socket string, fps float64) int {
 				nextFrames = candidateFrames
 				nextWakeAt = resetTimer(timer, candidateDuration)
 			}
-		case <-signals:
-			if err := animator.ResetAll(); err != nil {
-				fmt.Fprintf(os.Stderr, "Unable to reset all title formats: %v\n", err)
-			}
+		case <-ctx.Done():
+			resetAnimatorForShutdown(animator)
 			return 0
 		case <-timer.C:
 			phase += nextFrames
@@ -66,6 +65,14 @@ func runLoopWithFPS(socket string, fps float64) int {
 			nextFrames = animator.FramesUntilNextWake(phase)
 			nextWakeAt = resetTimer(timer, time.Duration(nextFrames)*frameDuration(fps))
 		}
+	}
+}
+
+func resetAnimatorForShutdown(animator *TitleAnimator) {
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := animator.ResetAllContext(cleanupCtx); err != nil {
+		fmt.Fprintf(os.Stderr, "Unable to reset all title formats: %v\n", err)
 	}
 }
 

@@ -75,9 +75,12 @@ func runSessionDaemon(ctx context.Context, swaySocket string, reportError func(e
 		if operationStoreErr != nil {
 			return nil, operationStoreErr
 		}
-		return operationStore.Active()
+		return operationStore.ActiveContext(ctx)
 	}
+	eventStreamState := &swayipc.EventStreamState{}
 	runtime, err := newSessionRuntimeWithOptions(control, sessionRuntimeOptions{
+		Context:             ctx,
+		EventStreamState:    eventStreamState,
 		Root:                stateRoot,
 		CompositorID:        compositorID,
 		StartedAt:           time.Now(),
@@ -122,7 +125,7 @@ func runSessionDaemon(ctx context.Context, swaySocket string, reportError func(e
 	events := make(chan swayipc.Event, 16)
 	done := make(chan struct{})
 	defer close(done)
-	go swayipc.StreamSessionEvents(swaySocket, events, done)
+	go swayipc.StreamSessionEventsWithState(swaySocket, events, done, eventStreamState)
 	return runSessionDaemonLoop(ctx, control, runtime, events, reportError)
 }
 
@@ -164,7 +167,7 @@ func (launch preparedDesktopApplicationLaunch) Start() error {
 	return launch.starter.Start(launch.spec)
 }
 
-func (launcher daemonApplicationLauncher) Prepare(context sessionstate.Context) (preparedApplicationLaunch, error) {
+func (launcher daemonApplicationLauncher) Prepare(ctx context.Context, context sessionstate.Context) (preparedApplicationLaunch, error) {
 	starter := sessionstate.ExecProcessStarter{}
 	adapter := sessionstate.DesktopApplicationLauncher{
 		StateRoot: launcher.stateRoot,
@@ -183,13 +186,13 @@ func (launcher daemonApplicationLauncher) Prepare(context sessionstate.Context) 
 			return nil, err
 		}
 		adapter.Flatpak = flatpak
-		if err := sessionstate.VerifyFlatpakInstallation(flatpak, context.Launcher, sessionstate.ExecCommandRunner{}); err != nil {
+		if err := sessionstate.VerifyFlatpakInstallationContext(ctx, flatpak, context.Launcher, sessionstate.ExecCommandRunner{}); err != nil {
 			return nil, err
 		}
 	default:
 		return nil, fmt.Errorf("unsupported desktop application launcher kind %q", context.Launcher.Kind)
 	}
-	spec, err := adapter.Spec(context)
+	spec, err := adapter.SpecContext(ctx, context)
 	if err != nil {
 		return nil, err
 	}
@@ -229,8 +232,6 @@ func runSessionDaemonLoop(
 		timerChannel = timer.C
 	}
 
-	reconcilePersistentSession(control, runtime, reportError)
-	resetTimer()
 	for {
 		select {
 		case <-ctx.Done():

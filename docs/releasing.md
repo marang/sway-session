@@ -78,6 +78,17 @@ AUR_COMMIT_EMAIL
 The public key for `AUR_PRIVATE_KEY` must be added to the AUR account allowed to
 push to the package.
 
+The publishing job pins the official `aur.archlinux.org` Ed25519 host key and
+requires fingerprint
+`SHA256:RFzBCUItH9LZS0cKB5UE6ceAYhBD5C8GeOBip8Z11+4`; it never trusts a key
+learned during the release run. If Arch rotates that key, verify the new value
+against Arch Linux infrastructure's
+[`docs/ssh-hostkeys.txt`](https://gitlab.archlinux.org/archlinux/infrastructure/-/blob/main/docs/ssh-hostkeys.txt)
+through a separate trusted path, then update both the workflow key and
+fingerprint plus the packaging regression check in one reviewed change.
+
 The release tag is created only after the real Sway/Herdr end-to-end release
-check has passed. Pushing the tag starts the GitHub release and AUR workflows;
-it is not the point at which the end-to-end check is performed.
+check has passed. That check starts with a fresh schema-5 session-state root;
+pre-release registries are reset, not upgraded. Pushing the tag starts the
+GitHub release and AUR workflows; it is not the point at which the end-to-end
+check is performed.

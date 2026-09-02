@@ -8,6 +8,9 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/marang/sway-title-animator/internal/statefile"
 )
 
 func TestUserDesktopApprovalCreatesProtectedSnapshotAndTypedGioLaunch(t *testing.T) {
@@ -69,6 +72,54 @@ func TestUserDesktopApprovalCreatesProtectedSnapshotAndTypedGioLaunch(t *testing
 	}
 	if _, err := launcher.Spec(context); err == nil || !strings.Contains(err.Error(), "executable changed") {
 		t.Fatalf("changed user executable was accepted: %v", err)
+	}
+}
+
+func TestDesktopLaunchSpecStopsWaitingForApprovalLockWhenCanceled(t *testing.T) {
+	root := t.TempDir()
+	applications := filepath.Join(root, "applications")
+	if err := os.Mkdir(applications, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	desktopPath := filepath.Join(applications, "org.example.Local.desktop")
+	if err := os.WriteFile(desktopPath, []byte("[Desktop Entry]\nType=Application\nName=Local\nExec=/usr/bin/true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	entry := parsedCatalogEntry(t, desktopPath, "org.example.Local.desktop", DesktopEntryUser)
+	stateRoot := filepath.Join(root, "state", "sway-session")
+	approval, err := PrepareDesktopApproval(stateRoot, testContextID, entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionContext := Context{
+		ID: testContextID, State: ContextActive, Launcher: approval.Launcher,
+		App: &Application{Identity: ApplicationIdentity{Protocol: WindowWayland, WaylandAppID: "org.example.Local"}, RestorePolicy: ApplicationRestoreFollow},
+	}
+
+	release := make(chan struct{})
+	locked := make(chan struct{})
+	lockDone := make(chan error, 1)
+	approvalDirectory := filepath.Dir(approval.SnapshotPath)
+	go func() {
+		lockDone <- statefile.WithPrivateDirectoryLockContext(context.Background(), approvalDirectory, func(*statefile.LockedPrivateDirectory) error {
+			close(locked)
+			<-release
+			return nil
+		})
+	}()
+	<-locked
+	t.Cleanup(func() {
+		close(release)
+		if err := <-lockDone; err != nil {
+			t.Errorf("release approval lock: %v", err)
+		}
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	launcher := DesktopApplicationLauncher{GIO: "/usr/bin/gio", StateRoot: stateRoot}
+	if _, err := launcher.SpecContext(ctx, sessionContext); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("locked approval preflight returned %v, want context deadline", err)
 	}
 }
 
@@ -146,6 +197,114 @@ func TestDesktopApprovalReuseIsNotDiscardedByFailedTransaction(t *testing.T) {
 	}
 }
 
+func TestDesktopApprovalCreatorFailureDoesNotRemoveSnapshotCommittedByConcurrentReuser(t *testing.T) {
+	root := t.TempDir()
+	applications := filepath.Join(root, "applications")
+	if err := os.Mkdir(applications, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	desktopPath := filepath.Join(applications, "org.example.Local.desktop")
+	if err := os.WriteFile(desktopPath, []byte("[Desktop Entry]\nType=Application\nName=Local\nExec=/usr/bin/true\nStartupWMClass=LocalApp\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	entry := parsedCatalogEntry(t, desktopPath, "org.example.Local.desktop", DesktopEntryUser)
+	stateRoot := filepath.Join(root, "state")
+
+	creator, err := PrepareDesktopApproval(stateRoot, testContextID, entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !creator.SnapshotCreated {
+		t.Fatalf("first operation did not create snapshot: %+v", creator)
+	}
+	discardCreator := make(chan struct{})
+	creatorDone := make(chan error, 1)
+	go func() {
+		<-discardCreator
+		creatorDone <- DiscardDesktopApproval(stateRoot, creator)
+	}()
+
+	reuser, err := PrepareDesktopApproval(stateRoot, testContextID, entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reuser.SnapshotCreated || reuser.SnapshotPath != creator.SnapshotPath {
+		t.Fatalf("second operation did not reuse snapshot: creator=%+v reuser=%+v", creator, reuser)
+	}
+	window := WindowApplication{
+		ContainerID: 42,
+		Workspace:   "2",
+		Identity: ApplicationIdentity{
+			Protocol:    WindowXWayland,
+			X11Class:    "LocalApp",
+			X11Instance: "local-app",
+		},
+	}
+	applicationContext, err := NewApplicationContext(testContextID, entry, window, reuser.Launcher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &mutationSwayClient{tree: applicationTree(appWindow(42, true, "", "LocalApp", "local-app", ""))}
+	if err := RegisterApplicationContext(t.Context(), stateRoot, client, applicationContext, 42); err != nil {
+		t.Fatal(err)
+	}
+
+	close(discardCreator)
+	if err := <-creatorDone; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(reuser.SnapshotPath); err != nil {
+		t.Fatalf("creator rollback removed the committed reuser snapshot: %v", err)
+	}
+}
+
+func TestDesktopApprovalReuserCannotCommitAfterCreatorRemovedUnreferencedSnapshot(t *testing.T) {
+	root := t.TempDir()
+	applications := filepath.Join(root, "applications")
+	if err := os.Mkdir(applications, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	desktopPath := filepath.Join(applications, "org.example.Local.desktop")
+	if err := os.WriteFile(desktopPath, []byte("[Desktop Entry]\nType=Application\nName=Local\nExec=/usr/bin/true\nStartupWMClass=LocalApp\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	entry := parsedCatalogEntry(t, desktopPath, "org.example.Local.desktop", DesktopEntryUser)
+	stateRoot := filepath.Join(root, "state")
+	creator, err := PrepareDesktopApproval(stateRoot, testContextID, entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reuser, err := PrepareDesktopApproval(stateRoot, testContextID, entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := DiscardDesktopApproval(stateRoot, creator); err != nil {
+		t.Fatal(err)
+	}
+
+	window := WindowApplication{
+		ContainerID: 42,
+		Workspace:   "2",
+		Identity: ApplicationIdentity{
+			Protocol:    WindowXWayland,
+			X11Class:    "LocalApp",
+			X11Instance: "local-app",
+		},
+	}
+	applicationContext, err := NewApplicationContext(testContextID, entry, window, reuser.Launcher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &mutationSwayClient{tree: applicationTree(appWindow(42, true, "", "LocalApp", "local-app", ""))}
+	err = RegisterApplicationContext(t.Context(), stateRoot, client, applicationContext, 42)
+	if err == nil || !strings.Contains(err.Error(), "snapshot") {
+		t.Fatalf("reuser committed a removed unreferenced snapshot: %v", err)
+	}
+	if client.commandCalls != 0 {
+		t.Fatalf("missing snapshot crossed the Sway mutation boundary: %d commands", client.commandCalls)
+	}
+}
+
 func TestUserDesktopApprovalRejectsSymlinkedTrustMaterial(t *testing.T) {
 	root := t.TempDir()
 	realDesktop := filepath.Join(root, "real.desktop")
@@ -207,6 +366,22 @@ type desktopCommandRunner struct {
 	name      string
 	arguments []string
 	err       error
+}
+
+type cancelAwareDesktopCommandRunner struct{}
+
+func (cancelAwareDesktopCommandRunner) CombinedOutput(ctx context.Context, _ string, _ ...string) ([]byte, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func TestVerifyFlatpakInstallationHonorsCallerCancellation(t *testing.T) {
+	launcher := Launcher{Kind: LauncherFlatpak, FlatpakID: "org.example.App", FlatpakInstallation: FlatpakSystem}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := VerifyFlatpakInstallationContext(ctx, "/usr/bin/flatpak", launcher, cancelAwareDesktopCommandRunner{}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled Flatpak verification returned %v", err)
+	}
 }
 
 func (runner *desktopCommandRunner) CombinedOutput(_ context.Context, name string, arguments ...string) ([]byte, error) {

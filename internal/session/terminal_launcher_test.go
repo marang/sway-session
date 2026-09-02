@@ -47,16 +47,19 @@ func TestBuildTerminalProcessSpecUsesOnlyTypedAdapterArguments(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			context.Launcher.Terminal = &TerminalLauncher{Adapter: test.adapter}
-			spec, err := BuildTerminalProcessSpec(context, test.executable, "/usr/bin/herdr")
+			spec, err := BuildTerminalProcessSpec(context, test.executable, "/usr/bin/herdr", "/home/test/.config/herdr/custom.toml")
 			if err != nil {
 				t.Fatal(err)
 			}
 			if spec.Name != test.executable || !reflect.DeepEqual(spec.Arguments, test.arguments) {
 				t.Fatalf("unexpected process spec: got=%+v want name=%q arguments=%q", spec, test.executable, test.arguments)
 			}
-			if !reflect.DeepEqual(spec.Environment, []string{"SWAY_SESSION_CONTEXT_ID=" + string(context.ID)}) ||
-				!reflect.DeepEqual(spec.UnsetEnvironment, []string{"CODEX_THREAD_ID"}) ||
-				!reflect.DeepEqual(spec.UnsetEnvironmentPrefixes, []string{"HERDR_"}) {
+			if !reflect.DeepEqual(spec.Environment, []string{
+				"SWAY_SESSION_CONTEXT_ID=" + string(context.ID),
+				"HERDR_CONFIG_PATH=/home/test/.config/herdr/custom.toml",
+			}) ||
+				!reflect.DeepEqual(spec.UnsetInheritedEnvironment, []string{"CODEX_THREAD_ID"}) ||
+				!reflect.DeepEqual(spec.UnsetInheritedEnvironmentPrefixes, []string{"HERDR_"}) {
 				t.Fatalf("unsafe terminal environment: %+v", spec)
 			}
 		})

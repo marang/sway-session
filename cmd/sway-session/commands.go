@@ -59,7 +59,7 @@ func executeRequestStart(ctx context.Context, arguments []string, deps dependenc
 	return commandResult{Command: "request-start", Contexts: []sessionstate.Context{*response.Context}, Workspace: response.Workspace, Created: response.Created}, nil
 }
 
-func executeRegister(arguments []string, deps dependencies) (commandResult, *commandFailure) {
+func executeRegister(ctx context.Context, arguments []string, deps dependencies) (commandResult, *commandFailure) {
 	set := newFlagSet("register")
 	sessionName := set.String("session", "", "Herdr session name")
 	cwd := set.String("cwd", "", "project directory")
@@ -105,11 +105,11 @@ func executeRegister(arguments []string, deps dependencies) (commandResult, *com
 	if commandFailure != nil {
 		return commandResult{}, commandFailure
 	}
-	_, err = sessionstate.UpdateRegistry(root, func(registry *sessionstate.Registry) error {
+	_, err = sessionstate.UpdateRegistryContext(ctx, root, func(registry *sessionstate.Registry) error {
 		return sessionstate.AddContext(registry, created)
 	})
 	if err != nil {
-		if committedContext(root, created.ID, func(context sessionstate.Context) bool { return contextsEqual(context, created) }, err) {
+		if committedContextContext(ctx, root, created.ID, func(context sessionstate.Context) bool { return contextsEqual(context, created) }, err) {
 			return commandResult{Command: "register", Contexts: []sessionstate.Context{created}}, nil
 		}
 		return commandResult{}, classifyStateError("register context", err)
@@ -124,7 +124,7 @@ func registrationID(value string, deps dependencies) (sessionstate.ContextID, er
 	return deps.newContextID()
 }
 
-func executeList(arguments []string, deps dependencies) (commandResult, *commandFailure) {
+func executeList(ctx context.Context, arguments []string, deps dependencies) (commandResult, *commandFailure) {
 	if len(arguments) != 0 {
 		return commandResult{}, usageFailure("list", "list accepts no arguments")
 	}
@@ -133,7 +133,7 @@ func executeList(arguments []string, deps dependencies) (commandResult, *command
 		return commandResult{}, commandFailure
 	}
 	registry := sessionstate.Registry{Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{}}
-	if err := sessionstate.RegistryFile(root).LoadInto(&registry); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := sessionstate.RegistryFile(root).LoadIntoContext(ctx, &registry); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return commandResult{}, classifyStateError("load context registry", err)
 	}
 	sort.Slice(registry.Contexts, func(left int, right int) bool {
@@ -142,7 +142,7 @@ func executeList(arguments []string, deps dependencies) (commandResult, *command
 	return commandResult{Command: "list", Contexts: registry.Contexts}, nil
 }
 
-func executeStateChange(name string, arguments []string, state sessionstate.ContextState, deps dependencies) (commandResult, *commandFailure) {
+func executeStateChange(ctx context.Context, name string, arguments []string, state sessionstate.ContextState, deps dependencies) (commandResult, *commandFailure) {
 	if len(arguments) != 1 {
 		return commandResult{}, usageFailure(name, fmt.Sprintf("%s requires exactly one context", name))
 	}
@@ -152,7 +152,7 @@ func executeStateChange(name string, arguments []string, state sessionstate.Cont
 	}
 	var changed sessionstate.Context
 	action := "no_change"
-	_, err := sessionstate.UpdateRegistry(root, func(registry *sessionstate.Registry) error {
+	_, err := sessionstate.UpdateRegistryContext(ctx, root, func(registry *sessionstate.Registry) error {
 		index, resolveErr := sessionstate.ResolveContext(*registry, arguments[0])
 		if resolveErr != nil {
 			return resolveErr
@@ -169,7 +169,7 @@ func executeStateChange(name string, arguments []string, state sessionstate.Cont
 		return mutationErr
 	})
 	if err != nil {
-		if changed.ID != "" && committedContext(root, changed.ID, func(context sessionstate.Context) bool { return contextsEqual(context, changed) }, err) {
+		if changed.ID != "" && committedContextContext(ctx, root, changed.ID, func(context sessionstate.Context) bool { return contextsEqual(context, changed) }, err) {
 			return commandResult{Command: name, Contexts: []sessionstate.Context{changed}, Actions: []string{action}}, nil
 		}
 		return commandResult{}, classifyStateError(name+" context", err)
@@ -188,7 +188,7 @@ func executePurge(ctx context.Context, arguments []string, stdin io.Reader, stde
 		return commandResult{}, commandFailure
 	}
 	registry := sessionstate.Registry{}
-	if err := sessionstate.RegistryFile(root).LoadInto(&registry); err != nil {
+	if err := sessionstate.RegistryFile(root).LoadIntoContext(ctx, &registry); err != nil {
 		return commandResult{}, classifyStateError("load context registry", err)
 	}
 	index, err := sessionstate.ResolveContext(registry, set.Arg(0))
@@ -277,11 +277,11 @@ func executePurge(ctx context.Context, arguments []string, stdin io.Reader, stde
 	}
 	for attempt := 0; attempt < 2; attempt++ {
 		externalReconciled = false
-		_, err = sessionstate.UpdateRegistry(root, mutate)
+		_, err = sessionstate.UpdateRegistryContext(ctx, root, mutate)
 		if err == nil {
 			break
 		}
-		if registryMissingContext(root, target.ID, err) {
+		if registryMissingContext(ctx, root, target.ID, err) {
 			err = nil
 			break
 		}
@@ -322,7 +322,7 @@ func executeRestore(ctx context.Context, arguments []string, deps dependencies) 
 	}
 	result := commandResult{Command: "restore", Contexts: []sessionstate.Context{}}
 	if selector != "" {
-		queued, handled, err := queueDesktopRestore(root, selector)
+		queued, handled, err := queueDesktopRestore(ctx, root, selector)
 		if err != nil {
 			return commandResult{}, classifyStateError("queue desktop application restore", err)
 		}
@@ -333,7 +333,7 @@ func executeRestore(ctx context.Context, arguments []string, deps dependencies) 
 		}
 	}
 	var operationDiagnostics []diagnostic.Diagnostic
-	err := sessionstate.InspectRegistryLocked(root, func(registry sessionstate.Registry) error {
+	err := sessionstate.InspectRegistryLockedContext(ctx, root, func(registry sessionstate.Registry) error {
 		targets, err := restoreTargets(registry, selector, *requireActive)
 		if err != nil {
 			return err
@@ -347,7 +347,7 @@ func executeRestore(ctx context.Context, arguments []string, deps dependencies) 
 			return errors.New("sway client is nil")
 		}
 		defer client.Close()
-		tree, err := requestTree(client)
+		tree, err := requestTree(ctx, client)
 		if err != nil {
 			return err
 		}
@@ -391,7 +391,7 @@ func executeRestore(ctx context.Context, arguments []string, deps dependencies) 
 		for _, id := range sortedWaitingIDs(waiting) {
 			target := waiting[id]
 			if target.Launcher.Terminal == nil {
-				operationDiagnostics = append(operationDiagnostics, diagnosticForContext("terminal_adapter", target, errors.New("herdr context has no terminal adapter"), "Migrate the context registry before retrying."))
+				operationDiagnostics = append(operationDiagnostics, diagnosticForContext("terminal_adapter", target, errors.New("herdr context has no terminal adapter"), "Reset the invalid session state and recreate the context."))
 				delete(waiting, id)
 				continue
 			}
@@ -415,7 +415,7 @@ func executeRestore(ctx context.Context, arguments []string, deps dependencies) 
 				delete(waiting, id)
 				continue
 			}
-			spec, err := sessionstate.BuildTerminalProcessSpec(target, terminalExecutable, herdr)
+			spec, err := sessionstate.BuildTerminalProcessSpec(target, terminalExecutable, herdr, paths.ConfigFile)
 			if err != nil {
 				operationDiagnostics = append(operationDiagnostics, diagnosticForContext("terminal_adapter", target, err, ""))
 				delete(waiting, id)
@@ -450,7 +450,7 @@ func executeRestore(ctx context.Context, arguments []string, deps dependencies) 
 		}
 		deadline := deps.now().Add(deps.settleTimeout)
 		for {
-			tree, err = requestTree(client)
+			tree, err = requestTree(ctx, client)
 			if err != nil {
 				appendAllRestoreFailures(&operationDiagnostics, waiting, "sway_tree", err, "The launched process remains detectable; retry after Sway IPC recovers.")
 				return nil
@@ -496,9 +496,9 @@ func executeRestore(ctx context.Context, arguments []string, deps dependencies) 
 
 var errNotDesktopApplication = errors.New("selected context is not a desktop application")
 
-func queueDesktopRestore(root string, selector string) (sessionstate.Context, bool, error) {
+func queueDesktopRestore(ctx context.Context, root string, selector string) (sessionstate.Context, bool, error) {
 	var queued sessionstate.Context
-	_, err := sessionstate.UpdateRegistry(root, func(registry *sessionstate.Registry) error {
+	_, err := sessionstate.UpdateRegistryContext(ctx, root, func(registry *sessionstate.Registry) error {
 		index, err := sessionstate.ResolveContext(*registry, selector)
 		if err != nil {
 			return err
@@ -551,8 +551,8 @@ func restoreTargets(registry sessionstate.Registry, selector string, requireActi
 	return targets, nil
 }
 
-func requestTree(client swayRequester) (*swayipc.TreeNode, error) {
-	message, err := client.Request(swayipc.GetTree, nil)
+func requestTree(ctx context.Context, client swayRequester) (*swayipc.TreeNode, error) {
+	message, err := client.RequestContext(ctx, swayipc.GetTree, nil)
 	if err != nil {
 		return nil, fmt.Errorf("request Sway tree: %w", err)
 	}
@@ -590,8 +590,10 @@ func committedContextContext(ctx context.Context, root string, id sessionstate.C
 	if !errors.As(updateErr, &unknown) {
 		return false
 	}
+	reconcileCtx, cancel := commandReconciliationContext(ctx)
+	defer cancel()
 	registry := sessionstate.Registry{}
-	if err := sessionstate.RegistryFile(root).LoadIntoContext(ctx, &registry); err != nil {
+	if err := sessionstate.RegistryFile(root).LoadIntoContext(reconcileCtx, &registry); err != nil {
 		return false
 	}
 	for _, context := range registry.Contexts {
@@ -602,13 +604,15 @@ func committedContextContext(ctx context.Context, root string, id sessionstate.C
 	return false
 }
 
-func registryMissingContext(root string, id sessionstate.ContextID, updateErr error) bool {
+func registryMissingContext(ctx context.Context, root string, id sessionstate.ContextID, updateErr error) bool {
 	var unknown *statefile.CommitOutcomeUnknownError
 	if !errors.As(updateErr, &unknown) {
 		return false
 	}
+	reconcileCtx, cancel := commandReconciliationContext(ctx)
+	defer cancel()
 	registry := sessionstate.Registry{}
-	if err := sessionstate.RegistryFile(root).LoadInto(&registry); err != nil {
+	if err := sessionstate.RegistryFile(root).LoadIntoContext(reconcileCtx, &registry); err != nil {
 		return false
 	}
 	for _, context := range registry.Contexts {
@@ -617,6 +621,13 @@ func registryMissingContext(root string, id sessionstate.ContextID, updateErr er
 		}
 	}
 	return true
+}
+
+func commandReconciliationContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 }
 
 func contextsEqual(left sessionstate.Context, right sessionstate.Context) bool {

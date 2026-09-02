@@ -30,7 +30,7 @@ type dependencies struct {
 	userPaths          func() (herdrinit.UserPaths, error)
 	acquireContextLock func(string, sessionstate.ContextID) (io.Closer, error)
 	resolveExecutable  func(string) (string, error)
-	inspectContext     func(string, sessionstate.ContextID, func(sessionstate.Context) error) error
+	inspectContext     func(context.Context, string, sessionstate.ContextID, func(sessionstate.Context) error) error
 	initialize         func(context.Context, sessionstate.Context, []string, herdrinit.Runner) (herdrinit.Result, error)
 }
 
@@ -41,7 +41,7 @@ func defaultDependencies() dependencies {
 			return herdrinit.AcquireContextLock(root, id)
 		},
 		resolveExecutable: herdrinit.ResolveSystemExecutable,
-		inspectContext:    herdrinit.InspectActiveContext,
+		inspectContext:    herdrinit.InspectActiveContextContext,
 		initialize:        herdrinit.Initialize,
 	}
 }
@@ -87,6 +87,12 @@ func runWithContext(ctx context.Context, arguments []string, stdout io.Writer, s
 		writeError(stderr, *structured, err)
 		return 3
 	}
+	operationContext, cancel := context.WithTimeout(ctx, operationTimeout)
+	defer cancel()
+	if err := operationContext.Err(); err != nil {
+		writeError(stderr, *structured, err)
+		return 3
+	}
 	lock, err := deps.acquireContextLock(paths.RuntimeDir, id)
 	if err != nil {
 		writeError(stderr, *structured, err)
@@ -98,10 +104,8 @@ func runWithContext(ctx context.Context, arguments []string, stdout io.Writer, s
 		writeError(stderr, *structured, err)
 		return 3
 	}
-	operationContext, cancel := context.WithTimeout(ctx, operationTimeout)
-	defer cancel()
 	var result herdrinit.Result
-	err = deps.inspectContext(paths.SessionStateRoot(), id, func(contextValue sessionstate.Context) error {
+	err = deps.inspectContext(operationContext, paths.SessionStateRoot(), id, func(contextValue sessionstate.Context) error {
 		var initializeErr error
 		result, initializeErr = deps.initialize(operationContext, contextValue, []string(roles), herdrinit.ExecRunner{Executable: executable, User: paths})
 		return initializeErr

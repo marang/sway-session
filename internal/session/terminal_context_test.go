@@ -90,13 +90,13 @@ func TestCreateTerminalInstanceContextAlwaysCreatesUniqueWindowAndSession(t *tes
 	if IsTerminalInstanceContext(lookalike) {
 		t.Fatal("pre-v4 lookalike without explicit discriminator was classified as a fresh terminal instance")
 	}
-	legacy := first
-	legacy.Launcher.Session = "sway-terminal-instance-" + string(first.ID)
-	if !IsTerminalInstanceContext(legacy) {
-		t.Fatal("v4 terminal instance became invalid after shortening new session names")
+	oldSpelling := first
+	oldSpelling.Launcher.Session = "sway-terminal-instance-" + string(first.ID)
+	if IsTerminalInstanceContext(oldSpelling) {
+		t.Fatal("pre-release terminal instance spelling remained current-schema compatible")
 	}
-	if err := legacy.Validate(); err != nil {
-		t.Fatalf("v4 terminal instance no longer validates: %v", err)
+	if err := oldSpelling.Validate(); err == nil {
+		t.Fatal("pre-release terminal instance spelling passed current-schema validation")
 	}
 }
 

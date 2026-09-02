@@ -2,7 +2,9 @@ package session
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -71,6 +73,37 @@ func TestApplicationOperationTokenIsOwnerOnlyOneTimeAndBounded(t *testing.T) {
 	}
 	if _, err := store.Consume(token); err == nil {
 		t.Fatal("operation token was replayable")
+	}
+}
+
+func TestApplicationOperationContextStopsWaitingForStoreLock(t *testing.T) {
+	store := ApplicationOperationStore{RuntimeRoot: t.TempDir(), Random: bytes.NewReader(bytes.Repeat([]byte{0x7a}, 16))}
+	locked := make(chan struct{})
+	release := make(chan struct{})
+	lockDone := make(chan error, 1)
+	go func() {
+		lockDone <- statefile.WithPrivateDirectoryLock(store.directory(), func(*statefile.LockedPrivateDirectory) error {
+			close(locked)
+			<-release
+			return nil
+		})
+	}()
+	<-locked
+	defer func() {
+		close(release)
+		if err := <-lockDone; err != nil {
+			t.Errorf("release operation-store lock: %v", err)
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	_, err := store.CreateContext(ctx, ApplicationOperation{
+		Kind:  OperationReapprove,
+		Items: []ApplicationOperationItem{{ContextID: testContextID, ContextRevision: strings.Repeat("a", 64), DesktopID: "safe.desktop"}},
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("locked operation store returned %v, want context deadline", err)
 	}
 }
 

@@ -15,7 +15,7 @@ import (
 func TestSwayShutdownMonitorStopsOnShutdownEvent(t *testing.T) {
 	socket, closeServer := fakeSwayShutdownServer(t, true)
 	defer closeServer()
-	monitor, err := subscribeToSwayShutdown(socket)
+	monitor, err := subscribeToSwayShutdown(t.Context(), socket)
 	if err != nil {
 		t.Fatalf("subscribeToSwayShutdown returned error: %v", err)
 	}
@@ -30,7 +30,7 @@ func TestSwayShutdownMonitorStopsOnShutdownEvent(t *testing.T) {
 func TestSwayShutdownMonitorStopsOnContextCancellation(t *testing.T) {
 	socket, closeServer := fakeSwayShutdownServer(t, false)
 	defer closeServer()
-	monitor, err := subscribeToSwayShutdown(socket)
+	monitor, err := subscribeToSwayShutdown(t.Context(), socket)
 	if err != nil {
 		t.Fatalf("subscribeToSwayShutdown returned error: %v", err)
 	}
@@ -38,6 +38,17 @@ func TestSwayShutdownMonitorStopsOnContextCancellation(t *testing.T) {
 	cancel()
 	if err := monitor.Wait(ctx); err != nil {
 		t.Fatalf("cancel monitor: %v", err)
+	}
+}
+
+func TestSwayShutdownMonitorTreatsReaderCancellationRaceAsCleanShutdown(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	monitor := &swayShutdownMonitor{result: make(chan error, 1)}
+	monitor.result <- fmt.Errorf("sway ipc read canceled: %w", context.Canceled)
+
+	if err := monitor.Wait(ctx); err != nil {
+		t.Fatalf("canceled reader won select race: %v", err)
 	}
 }
 

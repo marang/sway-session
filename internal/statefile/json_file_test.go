@@ -111,6 +111,9 @@ func TestContextOperationsStopWaitingForStateLock(t *testing.T) {
 	defer unlockDirectory(directory)
 
 	for name, operation := range map[string]func(context.Context) error{
+		"save": func(ctx context.Context) error {
+			return file.SaveContext(ctx, want)
+		},
 		"load": func(ctx context.Context) error {
 			var got testDocument
 			return file.LoadIntoContext(ctx, &got)
@@ -127,6 +130,57 @@ func TestContextOperationsStopWaitingForStateLock(t *testing.T) {
 				t.Fatal("inspection ran without acquiring the state lock")
 				return nil
 			})
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+			defer cancel()
+			if err := operation(ctx); !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("locked %s returned %v, want context deadline", name, err)
+			}
+		})
+	}
+}
+
+func TestPrivateFileContextOperationsStopWaitingForDirectoryLock(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "private")
+	if err := CreatePrivateFile(root, "existing", []byte("data")); err != nil {
+		t.Fatal(err)
+	}
+	directory, err := openStateDirectory(root, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer directory.Close()
+	if err := lockDirectory(directory, unix.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	defer unlockDirectory(directory)
+
+	for name, operation := range map[string]func(context.Context) error{
+		"compound": func(ctx context.Context) error {
+			return WithPrivateDirectoryLockContext(ctx, root, func(*LockedPrivateDirectory) error {
+				t.Fatal("compound action ran without acquiring the directory lock")
+				return nil
+			})
+		},
+		"create": func(ctx context.Context) error {
+			return CreatePrivateFileContext(ctx, root, "new", []byte("data"))
+		},
+		"read": func(ctx context.Context) error {
+			_, readErr := ReadPrivateFileContext(ctx, root, "existing")
+			return readErr
+		},
+		"list": func(ctx context.Context) error {
+			_, listErr := ListPrivateFilesContext(ctx, root, 2)
+			return listErr
+		},
+		"consume": func(ctx context.Context) error {
+			_, consumeErr := ConsumePrivateFileContext(ctx, root, "existing")
+			return consumeErr
+		},
+		"remove": func(ctx context.Context) error {
+			return RemovePrivateFileContext(ctx, root, "existing")
 		},
 	} {
 		t.Run(name, func(t *testing.T) {

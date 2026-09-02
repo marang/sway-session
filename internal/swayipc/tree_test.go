@@ -36,6 +36,18 @@ func TestDecodeEventPreservesTypedPayload(t *testing.T) {
 			payload:     `{"change":"run"}`,
 			wantType:    EventBinding,
 		},
+		{
+			name:        "tick",
+			messageType: tickEventMessage,
+			payload:     `{"first":false,"payload":"_sway_session_move_7"}`,
+			wantType:    EventTick,
+		},
+		{
+			name:        "initial tick",
+			messageType: tickEventMessage,
+			payload:     `{"first":true,"payload":""}`,
+			wantType:    EventTick,
+		},
 	}
 
 	for _, test := range tests {
@@ -52,6 +64,12 @@ func TestDecodeEventPreservesTypedPayload(t *testing.T) {
 			}
 			if event.Current != nil && event.Current.ID != test.wantID {
 				t.Fatalf("unexpected current workspace: %+v", event.Current)
+			}
+			if test.name == "tick" && event.Payload != "_sway_session_move_7" {
+				t.Fatalf("unexpected tick payload: %q", event.Payload)
+			}
+			if test.name == "initial tick" && !event.First {
+				t.Fatal("initial tick lost its first-event marker")
 			}
 		})
 	}
@@ -76,6 +94,7 @@ func TestEventLayoutRelevanceExcludesPresentationOnlyChanges(t *testing.T) {
 		{Type: EventWorkspace, Change: "urgent"},
 		{Type: EventShutdown, Change: "exit"},
 		{Type: EventBinding, Change: "run"},
+		{Type: EventTick, Payload: "barrier"},
 	} {
 		if event.AffectsSessionLayout() {
 			t.Fatalf("presentation-only event affected session layout: %+v", event)

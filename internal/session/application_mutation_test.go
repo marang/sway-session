@@ -1,9 +1,12 @@
 package session
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -16,7 +19,7 @@ func TestRegisterApplicationContextMarksAndEnablesIndicatorsInOneTransaction(t *
 	context := flatpakApplicationContext("org.example.App", "org.example.App")
 	context.ID = testContextID
 	client := &mutationSwayClient{tree: applicationTree(appWindow(42, true, "org.example.App", "", "", "org.example.App"))}
-	if err := RegisterApplicationContext(root, client, context, 42); err != nil {
+	if err := RegisterApplicationContext(t.Context(), root, client, context, 42); err != nil {
 		t.Fatal(err)
 	}
 	var registry Registry
@@ -35,7 +38,7 @@ func TestRegisterApplicationContextRollsBackWhenSwayRejectsMark(t *testing.T) {
 	context := flatpakApplicationContext("org.example.App", "org.example.App")
 	context.ID = testContextID
 	client := &mutationSwayClient{tree: applicationTree(appWindow(42, true, "org.example.App", "", "", "org.example.App")), reject: true}
-	if err := RegisterApplicationContext(root, client, context, 42); err == nil {
+	if err := RegisterApplicationContext(t.Context(), root, client, context, 42); err == nil {
 		t.Fatal("Sway mark rejection was accepted")
 	}
 	var registry Registry
@@ -47,7 +50,7 @@ func TestRegisterApplicationContextRollsBackWhenSwayRejectsMark(t *testing.T) {
 func TestSetContextMarkReobservesUnknownCommandOutcome(t *testing.T) {
 	window := appWindow(42, true, "org.example.App", "", "", "")
 	client := &mutationSwayClient{tree: applicationTree(window), unknownAfterApply: true}
-	if err := SetContextMark(client, 42, testContextID, true); err != nil {
+	if err := SetContextMark(t.Context(), client, 42, testContextID, true); err != nil {
 		t.Fatalf("observably successful unknown outcome failed: %v", err)
 	}
 	mark, _ := testContextID.Mark()
@@ -62,12 +65,173 @@ func TestRegisterRollsBackAttemptedMarkWhenUnknownOutcomeCannotBeObserved(t *tes
 	context.ID = testContextID
 	window := appWindow(42, true, "org.example.App", "", "", "org.example.App")
 	client := &mutationSwayClient{tree: applicationTree(window), unknownAfterApply: true, observeFailures: 1}
-	if err := RegisterApplicationContext(root, client, context, 42); err == nil {
+	if err := RegisterApplicationContext(t.Context(), root, client, context, 42); err == nil {
 		t.Fatal("unobservable mark outcome was accepted")
 	}
 	mark, _ := context.ID.Mark()
 	if containsMark(window.Marks, mark) {
 		t.Fatalf("attempted mark was orphaned after registry rollback: %q", window.Marks)
+	}
+}
+
+func TestRegisterDoesNotRollBackMarkWhenCommittedRegistryCannotBeReconciled(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state")
+	applicationContext := flatpakApplicationContext("org.example.App", "org.example.App")
+	applicationContext.ID = testContextID
+	committed := Registry{
+		Version:     ContextsSchemaVersion,
+		Preferences: RegistryPreferences{DesktopIndicators: true},
+		Contexts:    []Context{applicationContext},
+	}
+	data, err := json.Marshal(committed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	window := appWindow(42, true, "org.example.App", "", "", "org.example.App")
+	wroteCommittedRegistry := false
+	client := &mutationSwayClient{
+		tree:              applicationTree(window),
+		unknownAfterApply: true,
+		observeFailures:   1,
+		beforeCommand: func() {
+			if wroteCommittedRegistry {
+				return
+			}
+			wroteCommittedRegistry = true
+			path := filepath.Join(root, ContextsFilename)
+			if err := os.WriteFile(path, data, 0o600); err != nil {
+				t.Fatalf("write committed registry: %v", err)
+			}
+			if err := os.Chmod(path, 0); err != nil {
+				t.Fatalf("make reconciliation load fail: %v", err)
+			}
+		},
+	}
+
+	err = RegisterApplicationContext(t.Context(), root, client, applicationContext, 42)
+	if err == nil {
+		t.Fatal("unknown registry reconciliation was accepted")
+	}
+	mark, _ := applicationContext.ID.Mark()
+	if !containsMark(window.Marks, mark) {
+		t.Fatalf("unknown registry reconciliation destructively removed committed mark: %q", window.Marks)
+	}
+	if !strings.Contains(err.Error(), "daemon reconciliation") {
+		t.Fatalf("reconciliation failure was not actionable: %v", err)
+	}
+
+	path := filepath.Join(root, ContextsFilename)
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatalf("restore committed registry permissions: %v", err)
+	}
+	var visible Registry
+	if err := RegistryFile(root).LoadInto(&visible); err != nil {
+		t.Fatalf("load committed registry: %v", err)
+	}
+	if len(visible.Contexts) != 1 || !reflect.DeepEqual(visible.Contexts[0], applicationContext) {
+		t.Fatalf("unexpected committed registry: %+v", visible)
+	}
+}
+
+func TestRegisterDoesNotRollBackCommittedMarkAfterConcurrentLifecycleChange(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state")
+	applicationContext := flatpakApplicationContext("org.example.App", "org.example.App")
+	applicationContext.ID = testContextID
+	committedContext := applicationContext
+	committedContext.App = &Application{
+		Identity:      applicationContext.App.Identity,
+		DesiredOpen:   true,
+		RestorePolicy: ApplicationRestorePinned,
+	}
+	committed := Registry{
+		Version:     ContextsSchemaVersion,
+		Preferences: RegistryPreferences{DesktopIndicators: true},
+		Contexts:    []Context{committedContext},
+	}
+	data, err := json.Marshal(committed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	window := appWindow(42, true, "org.example.App", "", "", "org.example.App")
+	wroteCommittedRegistry := false
+	client := &mutationSwayClient{
+		tree:                        applicationTree(window),
+		unknownAfterApply:           true,
+		observeFailuresAfterCommand: 1,
+		beforeCommand: func() {
+			if wroteCommittedRegistry {
+				return
+			}
+			wroteCommittedRegistry = true
+			if err := os.WriteFile(filepath.Join(root, ContextsFilename), data, 0o600); err != nil {
+				t.Fatalf("write concurrently updated registry: %v", err)
+			}
+		},
+	}
+
+	if err := RegisterApplicationContext(t.Context(), root, client, applicationContext, 42); err != nil {
+		t.Fatalf("committed registration was mistaken for rollback after lifecycle change: %v", err)
+	}
+	mark, _ := applicationContext.ID.Mark()
+	if !containsMark(window.Marks, mark) {
+		t.Fatalf("concurrent lifecycle change caused committed mark rollback: %q", window.Marks)
+	}
+	var visible Registry
+	if err := RegistryFile(root).LoadInto(&visible); err != nil {
+		t.Fatal(err)
+	}
+	if len(visible.Contexts) != 1 || visible.Contexts[0].App.RestorePolicy != ApplicationRestorePinned {
+		t.Fatalf("concurrent lifecycle state was not preserved: %+v", visible)
+	}
+}
+
+func TestApplicationMutationReconciliationIgnoresOnlyLifecycleFields(t *testing.T) {
+	expected := flatpakApplicationContext("org.example.App", "org.example.App")
+	expected.ID = testContextID
+	current := expected
+	current.State = ContextArchived
+	archivedAt := time.Now().UTC()
+	current.ArchivedAt = &archivedAt
+	current.App = &Application{
+		Identity:      expected.App.Identity,
+		DesiredOpen:   true,
+		RestorePolicy: ApplicationRestorePinned,
+	}
+	if !sameApplicationMutation(current, expected) {
+		t.Fatal("authoritative lifecycle change hid a committed application mutation")
+	}
+
+	differentLauncher := current
+	differentLauncher.Launcher.FlatpakID = "org.example.Other"
+	if sameApplicationMutation(differentLauncher, expected) {
+		t.Fatal("different launcher was mistaken for the committed mutation")
+	}
+	differentIdentity := current
+	differentIdentity.App = &Application{
+		Identity: ApplicationIdentity{Protocol: WindowWayland, WaylandAppID: "org.example.Other"},
+	}
+	if sameApplicationMutation(differentIdentity, expected) {
+		t.Fatal("different window identity was mistaken for the committed mutation")
+	}
+}
+
+func TestRegisterUsesFreshBoundedContextForRollbackAfterCancellation(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state")
+	applicationContext := flatpakApplicationContext("org.example.App", "org.example.App")
+	applicationContext.ID = testContextID
+	window := appWindow(42, true, "org.example.App", "", "", "org.example.App")
+	ctx, cancel := context.WithCancel(context.Background())
+	client := &mutationSwayClient{
+		tree:               applicationTree(window),
+		honorContext:       true,
+		cancelAfterCommand: cancel,
+	}
+	if err := RegisterApplicationContext(ctx, root, client, applicationContext, 42); err == nil {
+		t.Fatal("canceled registration was accepted")
+	}
+	mark, _ := applicationContext.ID.Mark()
+	if containsMark(window.Marks, mark) {
+		t.Fatalf("canceled registration left an orphaned Sway mark: %q", window.Marks)
 	}
 }
 
@@ -89,7 +253,7 @@ func TestRepairApplicationMarkHoldsRegistryLockAcrossSwayMutation(t *testing.T) 
 	}
 	repairDone := make(chan error, 1)
 	go func() {
-		repairDone <- RepairApplicationMark(root, client, 42, registered)
+		repairDone <- RepairApplicationMark(t.Context(), root, client, 42, registered)
 	}()
 	<-commandStarted
 
@@ -146,7 +310,7 @@ func TestRebindPreservesLifecycleChangedAfterApprovalWasReviewed(t *testing.T) {
 	replacement.ID = expected.ID
 	client := &mutationSwayClient{tree: applicationTree(appWindow(42, true, "org.example.New", "", "", "org.example.New"))}
 
-	if _, _, err := RebindApplicationContext(root, client, expected, replacement, 42); err != nil {
+	if _, _, err := RebindApplicationContext(t.Context(), root, client, expected, replacement, 42); err != nil {
 		t.Fatalf("lifecycle-only change invalidated rebind approval: %v", err)
 	}
 	var registry Registry
@@ -177,11 +341,71 @@ func TestRebindRejectsLauncherChangedAfterApprovalWasReviewed(t *testing.T) {
 	replacement.ID = expected.ID
 	client := &mutationSwayClient{tree: applicationTree(appWindow(42, true, "org.example.New", "", "", "org.example.New"))}
 
-	if _, _, err := RebindApplicationContext(root, client, expected, replacement, 42); err == nil {
+	if _, _, err := RebindApplicationContext(t.Context(), root, client, expected, replacement, 42); err == nil {
 		t.Fatal("rebind accepted a launcher changed after approval")
 	}
 	if client.commandCalls != 0 {
 		t.Fatalf("stale rebind crossed the Sway mutation boundary: %d commands", client.commandCalls)
+	}
+}
+
+func TestRebindDoesNotRollBackMarkWhenCommittedRegistryCannotBeReconciled(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state")
+	expected := flatpakApplicationContext("org.example.Old", "org.example.Old")
+	expected.ID = testContextID
+	if err := RegistryFile(root).Save(Registry{Version: ContextsSchemaVersion, Contexts: []Context{expected}}); err != nil {
+		t.Fatal(err)
+	}
+	replacement := flatpakApplicationContext("org.example.New", "org.example.New")
+	replacement.ID = expected.ID
+	committed := Registry{Version: ContextsSchemaVersion, Contexts: []Context{replacement}}
+	data, err := json.Marshal(committed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	window := appWindow(42, true, "org.example.New", "", "", "org.example.New")
+	wroteCommittedRegistry := false
+	client := &mutationSwayClient{
+		tree:                        applicationTree(window),
+		unknownAfterApply:           true,
+		observeFailuresAfterCommand: 1,
+		beforeCommand: func() {
+			if wroteCommittedRegistry {
+				return
+			}
+			wroteCommittedRegistry = true
+			path := filepath.Join(root, ContextsFilename)
+			if err := os.WriteFile(path, data, 0o600); err != nil {
+				t.Fatalf("write committed registry: %v", err)
+			}
+			if err := os.Chmod(path, 0); err != nil {
+				t.Fatalf("make reconciliation load fail: %v", err)
+			}
+		},
+	}
+
+	_, _, err = RebindApplicationContext(t.Context(), root, client, expected, replacement, 42)
+	if err == nil {
+		t.Fatal("unknown registry reconciliation was accepted")
+	}
+	mark, _ := replacement.ID.Mark()
+	if !containsMark(window.Marks, mark) {
+		t.Fatalf("unknown registry reconciliation destructively removed committed mark: %q", window.Marks)
+	}
+	if !strings.Contains(err.Error(), "daemon reconciliation") {
+		t.Fatalf("reconciliation failure was not actionable: %v", err)
+	}
+
+	path := filepath.Join(root, ContextsFilename)
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatalf("restore committed registry permissions: %v", err)
+	}
+	var visible Registry
+	if err := RegistryFile(root).LoadInto(&visible); err != nil {
+		t.Fatalf("load committed registry: %v", err)
+	}
+	if len(visible.Contexts) != 1 || !reflect.DeepEqual(visible.Contexts[0], replacement) {
+		t.Fatalf("unexpected committed registry: %+v", visible)
 	}
 }
 
@@ -214,12 +438,34 @@ func TestReapprovePreservesLifecycleChangedAfterApprovalWasReviewed(t *testing.T
 	launcher.DesktopEntrySHA256 = strings.Repeat("b", 64)
 	launcher.ApprovedExecutableSHA256 = strings.Repeat("b", 64)
 
-	_, replacement, err := ReapproveApplicationContext(root, expected.ID, revision, launcher)
+	_, replacement, err := ReapproveApplicationContext(t.Context(), root, expected.ID, revision, launcher)
 	if err != nil {
 		t.Fatalf("lifecycle-only change invalidated reapproval: %v", err)
 	}
 	if replacement.Launcher.DesktopEntrySHA256 != strings.Repeat("b", 64) || replacement.App.RestorePolicy != ApplicationRestorePinned {
 		t.Fatalf("reapproval did not merge reviewed launcher with current lifecycle: %+v", replacement)
+	}
+}
+
+func TestReapproveReportsUnknownRegistryReconciliation(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state")
+	expected := flatpakApplicationContext("org.example.App", "org.example.App")
+	expected.ID = testContextID
+	if err := RegistryFile(root).Save(Registry{Version: ContextsSchemaVersion, Contexts: []Context{expected}}); err != nil {
+		t.Fatal(err)
+	}
+	revision, err := ApplicationOperationContextRevision(expected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, ContextsFilename)
+	if err := os.Chmod(path, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err = ReapproveApplicationContext(t.Context(), root, expected.ID, revision, expected.Launcher)
+	if err == nil || !strings.Contains(err.Error(), "cannot reconcile registry state") {
+		t.Fatalf("reapproval did not report unknown reconciliation: %v", err)
 	}
 }
 
@@ -254,18 +500,28 @@ func TestSwaynagApprovalPresenterUsesOnlyFixedCommandAndValidatedToken(t *testin
 }
 
 type mutationSwayClient struct {
-	tree              *swayipc.TreeNode
-	reject            bool
-	unknownAfterApply bool
-	observeFailures   int
-	commandCalls      int
-	beforeCommand     func()
+	tree                        *swayipc.TreeNode
+	reject                      bool
+	unknownAfterApply           bool
+	observeFailures             int
+	observeFailuresAfterCommand int
+	commandCalls                int
+	beforeCommand               func()
+	honorContext                bool
+	cancelAfterCommand          func()
 }
 
-func (client *mutationSwayClient) Request(messageType swayipc.MessageType, payload []byte) (swayipc.Message, error) {
+func (client *mutationSwayClient) RequestContext(ctx context.Context, messageType swayipc.MessageType, payload []byte) (swayipc.Message, error) {
+	if client.honorContext && ctx.Err() != nil {
+		return swayipc.Message{}, ctx.Err()
+	}
 	if messageType == swayipc.GetTree {
 		if client.observeFailures > 0 {
 			client.observeFailures--
+			return swayipc.Message{}, errors.New("tree unavailable")
+		}
+		if client.commandCalls > 0 && client.observeFailuresAfterCommand > 0 {
+			client.observeFailuresAfterCommand--
 			return swayipc.Message{}, errors.New("tree unavailable")
 		}
 		data, err := json.Marshal(client.tree)
@@ -300,6 +556,11 @@ func (client *mutationSwayClient) Request(messageType swayipc.MessageType, paylo
 	}
 	if client.unknownAfterApply {
 		return swayipc.Message{}, errors.New("connection lost after send")
+	}
+	if client.cancelAfterCommand != nil {
+		client.cancelAfterCommand()
+		client.cancelAfterCommand = nil
+		return swayipc.Message{}, context.Canceled
 	}
 	if client.reject {
 		return swayipc.Message{Type: swayipc.RunCommand, Payload: []byte(`[{"success":false,"error":"rejected"}]`)}, nil

@@ -37,13 +37,22 @@ type Result struct {
 // InspectActiveContext keeps the registry lock for the complete dependent
 // operation, preventing archive or purge from racing Herdr mutations.
 func InspectActiveContext(root string, id sessionstate.ContextID, inspect func(sessionstate.Context) error) error {
+	return InspectActiveContextContext(context.Background(), root, id, inspect)
+}
+
+// InspectActiveContextContext is InspectActiveContext with cancelable registry
+// lock acquisition and inspection.
+func InspectActiveContextContext(ctx context.Context, root string, id sessionstate.ContextID, inspect func(sessionstate.Context) error) error {
+	if ctx == nil {
+		return errors.New("active context inspection context is nil")
+	}
 	if err := id.Validate(); err != nil {
 		return err
 	}
 	if inspect == nil {
 		return errors.New("active context inspector is nil")
 	}
-	return sessionstate.InspectRegistryLocked(root, func(registry sessionstate.Registry) error {
+	return sessionstate.InspectRegistryLockedContext(ctx, root, func(registry sessionstate.Registry) error {
 		contextValue, err := activeContext(registry, id)
 		if err != nil {
 			return err

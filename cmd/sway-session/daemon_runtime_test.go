@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -15,9 +16,47 @@ import (
 
 type recordingRequester struct {
 	commands []string
+	barriers []string
 	failAt   int
 	failure  error
 }
+
+type mutableEventStreamGuard struct {
+	epoch     uint64
+	connected bool
+}
+
+func (guard *mutableEventStreamGuard) Snapshot() (uint64, bool) {
+	return guard.epoch, guard.connected
+}
+
+type disconnectingDaemonRequester struct {
+	guard    *mutableEventStreamGuard
+	commands int
+	barriers int
+}
+
+func (requester *disconnectingDaemonRequester) RequestContext(ctx context.Context, messageType swayipc.MessageType, _ []byte) (swayipc.Message, error) {
+	if err := ctx.Err(); err != nil {
+		return swayipc.Message{}, err
+	}
+	switch messageType {
+	case swayipc.RunCommand:
+		requester.commands++
+		if requester.commands == 1 {
+			requester.guard.epoch = 2
+			requester.guard.connected = false
+		}
+		return swayipc.Message{Type: swayipc.RunCommand, Payload: []byte(`[{"success":true}]`)}, nil
+	case swayipc.SendTick:
+		requester.barriers++
+		return swayipc.Message{Type: swayipc.SendTick, Payload: []byte(`{"success":true}`)}, nil
+	default:
+		return swayipc.Message{}, errors.New("unexpected fake Sway request")
+	}
+}
+
+func (*disconnectingDaemonRequester) Close() {}
 
 type recordingApplicationLauncher struct {
 	contexts     []sessionstate.Context
@@ -41,7 +80,10 @@ func (launch recordingPreparedApplicationLaunch) Start() error {
 	return nil
 }
 
-func (launcher *recordingApplicationLauncher) Prepare(context sessionstate.Context) (preparedApplicationLaunch, error) {
+func (launcher *recordingApplicationLauncher) Prepare(ctx context.Context, context sessionstate.Context) (preparedApplicationLaunch, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if launcher.prepareErr != nil {
 		return nil, launcher.prepareErr
 	}
@@ -110,25 +152,205 @@ func TestSessionRuntimeFocusActivityCancelsConflictingRestore(t *testing.T) {
 	}
 }
 
-func TestSessionRuntimeExpiredExpectedMoveCannotHideLaterUserMove(t *testing.T) {
-	now := time.Unix(5000, 0)
+func TestSessionRuntimeDelayedExpectedMovePreservesRestoreThenNextMoveCancels(t *testing.T) {
+	now := time.Now()
 	runtime := &sessionRuntime{
 		persisted: sessionstate.LayoutSnapshot{Version: sessionstate.LayoutSchemaVersion, Workspaces: []sessionstate.WorkspaceLayout{{
 			Name: "98: apps", RestoreMode: sessionstate.WorkspaceRestorePlacementOnly, PlacementContexts: []sessionstate.ContextID{testManagedContextID},
 		}}},
 		restoreProgress: &sessionstate.RestoreProgress{Workspace: "98: apps", Phase: sessionstate.RestoreBuild},
 		restoreExcluded: map[string]struct{}{},
-		expectedMoves:   map[int64]expectedMove{41: {count: 1, expiresAt: now.Add(-time.Second)}},
+	}
+	runtime.expectMove(41)
+
+	runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "move", Container: &Node{ID: 41}}, now.Add(time.Hour))
+
+	if runtime.restoreProgress == nil {
+		t.Fatal("delayed daemon move was mistaken for later user intent")
+	}
+	if len(runtime.expectedMoves) != 0 {
+		t.Fatalf("consumed daemon move remained pending: %+v", runtime.expectedMoves)
 	}
 
-	runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "move", Container: &Node{ID: 41}}, now)
+	runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "move", Container: &Node{ID: 41}}, now.Add(2*time.Hour))
 
 	if runtime.restoreProgress != nil {
-		t.Fatal("expired daemon move expectation hid a later user move")
+		t.Fatal("move after the daemon-generated event did not cancel restore")
 	}
 }
 
-func (requester *recordingRequester) Request(messageType swayipc.MessageType, payload []byte) (swayipc.Message, error) {
+func TestSessionRuntimeReconnectInvalidatesStaleExpectedMove(t *testing.T) {
+	runtime := &sessionRuntime{
+		persisted: sessionstate.LayoutSnapshot{Version: sessionstate.LayoutSchemaVersion, Workspaces: []sessionstate.WorkspaceLayout{{
+			Name: "98: apps", RestoreMode: sessionstate.WorkspaceRestorePlacementOnly, PlacementContexts: []sessionstate.ContextID{testManagedContextID},
+		}}},
+		restoreProgress: &sessionstate.RestoreProgress{Workspace: "98: apps", Phase: sessionstate.RestoreBuild},
+		restoreExcluded: map[string]struct{}{},
+	}
+	runtime.HandleEvent(swayipc.Event{Type: swayipc.EventStream, Change: "ready"}, time.Now())
+	if runtime.restoreProgress == nil {
+		t.Fatal("initial event-stream readiness canceled startup restore")
+	}
+	runtime.expectMove(41)
+
+	runtime.HandleEvent(swayipc.Event{Type: swayipc.EventStream, Change: "ready"}, time.Now())
+	if runtime.restoreProgress != nil {
+		t.Fatal("event-stream reconnect continued restore despite possibly lost user intent")
+	}
+	if len(runtime.expectedMoves) != 0 {
+		t.Fatalf("reconnect retained stale move expectations: %+v", runtime.expectedMoves)
+	}
+}
+
+func TestSessionRuntimeStreamLossDuringStartupSettlingCancelsRestore(t *testing.T) {
+	for _, transition := range []swayipc.Event{
+		{Type: swayipc.EventStream, Change: "disconnected"},
+		{Type: swayipc.EventStream, Change: "ready"},
+	} {
+		t.Run(transition.Change, func(t *testing.T) {
+			runtime := &sessionRuntime{
+				persisted: sessionstate.LayoutSnapshot{Version: sessionstate.LayoutSchemaVersion, Workspaces: []sessionstate.WorkspaceLayout{{
+					Name: "98: apps", RestoreMode: sessionstate.WorkspaceRestorePlacementOnly, PlacementContexts: []sessionstate.ContextID{testManagedContextID},
+				}}},
+				startupDeadline: time.Now().Add(sessionStartupSettleDelay),
+				restoreExcluded: map[string]struct{}{},
+			}
+			runtime.HandleEvent(swayipc.Event{Type: swayipc.EventStream, Change: "ready"}, time.Now())
+			if runtime.startupComplete {
+				t.Fatal("initial event-stream readiness canceled startup settling")
+			}
+
+			runtime.HandleEvent(transition, time.Now())
+
+			if !runtime.startupComplete || !runtime.startupDeadline.IsZero() || !runtime.originalFocusDone {
+				t.Fatalf("stream loss left startup restore active: %+v", runtime)
+			}
+			if _, excluded := runtime.restoreExcluded["98: apps"]; !excluded {
+				t.Fatal("stream loss left startup workspace eligible for restoration")
+			}
+		})
+	}
+}
+
+func TestSessionRuntimeStopsMutatingWhenStreamDisconnectsDuringReconcile(t *testing.T) {
+	stateHome := filepath.Join(t.TempDir(), "state")
+	setSessionTestStateHome(t, stateHome)
+	root := filepath.Join(stateHome, "sway-session")
+	if err := sessionstate.RegistryFile(root).Save(sessionRegistry(testManagedContextID)); err != nil {
+		t.Fatal(err)
+	}
+	if err := sessionstate.LayoutFile(root).Save(placementOnlySnapshot("98: saved", testManagedContextID)); err != nil {
+		t.Fatal(err)
+	}
+	guard := &mutableEventStreamGuard{epoch: 1, connected: true}
+	requester := &disconnectingDaemonRequester{guard: guard}
+	runtime, err := newSessionRuntimeWithOptions(requester, sessionRuntimeOptions{Root: root, EventStreamState: guard})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime.HandleEvent(swayipc.Event{Type: swayipc.EventStream, Change: "ready", StreamEpoch: 1}, time.Now())
+	appID, _ := testManagedContextID.AppID()
+
+	_, err = runtime.Reconcile(daemonTree("99: current", &Node{ID: 41, Type: "con", AppID: &appID}), time.Now())
+
+	if err == nil || !strings.Contains(err.Error(), "event stream changed") {
+		t.Fatalf("disconnecting reconciliation returned %v", err)
+	}
+	if requester.commands != 1 || requester.barriers != 0 {
+		t.Fatalf("stream loss allowed later mutations: commands=%d barriers=%d", requester.commands, requester.barriers)
+	}
+	if !runtime.startupComplete || runtime.restoreProgress != nil {
+		t.Fatalf("stream loss left startup restoration active: %+v", runtime)
+	}
+}
+
+func TestSessionRuntimeAmbiguousMoveOutcomeStopsRestoreAndExposesLaterUserMove(t *testing.T) {
+	for _, failure := range []error{
+		&swayipc.CommandOutcomeUnknownError{Cause: errors.New("connection lost")},
+		&swayipc.CommandResponseInvalidError{Cause: errors.New("malformed response")},
+	} {
+		runtime := &sessionRuntime{
+			client: &recordingRequester{failAt: 1, failure: failure},
+			persisted: sessionstate.LayoutSnapshot{
+				Version: sessionstate.LayoutSchemaVersion,
+				Workspaces: []sessionstate.WorkspaceLayout{{
+					Name:              "98: apps",
+					RestoreMode:       sessionstate.WorkspaceRestorePlacementOnly,
+					PlacementContexts: []sessionstate.ContextID{testManagedContextID},
+				}},
+			},
+			restoreProgress: &sessionstate.RestoreProgress{Workspace: "98: apps", Phase: sessionstate.RestoreBuild},
+			restoreExcluded: map[string]struct{}{},
+		}
+
+		err := runtime.applyPlacementAction(sessionstate.PlacementAction{
+			Kind:        sessionstate.PlacementMoveWorkspace,
+			ContextID:   testManagedContextID,
+			ContainerID: 41,
+			Workspace:   "98: apps",
+		})
+		if !errors.Is(err, failure) {
+			t.Fatalf("ambiguous move returned %v, want %v", err, failure)
+		}
+		if runtime.restoreProgress != nil {
+			t.Fatal("ambiguous move outcome left conflicting restore active")
+		}
+		if len(runtime.expectedMoves) != 0 || runtime.consumeExpectedMove(41) {
+			t.Fatalf("ambiguous move could hide a later user move: %+v", runtime.expectedMoves)
+		}
+	}
+}
+
+func TestSessionRuntimeNoOpMoveBarrierExpiresAttributionBeforeLaterUserMove(t *testing.T) {
+	requester := &recordingRequester{}
+	runtime := &sessionRuntime{
+		client: requester,
+		persisted: sessionstate.LayoutSnapshot{
+			Version: sessionstate.LayoutSchemaVersion,
+			Workspaces: []sessionstate.WorkspaceLayout{{
+				Name:              "98: apps",
+				RestoreMode:       sessionstate.WorkspaceRestorePlacementOnly,
+				PlacementContexts: []sessionstate.ContextID{testManagedContextID},
+			}},
+		},
+		restoreProgress: &sessionstate.RestoreProgress{Workspace: "98: apps", Phase: sessionstate.RestoreBuild},
+		restoreExcluded: map[string]struct{}{},
+	}
+
+	if err := runtime.applyPlacementAction(sessionstate.PlacementAction{
+		Kind:        sessionstate.PlacementMoveWorkspace,
+		ContextID:   testManagedContextID,
+		ContainerID: 41,
+		Workspace:   "98: apps",
+	}); err != nil {
+		t.Fatalf("apply no-op move: %v", err)
+	}
+	if len(requester.barriers) != 1 {
+		t.Fatalf("move emitted %d attribution barriers, want 1", len(requester.barriers))
+	}
+
+	runtime.HandleEvent(swayipc.Event{Type: swayipc.EventTick, Payload: requester.barriers[0]}, time.Now())
+	if runtime.restoreProgress == nil {
+		t.Fatal("attribution barrier itself canceled restore")
+	}
+	if len(runtime.expectedMoves) != 0 {
+		t.Fatalf("no-op move remained attributed after barrier: %+v", runtime.expectedMoves)
+	}
+
+	runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "move", Container: &Node{ID: 41}}, time.Now())
+	if runtime.restoreProgress != nil {
+		t.Fatal("later user move was hidden by no-op daemon move")
+	}
+}
+
+func (requester *recordingRequester) RequestContext(ctx context.Context, messageType swayipc.MessageType, payload []byte) (swayipc.Message, error) {
+	if err := ctx.Err(); err != nil {
+		return swayipc.Message{}, err
+	}
+	if messageType == swayipc.SendTick {
+		requester.barriers = append(requester.barriers, string(payload))
+		return swayipc.Message{Type: swayipc.SendTick, Payload: []byte(`{"success":true}`)}, nil
+	}
 	if messageType != swayipc.RunCommand {
 		return swayipc.Message{}, errors.New("unexpected request type")
 	}
@@ -736,6 +958,44 @@ func TestSessionRuntimeStartFailureRemainsAConservativeSingleAttempt(t *testing.
 	}
 }
 
+func TestSessionRuntimeCancellationReleasesRegistryLockHeldAcrossSwayRequest(t *testing.T) {
+	runtime, _, _, registered, start := testApplicationRuntime(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	requester := &blockingDaemonRequester{entered: make(chan struct{})}
+	runtime.ctx = ctx
+	runtime.client = requester
+	appID := registered.App.Identity.WaylandAppID
+	sandboxID := registered.App.Identity.SandboxAppID
+	window := &Node{ID: 41, Type: "con", AppID: &appID, SandboxAppID: &sandboxID}
+	reconciled := make(chan error, 1)
+	go func() {
+		_, err := runtime.Reconcile(daemonTree("98: apps", window), start)
+		reconciled <- err
+	}()
+
+	select {
+	case <-requester.entered:
+	case <-time.After(time.Second):
+		t.Fatal("runtime did not reach the Sway request while holding the registry transaction")
+	}
+	cancel()
+
+	select {
+	case err := <-reconciled:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("reconcile error = %v, want context cancellation", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("runtime did not return after cancellation")
+	}
+
+	updateCtx, stop := context.WithTimeout(context.Background(), time.Second)
+	defer stop()
+	if _, err := sessionstate.UpdateRegistryContext(updateCtx, runtime.root, func(*sessionstate.Registry) error { return nil }); err != nil {
+		t.Fatalf("registry lock remained held after canceled Sway request: %v", err)
+	}
+}
+
 func TestNewSessionRuntimeRejectsMalformedApplicationSessionState(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "state")
 	directory := filepath.Join(root, sessionstate.ApplicationSessionDirectory)
@@ -754,6 +1014,38 @@ func TestNewSessionRuntimeRejectsMalformedApplicationSessionState(t *testing.T) 
 	})
 	if err == nil || !strings.Contains(err.Error(), "load desktop application restore state") {
 		t.Fatalf("malformed application session state was accepted: %v", err)
+	}
+}
+
+func TestNewSessionRuntimeStopsWaitingForStateLockWhenCanceled(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state")
+	if err := sessionstate.RegistryFile(root).Save(sessionRegistry(testManagedContextID)); err != nil {
+		t.Fatal(err)
+	}
+	locked := make(chan struct{})
+	release := make(chan struct{})
+	mutationDone := make(chan error, 1)
+	go func() {
+		_, err := sessionstate.UpdateRegistry(root, func(*sessionstate.Registry) error {
+			close(locked)
+			<-release
+			return nil
+		})
+		mutationDone <- err
+	}()
+	<-locked
+	t.Cleanup(func() {
+		close(release)
+		if err := <-mutationDone; err != nil {
+			t.Errorf("release registry mutation: %v", err)
+		}
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	_, err := newSessionRuntimeWithOptions(&recordingRequester{}, sessionRuntimeOptions{Context: ctx, Root: root})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("runtime initialization returned %v, want context deadline", err)
 	}
 }
 

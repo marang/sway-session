@@ -191,29 +191,26 @@ named [Herdr](https://herdr.dev/) session. Alacritty is the default adapter.
 Sway restores the outer workspace and layout; Herdr restores the terminal tabs,
 panes, supported agent sessions, and pane screen history.
 
-On first access, valid version-1 through version-4 context registries are
-atomically upgraded to version 5. The exact old bytes remain owner-only in the
-matching `contexts.v1.json` through `contexts.v4.json` file beside the active
-registry as manual rollback evidence. Malformed or
-unknown-version state is never migrated, and rollback files are never loaded
-automatically. Version 3 added typed terminal adapter data, an optional stable
-terminal identity, and an `archived_at` timestamp. Version 4 adds the explicit
-fresh-instance discriminator used by `terminal --new`; migration never infers
-that discriminator from old provider or session text. Migrated legacy Herdr
-contexts therefore remain manual (unidentified) terminals. Version 5 shortens
-new instance session names to keep Herdr's derived Unix socket paths usable;
-existing version-4 instance names are preserved exactly. Version 2 also
-supports explicit normal desktop-application registrations.
+The release registry schema is version 5 only. A version-1 through version-4,
+unknown, malformed, or otherwise invalid `contexts.json` fails closed: the
+command does not interpret or replace it, and its bytes remain unchanged.
+Schema 5 records typed terminal adapters, stable terminal identities, archive
+timestamps, desktop-application registrations, and the explicit fresh-terminal
+instance discriminator. Fresh instance session names retain the complete UUID
+without separators so Herdr's derived Unix socket paths remain bounded.
 
-Concurrent registry creation and migration contenders serialize on the
-owner-only runtime `registry-migration.lock`, then re-read the state before
-checking the daemon's exclusive `daemon.lock`. A current daemon publishes its
-registry-schema compatibility together with its PID and process start time. If
-an older daemon is still running after a package upgrade, commands refuse to
-migrate instead of stranding that process on an unreadable registry. Restart
-the complete Sway session once after such an upgrade, then retry the command;
-the new daemon performs or accepts the v5 migration. The error is safe to retry
-and leaves both `contexts.json` and its rollback evidence untouched.
+Pre-release state is not upgraded. Before first use of this release, stop every
+`sway-session daemon` process and reset the private session-state directory:
+
+```sh
+rm -rf -- "${XDG_STATE_HOME:-$HOME/.local/state}/sway-session"
+```
+
+This deliberately forgets registered contexts, captured layouts,
+desktop-application approvals, and runtime launch-attempt state. It does not
+delete Herdr sessions or pane history; remove those separately only when that
+is also intended. The owner-only runtime `daemon.lock` continues to prevent two
+session daemons from running concurrently.
 
 The independent session daemon groups every matching top-level window into one
 application presence, adopts one unambiguous window as the optional layout
@@ -316,10 +313,9 @@ is suited to agents: `terminal list` returns typed-terminal records in stable
 context-ID order, `terminal status [context]` or `terminal status --project
 NAME` returns one record (the default identity when omitted), and cleanup is a
 read-only candidate preview.
-These commands use a non-migrating current-schema snapshot. If they encounter a
-legacy v1/v2/v3/v4 registry, they return the stable `migration_required` diagnostic
-without changing bytes; run `sway-session --json list` once to perform the
-validated migration and retry.
+These commands use a current-schema snapshot. An unsupported or invalid
+registry returns the stable `unsupported_version` or state diagnostic without
+changing bytes; reset pre-release session state before retrying.
 
 ```sh
 sway-session --json terminal list
@@ -471,7 +467,7 @@ without accepting pane roles or commands:
   --session lab-88 \
   --cwd "$PWD" \
   --label LAB-88 \
-  --workspace 7
+  --workspace 98
 ```
 
 Pass the returned `.contexts[0].id` to the packaged initializer:
@@ -495,9 +491,9 @@ transition intentionally recognizes only the root-owned
 `/usr/bin/sway-herdr-init` from a distribution package. The broker likewise
 launches only a root-owned system `sway-session` with a system-only executable
 search path. The outer Herdr launcher removes inherited `HERDR_*` pane metadata
-and `CODEX_THREAD_ID` before starting a distinct context, then injects only its
-new registered context ID. Do not allow-list a user-writable source-install
-copy.
+and `CODEX_THREAD_ID` before starting a distinct context, then injects its new
+registered context ID and the validated `HERDR_CONFIG_PATH` resolved for that
+context. Do not allow-list a user-writable source-install copy.
 
 Pane roles are logical Herdr agent kinds such as `codex`, not executable paths
 or runtime definitions. A future trusted wrapper or container launcher belongs
@@ -548,7 +544,7 @@ source ~/.local/share/fish/vendor_completions.d/sway-session.fish
 
 The public read-only interface used by these adapters is
 `sway-session completion contexts <archive|activate|restore|restore-active|purge|terminal-status|app-forget>`.
-It never creates or migrates session state. `purge` completion is deliberately
+It never creates or changes session state. `purge` completion is deliberately
 limited to Herdr contexts, matching the command's current deletion semantics;
 desktop-application registrations use `app forget`.
 

@@ -183,6 +183,11 @@ require_fixed .github/workflows/aur.yml 'gh pr create'
 require_fixed .github/workflows/aur.yml 'cp release-metadata/SRCINFO .SRCINFO'
 require_fixed .github/workflows/aur.yml 'git checkout -B "$branch" origin/main'
 require_fixed .github/workflows/aur.yml '--force-with-lease="refs/heads/${branch}:${remote_sha}"'
+require_fixed .github/workflows/aur.yml 'aur.archlinux.org ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEuBKrPzbawxA/k2g6NcyV5jmqwJ2s+zpgZGZ7tpLIcN'
+require_fixed .github/workflows/aur.yml 'SHA256:RFzBCUItH9LZS0cKB5UE6ceAYhBD5C8GeOBip8Z11+4'
+require_fixed .github/workflows/aur.yml 'StrictHostKeyChecking=yes'
+reject_fixed .github/workflows/aur.yml 'ssh-keyscan'
+reject_fixed .github/workflows/aur.yml 'StrictHostKeyChecking=accept-new'
 
 if git check-ignore --no-index --quiet .SRCINFO; then
 	echo '.SRCINFO must remain trackable for release metadata sync PRs.' >&2

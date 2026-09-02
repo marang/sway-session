@@ -2,6 +2,7 @@ package session
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -175,8 +176,13 @@ type ApplicationOperationStore struct {
 }
 
 func (store ApplicationOperationStore) Create(operation ApplicationOperation) (string, error) {
+	return store.CreateContext(context.Background(), operation)
+}
+
+// CreateContext is Create with cancelable operation-store lock acquisition.
+func (store ApplicationOperationStore) CreateContext(ctx context.Context, operation ApplicationOperation) (string, error) {
 	var token string
-	err := statefile.WithPrivateDirectoryLock(store.directory(), func(directory *statefile.LockedPrivateDirectory) error {
+	err := statefile.WithPrivateDirectoryLockContext(ctx, store.directory(), func(directory *statefile.LockedPrivateDirectory) error {
 		var err error
 		token, err = store.createLocked(directory, operation)
 		return err
@@ -262,10 +268,15 @@ func DefaultApplicationOperationStore() (ApplicationOperationStore, error) {
 }
 
 func (store ApplicationOperationStore) Consume(token string) (ApplicationOperation, error) {
+	return store.ConsumeContext(context.Background(), token)
+}
+
+// ConsumeContext is Consume with cancelable operation-store lock acquisition.
+func (store ApplicationOperationStore) ConsumeContext(ctx context.Context, token string) (ApplicationOperation, error) {
 	if !validOperationToken(token) {
 		return ApplicationOperation{}, errors.New("application operation token must contain 32 lowercase hexadecimal characters")
 	}
-	data, err := statefile.ConsumePrivateFile(store.directory(), token+".json")
+	data, err := statefile.ConsumePrivateFileContext(ctx, store.directory(), token+".json")
 	if err != nil {
 		return ApplicationOperation{}, fmt.Errorf("consume application operation token: %w", err)
 	}
@@ -293,10 +304,15 @@ func (store ApplicationOperationStore) Consume(token string) (ApplicationOperati
 // Discard removes a stored approval which can no longer be presented. Missing
 // tokens are already discarded and therefore succeed idempotently.
 func (store ApplicationOperationStore) Discard(token string) error {
+	return store.DiscardContext(context.Background(), token)
+}
+
+// DiscardContext is Discard with cancelable operation-store lock acquisition.
+func (store ApplicationOperationStore) DiscardContext(ctx context.Context, token string) error {
 	if !validOperationToken(token) {
 		return errors.New("application operation token must contain 32 lowercase hexadecimal characters")
 	}
-	err := statefile.RemovePrivateFile(store.directory(), token+".json")
+	err := statefile.RemovePrivateFileContext(ctx, store.directory(), token+".json")
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
@@ -309,7 +325,12 @@ func (store ApplicationOperationStore) Discard(token string) error {
 // Active returns valid, unexpired approval operations without exposing their
 // one-time tokens or consuming them. Concurrently consumed files are skipped.
 func (store ApplicationOperationStore) Active() ([]ApplicationOperation, error) {
-	names, err := statefile.ListPrivateFiles(store.directory(), maxStoredOperationRecoveryItems)
+	return store.ActiveContext(context.Background())
+}
+
+// ActiveContext is Active with cancelable operation-store lock acquisition.
+func (store ApplicationOperationStore) ActiveContext(ctx context.Context) ([]ApplicationOperation, error) {
+	names, err := statefile.ListPrivateFilesContext(ctx, store.directory(), maxStoredOperationRecoveryItems)
 	if errors.Is(err, os.ErrNotExist) {
 		return []ApplicationOperation{}, nil
 	}
@@ -324,7 +345,7 @@ func (store ApplicationOperationStore) Active() ([]ApplicationOperation, error) 
 		if name != token+".json" || !validOperationToken(token) {
 			continue
 		}
-		data, readErr := statefile.ReadPrivateFile(store.directory(), name)
+		data, readErr := statefile.ReadPrivateFileContext(ctx, store.directory(), name)
 		if errors.Is(readErr, os.ErrNotExist) {
 			continue
 		}
@@ -347,7 +368,7 @@ func (store ApplicationOperationStore) Active() ([]ApplicationOperation, error) 
 			return nil, err
 		}
 		if !operation.ExpiresAt.After(now) {
-			removeErr := statefile.RemovePrivateFile(store.directory(), name)
+			removeErr := statefile.RemovePrivateFileContext(ctx, store.directory(), name)
 			if removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
 				return nil, fmt.Errorf("remove expired application operation: %w", removeErr)
 			}

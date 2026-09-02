@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -13,7 +14,7 @@ import (
 	"github.com/marang/sway-title-animator/internal/swayipc"
 )
 
-func executeApp(arguments []string, deps dependencies) (commandResult, *commandFailure) {
+func executeApp(ctx context.Context, arguments []string, deps dependencies) (commandResult, *commandFailure) {
 	if len(arguments) == 0 {
 		return commandResult{}, usageFailure("app", "app requires a subcommand")
 	}
@@ -21,35 +22,35 @@ func executeApp(arguments []string, deps dependencies) (commandResult, *commandF
 	arguments = arguments[1:]
 	switch subcommand {
 	case "register-focused":
-		return executeAppRegisterFocused(arguments, deps)
+		return executeAppRegisterFocused(ctx, arguments, deps)
 	case "register-workspace":
-		return executeAppRegisterWorkspace(arguments, deps)
+		return executeAppRegisterWorkspace(ctx, arguments, deps)
 	case "confirm":
-		return executeAppConfirm(arguments, deps)
+		return executeAppConfirm(ctx, arguments, deps)
 	case "status":
-		return executeAppStatus(arguments, deps)
+		return executeAppStatus(ctx, arguments, deps)
 	case "list":
-		return executeAppList(arguments, deps)
+		return executeAppList(ctx, arguments, deps)
 	case "rebind-focused":
-		return executeAppRebindFocused(arguments, deps)
+		return executeAppRebindFocused(ctx, arguments, deps)
 	case "reapprove":
-		return executeAppReapprove(arguments, deps)
+		return executeAppReapprove(ctx, arguments, deps)
 	case "pin", "unpin":
-		return executeAppPolicy(subcommand, arguments, deps)
+		return executeAppPolicy(ctx, subcommand, arguments, deps)
 	case "archive", "activate":
 		state := sessionstate.ContextArchived
 		if subcommand == "activate" {
 			state = sessionstate.ContextActive
 		}
-		return executeAppStateChange(subcommand, arguments, state, deps)
+		return executeAppStateChange(ctx, subcommand, arguments, state, deps)
 	case "forget":
-		return executeAppForget(arguments, deps)
+		return executeAppForget(ctx, arguments, deps)
 	default:
 		return commandResult{}, usageFailure("app", fmt.Sprintf("unknown app subcommand %q", subcommand))
 	}
 }
 
-func executeAppRegisterFocused(arguments []string, deps dependencies) (commandResult, *commandFailure) {
+func executeAppRegisterFocused(ctx context.Context, arguments []string, deps dependencies) (commandResult, *commandFailure) {
 	set := newFlagSet("app register-focused")
 	socketFlag := set.String("socket", "", "Sway IPC socket")
 	desktopID := set.String("desktop-id", "", "exact desktop file ID for an ambiguous match")
@@ -57,7 +58,7 @@ func executeAppRegisterFocused(arguments []string, deps dependencies) (commandRe
 	if err := set.Parse(arguments); err != nil || set.NArg() != 0 {
 		return commandResult{}, usageFailure("app", "app register-focused accepts only --socket, --desktop-id, and --yes")
 	}
-	environment, commandFailure := loadApplicationEnvironment(*socketFlag, deps, true, false)
+	environment, commandFailure := loadApplicationEnvironment(ctx, *socketFlag, deps, true, false)
 	if commandFailure != nil {
 		return commandResult{}, commandFailure
 	}
@@ -67,7 +68,7 @@ func executeAppRegisterFocused(arguments []string, deps dependencies) (commandRe
 		return commandResult{}, failure("app_resolution", "resolve focused application", err.Error())
 	}
 	if resolution.Registered != nil {
-		if err := sessionstate.RepairApplicationMark(environment.root, environment.client, resolution.Window.ContainerID, *resolution.Registered); err != nil {
+		if err := sessionstate.RepairApplicationMark(ctx, environment.root, environment.client, resolution.Window.ContainerID, *resolution.Registered); err != nil {
 			return commandResult{}, failure("sway_mark", "repair registered application mark", err.Error())
 		}
 		return commandResult{Command: "app status", Contexts: []sessionstate.Context{*resolution.Registered}, Message: "Focused application is already registered; its mark is healthy."}, nil
@@ -89,18 +90,18 @@ func executeAppRegisterFocused(arguments []string, deps dependencies) (commandRe
 		if err != nil {
 			return commandResult{}, failure("app_operation", "prepare focused registration", err.Error())
 		}
-		return applyApplicationOperation(operation, deps, *socketFlag)
+		return applyApplicationOperation(ctx, operation, deps, *socketFlag)
 	}
 	choices := make([]sessionstate.ApprovalChoice, 0, len(candidates))
 	for _, candidate := range candidates {
 		operation, err := newRegisterOperation([]sessionstate.WindowApplication{resolution.Window}, []sessionstate.DesktopEntry{candidate}, deps)
 		if err != nil {
-			err = errors.Join(err, discardApplicationOperationChoices(choices, deps))
+			err = errors.Join(err, discardApplicationOperationChoices(ctx, choices, deps))
 			return commandResult{}, failure("app_operation", "prepare focused registration", err.Error())
 		}
-		choice, err := storeApplicationOperation(operation, approvalChoiceLabel(candidate), deps)
+		choice, err := storeApplicationOperation(ctx, operation, approvalChoiceLabel(candidate), deps)
 		if err != nil {
-			err = errors.Join(err, discardApplicationOperationChoices(choices, deps))
+			err = errors.Join(err, discardApplicationOperationChoices(ctx, choices, deps))
 			return commandResult{}, failure("app_operation", "store focused registration approval", err.Error())
 		}
 		choices = append(choices, choice)
@@ -109,26 +110,26 @@ func executeAppRegisterFocused(arguments []string, deps dependencies) (commandRe
 	if len(candidates) == 1 {
 		summary, summaryErr := sessionstate.DesktopApprovalSummary(candidates[0])
 		if summaryErr != nil {
-			summaryErr = errors.Join(summaryErr, discardApplicationOperationChoices(choices, deps))
+			summaryErr = errors.Join(summaryErr, discardApplicationOperationChoices(ctx, choices, deps))
 			return commandResult{}, failure("launcher_trust", "preview desktop launcher", summaryErr.Error())
 		}
 		message = fmt.Sprintf("Register %s on workspace %s for session restore?", summary, resolution.Window.Workspace)
 	}
 	if err := deps.presentApproval(message, choices); err != nil {
-		err = errors.Join(err, discardApplicationOperationChoices(choices, deps))
+		err = errors.Join(err, discardApplicationOperationChoices(ctx, choices, deps))
 		return commandResult{}, failure("approval_ui", "open application registration confirmation", err.Error())
 	}
 	return commandResult{Command: "app register-focused", Message: "Registration confirmation opened."}, nil
 }
 
-func executeAppRegisterWorkspace(arguments []string, deps dependencies) (commandResult, *commandFailure) {
+func executeAppRegisterWorkspace(ctx context.Context, arguments []string, deps dependencies) (commandResult, *commandFailure) {
 	set := newFlagSet("app register-workspace")
 	socketFlag := set.String("socket", "", "Sway IPC socket")
 	yes := set.Bool("yes", false, "approve without swaynag")
 	if err := set.Parse(arguments); err != nil || set.NArg() != 0 {
 		return commandResult{}, usageFailure("app", "app register-workspace accepts only --socket and --yes")
 	}
-	environment, commandFailure := loadApplicationEnvironment(*socketFlag, deps, true, true)
+	environment, commandFailure := loadApplicationEnvironment(ctx, *socketFlag, deps, true, true)
 	if commandFailure != nil {
 		return commandResult{}, commandFailure
 	}
@@ -171,9 +172,9 @@ func executeAppRegisterWorkspace(arguments []string, deps dependencies) (command
 		return commandResult{}, failure("app_operation", "prepare workspace registration", err.Error())
 	}
 	if *yes {
-		return applyApplicationOperation(operation, deps, *socketFlag)
+		return applyApplicationOperation(ctx, operation, deps, *socketFlag)
 	}
-	choice, err := storeApplicationOperation(operation, fmt.Sprintf("Register %d applications", len(operation.Items)), deps)
+	choice, err := storeApplicationOperation(ctx, operation, fmt.Sprintf("Register %d applications", len(operation.Items)), deps)
 	if err != nil {
 		return commandResult{}, failure("app_operation", "store workspace registration approval", err.Error())
 	}
@@ -183,13 +184,13 @@ func executeAppRegisterWorkspace(arguments []string, deps dependencies) (command
 	}
 	message := boundedDisplay("Register these applications from workspace "+pendingWindows[0].Workspace+": "+strings.Join(names, ", ")+"?", 4000)
 	if err := deps.presentApproval(message, []sessionstate.ApprovalChoice{choice}); err != nil {
-		err = errors.Join(err, discardApplicationOperationChoices([]sessionstate.ApprovalChoice{choice}, deps))
+		err = errors.Join(err, discardApplicationOperationChoices(ctx, []sessionstate.ApprovalChoice{choice}, deps))
 		return commandResult{}, failure("approval_ui", "open workspace registration confirmation", err.Error())
 	}
 	return commandResult{Command: "app register-workspace", Message: "Workspace registration confirmation opened."}, nil
 }
 
-func executeAppConfirm(arguments []string, deps dependencies) (commandResult, *commandFailure) {
+func executeAppConfirm(ctx context.Context, arguments []string, deps dependencies) (commandResult, *commandFailure) {
 	set := newFlagSet("app confirm")
 	if err := set.Parse(arguments); err != nil || set.NArg() != 1 {
 		return commandResult{}, usageFailure("app", "app confirm requires exactly one operation token")
@@ -198,20 +199,20 @@ func executeAppConfirm(arguments []string, deps dependencies) (commandResult, *c
 	if err != nil {
 		return commandResult{}, failure("app_operation", "resolve application operation store", err.Error())
 	}
-	operation, err := store.Consume(set.Arg(0))
+	operation, err := store.ConsumeContext(ctx, set.Arg(0))
 	if err != nil {
 		return commandResult{}, failure("app_operation", "consume application approval", err.Error())
 	}
-	return applyApplicationOperation(operation, deps, "")
+	return applyApplicationOperation(ctx, operation, deps, "")
 }
 
-func executeAppStatus(arguments []string, deps dependencies) (commandResult, *commandFailure) {
+func executeAppStatus(ctx context.Context, arguments []string, deps dependencies) (commandResult, *commandFailure) {
 	set := newFlagSet("app status")
 	socketFlag := set.String("socket", "", "Sway IPC socket")
 	if err := set.Parse(arguments); err != nil || set.NArg() != 0 {
 		return commandResult{}, usageFailure("app", "app status accepts only --socket")
 	}
-	environment, commandFailure := loadApplicationEnvironment(*socketFlag, deps, true, false)
+	environment, commandFailure := loadApplicationEnvironment(ctx, *socketFlag, deps, true, false)
 	if commandFailure != nil {
 		return commandResult{}, commandFailure
 	}
@@ -226,7 +227,7 @@ func executeAppStatus(arguments []string, deps dependencies) (commandResult, *co
 	return commandResult{Command: "app status", Contexts: []sessionstate.Context{*resolution.Registered}}, nil
 }
 
-func executeAppList(arguments []string, deps dependencies) (commandResult, *commandFailure) {
+func executeAppList(ctx context.Context, arguments []string, deps dependencies) (commandResult, *commandFailure) {
 	if len(arguments) != 0 {
 		return commandResult{}, usageFailure("app", "app list accepts no arguments")
 	}
@@ -234,7 +235,7 @@ func executeAppList(arguments []string, deps dependencies) (commandResult, *comm
 	if commandFailure != nil {
 		return commandResult{}, commandFailure
 	}
-	registry, err := loadRegistry(root)
+	registry, err := loadRegistry(ctx, root)
 	if err != nil {
 		return commandResult{}, classifyStateError("load application registry", err)
 	}
@@ -248,7 +249,7 @@ func executeAppList(arguments []string, deps dependencies) (commandResult, *comm
 	return commandResult{Command: "app list", Contexts: contexts}, nil
 }
 
-func executeAppRebindFocused(arguments []string, deps dependencies) (commandResult, *commandFailure) {
+func executeAppRebindFocused(ctx context.Context, arguments []string, deps dependencies) (commandResult, *commandFailure) {
 	set := newFlagSet("app rebind-focused")
 	socketFlag := set.String("socket", "", "Sway IPC socket")
 	desktopID := set.String("desktop-id", "", "exact desktop file ID")
@@ -256,7 +257,7 @@ func executeAppRebindFocused(arguments []string, deps dependencies) (commandResu
 	if err := set.Parse(arguments); err != nil || set.NArg() != 1 {
 		return commandResult{}, usageFailure("app", "app rebind-focused requires one context and optional --socket, --desktop-id, or --yes")
 	}
-	environment, commandFailure := loadApplicationEnvironment(*socketFlag, deps, true, true)
+	environment, commandFailure := loadApplicationEnvironment(ctx, *socketFlag, deps, true, true)
 	if commandFailure != nil {
 		return commandResult{}, commandFailure
 	}
@@ -293,27 +294,27 @@ func executeAppRebindFocused(arguments []string, deps dependencies) (commandResu
 	item := sessionstate.ApplicationOperationItem{ContextID: context.ID, ContextRevision: revision, Window: &window, DesktopID: candidates[0].ID}
 	operation := applicationOperation(sessionstate.OperationRebind, []sessionstate.ApplicationOperationItem{item}, deps)
 	if *yes {
-		return applyApplicationOperation(operation, deps, *socketFlag)
+		return applyApplicationOperation(ctx, operation, deps, *socketFlag)
 	}
-	choice, err := storeApplicationOperation(operation, "Rebind to "+candidates[0].Name, deps)
+	choice, err := storeApplicationOperation(ctx, operation, "Rebind to "+candidates[0].Name, deps)
 	if err != nil {
 		return commandResult{}, failure("app_operation", "store application rebind approval", err.Error())
 	}
 	old := environment.registry.Contexts[index]
 	summary, err := sessionstate.DesktopApprovalSummary(candidates[0])
 	if err != nil {
-		err = errors.Join(err, discardApplicationOperationChoices([]sessionstate.ApprovalChoice{choice}, deps))
+		err = errors.Join(err, discardApplicationOperationChoices(ctx, []sessionstate.ApprovalChoice{choice}, deps))
 		return commandResult{}, failure("launcher_trust", "preview rebound desktop launcher", err.Error())
 	}
 	message := fmt.Sprintf("Rebind %s (%s) to %s?", contextDisplayName(old), launcherDisplay(old.Launcher), summary)
 	if err := deps.presentApproval(message, []sessionstate.ApprovalChoice{choice}); err != nil {
-		err = errors.Join(err, discardApplicationOperationChoices([]sessionstate.ApprovalChoice{choice}, deps))
+		err = errors.Join(err, discardApplicationOperationChoices(ctx, []sessionstate.ApprovalChoice{choice}, deps))
 		return commandResult{}, failure("approval_ui", "open application rebind confirmation", err.Error())
 	}
 	return commandResult{Command: "app rebind-focused", Message: "Application rebind confirmation opened."}, nil
 }
 
-func executeAppReapprove(arguments []string, deps dependencies) (commandResult, *commandFailure) {
+func executeAppReapprove(ctx context.Context, arguments []string, deps dependencies) (commandResult, *commandFailure) {
 	set := newFlagSet("app reapprove")
 	yes := set.Bool("yes", false, "approve without swaynag")
 	if err := set.Parse(arguments); err != nil || set.NArg() != 1 {
@@ -323,7 +324,7 @@ func executeAppReapprove(arguments []string, deps dependencies) (commandResult, 
 	if commandFailure != nil {
 		return commandResult{}, commandFailure
 	}
-	registry, err := loadRegistry(root)
+	registry, err := loadRegistry(ctx, root)
 	if err != nil {
 		return commandResult{}, classifyStateError("load application registry", err)
 	}
@@ -342,20 +343,20 @@ func executeAppReapprove(arguments []string, deps dependencies) (commandResult, 
 	item := sessionstate.ApplicationOperationItem{ContextID: context.ID, ContextRevision: revision, DesktopID: context.Launcher.DesktopID}
 	operation := applicationOperation(sessionstate.OperationReapprove, []sessionstate.ApplicationOperationItem{item}, deps)
 	if *yes {
-		return applyApplicationOperation(operation, deps, "")
+		return applyApplicationOperation(ctx, operation, deps, "")
 	}
-	choice, err := storeApplicationOperation(operation, "Reapprove "+contextDisplayName(context), deps)
+	choice, err := storeApplicationOperation(ctx, operation, "Reapprove "+contextDisplayName(context), deps)
 	if err != nil {
 		return commandResult{}, failure("app_operation", "store launcher reapproval", err.Error())
 	}
 	if err := deps.presentApproval("Approve the current user-local desktop entry and executable checksums for "+contextDisplayName(context)+"?", []sessionstate.ApprovalChoice{choice}); err != nil {
-		err = errors.Join(err, discardApplicationOperationChoices([]sessionstate.ApprovalChoice{choice}, deps))
+		err = errors.Join(err, discardApplicationOperationChoices(ctx, []sessionstate.ApprovalChoice{choice}, deps))
 		return commandResult{}, failure("approval_ui", "open launcher reapproval confirmation", err.Error())
 	}
 	return commandResult{Command: "app reapprove", Message: "Launcher reapproval confirmation opened."}, nil
 }
 
-func executeAppPolicy(name string, arguments []string, deps dependencies) (commandResult, *commandFailure) {
+func executeAppPolicy(ctx context.Context, name string, arguments []string, deps dependencies) (commandResult, *commandFailure) {
 	if len(arguments) != 1 {
 		return commandResult{}, usageFailure("app", "app "+name+" requires exactly one context")
 	}
@@ -368,18 +369,18 @@ func executeAppPolicy(name string, arguments []string, deps dependencies) (comma
 		policy = sessionstate.ApplicationRestorePinned
 	}
 	var changed sessionstate.Context
-	_, err := sessionstate.UpdateRegistry(root, func(registry *sessionstate.Registry) error {
+	_, err := sessionstate.UpdateRegistryContext(ctx, root, func(registry *sessionstate.Registry) error {
 		var mutateErr error
 		changed, mutateErr = sessionstate.SetApplicationRestorePolicy(registry, arguments[0], policy)
 		return mutateErr
 	})
-	if err != nil && (changed.ID == "" || !registryContainsExactApplicationContext(root, changed)) {
+	if err != nil && (changed.ID == "" || !registryContainsExactApplicationContext(ctx, root, changed)) {
 		return commandResult{}, classifyStateError(name+" application", err)
 	}
 	return commandResult{Command: "app " + name, Contexts: []sessionstate.Context{changed}}, nil
 }
 
-func executeAppStateChange(name string, arguments []string, state sessionstate.ContextState, deps dependencies) (commandResult, *commandFailure) {
+func executeAppStateChange(ctx context.Context, name string, arguments []string, state sessionstate.ContextState, deps dependencies) (commandResult, *commandFailure) {
 	if len(arguments) != 1 {
 		return commandResult{}, usageFailure("app", "app "+name+" requires exactly one context")
 	}
@@ -388,7 +389,7 @@ func executeAppStateChange(name string, arguments []string, state sessionstate.C
 		return commandResult{}, commandFailure
 	}
 	var changed sessionstate.Context
-	_, err := sessionstate.UpdateRegistry(root, func(registry *sessionstate.Registry) error {
+	_, err := sessionstate.UpdateRegistryContext(ctx, root, func(registry *sessionstate.Registry) error {
 		index, err := sessionstate.ResolveContext(*registry, arguments[0])
 		if err != nil {
 			return err
@@ -399,13 +400,13 @@ func executeAppStateChange(name string, arguments []string, state sessionstate.C
 		changed, err = sessionstate.SetContextState(registry, arguments[0], state)
 		return err
 	})
-	if err != nil && (changed.ID == "" || !registryContainsExactApplicationContext(root, changed)) {
+	if err != nil && (changed.ID == "" || !registryContainsExactApplicationContext(ctx, root, changed)) {
 		return commandResult{}, classifyStateError(name+" application", err)
 	}
 	return commandResult{Command: "app " + name, Contexts: []sessionstate.Context{changed}}, nil
 }
 
-func executeAppForget(arguments []string, deps dependencies) (commandResult, *commandFailure) {
+func executeAppForget(ctx context.Context, arguments []string, deps dependencies) (commandResult, *commandFailure) {
 	set := newFlagSet("app forget")
 	socketFlag := set.String("socket", "", "Sway IPC socket")
 	yes := set.Bool("yes", false, "confirm permanent registry removal")
@@ -425,11 +426,13 @@ func executeAppForget(arguments []string, deps dependencies) (commandResult, *co
 		return commandResult{}, failure("sway", "connect to Sway", "Sway client is unavailable")
 	}
 	defer client.Close()
-	removed, err := sessionstate.ForgetApplicationContext(root, client, set.Arg(0))
+	removed, err := sessionstate.ForgetApplicationContext(ctx, root, client, set.Arg(0))
 	if err != nil {
 		return commandResult{}, classifyStateError("forget application", err)
 	}
-	if cleanupErr := sessionstate.RemoveDesktopApprovalSnapshot(root, removed.Launcher); cleanupErr != nil {
+	if cleanupErr := withAppCleanupContext(ctx, func(cleanupCtx context.Context) error {
+		return sessionstate.RemoveDesktopApprovalSnapshotContext(cleanupCtx, root, removed.Launcher)
+	}); cleanupErr != nil {
 		return commandResult{Command: "app forget", Contexts: []sessionstate.Context{removed}}, failure("approval_cleanup", "application was forgotten but its protected launcher snapshot could not be removed", cleanupErr.Error())
 	}
 	return commandResult{Command: "app forget", Contexts: []sessionstate.Context{removed}}, nil
@@ -449,12 +452,12 @@ func (environment applicationEnvironment) close() {
 	}
 }
 
-func loadApplicationEnvironment(socketFlag string, deps dependencies, needTree bool, needCatalog bool) (applicationEnvironment, *commandFailure) {
+func loadApplicationEnvironment(ctx context.Context, socketFlag string, deps dependencies, needTree bool, needCatalog bool) (applicationEnvironment, *commandFailure) {
 	root, commandFailure := stateRoot(deps)
 	if commandFailure != nil {
 		return applicationEnvironment{}, commandFailure
 	}
-	registry, err := loadRegistry(root)
+	registry, err := loadRegistry(ctx, root)
 	if err != nil {
 		return applicationEnvironment{}, classifyStateError("load application registry", err)
 	}
@@ -477,7 +480,7 @@ func loadApplicationEnvironment(socketFlag string, deps dependencies, needTree b
 	if environment.client == nil {
 		return applicationEnvironment{}, failure("sway", "connect to Sway", "Sway client is unavailable")
 	}
-	tree, err := requestTree(environment.client)
+	tree, err := requestTree(ctx, environment.client)
 	if err != nil {
 		environment.close()
 		return applicationEnvironment{}, failure("sway_tree", "observe Sway applications", err.Error())
@@ -497,9 +500,9 @@ func applicationSocket(flagValue string) (string, *commandFailure) {
 	return socket, nil
 }
 
-func loadRegistry(root string) (sessionstate.Registry, error) {
+func loadRegistry(ctx context.Context, root string) (sessionstate.Registry, error) {
 	registry := sessionstate.Registry{Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{}}
-	err := sessionstate.RegistryFile(root).LoadInto(&registry)
+	err := sessionstate.RegistryFile(root).LoadIntoContext(ctx, &registry)
 	if errors.Is(err, os.ErrNotExist) {
 		return registry, nil
 	}
@@ -570,19 +573,19 @@ func boundedDisplay(value string, maxBytes int) string {
 	return result.String()
 }
 
-func storeApplicationOperation(operation sessionstate.ApplicationOperation, label string, deps dependencies) (sessionstate.ApprovalChoice, error) {
+func storeApplicationOperation(ctx context.Context, operation sessionstate.ApplicationOperation, label string, deps dependencies) (sessionstate.ApprovalChoice, error) {
 	store, err := deps.operationStore()
 	if err != nil {
 		return sessionstate.ApprovalChoice{}, err
 	}
-	token, err := store.Create(operation)
+	token, err := store.CreateContext(ctx, operation)
 	if err != nil {
 		return sessionstate.ApprovalChoice{}, err
 	}
 	return sessionstate.ApprovalChoice{Label: label, Token: token}, nil
 }
 
-func discardApplicationOperationChoices(choices []sessionstate.ApprovalChoice, deps dependencies) error {
+func discardApplicationOperationChoices(ctx context.Context, choices []sessionstate.ApprovalChoice, deps dependencies) error {
 	if len(choices) == 0 {
 		return nil
 	}
@@ -591,15 +594,26 @@ func discardApplicationOperationChoices(choices []sessionstate.ApprovalChoice, d
 		return fmt.Errorf("resolve application operation store for rollback: %w", err)
 	}
 	var discardErrors []error
-	for _, choice := range choices {
-		if err := store.Discard(choice.Token); err != nil {
-			discardErrors = append(discardErrors, err)
+	return withAppCleanupContext(ctx, func(cleanupCtx context.Context) error {
+		for _, choice := range choices {
+			if err := store.DiscardContext(cleanupCtx, choice.Token); err != nil {
+				discardErrors = append(discardErrors, err)
+			}
 		}
-	}
-	return errors.Join(discardErrors...)
+		return errors.Join(discardErrors...)
+	})
 }
 
-func applyApplicationOperation(operation sessionstate.ApplicationOperation, deps dependencies, socketOverride string) (commandResult, *commandFailure) {
+func withAppCleanupContext(ctx context.Context, cleanup func(context.Context) error) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+	defer cancel()
+	return cleanup(cleanupCtx)
+}
+
+func applyApplicationOperation(ctx context.Context, operation sessionstate.ApplicationOperation, deps dependencies, socketOverride string) (commandResult, *commandFailure) {
 	if err := operation.Validate(deps.now().UTC()); err != nil {
 		return commandResult{}, failure("app_operation", "validate application approval", err.Error())
 	}
@@ -613,18 +627,18 @@ func applyApplicationOperation(operation sessionstate.ApplicationOperation, deps
 	}
 	switch operation.Kind {
 	case sessionstate.OperationRegister:
-		return applyRegisterOperation(root, catalog, operation, deps, socketOverride)
+		return applyRegisterOperation(ctx, root, catalog, operation, deps, socketOverride)
 	case sessionstate.OperationRebind:
-		return applyRebindOperation(root, catalog, operation, deps, socketOverride)
+		return applyRebindOperation(ctx, root, catalog, operation, deps, socketOverride)
 	case sessionstate.OperationReapprove:
-		return applyReapproveOperation(root, catalog, operation, deps)
+		return applyReapproveOperation(ctx, root, catalog, operation, deps)
 	default:
 		return commandResult{}, failure("app_operation", "apply application approval", "unsupported operation")
 	}
 }
 
-func applyRegisterOperation(root string, catalog sessionstate.DesktopCatalog, operation sessionstate.ApplicationOperation, deps dependencies, socketOverride string) (commandResult, *commandFailure) {
-	client, tree, commandFailure := operationSwayClient(deps, socketOverride)
+func applyRegisterOperation(ctx context.Context, root string, catalog sessionstate.DesktopCatalog, operation sessionstate.ApplicationOperation, deps dependencies, socketOverride string) (commandResult, *commandFailure) {
+	client, tree, commandFailure := operationSwayClient(ctx, deps, socketOverride)
 	if commandFailure != nil {
 		return commandResult{}, commandFailure
 	}
@@ -633,9 +647,7 @@ func applyRegisterOperation(root string, catalog sessionstate.DesktopCatalog, op
 	containers := make([]int64, 0, len(operation.Items))
 	approvals := make([]sessionstate.DesktopApproval, 0, len(operation.Items))
 	cleanup := func() {
-		for _, approval := range approvals {
-			_ = sessionstate.DiscardDesktopApproval(root, approval)
-		}
+		_ = discardDesktopApprovals(ctx, root, approvals)
 	}
 	for _, item := range operation.Items {
 		window, err := sessionstate.ApplicationWindowByContainer(tree, item.Window.ContainerID)
@@ -651,7 +663,7 @@ func applyRegisterOperation(root string, catalog sessionstate.DesktopCatalog, op
 			cleanup()
 			return commandResult{}, failure("app_stale", "revalidate desktop launcher", "approved desktop entry no longer matches the window")
 		}
-		approval, err := sessionstate.PrepareDesktopApproval(root, item.ContextID, entry)
+		approval, err := sessionstate.PrepareDesktopApprovalContext(ctx, root, item.ContextID, entry)
 		if err != nil {
 			cleanup()
 			return commandResult{}, failure("launcher_trust", "approve desktop launcher", err.Error())
@@ -671,16 +683,28 @@ func applyRegisterOperation(root string, catalog sessionstate.DesktopCatalog, op
 		contexts = append(contexts, context)
 		containers = append(containers, window.ContainerID)
 	}
-	if err := sessionstate.RegisterApplicationContexts(root, client, contexts, containers); err != nil {
+	if err := sessionstate.RegisterApplicationContexts(ctx, root, client, contexts, containers); err != nil {
 		cleanup()
 		return commandResult{}, classifyStateError("register desktop application", err)
 	}
 	return commandResult{Command: "app register", Contexts: contexts}, nil
 }
 
-func applyRebindOperation(root string, catalog sessionstate.DesktopCatalog, operation sessionstate.ApplicationOperation, deps dependencies, socketOverride string) (commandResult, *commandFailure) {
+func discardDesktopApprovals(ctx context.Context, root string, approvals []sessionstate.DesktopApproval) error {
+	return withAppCleanupContext(ctx, func(cleanupCtx context.Context) error {
+		var cleanupErrors []error
+		for _, approval := range approvals {
+			if err := sessionstate.DiscardDesktopApprovalContext(cleanupCtx, root, approval); err != nil {
+				cleanupErrors = append(cleanupErrors, err)
+			}
+		}
+		return errors.Join(cleanupErrors...)
+	})
+}
+
+func applyRebindOperation(ctx context.Context, root string, catalog sessionstate.DesktopCatalog, operation sessionstate.ApplicationOperation, deps dependencies, socketOverride string) (commandResult, *commandFailure) {
 	item := operation.Items[0]
-	client, tree, commandFailure := operationSwayClient(deps, socketOverride)
+	client, tree, commandFailure := operationSwayClient(ctx, deps, socketOverride)
 	if commandFailure != nil {
 		return commandResult{}, commandFailure
 	}
@@ -696,7 +720,7 @@ func applyRebindOperation(root string, catalog sessionstate.DesktopCatalog, oper
 	if !ok || !candidateContains(sessionstate.ApplicationResolution{Candidates: desktopCandidatesForWindow(window, catalog)}, item.DesktopID) {
 		return commandResult{}, failure("app_stale", "revalidate rebind launcher", "approved desktop entry no longer matches the window")
 	}
-	registry, err := loadRegistry(root)
+	registry, err := loadRegistry(ctx, root)
 	if err != nil {
 		return commandResult{}, classifyStateError("load application registry", err)
 	}
@@ -715,38 +739,46 @@ func applyRebindOperation(root string, catalog sessionstate.DesktopCatalog, oper
 		}
 		return commandResult{}, failure("app_stale", "revalidate application rebind", err.Error())
 	}
-	approval, err := sessionstate.PrepareDesktopApproval(root, item.ContextID, entry)
+	approval, err := sessionstate.PrepareDesktopApprovalContext(ctx, root, item.ContextID, entry)
 	if err != nil {
 		return commandResult{}, failure("launcher_trust", "approve rebound desktop launcher", err.Error())
 	}
 	if approval.Launcher.Kind == sessionstate.LauncherFlatpak {
 		if err := deps.verifyFlatpak(approval.Launcher); err != nil {
-			_ = sessionstate.DiscardDesktopApproval(root, approval)
+			_ = withAppCleanupContext(ctx, func(cleanupCtx context.Context) error {
+				return sessionstate.DiscardDesktopApprovalContext(cleanupCtx, root, approval)
+			})
 			return commandResult{}, failure("flatpak_installation", "verify rebound Flatpak installation", err.Error())
 		}
 	}
 	replacement, err := sessionstate.NewApplicationContext(item.ContextID, entry, window, approval.Launcher)
 	if err != nil {
-		_ = sessionstate.DiscardDesktopApproval(root, approval)
+		_ = withAppCleanupContext(ctx, func(cleanupCtx context.Context) error {
+			return sessionstate.DiscardDesktopApprovalContext(cleanupCtx, root, approval)
+		})
 		return commandResult{}, failure("invalid_context", "create rebound application context", err.Error())
 	}
 	replacement.State = previous.State
 	replacement.App.DesiredOpen = previous.App.DesiredOpen
 	replacement.App.RestorePolicy = previous.App.RestorePolicy
-	old, replacement, err := sessionstate.RebindApplicationContext(root, client, previous, replacement, window.ContainerID)
+	old, replacement, err := sessionstate.RebindApplicationContext(ctx, root, client, previous, replacement, window.ContainerID)
 	if err != nil {
-		_ = sessionstate.DiscardDesktopApproval(root, approval)
+		_ = withAppCleanupContext(ctx, func(cleanupCtx context.Context) error {
+			return sessionstate.DiscardDesktopApprovalContext(cleanupCtx, root, approval)
+		})
 		return commandResult{}, classifyStateError("rebind desktop application", err)
 	}
 	if old.Launcher.ApprovedDesktopPath != replacement.Launcher.ApprovedDesktopPath {
-		_ = sessionstate.RemoveDesktopApprovalSnapshot(root, old.Launcher)
+		_ = withAppCleanupContext(ctx, func(cleanupCtx context.Context) error {
+			return sessionstate.RemoveDesktopApprovalSnapshotContext(cleanupCtx, root, old.Launcher)
+		})
 	}
 	return commandResult{Command: "app rebind-focused", Contexts: []sessionstate.Context{replacement}}, nil
 }
 
-func applyReapproveOperation(root string, catalog sessionstate.DesktopCatalog, operation sessionstate.ApplicationOperation, _ dependencies) (commandResult, *commandFailure) {
+func applyReapproveOperation(ctx context.Context, root string, catalog sessionstate.DesktopCatalog, operation sessionstate.ApplicationOperation, _ dependencies) (commandResult, *commandFailure) {
 	item := operation.Items[0]
-	registry, err := loadRegistry(root)
+	registry, err := loadRegistry(ctx, root)
 	if err != nil {
 		return commandResult{}, classifyStateError("load application registry", err)
 	}
@@ -769,22 +801,26 @@ func applyReapproveOperation(root string, catalog sessionstate.DesktopCatalog, o
 	if !ok {
 		return commandResult{}, failure("app_stale", "revalidate launcher reapproval", "desktop entry no longer exists")
 	}
-	approval, err := sessionstate.PrepareDesktopApproval(root, item.ContextID, entry)
+	approval, err := sessionstate.PrepareDesktopApprovalContext(ctx, root, item.ContextID, entry)
 	if err != nil {
 		return commandResult{}, failure("launcher_trust", "reapprove desktop launcher", err.Error())
 	}
-	previous, replacement, err := sessionstate.ReapproveApplicationContext(root, item.ContextID, item.ContextRevision, approval.Launcher)
+	previous, replacement, err := sessionstate.ReapproveApplicationContext(ctx, root, item.ContextID, item.ContextRevision, approval.Launcher)
 	if err != nil {
-		_ = sessionstate.DiscardDesktopApproval(root, approval)
+		_ = withAppCleanupContext(ctx, func(cleanupCtx context.Context) error {
+			return sessionstate.DiscardDesktopApprovalContext(cleanupCtx, root, approval)
+		})
 		return commandResult{}, classifyStateError("reapprove desktop launcher", err)
 	}
 	if previous.Launcher.ApprovedDesktopPath != replacement.Launcher.ApprovedDesktopPath {
-		_ = sessionstate.RemoveDesktopApprovalSnapshot(root, previous.Launcher)
+		_ = withAppCleanupContext(ctx, func(cleanupCtx context.Context) error {
+			return sessionstate.RemoveDesktopApprovalSnapshotContext(cleanupCtx, root, previous.Launcher)
+		})
 	}
 	return commandResult{Command: "app reapprove", Contexts: []sessionstate.Context{replacement}}, nil
 }
 
-func operationSwayClient(deps dependencies, socketOverride string) (swayRequester, *swayipc.TreeNode, *commandFailure) {
+func operationSwayClient(ctx context.Context, deps dependencies, socketOverride string) (swayRequester, *swayipc.TreeNode, *commandFailure) {
 	socket, commandFailure := applicationSocket(socketOverride)
 	if commandFailure != nil {
 		return nil, nil, commandFailure
@@ -793,7 +829,7 @@ func operationSwayClient(deps dependencies, socketOverride string) (swayRequeste
 	if client == nil {
 		return nil, nil, failure("sway", "connect to Sway", "Sway client is unavailable")
 	}
-	tree, err := requestTree(client)
+	tree, err := requestTree(ctx, client)
 	if err != nil {
 		client.Close()
 		return nil, nil, failure("sway_tree", "observe Sway applications", err.Error())
@@ -805,8 +841,10 @@ func desktopCandidatesForWindow(window sessionstate.WindowApplication, catalog s
 	return sessionstate.DesktopCandidatesForWindow(window, catalog)
 }
 
-func registryContainsExactApplicationContext(root string, expected sessionstate.Context) bool {
-	registry, err := loadRegistry(root)
+func registryContainsExactApplicationContext(ctx context.Context, root string, expected sessionstate.Context) bool {
+	reconcileCtx, cancel := commandReconciliationContext(ctx)
+	defer cancel()
+	registry, err := loadRegistry(reconcileCtx, root)
 	if err != nil {
 		return false
 	}

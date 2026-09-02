@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 
 	sessionstate "github.com/marang/sway-title-animator/internal/session"
 	"github.com/marang/sway-title-animator/internal/sessionrequest"
@@ -40,7 +41,7 @@ func runSessionRequestBroker(ctx context.Context, swaySocket string, reportError
 	if ctx == nil {
 		return errors.New("broker context is nil")
 	}
-	monitor, err := subscribeToSwayShutdown(swaySocket)
+	monitor, err := subscribeToSwayShutdown(ctx, swaySocket)
 	if err != nil {
 		return err
 	}
@@ -81,22 +82,14 @@ type swayShutdownMonitor struct {
 	result     chan error
 }
 
-func subscribeToSwayShutdown(socket string) (*swayShutdownMonitor, error) {
-	connection, err := swayipc.Dial(socket)
+func subscribeToSwayShutdown(ctx context.Context, socket string) (*swayShutdownMonitor, error) {
+	connection, err := swayipc.OpenSubscriptionContext(ctx, socket, []byte(`["shutdown"]`), 5*time.Second)
 	if err != nil {
-		return nil, fmt.Errorf("connect to Sway shutdown events: %w", err)
-	}
-	response, err := connection.Request(swayipc.Subscribe, []byte(`["shutdown"]`))
-	if err == nil {
-		err = swayipc.CheckSubscribeResponse(response)
-	}
-	if err != nil {
-		_ = connection.Close()
-		return nil, fmt.Errorf("subscribe to Sway shutdown events: %w", err)
+		return nil, fmt.Errorf("open Sway shutdown subscription: %w", err)
 	}
 	monitor := &swayShutdownMonitor{connection: connection, result: make(chan error, 1)}
 	go func() {
-		message, err := connection.Read()
+		message, err := connection.ReadContext(ctx)
 		if err == nil {
 			var event swayipc.Event
 			event, err = swayipc.DecodeEvent(message)
@@ -112,6 +105,11 @@ func subscribeToSwayShutdown(socket string) (*swayShutdownMonitor, error) {
 func (monitor *swayShutdownMonitor) Wait(ctx context.Context) error {
 	select {
 	case err := <-monitor.result:
+		// The reader uses the same lifecycle context. If its cancellation
+		// result wins this select race, shutdown is still intentional.
+		if ctx.Err() != nil {
+			return nil
+		}
 		if err != nil {
 			return fmt.Errorf("monitor Sway shutdown: %w", err)
 		}

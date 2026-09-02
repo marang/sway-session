@@ -149,7 +149,7 @@ func TestTerminalCommandRejectsEmptyCwdWithoutEffects(t *testing.T) {
 	}
 }
 
-func TestTerminalCommandRejectsInvalidLabelBeforeAnyDependencyOrLegacyMigration(t *testing.T) {
+func TestTerminalCommandRejectsInvalidLabelBeforeAnyDependency(t *testing.T) {
 	for name, label := range map[string]string{
 		"surrounding-whitespace": " terminal",
 		"control-character":      "terminal\nname",
@@ -164,9 +164,9 @@ func TestTerminalCommandRejectsInvalidLabelBeforeAnyDependencyOrLegacyMigration(
 			if err := os.MkdirAll(root, 0o700); err != nil {
 				t.Fatal(err)
 			}
-			legacy := []byte(`{"version":3,"preferences":{"desktop_indicators":false},"contexts":[]}`)
+			registry := []byte(`{"version":5,"preferences":{"desktop_indicators":false},"contexts":[]}`)
 			registryPath := filepath.Join(root, sessionstate.ContextsFilename)
-			if err := os.WriteFile(registryPath, legacy, 0o600); err != nil {
+			if err := os.WriteFile(registryPath, registry, 0o600); err != nil {
 				t.Fatal(err)
 			}
 			deps.stateRoot = func() (string, error) {
@@ -193,17 +193,14 @@ func TestTerminalCommandRejectsInvalidLabelBeforeAnyDependencyOrLegacyMigration(
 				t.Fatalf("invalid --label code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 			}
 			unchanged, err := os.ReadFile(registryPath)
-			if err != nil || !bytes.Equal(unchanged, legacy) {
-				t.Fatalf("invalid label changed v3 registry: data=%q err=%v", unchanged, err)
-			}
-			if _, err := os.Lstat(filepath.Join(root, sessionstate.ContextsV3BackupFilename)); !errors.Is(err, os.ErrNotExist) {
-				t.Fatalf("invalid label created v3 migration backup: %v", err)
+			if err != nil || !bytes.Equal(unchanged, registry) {
+				t.Fatalf("invalid label changed registry: data=%q err=%v", unchanged, err)
 			}
 		})
 	}
 }
 
-func TestTerminalCommandRejectsControlCharacterCwdBeforeAnyDependencyOrLegacyMigration(t *testing.T) {
+func TestTerminalCommandRejectsControlCharacterCwdBeforeAnyDependency(t *testing.T) {
 	deps := testDependencies(t)
 	root, err := deps.stateRoot()
 	if err != nil {
@@ -212,9 +209,9 @@ func TestTerminalCommandRejectsControlCharacterCwdBeforeAnyDependencyOrLegacyMig
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	legacy := []byte(`{"version":3,"preferences":{"desktop_indicators":false},"contexts":[]}`)
+	registry := []byte(`{"version":5,"preferences":{"desktop_indicators":false},"contexts":[]}`)
 	registryPath := filepath.Join(root, sessionstate.ContextsFilename)
-	if err := os.WriteFile(registryPath, legacy, 0o600); err != nil {
+	if err := os.WriteFile(registryPath, registry, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	badCwd := filepath.Join(t.TempDir(), "terminal\nwork")
@@ -241,11 +238,8 @@ func TestTerminalCommandRejectsControlCharacterCwdBeforeAnyDependencyOrLegacyMig
 		t.Fatalf("invalid --cwd code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
 	unchanged, err := os.ReadFile(registryPath)
-	if err != nil || !bytes.Equal(unchanged, legacy) {
-		t.Fatalf("invalid cwd changed v3 registry: data=%q err=%v", unchanged, err)
-	}
-	if _, err := os.Lstat(filepath.Join(root, sessionstate.ContextsV3BackupFilename)); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("invalid cwd created v3 migration backup: %v", err)
+	if err != nil || !bytes.Equal(unchanged, registry) {
+		t.Fatalf("invalid cwd changed registry: data=%q err=%v", unchanged, err)
 	}
 }
 
@@ -387,7 +381,7 @@ func TestTerminalListReturnsAnExplicitEmptyArray(t *testing.T) {
 	}
 }
 
-func TestTerminalInventoryRefusesLegacySchemaWithoutMigrating(t *testing.T) {
+func TestTerminalInventoryRefusesUnsupportedSchemaWithoutMutation(t *testing.T) {
 	deps := testDependencies(t)
 	root, err := deps.stateRoot()
 	if err != nil {
@@ -396,24 +390,21 @@ func TestTerminalInventoryRefusesLegacySchemaWithoutMigrating(t *testing.T) {
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	legacy := []byte(`{"version":3,"preferences":{"desktop_indicators":false},"contexts":[]}`)
+	unsupported := []byte(`{"version":4,"preferences":{"desktop_indicators":false},"contexts":[]}`)
 	path := filepath.Join(root, sessionstate.ContextsFilename)
-	if err := os.WriteFile(path, legacy, 0o600); err != nil {
+	if err := os.WriteFile(path, unsupported, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	code := runWith([]string{"--json", "terminal", "list"}, strings.NewReader(""), &stdout, &stderr, deps)
-	if code != exitOperation || stdout.Len() != 0 || !strings.Contains(stderr.String(), `"code":"migration_required"`) ||
-		!strings.Contains(stderr.String(), "sway-session --json list") {
-		t.Fatalf("legacy inventory code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	if code != exitOperation || stdout.Len() != 0 || !strings.Contains(stderr.String(), `"code":"unsupported_version"`) ||
+		!strings.Contains(stderr.String(), "schema version 4") {
+		t.Fatalf("unsupported inventory code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
 	unchanged, err := os.ReadFile(path)
-	if err != nil || !bytes.Equal(unchanged, legacy) {
-		t.Fatalf("read-only inventory modified legacy registry: data=%q err=%v", unchanged, err)
-	}
-	if _, err := os.Lstat(filepath.Join(root, sessionstate.ContextsV3BackupFilename)); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("read-only inventory created migration backup: %v", err)
+	if err != nil || !bytes.Equal(unchanged, unsupported) {
+		t.Fatalf("read-only inventory modified unsupported registry: data=%q err=%v", unchanged, err)
 	}
 }
 

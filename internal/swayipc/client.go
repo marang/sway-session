@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 )
+
+const defaultRequestTimeout = 5 * time.Second
 
 // CommandOutcomeUnknownError reports a mutating request whose connection
 // failed after the exchange began. Callers must observe fresh compositor state
@@ -39,13 +42,14 @@ func (err *CommandOutcomeUnknownError) Unwrap() error {
 // Client reconnects once for read-only requests. Mutating requests are never
 // repeated automatically because their outcome may be ambiguous.
 type Client struct {
-	socket string
-	conn   *Conn
+	socket         string
+	conn           *Conn
+	requestTimeout time.Duration
 }
 
 // NewClient creates a reconnecting Sway IPC request client.
 func NewClient(socket string) *Client {
-	return &Client{socket: socket}
+	return &Client{socket: socket, requestTimeout: defaultRequestTimeout}
 }
 
 // Close closes the current control connection, if any.
@@ -60,7 +64,7 @@ func (client *Client) Close() {
 // Request sends one request. Known read-only requests reconnect once after a
 // failed exchange; RUN_COMMAND returns CommandOutcomeUnknownError instead.
 func (client *Client) Request(messageType MessageType, payload []byte) (Message, error) {
-	return client.request(context.Background(), messageType, payload)
+	return client.RequestContext(context.Background(), messageType, payload)
 }
 
 // RequestContext sends one request and interrupts its Sway connection when the
@@ -70,7 +74,13 @@ func (client *Client) RequestContext(ctx context.Context, messageType MessageTyp
 	if ctx == nil {
 		return Message{}, errors.New("sway ipc request context is nil")
 	}
-	return client.request(ctx, messageType, payload)
+	timeout := defaultRequestTimeout
+	if client != nil && client.requestTimeout > 0 {
+		timeout = client.requestTimeout
+	}
+	requestCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	return client.request(requestCtx, messageType, payload)
 }
 
 func (client *Client) request(ctx context.Context, messageType MessageType, payload []byte) (Message, error) {
@@ -179,6 +189,23 @@ func CheckSubscribeResponse(message Message) error {
 	}
 	if !result.Success {
 		return errors.New("sway rejected event subscription")
+	}
+	return nil
+}
+
+// CheckSendTickResponse verifies that Sway accepted an event-stream barrier.
+func CheckSendTickResponse(message Message) error {
+	if message.Type != SendTick {
+		return fmt.Errorf("unexpected sway send-tick response type %d", message.Type)
+	}
+	var result struct {
+		Success bool `json:"success"`
+	}
+	if err := json.Unmarshal(message.Payload, &result); err != nil {
+		return fmt.Errorf("decode sway send-tick response: %w", err)
+	}
+	if !result.Success {
+		return errors.New("sway rejected event-stream barrier")
 	}
 	return nil
 }

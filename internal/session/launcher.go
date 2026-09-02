@@ -22,21 +22,22 @@ type ProcessStarter interface {
 type ExecProcessStarter struct{}
 
 type ProcessSpec struct {
-	Name                     string
-	Arguments                []string
-	Environment              []string
-	UnsetEnvironment         []string
-	UnsetEnvironmentPrefixes []string
+	Name        string
+	Arguments   []string
+	Environment []string // Trusted child overrides, applied after inherited values are filtered.
+
+	UnsetInheritedEnvironment         []string
+	UnsetInheritedEnvironmentPrefixes []string
 }
 
 func (ExecProcessStarter) Start(spec ProcessSpec) error {
 	command := exec.Command(spec.Name, spec.Arguments...)
-	if len(spec.Environment) != 0 || len(spec.UnsetEnvironment) != 0 || len(spec.UnsetEnvironmentPrefixes) != 0 {
+	if len(spec.Environment) != 0 || len(spec.UnsetInheritedEnvironment) != 0 || len(spec.UnsetInheritedEnvironmentPrefixes) != 0 {
 		environment, err := mergeEnvironment(
 			os.Environ(),
 			spec.Environment,
-			spec.UnsetEnvironment,
-			spec.UnsetEnvironmentPrefixes,
+			spec.UnsetInheritedEnvironment,
+			spec.UnsetInheritedEnvironmentPrefixes,
 		)
 		if err != nil {
 			return err
@@ -71,9 +72,6 @@ func mergeEnvironment(base []string, overrides []string, unset []string, unsetPr
 	if err := apply(base); err != nil {
 		return nil, err
 	}
-	if err := apply(overrides); err != nil {
-		return nil, err
-	}
 	removed := make(map[string]struct{}, len(unset))
 	for _, key := range unset {
 		if key == "" || strings.ContainsAny(key, "=\x00") {
@@ -86,7 +84,8 @@ func mergeEnvironment(base []string, overrides []string, unset []string, unsetPr
 			return nil, errors.New("process environment contains an invalid unset prefix")
 		}
 	}
-	result := make([]string, 0, len(order))
+	filteredValues := make(map[string]string, len(values)+len(overrides))
+	filteredOrder := make([]string, 0, len(order)+len(overrides))
 	for _, key := range order {
 		if _, excluded := removed[key]; excluded {
 			continue
@@ -101,6 +100,16 @@ func mergeEnvironment(base []string, overrides []string, unset []string, unsetPr
 		if excluded {
 			continue
 		}
+		filteredOrder = append(filteredOrder, key)
+		filteredValues[key] = values[key]
+	}
+	values = filteredValues
+	order = filteredOrder
+	if err := apply(overrides); err != nil {
+		return nil, err
+	}
+	result := make([]string, 0, len(order))
+	for _, key := range order {
 		result = append(result, values[key])
 	}
 	return result, nil

@@ -324,6 +324,31 @@ func TestInspectActiveContextUsesExactRegisteredID(t *testing.T) {
 	}
 }
 
+func TestInspectActiveContextHonorsCanceledContext(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state")
+	contextValue := sessionstate.Context{
+		ID:       sessionstate.ContextID("8f33d6d0-7c54-4da1-9e38-2bd290ef85ca"),
+		State:    sessionstate.ContextActive,
+		Launcher: sessionstate.Launcher{Kind: sessionstate.LauncherHerdr, Session: "lab-109", Cwd: root, Terminal: &sessionstate.TerminalLauncher{Adapter: sessionstate.TerminalAdapterAlacritty}},
+	}
+	if _, err := sessionstate.UpdateRegistry(root, func(registry *sessionstate.Registry) error {
+		registry.Contexts = append(registry.Contexts, contextValue)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	called := false
+	err := InspectActiveContextContext(ctx, root, contextValue.ID, func(sessionstate.Context) error {
+		called = true
+		return nil
+	})
+	if !errors.Is(err, context.Canceled) || called {
+		t.Fatalf("canceled inspection returned err=%v called=%t", err, called)
+	}
+}
+
 func TestInspectActiveContextSerializesArchiveWithDependentOperation(t *testing.T) {
 	root := t.TempDir()
 	if err := os.Chmod(root, 0o700); err != nil {

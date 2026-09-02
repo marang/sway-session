@@ -191,10 +191,10 @@ the compositor started. The only workspaces were `98: LAB-106 A` and
 - Two sequential `terminal --new` calls produced different context UUIDs,
   UUID-derived application IDs, and Herdr session names, and mapped exactly one
   marked window to each workspace.
-- The post-review rerun persisted registry schema 4 and required
-  `launcher.terminal.instance: true` on both new contexts before continuing.
-  Separate migration tests preserve exact v3 bytes and keep a pre-existing
-  naming lookalike classified as `manual`.
+- The post-review rerun persisted registry schema 4 and therefore predates the
+  current schema-5 release candidate and its reset-only state contract. It
+  remains evidence for the outer-window and independent-instance behavior only;
+  it is not schema-5 release evidence.
 - `terminal list` reported both as independent `instance` identities, while
   the daemon captured both placements in owner-only `contexts.json` and
   `layout.json` files.
@@ -212,6 +212,49 @@ The transient service used `KillMode=control-group`, a three-minute runtime
 limit, and exact temporary-root identity checks. It terminated all private
 compositor descendants and removed the isolated root after the successful
 run. It never addressed or mutated the interactive Sway compositor.
+
+### Required schema-5 release rerun
+
+Before releasing a build whose registry schema is 5, repeat the isolated
+headless procedure on workspace 98 or higher from a fresh schema-5 state root.
+Create a fresh terminal instance, verify that `contexts.json` validates as
+schema 5, and verify:
+
+- closing and restoring the registered terminal instance returns its marked
+  outer window to the saved high-numbered workspace while the animator is not
+  running;
+- foreign inherited `HERDR_*` values are absent while the validated
+  `HERDR_CONFIG_PATH` for the isolated test root reaches the launched Herdr
+  child; and
+- a daemon restart performs no duplicate launch or mark creation.
+
+Record the date, installed/source commit, Sway and Herdr versions, isolated
+workspace numbers, and cleanup result here. Until that record exists, the
+LAB-106 entry above is not sufficient schema-5 release evidence.
+
+### LAB-109 schema-5 release evidence (2026-09-02)
+
+The source code at commit `74cdf49` was built with the repository's Go 1.26.5
+toolchain and exercised with Sway 1.12, Alacritty, and Herdr 0.8.2 in a fresh
+private schema-5 state root. A transient headless wlroots compositor exposed
+only `98: LAB-109 schema5 E2E`; no request addressed the interactive compositor
+or a single-digit workspace.
+
+- `terminal --new` created one schema-5 terminal-instance context with the
+  short UUID-derived Herdr session name. The daemon marked its one outer window
+  and captured workspace 98 in `layout.json` without an animator process.
+- After closing that exact private-compositor container, one-shot `restore`
+  opened one new outer window with the same context mark on workspace 98 while
+  the animator remained absent.
+- The launched Herdr client received exactly the validated private
+  `HERDR_CONFIG_PATH` and `SWAY_SESSION_CONTEXT_ID`; injected foreign
+  `HERDR_TEST_FOREIGN` and `CODEX_THREAD_ID` values were absent.
+- Restarting only the session daemon kept exactly one marked window, one exact
+  Herdr client, and byte-identical `contexts.json` contents.
+- Cleanup used the typed `purge --yes` path, stopped both private services,
+  verified that no exact Herdr client remained, and removed only the two
+  validated disposable roots. The real session state was never opened or
+  changed.
 
 This document records the manual LAB-80 evidence gathered on 2026-08-29. It
 separates the outer Sway restore from components which were not available in

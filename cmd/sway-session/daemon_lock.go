@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"syscall"
 
-	sessionstate "github.com/marang/sway-title-animator/internal/session"
 	"github.com/marang/sway-title-animator/internal/statefile"
 	"golang.org/x/sys/unix"
 )
@@ -66,11 +65,6 @@ func acquireSessionDaemonLock() (*sessionDaemonLock, error) {
 		}
 		return nil, fmt.Errorf("lock session daemon: %w", err)
 	}
-	if err := sessionstate.MarkDaemonRegistryCompatibility(file); err != nil {
-		_ = unix.Flock(fd, unix.LOCK_UN)
-		closeFiles()
-		return nil, fmt.Errorf("publish session daemon compatibility: %w", err)
-	}
 	return &sessionDaemonLock{file: file, directory: directory}, nil
 }
 
@@ -78,11 +72,10 @@ func (lock *sessionDaemonLock) Close() error {
 	if lock == nil || lock.file == nil {
 		return nil
 	}
-	markerErr := sessionstate.ClearDaemonRegistryCompatibility(lock.file)
 	unlockErr := unix.Flock(int(lock.file.Fd()), unix.LOCK_UN)
 	fileErr := lock.file.Close()
 	directoryErr := lock.directory.Close()
 	lock.file = nil
 	lock.directory = nil
-	return errors.Join(markerErr, unlockErr, fileErr, directoryErr)
+	return errors.Join(unlockErr, fileErr, directoryErr)
 }

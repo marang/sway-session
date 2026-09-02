@@ -51,6 +51,50 @@ func TestAppRegisterFocusedFlatpakIsExplicitMarkedAndIdempotent(t *testing.T) {
 	}
 }
 
+func TestDiscardDesktopApprovalsSharesOneTotalCleanupBudget(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state")
+	if err := sessionstate.RegistryFile(root).Save(sessionstate.Registry{
+		Version:  sessionstate.ContextsSchemaVersion,
+		Contexts: []sessionstate.Context{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	lockEntered := make(chan struct{})
+	releaseLock := make(chan struct{})
+	lockDone := make(chan error, 1)
+	go func() {
+		lockDone <- sessionstate.InspectRegistryLocked(root, func(sessionstate.Registry) error {
+			close(lockEntered)
+			<-releaseLock
+			return nil
+		})
+	}()
+	<-lockEntered
+
+	approvals := make([]sessionstate.DesktopApproval, 3)
+	for index := range approvals {
+		approvals[index] = sessionstate.DesktopApproval{
+			SnapshotCreated: true,
+			Launcher: sessionstate.Launcher{
+				ApprovedDesktopPath: filepath.Join(root, "desktop-approvals", fmt.Sprintf("snapshot-%d.desktop", index)),
+			},
+		}
+	}
+	started := time.Now()
+	err := discardDesktopApprovals(context.Background(), root, approvals)
+	elapsed := time.Since(started)
+	close(releaseLock)
+	if lockErr := <-lockDone; lockErr != nil {
+		t.Fatalf("release registry lock: %v", lockErr)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("blocked cleanup returned %v, want deadline exceeded", err)
+	}
+	if elapsed >= 2*time.Second {
+		t.Fatalf("cleanup restarted its total budget per approval: %v", elapsed)
+	}
+}
+
 func TestAppRegisterFocusedDoesNotMoveHealthyAnchorToSameApplicationSibling(t *testing.T) {
 	deps := testDependencies(t)
 	registered := sessionstate.Context{
@@ -754,7 +798,7 @@ func containsString(values []string, want string) bool {
 func loadRegistryOrEmpty(t *testing.T, deps dependencies) sessionstate.Registry {
 	t.Helper()
 	root, _ := deps.stateRoot()
-	registry, err := loadRegistry(root)
+	registry, err := loadRegistry(t.Context(), root)
 	if err != nil {
 		t.Fatal(err)
 	}

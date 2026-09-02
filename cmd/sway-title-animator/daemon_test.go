@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -59,6 +60,63 @@ func TestAnimatorRunsWithoutSessionStateOrDaemon(t *testing.T) {
 		if _, err := os.Lstat(forbidden); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("animator touched session-owned path %s: %v", forbidden, err)
 		}
+	}
+}
+
+func TestAnimatorTreeRefreshStopsWhenDaemonContextIsCanceled(t *testing.T) {
+	socket := filepath.Join(t.TempDir(), "sway.sock")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	requestReceived := make(chan struct{})
+	serverDone := make(chan error, 1)
+	go func() {
+		connection, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			serverDone <- acceptErr
+			return
+		}
+		defer connection.Close()
+		messageType, _, readErr := readAnimatorTestFrame(connection)
+		if readErr != nil {
+			serverDone <- readErr
+			return
+		}
+		if messageType != uint32(swayipc.GetTree) {
+			serverDone <- fmt.Errorf("unexpected message type %d", messageType)
+			return
+		}
+		close(requestReceived)
+		var probe [1]byte
+		_, readErr = connection.Read(probe[:])
+		serverDone <- readErr
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	client := swayipc.NewClient(socket)
+	defer client.Close()
+	animator := NewTitleAnimatorWithContext(ctx, client)
+	refreshDone := make(chan error, 1)
+	go func() {
+		_, refreshErr := animator.RefreshTree(0)
+		refreshDone <- refreshErr
+	}()
+	<-requestReceived
+	cancel()
+	select {
+	case refreshErr := <-refreshDone:
+		if !errors.Is(refreshErr, context.Canceled) {
+			t.Fatalf("canceled refresh returned %v", refreshErr)
+		}
+	case <-time.After(300 * time.Millisecond):
+		t.Fatal("animator ignored cancellation while Sway was unresponsive")
+	}
+	select {
+	case <-serverDone:
+	case <-time.After(300 * time.Millisecond):
+		t.Fatal("animator cancellation did not close the Sway request")
 	}
 }
 
@@ -150,7 +208,7 @@ const animatorTestTree = `{
   "type": "root",
   "nodes": [{
     "id": 2,
-    "name": "1",
+    "name": "98",
     "type": "workspace",
     "layout": "splith",
     "rect": {"width": 1000, "height": 800},

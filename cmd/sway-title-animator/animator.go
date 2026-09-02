@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 )
 
 type TitleAnimator struct {
+	ctx                  context.Context
 	ipc                  *swayipc.Client
 	titleSetter          func(int64, string) error
 	lastFormats          map[int64]string
@@ -34,7 +36,15 @@ type TitleAnimator struct {
 }
 
 func NewTitleAnimator(ipc *swayipc.Client) *TitleAnimator {
+	return NewTitleAnimatorWithContext(context.Background(), ipc)
+}
+
+func NewTitleAnimatorWithContext(ctx context.Context, ipc *swayipc.Client) *TitleAnimator {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	return &TitleAnimator{
+		ctx:             ctx,
 		ipc:             ipc,
 		lastFormats:     map[int64]string{},
 		lastFormatSetAt: map[int64]time.Time{},
@@ -50,7 +60,7 @@ func (animator *TitleAnimator) RefreshTree(phase int) (*Node, error) {
 	if animator == nil || animator.ipc == nil {
 		return nil, errors.New("title animator has no Sway IPC client")
 	}
-	message, err := animator.ipc.Request(swayipc.GetTree, nil)
+	message, err := animator.ipc.RequestContext(animator.ctx, swayipc.GetTree, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -251,9 +261,13 @@ func (animator *TitleAnimator) FramesUntilNextWake(phase int) int {
 }
 
 func (animator *TitleAnimator) ResetAll() error {
+	return animator.ResetAllContext(animator.ctx)
+}
+
+func (animator *TitleAnimator) ResetAllContext(ctx context.Context) error {
 	var resetErrors []error
 	for conID := range animator.lastFormats {
-		if err := animator.SetTitleFormat(conID, "%title"); err != nil {
+		if err := animator.setTitleFormatContext(ctx, conID, "%title"); err != nil {
 			resetErrors = append(resetErrors, fmt.Errorf("reset container %d: %w", conID, err))
 		}
 	}
@@ -263,11 +277,15 @@ func (animator *TitleAnimator) ResetAll() error {
 }
 
 func (animator *TitleAnimator) SetTitleFormat(conID int64, value string) error {
+	return animator.setTitleFormatContext(animator.ctx, conID, value)
+}
+
+func (animator *TitleAnimator) setTitleFormatContext(ctx context.Context, conID int64, value string) error {
 	if animator.titleSetter != nil {
 		return animator.titleSetter(conID, value)
 	}
 	command := fmt.Sprintf("[con_id=%d] title_format %s", conID, quoteSwayString(value))
-	message, err := animator.ipc.Request(swayipc.RunCommand, []byte(command))
+	message, err := animator.ipc.RequestContext(ctx, swayipc.RunCommand, []byte(command))
 	if err != nil {
 		return err
 	}

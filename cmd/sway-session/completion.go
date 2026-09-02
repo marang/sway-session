@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"sort"
@@ -14,7 +15,7 @@ type completionCandidate struct {
 	Description string `json:"description"`
 }
 
-func executeCompletion(arguments []string, deps dependencies) (commandResult, *commandFailure) {
+func executeCompletion(ctx context.Context, arguments []string, deps dependencies) (commandResult, *commandFailure) {
 	if len(arguments) != 2 || arguments[0] != "contexts" || !supportedCompletionContextCommand(arguments[1]) {
 		return commandResult{}, usageFailure("completion", "completion contexts requires one supported command")
 	}
@@ -22,7 +23,7 @@ func executeCompletion(arguments []string, deps dependencies) (commandResult, *c
 	if commandFailure != nil {
 		return commandResult{}, commandFailure
 	}
-	registry, err := sessionstate.ReadRegistrySnapshot(root)
+	registry, err := sessionstate.ReadRegistrySnapshotContext(ctx, root)
 	if err != nil {
 		return commandResult{}, classifyStateError("load completion contexts", err)
 	}

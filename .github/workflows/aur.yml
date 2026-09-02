@@ -131,15 +131,23 @@ jobs:
         with:
           ssh-private-key: ${{ secrets.AUR_PRIVATE_KEY }}
 
-      - name: Trust AUR host key
+      - name: Install pinned AUR host key
         run: |
           install -m 700 -d ~/.ssh
-          ssh-keyscan -t ed25519 aur.archlinux.org >> ~/.ssh/known_hosts
-          chmod 644 ~/.ssh/known_hosts
+          printf '%s\n' \
+            'aur.archlinux.org ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEuBKrPzbawxA/k2g6NcyV5jmqwJ2s+zpgZGZ7tpLIcN' \
+            > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          fingerprint=$(ssh-keygen -lf ~/.ssh/known_hosts -E sha256 | awk '{print $2}')
+          expected='SHA256:RFzBCUItH9LZS0cKB5UE6ceAYhBD5C8GeOBip8Z11+4'
+          if [ "$fingerprint" != "$expected" ]; then
+            echo "Pinned AUR host-key fingerprint mismatch: $fingerprint" >&2
+            exit 1
+          fi
 
       - name: Clone AUR repo
         env:
-          GIT_SSH_COMMAND: "ssh -o StrictHostKeyChecking=accept-new"
+          GIT_SSH_COMMAND: "ssh -o StrictHostKeyChecking=yes"
           SSH_AUTH_SOCK: ${{ env.SSH_AUTH_SOCK }}
         run: |
           git clone ssh://aur@aur.archlinux.org/${AUR_REPO}.git aur

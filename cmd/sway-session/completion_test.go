@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -12,6 +13,18 @@ import (
 
 	sessionstate "github.com/marang/sway-title-animator/internal/session"
 )
+
+func TestCompletionContextsHonorsCanceledCommandContext(t *testing.T) {
+	deps := testDependencies(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, failure := executeCompletion(ctx, []string{"contexts", "archive"}, deps)
+	if failure == nil || len(failure.diagnostics) == 0 ||
+		!strings.Contains(failure.diagnostics[0].Message+failure.diagnostics[0].Hint, context.Canceled.Error()) {
+		t.Fatalf("canceled completion returned failure %+v", failure)
+	}
+}
 
 func TestCompletionContextsArchiveEmitsOnlyActiveCanonicalIDs(t *testing.T) {
 	deps := testDependencies(t)
@@ -43,7 +56,7 @@ func TestCompletionContextsArchiveEmitsOnlyActiveCanonicalIDs(t *testing.T) {
 	}
 }
 
-func TestCompletionContextReadNeverMigratesLegacyRegistry(t *testing.T) {
+func TestCompletionContextReadRejectsUnsupportedSchemaWithoutMutation(t *testing.T) {
 	deps := testDependencies(t)
 	root, err := deps.stateRoot()
 	if err != nil {
@@ -68,9 +81,6 @@ func TestCompletionContextReadNeverMigratesLegacyRegistry(t *testing.T) {
 	after, err := os.ReadFile(registryPath)
 	if err != nil || !bytes.Equal(after, legacy) {
 		t.Fatalf("legacy registry changed: data=%q err=%v", after, err)
-	}
-	if _, err := os.Stat(filepath.Join(root, sessionstate.ContextsV1BackupFilename)); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("completion created migration backup: %v", err)
 	}
 }
 

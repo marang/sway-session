@@ -221,7 +221,7 @@ func writeInstanceRecord(file *os.File) error {
 }
 
 func processMatchesRecord(record instanceRecord) bool {
-	if record.PID <= 0 || record.PID == os.Getpid() {
+	if record.PID <= 0 || record.PID == os.Getpid() || record.StartTime == 0 || record.Executable == "" {
 		return false
 	}
 	if err := syscall.Kill(record.PID, 0); err != nil && !errors.Is(err, syscall.EPERM) {
@@ -231,15 +231,8 @@ func processMatchesRecord(record instanceRecord) bool {
 	if err != nil {
 		return false
 	}
-	expectedExecutable := record.Executable
-	if expectedExecutable == "" {
-		expectedExecutable = "sway-title-animator"
-	}
-	if filepath.Base(executable) != filepath.Base(expectedExecutable) {
+	if filepath.Base(executable) != filepath.Base(record.Executable) {
 		return false
-	}
-	if record.StartTime == 0 {
-		return true
 	}
 	startTime, err := processStartTime(record.PID)
 	return err == nil && startTime == record.StartTime

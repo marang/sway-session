@@ -18,6 +18,7 @@ const (
 	RunCommand MessageType = 0
 	Subscribe  MessageType = 2
 	GetTree    MessageType = 4
+	SendTick   MessageType = 10
 
 	MaxPayloadSize = 64 * 1024 * 1024
 )
@@ -117,6 +118,15 @@ func (conn *Conn) Request(messageType MessageType, payload []byte) (Message, err
 	return readMessage(current)
 }
 
+// RequestContext is Request with cancellation that interrupts the underlying
+// socket when the peer stops responding.
+func (conn *Conn) RequestContext(ctx context.Context, messageType MessageType, payload []byte) (Message, error) {
+	if ctx == nil {
+		return Message{}, errors.New("sway ipc request context is nil")
+	}
+	return requestContext(ctx, conn, messageType, payload)
+}
+
 // Read reads one subsequent response or subscribed event.
 func (conn *Conn) Read() (Message, error) {
 	current := conn.current()
@@ -124,6 +134,35 @@ func (conn *Conn) Read() (Message, error) {
 		return Message{}, errors.New("sway ipc connection is closed")
 	}
 	return readMessage(current)
+}
+
+// ReadContext is Read with cancellation that interrupts the underlying socket.
+func (conn *Conn) ReadContext(ctx context.Context) (Message, error) {
+	if ctx == nil {
+		return Message{}, errors.New("sway ipc read context is nil")
+	}
+	if ctx.Done() == nil {
+		return conn.Read()
+	}
+	completed := make(chan struct{})
+	canceled := make(chan bool, 1)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.Close()
+			canceled <- true
+		case <-completed:
+			canceled <- false
+		}
+	}()
+	message, err := conn.Read()
+	close(completed)
+	if <-canceled {
+		if contextErr := ctx.Err(); contextErr != nil {
+			return Message{}, fmt.Errorf("sway ipc read canceled: %w", contextErr)
+		}
+	}
+	return message, err
 }
 
 func (conn *Conn) current() io.ReadWriteCloser {

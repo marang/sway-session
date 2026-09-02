@@ -335,19 +335,19 @@ func (manager TerminalManager) ensureWindow(ctx context.Context, registry Regist
 	if err != nil {
 		return fmt.Errorf("resolve %s terminal adapter: %w", target.Launcher.Terminal.Adapter, err)
 	}
-	herdrExecutable, err := manager.ResolveProgram("herdr")
-	if err != nil {
-		return fmt.Errorf("resolve Herdr executable: %w", err)
-	}
-	spec, err := BuildTerminalProcessSpec(target, terminalExecutable, herdrExecutable)
-	if err != nil {
-		return err
-	}
 	herdrPaths, err := manager.HerdrPaths()
 	if err != nil {
 		return fmt.Errorf("resolve Herdr paths: %w", err)
 	}
 	if err := ValidateHerdrSessionSocketPaths(herdrPaths.Root, target.Launcher.Session); err != nil {
+		return err
+	}
+	herdrExecutable, err := manager.ResolveProgram("herdr")
+	if err != nil {
+		return fmt.Errorf("resolve Herdr executable: %w", err)
+	}
+	spec, err := BuildTerminalProcessSpec(target, terminalExecutable, herdrExecutable, herdrPaths.ConfigFile)
+	if err != nil {
 		return err
 	}
 	pending, err := manager.FindPending(manager.ProcRoot, spec)

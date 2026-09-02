@@ -88,14 +88,7 @@ func terminalInstanceSessionMatches(id ContextID, sessionName string) bool {
 	if err != nil {
 		return false
 	}
-	// v4 registries created by sway-session 0.6.0 used the longer spelling.
-	// Keep recognizing it so an upgrade never invalidates or silently abandons
-	// an already usable Herdr session.
-	return sessionName == current || sessionName == legacyTerminalInstanceSessionName(id)
-}
-
-func legacyTerminalInstanceSessionName(id ContextID) string {
-	return "sway-terminal-instance-" + string(id)
+	return sessionName == current
 }
 
 // IsTerminalInstanceContext recognizes only the complete invariant emitted by

@@ -91,6 +91,15 @@ type DesktopApproval struct {
 // PrepareDesktopApproval revalidates a catalog entry and derives one typed
 // launcher. It never executes the desktop entry.
 func PrepareDesktopApproval(stateRoot string, id ContextID, entry DesktopEntry) (DesktopApproval, error) {
+	return PrepareDesktopApprovalContext(context.Background(), stateRoot, id, entry)
+}
+
+// PrepareDesktopApprovalContext is PrepareDesktopApproval with cancelable
+// access to protected approval snapshots.
+func PrepareDesktopApprovalContext(ctx context.Context, stateRoot string, id ContextID, entry DesktopEntry) (DesktopApproval, error) {
+	if ctx == nil {
+		return DesktopApproval{}, errors.New("desktop approval context is nil")
+	}
 	if err := id.Validate(); err != nil {
 		return DesktopApproval{}, err
 	}
@@ -133,18 +142,18 @@ func PrepareDesktopApproval(stateRoot string, id ContextID, entry DesktopEntry) 
 		directory := filepath.Join(stateRoot, desktopApprovalDirectory)
 		name := string(id) + "-" + digest + ".desktop"
 		created := false
-		existing, readErr := statefile.ReadPrivateFile(directory, name)
+		existing, readErr := statefile.ReadPrivateFileContext(ctx, directory, name)
 		switch {
 		case readErr == nil:
 			if !reflect.DeepEqual(existing, data) {
 				return DesktopApproval{}, errors.New("existing approved desktop snapshot does not match its content hash")
 			}
 		case errors.Is(readErr, os.ErrNotExist):
-			if err := statefile.CreatePrivateFile(directory, name, data); err != nil {
+			if err := statefile.CreatePrivateFileContext(ctx, directory, name, data); err != nil {
 				if !errors.Is(err, os.ErrExist) {
 					return DesktopApproval{}, fmt.Errorf("create approved desktop snapshot: %w", err)
 				}
-				existing, readErr = statefile.ReadPrivateFile(directory, name)
+				existing, readErr = statefile.ReadPrivateFileContext(ctx, directory, name)
 				if readErr != nil || !reflect.DeepEqual(existing, data) {
 					return DesktopApproval{}, errors.New("concurrently created approved desktop snapshot does not match its content hash")
 				}
@@ -157,7 +166,9 @@ func PrepareDesktopApproval(stateRoot string, id ContextID, entry DesktopEntry) 
 		launcher.ApprovedDesktopPath = filepath.Join(directory, name)
 		if err := launcher.validate(); err != nil {
 			if created {
-				_ = RemoveDesktopApprovalSnapshot(stateRoot, launcher)
+				cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+				_ = RemoveDesktopApprovalSnapshotContext(cleanupCtx, stateRoot, launcher)
+				cancel()
 			}
 			return DesktopApproval{}, err
 		}
@@ -172,17 +183,34 @@ func PrepareDesktopApproval(stateRoot string, id ContextID, entry DesktopEntry) 
 }
 
 // DiscardDesktopApproval removes only a snapshot created by this uncommitted
-// approval. A reused snapshot may already be referenced by the registry.
+// approval and only while it remains unreferenced by the registry.
 func DiscardDesktopApproval(stateRoot string, approval DesktopApproval) error {
+	return DiscardDesktopApprovalContext(context.Background(), stateRoot, approval)
+}
+
+// DiscardDesktopApprovalContext is DiscardDesktopApproval with cancelable
+// protected snapshot access.
+func DiscardDesktopApprovalContext(ctx context.Context, stateRoot string, approval DesktopApproval) error {
 	if !approval.SnapshotCreated {
 		return nil
 	}
-	return RemoveDesktopApprovalSnapshot(stateRoot, approval.Launcher)
+	return RemoveDesktopApprovalSnapshotContext(ctx, stateRoot, approval.Launcher)
 }
 
-// RemoveDesktopApprovalSnapshot removes only a snapshot proven to be inside
-// this application's private approval directory.
+// RemoveDesktopApprovalSnapshot removes only an unreferenced snapshot proven
+// to be inside this application's private approval directory.
 func RemoveDesktopApprovalSnapshot(stateRoot string, launcher Launcher) error {
+	return RemoveDesktopApprovalSnapshotContext(context.Background(), stateRoot, launcher)
+}
+
+// RemoveDesktopApprovalSnapshotContext is RemoveDesktopApprovalSnapshot with
+// cancelable protected snapshot and registry access. The registry lock keeps a
+// concurrent commit from beginning after the reference check but before the
+// snapshot removal.
+func RemoveDesktopApprovalSnapshotContext(ctx context.Context, stateRoot string, launcher Launcher) error {
+	if ctx == nil {
+		return errors.New("desktop approval removal context is nil")
+	}
 	if launcher.ApprovedDesktopPath == "" {
 		return nil
 	}
@@ -190,7 +218,40 @@ func RemoveDesktopApprovalSnapshot(stateRoot string, launcher Launcher) error {
 	if filepath.Dir(launcher.ApprovedDesktopPath) != directory {
 		return errors.New("approved desktop snapshot is outside the private approval directory")
 	}
-	return statefile.RemovePrivateFile(directory, filepath.Base(launcher.ApprovedDesktopPath))
+	return InspectRegistryLockedContext(ctx, stateRoot, func(registry Registry) error {
+		if registryReferencesDesktopApproval(registry, launcher.ApprovedDesktopPath) {
+			return nil
+		}
+		return statefile.RemovePrivateFileContext(ctx, directory, filepath.Base(launcher.ApprovedDesktopPath))
+	})
+}
+
+func validateUnreferencedDesktopApproval(ctx context.Context, stateRoot string, registry Registry, launcher Launcher) error {
+	if launcher.Kind != LauncherDesktop || launcher.DesktopOrigin != DesktopEntryUser ||
+		registryReferencesDesktopApproval(registry, launcher.ApprovedDesktopPath) {
+		return nil
+	}
+	directory := filepath.Join(stateRoot, desktopApprovalDirectory)
+	if filepath.Dir(launcher.ApprovedDesktopPath) != directory {
+		return errors.New("approved desktop snapshot is outside the private approval directory")
+	}
+	snapshot, err := statefile.ReadPrivateFileContext(ctx, directory, filepath.Base(launcher.ApprovedDesktopPath))
+	if err != nil {
+		return fmt.Errorf("read approved desktop snapshot before registry commit: %w", err)
+	}
+	if sha256Hex(snapshot) != launcher.DesktopEntrySHA256 {
+		return errors.New("approved desktop snapshot changed before registry commit")
+	}
+	return nil
+}
+
+func registryReferencesDesktopApproval(registry Registry, path string) bool {
+	for _, context := range registry.Contexts {
+		if context.Launcher.ApprovedDesktopPath == path {
+			return true
+		}
+	}
+	return false
 }
 
 // DesktopApplicationLauncher starts only the two typed desktop launcher forms.
@@ -227,16 +288,28 @@ func (launcher DesktopApplicationLauncher) Launch(context Context) error {
 
 // Spec revalidates all mutable trust evidence immediately before returning a
 // no-shell process specification.
-func (launcher DesktopApplicationLauncher) Spec(context Context) (ProcessSpec, error) {
-	if err := context.Validate(); err != nil {
+func (launcher DesktopApplicationLauncher) Spec(sessionContext Context) (ProcessSpec, error) {
+	return launcher.SpecContext(context.Background(), sessionContext)
+}
+
+// SpecContext is Spec with cancellation for mutable approval and executable
+// revalidation performed immediately before launch.
+func (launcher DesktopApplicationLauncher) SpecContext(ctx context.Context, sessionContext Context) (ProcessSpec, error) {
+	if ctx == nil {
+		return ProcessSpec{}, errors.New("desktop launch context is nil")
+	}
+	if err := ctx.Err(); err != nil {
+		return ProcessSpec{}, err
+	}
+	if err := sessionContext.Validate(); err != nil {
 		return ProcessSpec{}, fmt.Errorf("validate context: %w", err)
 	}
-	switch context.Launcher.Kind {
+	switch sessionContext.Launcher.Kind {
 	case LauncherDesktop:
 		if launcher.GIO != systemGIOExecutable {
 			return ProcessSpec{}, fmt.Errorf("gio launcher must be %s", systemGIOExecutable)
 		}
-		path, environment, err := revalidateDesktopLaunch(context.Launcher, launcher.StateRoot)
+		path, environment, err := revalidateDesktopLaunchContext(ctx, sessionContext.Launcher, launcher.StateRoot)
 		if err != nil {
 			return ProcessSpec{}, err
 		}
@@ -246,16 +319,22 @@ func (launcher DesktopApplicationLauncher) Spec(context Context) (ProcessSpec, e
 			return ProcessSpec{}, fmt.Errorf("flatpak launcher must be %s", systemFlatpakExecutable)
 		}
 		installation := "--system"
-		if context.Launcher.FlatpakInstallation == FlatpakUser {
+		if sessionContext.Launcher.FlatpakInstallation == FlatpakUser {
 			installation = "--user"
 		}
-		return ProcessSpec{Name: launcher.Flatpak, Arguments: []string{"run", installation, context.Launcher.FlatpakID}, Environment: []string{"PATH=/usr/local/bin:/usr/bin"}}, nil
+		return ProcessSpec{Name: launcher.Flatpak, Arguments: []string{"run", installation, sessionContext.Launcher.FlatpakID}, Environment: []string{"PATH=/usr/local/bin:/usr/bin"}}, nil
 	default:
-		return ProcessSpec{}, fmt.Errorf("desktop launcher does not support context launcher kind %q", context.Launcher.Kind)
+		return ProcessSpec{}, fmt.Errorf("desktop launcher does not support context launcher kind %q", sessionContext.Launcher.Kind)
 	}
 }
 
-func revalidateDesktopLaunch(launcher Launcher, stateRoot string) (string, []string, error) {
+func revalidateDesktopLaunchContext(ctx context.Context, launcher Launcher, stateRoot string) (string, []string, error) {
+	if ctx == nil {
+		return "", nil, errors.New("desktop launch context is nil")
+	}
+	if err := ctx.Err(); err != nil {
+		return "", nil, err
+	}
 	switch launcher.DesktopOrigin {
 	case DesktopEntrySystem:
 		data, err := readTrustedRegularFile(launcher.DesktopPath, 0, true, MaxDesktopEntrySize)
@@ -279,17 +358,35 @@ func revalidateDesktopLaunch(launcher Launcher, stateRoot string) (string, []str
 			return "", nil, errors.New("approved desktop snapshot is outside the private approval directory")
 		}
 		source, err := readTrustedRegularFile(launcher.DesktopPath, uint32(os.Geteuid()), false, MaxDesktopEntrySize)
-		if err != nil || sha256Hex(source) != launcher.DesktopEntrySHA256 {
+		if err != nil {
+			if contextErr := ctx.Err(); contextErr != nil {
+				return "", nil, contextErr
+			}
 			return "", nil, errors.New("user desktop entry changed and requires explicit reapproval")
 		}
-		snapshot, err := statefile.ReadPrivateFile(directory, filepath.Base(launcher.ApprovedDesktopPath))
-		if err != nil || sha256Hex(snapshot) != launcher.DesktopEntrySHA256 {
+		if sha256Hex(source) != launcher.DesktopEntrySHA256 {
+			return "", nil, errors.New("user desktop entry changed and requires explicit reapproval")
+		}
+		snapshot, err := statefile.ReadPrivateFileContext(ctx, directory, filepath.Base(launcher.ApprovedDesktopPath))
+		if err != nil {
+			if contextErr := ctx.Err(); contextErr != nil {
+				return "", nil, contextErr
+			}
+			return "", nil, errors.New("approved desktop snapshot is missing or changed")
+		}
+		if sha256Hex(snapshot) != launcher.DesktopEntrySHA256 {
 			return "", nil, errors.New("approved desktop snapshot is missing or changed")
 		}
 		environment := []string{"PATH=/usr/local/bin:/usr/bin"}
 		if launcher.ApprovedExecutablePath != "" {
-			digest, err := hashTrustedExecutable(launcher.ApprovedExecutablePath, uint32(os.Geteuid()), false)
-			if err != nil || digest != launcher.ApprovedExecutableSHA256 {
+			digest, err := hashTrustedExecutableContext(ctx, launcher.ApprovedExecutablePath, uint32(os.Geteuid()), false)
+			if err != nil {
+				if contextErr := ctx.Err(); contextErr != nil {
+					return "", nil, contextErr
+				}
+				return "", nil, errors.New("approved user executable changed and requires explicit reapproval")
+			}
+			if digest != launcher.ApprovedExecutableSHA256 {
 				return "", nil, errors.New("approved user executable changed and requires explicit reapproval")
 			}
 		}
@@ -551,6 +648,16 @@ func readTrustedRegularFile(path string, owner uint32, requireRootAncestors bool
 }
 
 func hashTrustedExecutable(path string, owner uint32, requireRootAncestors bool) (string, error) {
+	return hashTrustedExecutableContext(context.Background(), path, owner, requireRootAncestors)
+}
+
+func hashTrustedExecutableContext(ctx context.Context, path string, owner uint32, requireRootAncestors bool) (string, error) {
+	if ctx == nil {
+		return "", errors.New("approved executable context is nil")
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	file, err := openTrustedRegular(path, owner, requireRootAncestors)
 	if err != nil {
 		return "", fmt.Errorf("open approved executable: %w", err)
@@ -561,9 +668,26 @@ func hashTrustedExecutable(path string, owner uint32, requireRootAncestors bool)
 		return "", errors.New("approved executable is no longer executable")
 	}
 	hash := sha256.New()
-	written, err := io.Copy(hash, io.LimitReader(file, maxApprovedExecutableSize+1))
-	if err != nil {
-		return "", fmt.Errorf("hash approved executable: %w", err)
+	buffer := make([]byte, 32*1024)
+	limited := io.LimitReader(file, maxApprovedExecutableSize+1)
+	written := int64(0)
+	for {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		read, readErr := limited.Read(buffer)
+		if read > 0 {
+			written += int64(read)
+			if _, err := hash.Write(buffer[:read]); err != nil {
+				return "", fmt.Errorf("hash approved executable: %w", err)
+			}
+		}
+		if errors.Is(readErr, io.EOF) {
+			break
+		}
+		if readErr != nil {
+			return "", fmt.Errorf("hash approved executable: %w", readErr)
+		}
 	}
 	if written > maxApprovedExecutableSize {
 		return "", fmt.Errorf("approved executable exceeds %d bytes", maxApprovedExecutableSize)
@@ -583,6 +707,15 @@ type CommandOutputRunner interface {
 // VerifyFlatpakInstallation checks the exact typed installation immediately
 // before registration or launch.
 func VerifyFlatpakInstallation(executable string, launcher Launcher, runner CommandOutputRunner) error {
+	return VerifyFlatpakInstallationContext(context.Background(), executable, launcher, runner)
+}
+
+// VerifyFlatpakInstallationContext bounds the Flatpak probe by both the
+// caller's lifecycle and the operation-specific timeout.
+func VerifyFlatpakInstallationContext(parent context.Context, executable string, launcher Launcher, runner CommandOutputRunner) error {
+	if parent == nil {
+		return errors.New("flatpak verification context is nil")
+	}
 	if executable != systemFlatpakExecutable || runner == nil {
 		return fmt.Errorf("flatpak verifier requires %s and a runner", systemFlatpakExecutable)
 	}
@@ -596,7 +729,7 @@ func VerifyFlatpakInstallation(executable string, launcher Launcher, runner Comm
 	if launcher.FlatpakInstallation == FlatpakUser {
 		installation = "--user"
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(parent, 10*time.Second)
 	defer cancel()
 	if _, err := runner.CombinedOutput(ctx, executable, "info", installation, launcher.FlatpakID); err != nil {
 		return fmt.Errorf("verify installed Flatpak %s (%s): %w", launcher.FlatpakID, launcher.FlatpakInstallation, err)

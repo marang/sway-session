@@ -87,6 +87,15 @@ func OpenPrivateDirectory(path string, create bool) (*os.File, error) {
 // supplied descriptor-relative directory so pathname replacement cannot move
 // later steps onto a different inode and lock domain.
 func WithPrivateDirectoryLock(path string, action func(*LockedPrivateDirectory) error) error {
+	return WithPrivateDirectoryLockContext(context.Background(), path, action)
+}
+
+// WithPrivateDirectoryLockContext is WithPrivateDirectoryLock with cancelable
+// lock acquisition.
+func WithPrivateDirectoryLockContext(ctx context.Context, path string, action func(*LockedPrivateDirectory) error) error {
+	if ctx == nil {
+		return errors.New("private directory lock context is nil")
+	}
 	if action == nil {
 		return errors.New("private directory action is nil")
 	}
@@ -95,7 +104,7 @@ func WithPrivateDirectoryLock(path string, action func(*LockedPrivateDirectory) 
 		return err
 	}
 	defer directory.Close()
-	if err := lockDirectory(directory, unix.LOCK_EX); err != nil {
+	if err := lockDirectoryContext(ctx, directory, unix.LOCK_EX); err != nil {
 		return err
 	}
 	defer unlockDirectory(directory)
@@ -147,6 +156,15 @@ func (directory *LockedPrivateDirectory) validateName(name string) error {
 // CreatePrivateFile creates one bounded owner-only file exactly once. It is
 // intended for random operation tokens whose names must never be replaced.
 func CreatePrivateFile(directoryPath string, name string, data []byte) error {
+	return CreatePrivateFileContext(context.Background(), directoryPath, name, data)
+}
+
+// CreatePrivateFileContext is CreatePrivateFile with cancelable lock
+// acquisition.
+func CreatePrivateFileContext(ctx context.Context, directoryPath string, name string, data []byte) error {
+	if ctx == nil {
+		return errors.New("private file create context is nil")
+	}
 	if err := validatePrivateFilePath(directoryPath, name); err != nil {
 		return err
 	}
@@ -158,7 +176,7 @@ func CreatePrivateFile(directoryPath string, name string, data []byte) error {
 		return err
 	}
 	defer directory.Close()
-	if err := lockDirectory(directory, unix.LOCK_EX); err != nil {
+	if err := lockDirectoryContext(ctx, directory, unix.LOCK_EX); err != nil {
 		return err
 	}
 	defer unlockDirectory(directory)
@@ -205,6 +223,14 @@ func createPrivateFileAt(directory *os.File, name string, data []byte) error {
 // ReadPrivateFile reads one bounded owner-only regular file without following
 // symlinks.
 func ReadPrivateFile(directoryPath string, name string) ([]byte, error) {
+	return ReadPrivateFileContext(context.Background(), directoryPath, name)
+}
+
+// ReadPrivateFileContext is ReadPrivateFile with cancelable lock acquisition.
+func ReadPrivateFileContext(ctx context.Context, directoryPath string, name string) ([]byte, error) {
+	if ctx == nil {
+		return nil, errors.New("private file read context is nil")
+	}
 	if err := validatePrivateFilePath(directoryPath, name); err != nil {
 		return nil, err
 	}
@@ -213,7 +239,7 @@ func ReadPrivateFile(directoryPath string, name string) ([]byte, error) {
 		return nil, err
 	}
 	defer directory.Close()
-	if err := lockDirectory(directory, unix.LOCK_SH); err != nil {
+	if err := lockDirectoryContext(ctx, directory, unix.LOCK_SH); err != nil {
 		return nil, err
 	}
 	defer unlockDirectory(directory)
@@ -224,6 +250,14 @@ func ReadPrivateFile(directoryPath string, name string) ([]byte, error) {
 // not follow or open entries and fails when the directory contains more than
 // the caller's explicit bound.
 func ListPrivateFiles(directoryPath string, max int) ([]string, error) {
+	return ListPrivateFilesContext(context.Background(), directoryPath, max)
+}
+
+// ListPrivateFilesContext is ListPrivateFiles with cancelable lock acquisition.
+func ListPrivateFilesContext(ctx context.Context, directoryPath string, max int) ([]string, error) {
+	if ctx == nil {
+		return nil, errors.New("private file list context is nil")
+	}
 	if max <= 0 {
 		return nil, errors.New("private file list bound must be positive")
 	}
@@ -235,7 +269,7 @@ func ListPrivateFiles(directoryPath string, max int) ([]string, error) {
 		return nil, err
 	}
 	defer directory.Close()
-	if err := lockDirectory(directory, unix.LOCK_SH); err != nil {
+	if err := lockDirectoryContext(ctx, directory, unix.LOCK_SH); err != nil {
 		return nil, err
 	}
 	defer unlockDirectory(directory)
@@ -274,6 +308,15 @@ func listPrivateFilesAt(directory *os.File, max int) ([]string, error) {
 // ConsumePrivateFile atomically reads and removes a private file under the
 // directory lock. A second consumer observes a missing file.
 func ConsumePrivateFile(directoryPath string, name string) ([]byte, error) {
+	return ConsumePrivateFileContext(context.Background(), directoryPath, name)
+}
+
+// ConsumePrivateFileContext is ConsumePrivateFile with cancelable lock
+// acquisition.
+func ConsumePrivateFileContext(ctx context.Context, directoryPath string, name string) ([]byte, error) {
+	if ctx == nil {
+		return nil, errors.New("private file consume context is nil")
+	}
 	if err := validatePrivateFilePath(directoryPath, name); err != nil {
 		return nil, err
 	}
@@ -282,7 +325,7 @@ func ConsumePrivateFile(directoryPath string, name string) ([]byte, error) {
 		return nil, err
 	}
 	defer directory.Close()
-	if err := lockDirectory(directory, unix.LOCK_EX); err != nil {
+	if err := lockDirectoryContext(ctx, directory, unix.LOCK_EX); err != nil {
 		return nil, err
 	}
 	defer unlockDirectory(directory)
@@ -302,6 +345,15 @@ func ConsumePrivateFile(directoryPath string, name string) ([]byte, error) {
 // RemovePrivateFile removes one verified owner-only regular file. A missing
 // file is a successful idempotent result.
 func RemovePrivateFile(directoryPath string, name string) error {
+	return RemovePrivateFileContext(context.Background(), directoryPath, name)
+}
+
+// RemovePrivateFileContext is RemovePrivateFile with cancelable lock
+// acquisition.
+func RemovePrivateFileContext(ctx context.Context, directoryPath string, name string) error {
+	if ctx == nil {
+		return errors.New("private file remove context is nil")
+	}
 	if err := validatePrivateFilePath(directoryPath, name); err != nil {
 		return err
 	}
@@ -313,7 +365,7 @@ func RemovePrivateFile(directoryPath string, name string) error {
 		return err
 	}
 	defer directory.Close()
-	if err := lockDirectory(directory, unix.LOCK_EX); err != nil {
+	if err := lockDirectoryContext(ctx, directory, unix.LOCK_EX); err != nil {
 		return err
 	}
 	defer unlockDirectory(directory)
@@ -389,6 +441,14 @@ func (file JSONFile[T]) LoadSnapshotInto(target *T) error {
 // the existing file. Use Update for a read-modify-write operation that must not
 // lose changes made by another process.
 func (file JSONFile[T]) Save(value T) error {
+	return file.SaveContext(context.Background(), value)
+}
+
+// SaveContext is Save with cancelable state-lock acquisition.
+func (file JSONFile[T]) SaveContext(ctx context.Context, value T) error {
+	if ctx == nil {
+		return errors.New("state save context is nil")
+	}
 	if err := file.validatePath(); err != nil {
 		return err
 	}
@@ -401,7 +461,7 @@ func (file JSONFile[T]) Save(value T) error {
 		return err
 	}
 	defer directory.Close()
-	if err := lockDirectory(directory, unix.LOCK_EX); err != nil {
+	if err := lockDirectoryContext(ctx, directory, unix.LOCK_EX); err != nil {
 		return err
 	}
 	defer unlockDirectory(directory)

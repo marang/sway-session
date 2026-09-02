@@ -532,6 +532,10 @@ func TestRestoreLaunchesMissingContextWithTypedArgumentsAndWaitsForMapping(t *te
 	if len(starter.calls) != 1 {
 		t.Fatalf("expected one launch, got %v", starter.calls)
 	}
+	herdrPaths, err := deps.herdrPaths()
+	if err != nil {
+		t.Fatal(err)
+	}
 	want := processCall{
 		name: "/trusted/alacritty",
 		arguments: []string{
@@ -539,7 +543,10 @@ func TestRestoreLaunchesMissingContextWithTypedArgumentsAndWaitsForMapping(t *te
 			"--working-directory=" + registered.Launcher.Cwd, "--title=LAB-80",
 			"-e", "/trusted/herdr", "--session", "lab-80",
 		},
-		environment: []string{"SWAY_SESSION_CONTEXT_ID=" + string(testContextID)},
+		environment: []string{
+			"SWAY_SESSION_CONTEXT_ID=" + string(testContextID),
+			"HERDR_CONFIG_PATH=" + herdrPaths.ConfigFile,
+		},
 	}
 	if !reflect.DeepEqual(starter.calls[0], want) {
 		t.Fatalf("launcher argv differs:\ngot  %q\nwant %q", starter.calls[0], want)
@@ -567,17 +574,21 @@ func TestRestoreRejectsMissingTerminalCwdBeforeProcessStart(t *testing.T) {
 	}
 }
 
-func TestRestoreRejectsLegacyInstanceWithOverlongHerdrSocketBeforeStart(t *testing.T) {
+func TestRestoreRejectsCurrentInstanceWithOverlongHerdrSocketBeforeStart(t *testing.T) {
 	deps := testDependencies(t)
 	cwd := t.TempDir()
-	legacy := sessionstate.Context{
+	sessionName, err := sessionstate.DeriveTerminalInstanceSessionName(testContextID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registered := sessionstate.Context{
 		ID:       testContextID,
 		Label:    "Terminal",
 		Provider: sessionstate.TerminalContextProvider,
 		State:    sessionstate.ContextActive,
 		Launcher: sessionstate.Launcher{
 			Kind:    sessionstate.LauncherHerdr,
-			Session: "sway-terminal-instance-" + string(testContextID),
+			Session: sessionName,
 			Cwd:     cwd,
 			Terminal: &sessionstate.TerminalLauncher{
 				Adapter:  sessionstate.TerminalAdapterAlacritty,
@@ -590,13 +601,13 @@ func TestRestoreRejectsLegacyInstanceWithOverlongHerdrSocketBeforeStart(t *testi
 		t.Fatal(err)
 	}
 	if err := sessionstate.RegistryFile(root).Save(sessionstate.Registry{
-		Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{legacy},
+		Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{registered},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	deps.herdrPaths = func() (sessionstate.HerdrPaths, error) {
 		return sessionstate.HerdrPaths{
-			Root: "/home/example/.config/herdr", ConfigFile: "/home/example/.config/herdr/config.toml",
+			Root: "/home/example/configuration-root/herdr", ConfigFile: "/home/example/configuration-root/herdr/config.toml",
 		}, nil
 	}
 	deps.newSwayClient = func(string) swayRequester {
@@ -611,7 +622,7 @@ func TestRestoreRejectsLegacyInstanceWithOverlongHerdrSocketBeforeStart(t *testi
 
 	if code != exitOperation || len(starter.calls) != 0 || !strings.Contains(stderr.String(), `"code":"herdr_path"`) ||
 		!strings.Contains(stderr.String(), "herdr-client.sock") || !strings.Contains(stderr.String(), "terminal --new") {
-		t.Fatalf("overlong legacy restore code=%d starts=%v stdout=%q stderr=%q", code, starter.calls, stdout.String(), stderr.String())
+		t.Fatalf("overlong restore code=%d starts=%v stdout=%q stderr=%q", code, starter.calls, stdout.String(), stderr.String())
 	}
 }
 
@@ -924,7 +935,7 @@ func testDependencies(t *testing.T) dependencies {
 
 func registerTestContext(t *testing.T, deps dependencies) sessionstate.Context {
 	t.Helper()
-	result, commandFailure := executeRegister([]string{"--session", "lab-80", "--label", "LAB-80"}, deps)
+	result, commandFailure := executeRegister(t.Context(), []string{"--session", "lab-80", "--label", "LAB-80"}, deps)
 	if commandFailure != nil {
 		t.Fatalf("register fixture: %+v", commandFailure)
 	}

@@ -816,7 +816,7 @@ func validateMetadata(name string, value string) error {
 
 // ValidateContextLabel checks optional presentation metadata stored on a
 // persistent context. Callers that accept a label must validate it before
-// initiating state migration or other side effects.
+// opening state or initiating other side effects.
 func ValidateContextLabel(value string) error {
 	return validateMetadata("label", value)
 }

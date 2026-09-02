@@ -112,14 +112,14 @@ func TestResolveRootOwnedSystemExecutableIgnoresCallerPath(t *testing.T) {
 func TestMergeEnvironmentOverridesExistingKeyWithoutDuplicates(t *testing.T) {
 	merged, err := mergeEnvironment(
 		[]string{"PATH=/untrusted", "LANG=C", "HERDR_ENV=1", "HERDR_SOCKET_PATH=/old", "CODEX_THREAD_ID=old"},
-		[]string{"PATH=/usr/local/bin:/usr/bin", "TOKEN=value"},
+		[]string{"PATH=/usr/local/bin:/usr/bin", "TOKEN=value", "HERDR_CONFIG_PATH=/trusted/config.toml"},
 		[]string{"CODEX_THREAD_ID"},
 		[]string{"HERDR_"},
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"PATH=/usr/local/bin:/usr/bin", "LANG=C", "TOKEN=value"}
+	want := []string{"PATH=/usr/local/bin:/usr/bin", "LANG=C", "TOKEN=value", "HERDR_CONFIG_PATH=/trusted/config.toml"}
 	if !reflect.DeepEqual(merged, want) {
 		t.Fatalf("environment override was ambiguous: got=%q want=%q", merged, want)
 	}

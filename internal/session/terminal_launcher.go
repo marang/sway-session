@@ -29,7 +29,7 @@ func TerminalAdapterExecutableName(adapter TerminalAdapter) (string, error) {
 // BuildTerminalProcessSpec constructs the complete process boundary for one
 // persisted Herdr context. Every adapter shape is compiled in and no value is
 // evaluated by a shell.
-func BuildTerminalProcessSpec(context Context, terminalExecutable string, herdrExecutable string) (ProcessSpec, error) {
+func BuildTerminalProcessSpec(context Context, terminalExecutable string, herdrExecutable string, herdrConfigPath string) (ProcessSpec, error) {
 	if err := context.Validate(); err != nil {
 		return ProcessSpec{}, fmt.Errorf("validate context: %w", err)
 	}
@@ -38,6 +38,9 @@ func BuildTerminalProcessSpec(context Context, terminalExecutable string, herdrE
 	}
 	if !filepath.IsAbs(terminalExecutable) || !filepath.IsAbs(herdrExecutable) {
 		return ProcessSpec{}, errors.New("launcher executables must be absolute paths")
+	}
+	if !filepath.IsAbs(herdrConfigPath) || filepath.Clean(herdrConfigPath) != herdrConfigPath || containsControl(herdrConfigPath) {
+		return ProcessSpec{}, errors.New("herdr config path must be a clean absolute path")
 	}
 	appID, err := context.ID.AppID()
 	if err != nil {
@@ -67,11 +70,14 @@ func BuildTerminalProcessSpec(context Context, terminalExecutable string, herdrE
 		return ProcessSpec{}, fmt.Errorf("unsupported terminal adapter %q", context.Launcher.Terminal.Adapter)
 	}
 	return ProcessSpec{
-		Name:                     terminalExecutable,
-		Arguments:                arguments,
-		Environment:              []string{"SWAY_SESSION_CONTEXT_ID=" + string(context.ID)},
-		UnsetEnvironment:         []string{"CODEX_THREAD_ID"},
-		UnsetEnvironmentPrefixes: []string{"HERDR_"},
+		Name:      terminalExecutable,
+		Arguments: arguments,
+		Environment: []string{
+			"SWAY_SESSION_CONTEXT_ID=" + string(context.ID),
+			"HERDR_CONFIG_PATH=" + herdrConfigPath,
+		},
+		UnsetInheritedEnvironment:         []string{"CODEX_THREAD_ID"},
+		UnsetInheritedEnvironmentPrefixes: []string{"HERDR_"},
 	}, nil
 }
 
@@ -88,10 +94,10 @@ func BuildEphemeralTerminalProcessSpec(adapter TerminalAdapter, cwd string, term
 		return ProcessSpec{}, err
 	}
 	return ProcessSpec{
-		Name:                     terminalExecutable,
-		Arguments:                []string{"--working-directory=" + cwd},
-		UnsetEnvironment:         []string{"CODEX_THREAD_ID", "SWAY_SESSION_CONTEXT_ID"},
-		UnsetEnvironmentPrefixes: []string{"HERDR_"},
+		Name:                              terminalExecutable,
+		Arguments:                         []string{"--working-directory=" + cwd},
+		UnsetInheritedEnvironment:         []string{"CODEX_THREAD_ID", "SWAY_SESSION_CONTEXT_ID"},
+		UnsetInheritedEnvironmentPrefixes: []string{"HERDR_"},
 	}, nil
 }
 

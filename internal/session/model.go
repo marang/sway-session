@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	ContextsSchemaVersion = 3
+	ContextsSchemaVersion = 4
 	LayoutSchemaVersion   = 1
 	MaxContexts           = 128
 )
@@ -49,6 +49,7 @@ const (
 type TerminalLauncher struct {
 	Adapter  TerminalAdapter   `json:"adapter"`
 	Identity *TerminalIdentity `json:"identity,omitempty"`
+	Instance bool              `json:"instance,omitempty"`
 }
 
 type TerminalIdentity struct {
@@ -347,7 +348,7 @@ func (context *Context) validate() error {
 	if err := context.ID.Validate(); err != nil {
 		return fmt.Errorf("invalid ID: %w", err)
 	}
-	if err := validateMetadata("label", context.Label); err != nil {
+	if err := ValidateContextLabel(context.Label); err != nil {
 		return err
 	}
 	if err := validateMetadata("provider", context.Provider); err != nil {
@@ -371,6 +372,15 @@ func (context *Context) validate() error {
 	case LauncherHerdr:
 		if context.App != nil {
 			return errors.New("herdr context must not contain desktop application state")
+		}
+		if context.Launcher.Terminal.Instance {
+			if context.Provider != TerminalContextProvider {
+				return errors.New("terminal instance must use the reserved provider")
+			}
+			sessionName, err := DeriveTerminalInstanceSessionName(context.ID)
+			if err != nil || context.Launcher.Session != sessionName {
+				return errors.New("terminal instance session must be derived from its context ID")
+			}
 		}
 	case LauncherDesktop, LauncherFlatpak:
 		if context.App == nil {
@@ -508,6 +518,9 @@ func (terminal *TerminalLauncher) validate() error {
 	}
 	if terminal.Identity == nil {
 		return nil
+	}
+	if terminal.Instance {
+		return errors.New("terminal instance must not contain a reusable identity")
 	}
 	switch terminal.Identity.Kind {
 	case TerminalIdentityDefault:
@@ -800,6 +813,13 @@ func validateMetadata(name string, value string) error {
 		return fmt.Errorf("%s must not contain control characters", name)
 	}
 	return nil
+}
+
+// ValidateContextLabel checks optional presentation metadata stored on a
+// persistent context. Callers that accept a label must validate it before
+// initiating state migration or other side effects.
+func ValidateContextLabel(value string) error {
+	return validateMetadata("label", value)
 }
 
 func validateDesktopID(value string) error {

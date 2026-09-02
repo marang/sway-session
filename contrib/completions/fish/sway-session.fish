@@ -101,6 +101,9 @@ function __sway_session_marker_value_open
     set -l value_options
     set -l bool_options
     switch $command[1]
+        case terminal
+            set value_options --project --cwd --label --socket
+            set bool_options --new --ephemeral
         case register
             set value_options --session --cwd --label --provider --id
         case restore daemon broker
@@ -542,6 +545,7 @@ complete -c sway-session -n '__sway_session_is_command terminal; and __sway_sess
 complete -c sway-session -n '__sway_session_is_command terminal; and __sway_session_options_open; and not __sway_session_terminal_subcommand list; and not __sway_session_terminal_subcommand status; and not __sway_session_terminal_subcommand cleanup; and not __sway_session_terminal_subcommand reconfigure' -l cwd -r -F
 complete -c sway-session -n '__sway_session_is_command terminal; and __sway_session_options_open; and not __sway_session_terminal_subcommand list; and not __sway_session_terminal_subcommand status; and not __sway_session_terminal_subcommand cleanup; and not __sway_session_terminal_subcommand reconfigure' -l label -x
 complete -c sway-session -n '__sway_session_is_command terminal; and __sway_session_options_open; and not __sway_session_terminal_subcommand list; and not __sway_session_terminal_subcommand status; and not __sway_session_terminal_subcommand cleanup; and not __sway_session_terminal_subcommand reconfigure' -l socket -r -F
+complete -c sway-session -n '__sway_session_is_command terminal; and __sway_session_options_open; and not __sway_session_terminal_subcommand list; and not __sway_session_terminal_subcommand status; and not __sway_session_terminal_subcommand cleanup; and not __sway_session_terminal_subcommand reconfigure' -l new
 complete -c sway-session -n '__sway_session_is_command terminal; and __sway_session_options_open; and not __sway_session_terminal_subcommand list; and not __sway_session_terminal_subcommand status; and not __sway_session_terminal_subcommand cleanup; and not __sway_session_terminal_subcommand reconfigure' -l ephemeral
 complete -c sway-session -n '__sway_session_is_command terminal; and __sway_session_options_open' -a 'list status cleanup reconfigure'
 complete -c sway-session -n '__sway_session_terminal_subcommand reconfigure; and __sway_session_options_open' -l project -x

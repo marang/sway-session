@@ -2,8 +2,8 @@
 
 Status: Core Herdr work-session restore, the dedicated session-daemon process,
 explicit desktop application group restore and visible integration, shell
-completion, and the reusable typed terminal adapter contract are implemented
-through LAB-105.
+completion, and the typed terminal adapter contract are implemented
+through LAB-106.
 
 Tracking issue: [LAB-80](https://linear.app/riotbox/issue/LAB-80/add-persistent-sway-work-session-restoration)
 
@@ -84,9 +84,9 @@ or window recorder.
    contained only `herdr`; version 2 also models system desktop entries,
    approved user-local desktop entries, and Flatpak application IDs. Schema
    version 3 adds a closed terminal adapter (`alacritty` or `foot`), optional
-   stable terminal identity, and `archived_at`. No state file contains a
-   generic command, argument vector, environment, or value interpreted by a
-   shell.
+   stable terminal identity, and `archived_at`; version 4 adds an explicit
+   fresh-terminal-instance discriminator. No state file contains a generic
+   command, argument vector, environment, or value interpreted by a shell.
 10. Codex does not receive access to the general Herdr control socket. Native
     resume metadata crosses a narrow, validated reporting boundary.
 11. A workspace containing both managed and unregistered tiled windows
@@ -179,12 +179,13 @@ ${XDG_STATE_HOME:-$HOME/.local/state}/sway-session/
 ```
 
 It contains three active documents with separate purposes and, after migration,
-one or two dedicated rollback documents:
+up to three dedicated rollback documents:
 
 ```text
 contexts.json   # written by sway-session lifecycle commands and brokers
-contexts.v1.json # exact rollback evidence after the v1 -> v3 migration
-contexts.v2.json # exact rollback evidence after the v2 -> v3 migration
+contexts.v1.json # exact rollback evidence after the v1 -> v4 migration
+contexts.v2.json # exact rollback evidence after the v2 -> v4 migration
+contexts.v3.json # exact rollback evidence after the v3 -> v4 migration
 layout.json     # written by sway-session daemon
 application-runtime/
   application-session.json # per-compositor conservative launch attempts
@@ -223,9 +224,9 @@ performing dependent external side effects.
 "Preserve the last valid version" has a deliberately fail-closed meaning: an
 invalid new candidate never replaces the valid on-disk file, and a failed load
 never replaces a caller's already loaded in-memory value. Supported migrations
-preserve the exact valid version-1 bytes as owner-only `contexts.v1.json` and
-the exact valid version-2 bytes as owner-only `contexts.v2.json` before
-atomically installing version 3. These rollback files are evidence for
+preserve the exact valid version-1, version-2, or version-3 bytes as owner-only
+`contexts.v1.json`, `contexts.v2.json`, or `contexts.v3.json`, respectively,
+before atomically installing version 4. These rollback files are evidence for
 deliberate manual recovery and are never automatic fallbacks. Malformed or
 unknown-version input is left byte-for-byte untouched and does not create a
 rollback file. A general disk-recovery design would require generations or
@@ -233,25 +234,27 @@ tombstones so an old backup cannot resurrect an archived or purged context.
 
 ### Context registry
 
-The registry schema is version 3. Existing valid version-1 and version-2
-registries are migrated automatically as described above. Legacy Herdr
-contexts receive `alacritty` and no stable terminal identity (reported as
-manual inventory), and no migration invents an archive time.
+The registry schema is version 4. Existing valid version-1, version-2, and
+version-3 registries are migrated automatically as described above. Legacy
+Herdr contexts receive `alacritty` and no stable terminal identity (reported
+as manual inventory), and no migration invents an archive time. Version 4
+persists an explicit terminal-instance discriminator; v3 migration always
+leaves it false instead of inferring it from provider or session text.
 
 Migration first checks the exclusive
 `${XDG_RUNTIME_DIR}/sway-session/daemon.lock`.
-The schema-v3 daemon writes a bounded marker containing its PID, process start
+The schema-v4 daemon writes a bounded marker containing its PID, process start
 time, and supported registry schema while it owns that lock. A held legacy or
 otherwise unverifiable lock blocks migration without modifying the registry;
 the diagnostic tells the user to restart the complete Sway session with the
 upgraded daemon and retry. This prevents a new one-shot CLI from replacing a
-v2 registry underneath a still-running v2 daemon.
+pre-v4 registry underneath a still-running pre-v4 daemon.
 
 The registry's Herdr-compatible shape is:
 
 ```json
 {
-  "version": 3,
+  "version": 4,
   "preferences": {
     "desktop_indicators": false
   },
@@ -287,7 +290,15 @@ two placement operations per context under the 256-action planner limit.
 true in the first successful desktop-registration transaction, and is not reset
 by later archive or forget operations.
 
-### Reusable typed terminal identities
+### Typed terminal identities
+
+`sway-session terminal --new` creates a fresh persistent terminal context on
+every invocation. The context UUID is also its unique Sway application
+identity and deterministically names its unique Herdr session. Fresh contexts
+have no reusable lookup key: agents address each one by the UUID returned in
+the versioned JSON result. Concurrent calls serialize registry creation but
+produce separate UUIDs, sessions, processes, and independently restorable
+windows.
 
 `sway-session terminal` is a narrow terminal launch surface, separate from
 manual `register` contexts. With no options it creates or reuses one default
@@ -319,7 +330,7 @@ template, environment, or shell configuration fields.
 `terminal list`, `terminal status`, and `terminal cleanup
 --archived-before YYYY-MM-DD` are registry-only, read-only inventory and
 preview operations. They use a non-migrating current-schema snapshot and
-return `migration_required` without modifying a legacy v1/v2 registry; the
+return `migration_required` without modifying a legacy v1/v2/v3 registry; the
 existing top-level `list` command is the explicit validated migration path.
 The cleanup command returns only archived typed-terminal
 contexts before the UTC date and never purges. All global `--json` results have
@@ -327,11 +338,12 @@ a stable version; terminal-open results expose terminal actions. A JSON purge
 without `--yes` returns a preview and diagnostic rather than prompting. Actual deletion still
 requires the exact selected UUID and `--yes` for noninteractive automation.
 
-The intended Sway bindings are `$mod+Return` for the persistent default and
-`$mod+Shift+Return` for an ephemeral terminal. Their packaging template is
-maintained separately. LAB-105 guarantees stable identity only for terminals
-launched by this command; per-window persistence for arbitrary identical
-application windows remains deferred to LAB-93.
+The intended Sway bindings are `$mod+Return` for an explicit fresh persistent
+instance (`terminal --new`) and `$mod+Shift+Return` for an ephemeral terminal.
+Their packaging template is maintained separately. LAB-105/LAB-106 guarantee
+stable identity only for terminals launched by this command; per-window
+persistence for arbitrary identical application windows remains deferred to
+LAB-93.
 
 ### Explicit desktop application identities
 
@@ -562,7 +574,7 @@ sway-session app rebind-focused [--desktop-id <id>] [--yes] <context>
 sway-session app reapprove [--yes] <context>
 sway-session app pin|unpin|archive|activate <context>
 sway-session app forget --yes <context>
-sway-session terminal [--project <name>] [--cwd <path>] [--ephemeral]
+sway-session terminal [--new | --project <name> | --ephemeral] [--cwd <path>]
 sway-session terminal list
 sway-session terminal status [context] [--project <name>]
 sway-session terminal cleanup [--archived-before YYYY-MM-DD]
@@ -868,9 +880,9 @@ behavior, or stop configuring the daemon.
 Implemented: add the closed Alacritty/Foot adapter contract, strict version-1
 terminal configuration, stable default and hashed project identities, the
 non-persistent ephemeral terminal path, and read-only terminal inventory and
-cleanup preview. Migrate valid v1/v2 registries to schema v3 with exact
-version-matched backups, preserving legacy Herdr contexts as Alacritty/manual
-identities and never inventing `archived_at`.
+cleanup preview. LAB-105 introduced schema v3 and exact version-matched
+backups for valid v1/v2 registries, preserving legacy Herdr contexts as
+Alacritty/manual identities and never inventing `archived_at`.
 
 Automated verification covers adapter/config validation, identity reuse and cwd
 conflicts, ephemeral non-persistence, stable JSON actions, read-only inventory,
@@ -878,6 +890,29 @@ cleanup date filtering, archive timestamps, and v1/v2 migration. A real Sway
 end-to-end run completed on 2026-09-02 with isolated state and configuration on
 workspaces 98 and 99. It verified persistent create/reuse/focus/status,
 archive/cleanup/purge, and an ephemeral launch that left the registry unchanged.
+
+### Phase 11: Fresh persistent terminal instances (LAB-106)
+
+Implemented: add the explicit `terminal --new` mode. Every call allocates a
+fresh context UUID, derives a unique bounded Herdr session from that UUID, and
+launches a separately identifiable terminal window. Keep default and project
+identity reuse available, make the shipped `$mod+Return` binding use `--new`,
+and retain `$mod+Shift+Return` as the state-free ephemeral path.
+
+The JSON result reports the exact context UUID, Herdr session, `instance`
+identity kind, and `created`/launch actions. Invalid `--new --project` and
+`--new --ephemeral` combinations, plus persistent options combined with
+`--ephemeral`, fail before configuration, filesystem, registry, Sway, or
+process access. Concurrent creation is serialized without collapsing distinct
+invocations into one context. A real isolated headless-Sway end-to-end run on
+2026-09-02 verified two such instances on workspaces 98 and 99, capture,
+marking, restore without the animator, independent archive/activate/purge, and
+complete cleanup using Herdr 0.8.2.
+
+Schema v4 records fresh instances with an explicit discriminator and migrates
+valid v3 registries with an exact owner-only backup. Existing v3 manual
+contexts remain manual even when their provider and session text happen to
+match the new naming convention.
 
 ## Test matrix
 
@@ -900,10 +935,10 @@ Automated tests must cover:
 - floating geometry clamping;
 - one-window-per-context duplicate prevention;
 - registry-wide typed launcher-identity uniqueness;
-- version-1 and version-2 to version-3 registry migration with exact
-  version-matched owner-only rollback evidence, Alacritty/manual legacy Herdr
-  terminal data, no invented archive time, and no fallback for malformed or
-  unknown input;
+- version-1, version-2, and version-3 to version-4 registry migration with
+  exact version-matched owner-only rollback evidence, Alacritty/manual legacy
+  Herdr terminal data, no inferred instance discriminator, no invented archive
+  time, and no fallback for malformed or unknown input;
 - mixed Herdr, system-desktop, approved user-local, and Flatpak identities;
 - Wayland, XWayland, sandbox, and ambiguous application-identity fixtures;
 - application-group adoption, profile-picker transitions, last-window close
@@ -915,9 +950,10 @@ Automated tests must cover:
   fail-closed behavior, and explicit catalog invalidation;
 - archive, activate, and purge transitions;
 - typed launcher validation and absence of shell evaluation;
-- closed terminal-adapter configuration, stable default/project identity reuse,
-  cwd conflict rejection, ephemeral non-persistence, JSON terminal actions,
-  inventory ordering, and read-only archive cleanup previews;
+- closed terminal-adapter configuration, fresh per-call instance creation,
+  stable default/project identity reuse, cwd conflict rejection, ephemeral
+  non-persistence, JSON terminal actions and session identity, inventory
+  ordering, and read-only archive cleanup previews;
 - per-context and per-workspace failure isolation;
 - IPC reconnects, bounded payload handling, and no replay of ambiguous
   mutating commands; and

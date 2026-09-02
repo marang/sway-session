@@ -92,7 +92,7 @@ require_count contrib/sway/45-title-animator.conf 'exec --no-startup-id /usr/bin
 require_count contrib/sway/45-title-animator.conf 'exec --no-startup-id /usr/bin/sway-session restore' 1
 require_fixed contrib/sway/45-title-animator.conf '# exec, not exec_always: a config reload must not request another restore.'
 require_count contrib/sway/45-title-animator.conf '# bindsym $mod+Ctrl+p exec --no-startup-id /usr/bin/sway-session app register-focused' 1
-require_count contrib/sway/45-title-animator.conf 'bindsym $mod+Return exec --no-startup-id /usr/bin/sway-session terminal' 1
+require_count contrib/sway/45-title-animator.conf 'bindsym $mod+Return exec --no-startup-id /usr/bin/sway-session terminal --new' 1
 require_count contrib/sway/45-title-animator.conf 'bindsym $mod+Shift+Return exec --no-startup-id /usr/bin/sway-session terminal --ephemeral' 1
 reject_fixed contrib/sway/45-title-animator.conf 'exec_always --no-startup-id /usr/bin/sway-session daemon'
 reject_fixed contrib/sway/45-title-animator.conf 'exec_always --no-startup-id /usr/bin/sway-session restore'

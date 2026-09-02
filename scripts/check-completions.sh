@@ -17,6 +17,10 @@ for completion in "$bash_completion" "$zsh_completion" "$fish_completion"; do
 			exit 1
 		fi
 	done
+	if ! grep -F -- '--new' "$completion" >/dev/null; then
+		echo "$completion omits the fresh persistent terminal option: --new" >&2
+		exit 1
+	fi
 done
 
 bash -n "$bash_completion"
@@ -110,7 +114,7 @@ fi
 COMP_WORDS=(sway-session terminal '')
 COMP_CWORD=2
 _sway_session
-for expected in list status cleanup reconfigure --project --cwd --label --socket --ephemeral; do
+for expected in list status cleanup reconfigure --new --project --cwd --label --socket --ephemeral; do
 	if [[ " ${COMPREPLY[*]} " != *" $expected "* ]]; then
 		printf 'bash terminal completion omitted %s: %q\n' "$expected" "${COMPREPLY[*]-}" >&2
 		exit 1

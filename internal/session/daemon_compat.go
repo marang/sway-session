@@ -32,7 +32,7 @@ type daemonCompatibilityMarker struct {
 
 // MarkDaemonRegistryCompatibility binds the current process and supported
 // contexts schema to the already-held daemon lock. Upgrade-time commands use
-// this evidence to distinguish a current daemon from a pre-schema-v3 daemon.
+// this evidence to distinguish a current daemon from a pre-schema-v4 daemon.
 func MarkDaemonRegistryCompatibility(lock *os.File) error {
 	if lock == nil {
 		return errors.New("daemon lock is nil")

@@ -48,7 +48,7 @@ var commandSpecs = map[string]commandSpec{
 	"request-start":        {usage: "request-start --session <name> --workspace <number> [options]", summary: "Request a typed ensure-and-start operation"},
 	"report-codex-session": {usage: "report-codex-session", summary: "Report a managed Codex SessionStart event to the narrow broker"},
 	"app":                  {usage: "app <subcommand> [options]", summary: "Manage explicitly registered desktop applications"},
-	"terminal":             {usage: "terminal [--project <name>] [--cwd <path>] [--ephemeral]", summary: "Open a reusable typed Herdr terminal"},
+	"terminal":             {usage: "terminal [--new | --project <name> | --ephemeral] [--cwd <path>]", summary: "Open a typed terminal"},
 	"completion":           {usage: "completion contexts <command>", summary: "Emit read-only shell completion candidates"},
 }
 
@@ -246,13 +246,15 @@ type terminalCommandResult struct {
 	ContextID sessionstate.ContextID            `json:"context_id,omitempty"`
 	Identity  *terminalIdentityResult           `json:"identity,omitempty"`
 	Adapter   sessionstate.TerminalAdapter      `json:"adapter"`
+	Session   string                            `json:"session,omitempty"`
 	Actions   []sessionstate.TerminalOpenAction `json:"actions"`
 	Ephemeral bool                              `json:"ephemeral,omitempty"`
 }
 
 type terminalIdentityResult struct {
-	Kind    sessionstate.TerminalIdentityKind `json:"kind"`
-	Project string                            `json:"project,omitempty"`
+	Kind      sessionstate.TerminalIdentityKind `json:"kind"`
+	Project   string                            `json:"project,omitempty"`
+	ContextID sessionstate.ContextID            `json:"context_id,omitempty"`
 }
 
 type terminalInventoryResult struct {
@@ -457,7 +459,7 @@ func writeCommandUsage(writer io.Writer, name string, spec commandSpec) {
 		_, _ = fmt.Fprintln(writer, "Options: --session NAME [--cwd PATH] [--label LABEL] [--provider NAME] [--id UUID]")
 	}
 	if name == "terminal" {
-		_, _ = fmt.Fprintln(writer, "Options: [--project NAME] [--cwd PATH] [--label LABEL] [--socket PATH] [--ephemeral]")
+		_, _ = fmt.Fprintln(writer, "Options: [--new | --project NAME | --ephemeral] [--cwd PATH] [--label LABEL] [--socket PATH]")
 		_, _ = fmt.Fprintln(writer, "Subcommands: list, status, cleanup, reconfigure [--project NAME] [--socket PATH]")
 	}
 	if name == "request-start" {

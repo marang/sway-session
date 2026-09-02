@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/marang/sway-title-animator/internal/statefile"
 )
@@ -17,6 +18,7 @@ const (
 	ContextsFilename            = "contexts.json"
 	ContextsV1BackupFilename    = "contexts.v1.json"
 	ContextsV2BackupFilename    = "contexts.v2.json"
+	ContextsV3BackupFilename    = "contexts.v3.json"
 	LayoutFilename              = "layout.json"
 	ApplicationSessionFilename  = "application-session.json"
 	ApplicationSessionDirectory = "application-runtime"
@@ -38,7 +40,7 @@ func DefaultStateRoot() (string, error) {
 	return filepath.Join(filepath.Clean(stateHome), "sway-session"), nil
 }
 
-// RegistryStore wraps the current JSON document with the supported v1 and v2
+// RegistryStore wraps the current JSON document with the supported v1-v3
 // contexts.json migrations. Versioned backups are rollback evidence only and
 // are never used as an automatic fallback.
 type RegistryStore struct {
@@ -136,6 +138,8 @@ func (store RegistryStore) migrateLegacyContext(ctx context.Context, version int
 		backupName = ContextsV1BackupFilename
 	case 2:
 		backupName = ContextsV2BackupFilename
+	case 3:
+		backupName = ContextsV3BackupFilename
 	default:
 		return Registry{}, false, &UnsupportedVersionError{
 			Document: "context registry",
@@ -210,6 +214,46 @@ type registryV2 struct {
 	Version     int                 `json:"version"`
 	Preferences RegistryPreferences `json:"preferences"`
 	Contexts    []contextV2         `json:"contexts"`
+}
+
+type registryV3 struct {
+	Version     int                 `json:"version"`
+	Preferences RegistryPreferences `json:"preferences"`
+	Contexts    []contextV3         `json:"contexts"`
+}
+
+type contextV3 struct {
+	ID         ContextID    `json:"id"`
+	Label      string       `json:"label,omitempty"`
+	Provider   string       `json:"provider,omitempty"`
+	State      ContextState `json:"state"`
+	ArchivedAt *time.Time   `json:"archived_at,omitempty"`
+	Launcher   launcherV3   `json:"launcher"`
+	App        *Application `json:"app,omitempty"`
+}
+
+type launcherV3 struct {
+	Kind LauncherKind `json:"kind"`
+
+	Session  string              `json:"session,omitempty"`
+	Cwd      string              `json:"cwd,omitempty"`
+	Terminal *terminalLauncherV3 `json:"terminal,omitempty"`
+
+	DesktopID                string             `json:"desktop_id,omitempty"`
+	DesktopOrigin            DesktopEntryOrigin `json:"desktop_origin,omitempty"`
+	DesktopPath              string             `json:"desktop_path,omitempty"`
+	DesktopEntrySHA256       string             `json:"desktop_entry_sha256,omitempty"`
+	ApprovedDesktopPath      string             `json:"approved_desktop_path,omitempty"`
+	ApprovedExecutablePath   string             `json:"approved_executable_path,omitempty"`
+	ApprovedExecutableSHA256 string             `json:"approved_executable_sha256,omitempty"`
+
+	FlatpakID           string              `json:"flatpak_id,omitempty"`
+	FlatpakInstallation FlatpakInstallation `json:"flatpak_installation,omitempty"`
+}
+
+type terminalLauncherV3 struct {
+	Adapter  TerminalAdapter   `json:"adapter"`
+	Identity *TerminalIdentity `json:"identity,omitempty"`
 }
 
 type contextV2 struct {
@@ -322,6 +366,31 @@ func decodeRegistryMigration(data []byte) (Registry, bool, error) {
 			Preferences: legacy.Preferences,
 			Contexts:    contexts,
 		}, true, nil
+	case 3:
+		var legacy registryV3
+		if err := decodeRegistryStrict(data, &legacy); err != nil {
+			return Registry{}, false, err
+		}
+		if legacy.Contexts == nil {
+			return Registry{}, false, errors.New("legacy context registry must contain a contexts array")
+		}
+		contexts := make([]Context, len(legacy.Contexts))
+		for index, old := range legacy.Contexts {
+			contexts[index] = Context{
+				ID:         old.ID,
+				Label:      old.Label,
+				Provider:   old.Provider,
+				State:      old.State,
+				ArchivedAt: old.ArchivedAt,
+				Launcher:   launcherFromV3(old.Launcher),
+				App:        old.App,
+			}
+		}
+		return Registry{
+			Version:     ContextsSchemaVersion,
+			Preferences: legacy.Preferences,
+			Contexts:    contexts,
+		}, true, nil
 	default:
 		return Registry{}, false, &UnsupportedVersionError{
 			Document: "context registry",
@@ -352,6 +421,27 @@ func launcherFromV2(old launcherV2) Launcher {
 	}
 }
 
+func launcherFromV3(old launcherV3) Launcher {
+	launcher := Launcher{
+		Kind:                     old.Kind,
+		Session:                  old.Session,
+		Cwd:                      old.Cwd,
+		DesktopID:                old.DesktopID,
+		DesktopOrigin:            old.DesktopOrigin,
+		DesktopPath:              old.DesktopPath,
+		DesktopEntrySHA256:       old.DesktopEntrySHA256,
+		ApprovedDesktopPath:      old.ApprovedDesktopPath,
+		ApprovedExecutablePath:   old.ApprovedExecutablePath,
+		ApprovedExecutableSHA256: old.ApprovedExecutableSHA256,
+		FlatpakID:                old.FlatpakID,
+		FlatpakInstallation:      old.FlatpakInstallation,
+	}
+	if old.Terminal != nil {
+		launcher.Terminal = &TerminalLauncher{Adapter: old.Terminal.Adapter, Identity: old.Terminal.Identity}
+	}
+	return launcher
+}
+
 func decodeRegistryStrict(data []byte, target any) error {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
@@ -369,7 +459,7 @@ func decodeRegistryStrict(data []byte, target any) error {
 
 func isLegacyRegistryVersion(err error) bool {
 	var versionError *UnsupportedVersionError
-	return errors.As(err, &versionError) && (versionError.Got == 1 || versionError.Got == 2) && versionError.Want == ContextsSchemaVersion
+	return errors.As(err, &versionError) && versionError.Got >= 1 && versionError.Got < ContextsSchemaVersion && versionError.Want == ContextsSchemaVersion
 }
 
 func legacyRegistryVersion(err error) int {

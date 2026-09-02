@@ -15,12 +15,22 @@ var (
 	ErrTerminalSessionCollision = errors.New("derived terminal session collides with another context")
 )
 
+const TerminalContextProvider = "sway-session-terminal"
+
 type TerminalContextRequest struct {
 	Identity    TerminalIdentity
 	Adapter     TerminalAdapter
 	Cwd         string
 	CwdExplicit bool
 	Label       string
+}
+
+// TerminalInstanceRequest describes a fresh persistent terminal which is
+// addressed by its context UUID rather than a reusable default/project key.
+type TerminalInstanceRequest struct {
+	Adapter TerminalAdapter
+	Cwd     string
+	Label   string
 }
 
 func terminalContextForIdentity(registry Registry, identity TerminalIdentity) (Context, error) {
@@ -61,6 +71,75 @@ func DeriveTerminalSessionName(identity TerminalIdentity) (string, error) {
 	default:
 		return "", fmt.Errorf("unsupported terminal identity kind %q", identity.Kind)
 	}
+}
+
+// DeriveTerminalInstanceSessionName binds a fresh Herdr session to the same
+// UUID that identifies its Sway window and registry context.
+func DeriveTerminalInstanceSessionName(id ContextID) (string, error) {
+	if err := id.Validate(); err != nil {
+		return "", fmt.Errorf("invalid terminal context ID: %w", err)
+	}
+	return "sway-terminal-instance-" + string(id), nil
+}
+
+// IsTerminalInstanceContext recognizes only the complete invariant emitted by
+// CreateTerminalInstanceContext. Provider text alone is presentation metadata
+// and must not change broker or inventory behavior.
+func IsTerminalInstanceContext(context Context) bool {
+	if context.Provider != TerminalContextProvider || context.Launcher.Kind != LauncherHerdr ||
+		context.Launcher.Terminal == nil || !context.Launcher.Terminal.Instance || context.Launcher.Terminal.Identity != nil {
+		return false
+	}
+	sessionName, err := DeriveTerminalInstanceSessionName(context.ID)
+	return err == nil && context.Launcher.Session == sessionName
+}
+
+// CreateTerminalInstanceContext always registers a fresh context. Unlike
+// EnsureTerminalContext, it has no reusable lookup identity: its generated
+// context UUID is the stable agent and Sway identity for the window lifetime.
+// Callers serialize this mutation with UpdateRegistry.
+func CreateTerminalInstanceContext(registry *Registry, request TerminalInstanceRequest, newContextID func() (ContextID, error)) (Context, error) {
+	if registry == nil {
+		return Context{}, errors.New("context registry is nil")
+	}
+	terminal := TerminalLauncher{Adapter: request.Adapter}
+	if err := terminal.validate(); err != nil {
+		return Context{}, err
+	}
+	if newContextID == nil {
+		return Context{}, errors.New("terminal context ID generator is nil")
+	}
+	id, err := newContextID()
+	if err != nil {
+		return Context{}, fmt.Errorf("generate terminal context ID: %w", err)
+	}
+	sessionName, err := DeriveTerminalInstanceSessionName(id)
+	if err != nil {
+		return Context{}, err
+	}
+	label := request.Label
+	if label == "" {
+		label = "Terminal"
+	}
+	created := Context{
+		ID:       id,
+		Label:    label,
+		Provider: TerminalContextProvider,
+		State:    ContextActive,
+		Launcher: Launcher{
+			Kind:    LauncherHerdr,
+			Session: sessionName,
+			Cwd:     request.Cwd,
+			Terminal: &TerminalLauncher{
+				Adapter:  request.Adapter,
+				Instance: true,
+			},
+		},
+	}
+	if err := AddContext(registry, created); err != nil {
+		return Context{}, err
+	}
+	return created, nil
 }
 
 // EnsureTerminalContext creates at most one context for an exact typed
@@ -130,7 +209,7 @@ func EnsureTerminalContext(registry *Registry, request TerminalContextRequest, n
 	created := Context{
 		ID:       newID,
 		Label:    label,
-		Provider: "sway-session-terminal",
+		Provider: TerminalContextProvider,
 		State:    ContextActive,
 		Launcher: Launcher{
 			Kind:    LauncherHerdr,

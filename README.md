@@ -186,27 +186,29 @@ swaymsg reload
 ## Persistent Work Sessions
 
 The optional `sway-session` CLI gives explicitly registered work contexts and
-reusable typed terminal contexts one terminal-adapter window backed by one
+typed terminal contexts one terminal-adapter window backed by one
 named [Herdr](https://herdr.dev/) session. Alacritty is the default adapter.
 Sway restores the outer workspace and layout; Herdr restores the terminal tabs,
 panes, supported agent sessions, and pane screen history.
 
-On first access, valid version-1 and version-2 context registries are
-atomically upgraded to version 3. The exact old bytes remain owner-only in
-`contexts.v1.json` or `contexts.v2.json`, respectively, beside the active
-registry as manual rollback evidence. Malformed or unknown-version state is
-never migrated, and rollback files are never loaded automatically. Version 3
-adds typed terminal adapter data, an optional stable terminal identity, and an
-`archived_at` timestamp. Migrated legacy Herdr contexts use the Alacritty
-adapter with a manual (unidentified) terminal identity. Version 2 also supports
-explicit normal desktop-application registrations.
+On first access, valid version-1, version-2, and version-3 context registries
+are atomically upgraded to version 4. The exact old bytes remain owner-only in
+`contexts.v1.json`, `contexts.v2.json`, or `contexts.v3.json`, respectively,
+beside the active registry as manual rollback evidence. Malformed or
+unknown-version state is never migrated, and rollback files are never loaded
+automatically. Version 3 added typed terminal adapter data, an optional stable
+terminal identity, and an `archived_at` timestamp. Version 4 adds the explicit
+fresh-instance discriminator used by `terminal --new`; migration never infers
+that discriminator from old provider or session text. Migrated legacy Herdr
+contexts therefore remain manual (unidentified) terminals. Version 2 also
+supports explicit normal desktop-application registrations.
 
 Migration is coordinated with the daemon's exclusive runtime lock. A current
 daemon publishes its registry-schema compatibility together with its PID and
 process start time. If an older daemon is still running after a package
 upgrade, commands refuse to migrate instead of stranding that process on an
 unreadable registry. Restart the complete Sway session once after such an
-upgrade, then retry the command; the new daemon performs or accepts the v3
+upgrade, then retry the command; the new daemon performs or accepts the v4
 migration. The error is safe to retry and leaves both `contexts.json` and its
 rollback evidence untouched.
 
@@ -235,12 +237,22 @@ chmod 700 "${XDG_CONFIG_HOME:-$HOME/.config}/herdr"
 chmod 600 "${XDG_CONFIG_HOME:-$HOME/.config}/herdr/config.toml"
 ```
 
-### Reusable terminals
+### Persistent terminals
+
+`sway-session terminal --new` creates a fresh persistent context, unique Sway
+application identity, and unique Herdr session on every invocation. Each
+window is independently restored and managed by its exact context UUID. The
+default Sway binding uses this explicit mode so repeated `$mod+Return` presses
+always create separate persistent windows. Closing a window keeps that context
+active so the next restore opens it again; archive or purge contexts that
+should no longer return. Each active or archived instance occupies one of the
+registry's bounded 128 context slots until it is purged.
 
 `sway-session terminal` opens or reuses one stable default typed terminal
 identity. It starts or attaches its Herdr session and focuses the existing
-window instead of creating another one. The default identity uses the home
-directory when first created.
+window instead of creating another one. This compatibility behavior is not the
+recommended default binding. The default identity uses the home directory when
+first created.
 
 Use `--project NAME` for one stable named identity. The Herdr session name is
 derived from a hash of `NAME`, and a newly created project identity uses the
@@ -257,6 +269,7 @@ exact process observation to reject mapped windows and pending old-adapter
 launches. An archived identity is never launched implicitly.
 
 ```sh
+sway-session --json terminal --new
 sway-session --json terminal
 sway-session --json terminal --project LAB-105
 sway-session --json terminal --project LAB-105 --cwd "$PWD"
@@ -287,7 +300,7 @@ These are the intended optional Sway bindings; packaging supplies the matching
 template separately:
 
 ```conf
-bindsym $mod+Return exec --no-startup-id /usr/bin/sway-session terminal
+bindsym $mod+Return exec --no-startup-id /usr/bin/sway-session terminal --new
 bindsym $mod+Shift+Return exec --no-startup-id /usr/bin/sway-session terminal --ephemeral
 ```
 
@@ -297,7 +310,7 @@ context-ID order, `terminal status [context]` or `terminal status --project
 NAME` returns one record (the default identity when omitted), and cleanup is a
 read-only candidate preview.
 These commands use a non-migrating current-schema snapshot. If they encounter a
-legacy v1/v2 registry, they return the stable `migration_required` diagnostic
+legacy v1/v2/v3 registry, they return the stable `migration_required` diagnostic
 without changing bytes; run `sway-session --json list` once to perform the
 validated migration and retry.
 
@@ -313,11 +326,13 @@ sway-session --json terminal reconfigure --project LAB-105
 UTC date; it does not delete anything. To delete a reviewed context and its
 Herdr state, use its exact UUID with `sway-session --json purge --yes UUID`.
 All `--json` results carry the stable result version; terminal-open results
-also expose their actions. In JSON mode, omission of `--yes` produces a preview
+also expose their context UUID, Herdr session, typed identity, and actions. A
+fresh instance reports identity kind `instance`, keyed by the same context UUID
+used to manage it. In JSON mode, omission of `--yes` produces a preview
 and confirmation diagnostic; it never prompts on standard input.
 
-Reusable terminal identity applies only to terminals launched through
-`sway-session terminal`. Persistence of separate but otherwise identical
+Per-window terminal identity applies only to terminals launched through
+`sway-session terminal --new`. Persistence of separate but otherwise identical
 arbitrary application windows remains deferred to LAB-93.
 
 Register the current project and start or attach its named Herdr session:

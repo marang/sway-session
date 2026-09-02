@@ -178,6 +178,41 @@ roots: it created only its own instance-lock file and no session directory,
 state file, or broker socket. The disposable context and Herdr state were
 purged and all temporary test files were removed afterward.
 
+### LAB-106 headless evidence (2026-09-02)
+
+The source-built `sway-session` was exercised with Sway 1.12, real Alacritty
+windows, and Herdr 0.8.2 inside a transient `systemd --user` service. The run
+used a private headless wlroots backend, IPC socket, Wayland socket, and XDG
+runtime/state/config/cache/data roots. Every Sway IPC request named that socket
+explicitly; inherited desktop socket and display variables were removed before
+the compositor started. The only workspaces were `98: LAB-106 A` and
+`99: LAB-106 B`.
+
+- Two sequential `terminal --new` calls produced different context UUIDs,
+  UUID-derived application IDs, and Herdr session names, and mapped exactly one
+  marked window to each workspace.
+- The post-review rerun persisted registry schema 4 and required
+  `launcher.terminal.instance: true` on both new contexts before continuing.
+  Separate migration tests preserve exact v3 bytes and keep a pre-existing
+  naming lookalike classified as `manual`.
+- `terminal list` reported both as independent `instance` identities, while
+  the daemon captured both placements in owner-only `contexts.json` and
+  `layout.json` files.
+- After stopping the daemon and closing only the two exact private-compositor
+  container IDs, one-shot `restore` reopened both windows on their saved
+  workspaces with no animator running. A restarted daemon converged without
+  leaving temporary restore marks.
+- Archiving and activating the first context left the second context and window
+  unchanged. A JSON purge without `--yes` returned the expected preview and
+  `confirmation_required` diagnostic without changing the registry hash.
+  Confirmed per-UUID purges then removed only their matching Herdr session, and
+  the final registry was empty.
+
+The transient service used `KillMode=control-group`, a three-minute runtime
+limit, and exact temporary-root identity checks. It terminated all private
+compositor descendants and removed the isolated root after the successful
+run. It never addressed or mutated the interactive Sway compositor.
+
 This document records the manual LAB-80 evidence gathered on 2026-08-29. It
 separates the outer Sway restore from components which were not available in
 the verification environment.

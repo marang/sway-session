@@ -156,11 +156,23 @@ func infoSysStat(info os.FileInfo) (*syscall.Stat_t, bool) {
 	return stat, ok
 }
 
+// ValidateTerminalCwdPath validates the persistent, side-effect-free path
+// contract before a registry transaction begins.
+func ValidateTerminalCwdPath(path string) error {
+	if path == "" || !filepath.IsAbs(path) || filepath.Clean(path) != path {
+		return errors.New("terminal cwd must be a clean absolute path")
+	}
+	if containsControl(path) {
+		return errors.New("terminal cwd must not contain control characters")
+	}
+	return nil
+}
+
 // ValidateTerminalCwd verifies the last filesystem precondition immediately
 // before a typed terminal process is started.
 func ValidateTerminalCwd(path string) error {
-	if path == "" || !filepath.IsAbs(path) || filepath.Clean(path) != path {
-		return errors.New("terminal cwd must be a clean absolute path")
+	if err := ValidateTerminalCwdPath(path); err != nil {
+		return err
 	}
 	info, err := os.Stat(path)
 	if err != nil {

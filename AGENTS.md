@@ -48,7 +48,7 @@ project checkpoint, whichever comes first.
 - `preview.go`: terminal preview and terminal-width handling.
 - `cmd/sway-session`: persistent work-session CLI and its explicit long-running
   `daemon`, including desktop-app presence/lifecycle, bounded launch adoption,
-  capture, marking, placement, layout restore, reusable typed terminal launch
+  capture, marking, placement, layout restore, typed terminal launch
   and inventory, and the existing narrow broker endpoints.
 - `cmd/sway-herdr-init` / `internal/herdrinit`: fixed, registry-locked
   initialization of one empty Herdr session without general pane control.

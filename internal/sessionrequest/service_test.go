@@ -239,6 +239,33 @@ func TestServiceRejectsArchiveRacingMappedContextFocus(t *testing.T) {
 	}
 }
 
+func TestServiceV1ReusesManualContextThatLooksLikeFreshTerminal(t *testing.T) {
+	service, request, client, runner := testService(t)
+	request.Workspace = 98
+	request.Provider = sessionstate.TerminalContextProvider
+	var err error
+	request.Session, err = sessionstate.DeriveTerminalInstanceSessionName(testContextID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contextValue := registeredContext(request)
+	if sessionstate.IsTerminalInstanceContext(contextValue) {
+		t.Fatal("manual context was classified as a fresh terminal instance")
+	}
+	if err := sessionstate.RegistryFile(service.StateRoot).Save(sessionstate.Registry{
+		Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{contextValue},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	response, err := service.Handle(context.Background(), request)
+	if err != nil || response.Created || response.Context == nil || response.Context.ID != contextValue.ID {
+		t.Fatalf("manual lookalike context was not reused: response=%+v err=%v", response, err)
+	}
+	if len(client.commands) == 0 || !reflect.DeepEqual(runner.calls, []sessionstate.ContextID{contextValue.ID}) {
+		t.Fatalf("manual lookalike context did not reach normal focus/restore: commands=%v restores=%v", client.commands, runner.calls)
+	}
+}
+
 func TestServiceRejectsSavedWorkspaceConflictBeforeRestore(t *testing.T) {
 	service, request, client, runner := testService(t)
 	contextValue := registeredContext(request)
@@ -343,6 +370,29 @@ func TestServiceV1RejectsStableOrNonAlacrittyTerminalContexts(t *testing.T) {
 				t.Fatalf("protocol-v1-incompatible context caused effects: commands=%v restores=%v", client.commands, runner.calls)
 			}
 		})
+	}
+}
+
+func TestServiceV1RejectsFreshTerminalInstanceContext(t *testing.T) {
+	service, request, client, runner := testService(t)
+	request.Provider = sessionstate.TerminalContextProvider
+	var err error
+	request.Session, err = sessionstate.DeriveTerminalInstanceSessionName(testContextID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contextValue := registeredContext(request)
+	contextValue.Launcher.Terminal.Instance = true
+	if err := sessionstate.RegistryFile(service.StateRoot).Save(sessionstate.Registry{
+		Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{contextValue},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Handle(context.Background(), request); err == nil || !strings.Contains(err.Error(), "conflicting context metadata") {
+		t.Fatalf("fresh terminal instance was exposed through protocol v1: %v", err)
+	}
+	if len(client.commands) != 0 || len(runner.calls) != 0 {
+		t.Fatalf("fresh terminal instance caused broker effects: commands=%v restores=%v", client.commands, runner.calls)
 	}
 }
 

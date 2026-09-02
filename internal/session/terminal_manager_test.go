@@ -4,12 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/marang/sway-title-animator/internal/statefile"
 	"github.com/marang/sway-title-animator/internal/swayipc"
 )
 
@@ -132,6 +136,142 @@ func TestTerminalManagerConcurrentOpenCreatesOneContextAndOneProcess(t *testing.
 	var registry Registry
 	if err := RegistryFile(root).LoadInto(&registry); err != nil || len(registry.Contexts) != 1 {
 		t.Fatalf("concurrent open registry=%+v err=%v", registry, err)
+	}
+}
+
+func TestTerminalManagerConcurrentNewCreatesIndependentContextsAndProcesses(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state", "sway-session")
+	client := &multiTerminalManagerClient{windows: make(map[string]int64)}
+	starter := &terminalManagerStarter{onStartSpec: client.mapProcess}
+	manager := terminalTestManager(root, nil, starter)
+	manager.Client = client
+	ids := []ContextID{
+		testContextID,
+		"6ba7b810-9dad-41d1-80b4-00c04fd430c8",
+	}
+	var idMu sync.Mutex
+	manager.NewContextID = func() (ContextID, error) {
+		idMu.Lock()
+		defer idMu.Unlock()
+		id := ids[0]
+		ids = ids[1:]
+		return id, nil
+	}
+	request := TerminalOpenRequest{
+		New:     true,
+		Adapter: TerminalAdapterAlacritty,
+		Cwd:     t.TempDir(),
+		Focus:   true,
+	}
+
+	results := make(chan TerminalOpenResult, 2)
+	errorsCh := make(chan error, 2)
+	var wait sync.WaitGroup
+	for range 2 {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			result, err := manager.Open(context.Background(), request)
+			results <- result
+			errorsCh <- err
+		}()
+	}
+	wait.Wait()
+	close(results)
+	close(errorsCh)
+	for err := range errorsCh {
+		if err != nil {
+			t.Fatalf("concurrent new terminal: %v", err)
+		}
+	}
+	seen := make(map[ContextID]struct{}, 2)
+	for result := range results {
+		if !reflect.DeepEqual(result.Actions, []TerminalOpenAction{
+			TerminalActionCreated, TerminalActionAttached, TerminalActionFocused,
+		}) {
+			t.Fatalf("unexpected concurrent new result: %+v", result)
+		}
+		seen[result.Context.ID] = struct{}{}
+	}
+	if len(seen) != 2 {
+		t.Fatalf("concurrent --new reused a context: %+v", seen)
+	}
+	starter.mu.Lock()
+	starts := len(starter.specs)
+	starter.mu.Unlock()
+	if starts != 2 {
+		t.Fatalf("concurrent --new started %d terminal processes", starts)
+	}
+	var registry Registry
+	if err := RegistryFile(root).LoadInto(&registry); err != nil || len(registry.Contexts) != 2 ||
+		registry.Contexts[0].Launcher.Session == registry.Contexts[1].Launcher.Session {
+		t.Fatalf("concurrent --new registry=%+v err=%v", registry, err)
+	}
+}
+
+func TestTerminalManagerNewReturnsIdentityWhenVisibleCommitCannotBeReobserved(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "missing-state", "sway-session")
+	starter := &terminalManagerStarter{}
+	manager := terminalTestManager(root, &terminalManagerClient{id: testContextID}, starter)
+	wantCommitError := errors.New("directory sync failed")
+	manager.RegistryUpdate = func(ctx context.Context, _ string, mutate func(*Registry) error) (Registry, error) {
+		registry := emptyRegistry()
+		if err := mutate(&registry); err != nil {
+			return Registry{}, err
+		}
+		return registry, &statefile.CommitOutcomeUnknownError{Cause: wantCommitError}
+	}
+
+	result, err := manager.Open(context.Background(), TerminalOpenRequest{
+		New: true, Adapter: TerminalAdapterAlacritty, Cwd: t.TempDir(), Focus: true,
+	})
+	if !errors.Is(err, wantCommitError) || !strings.Contains(err.Error(), "re-observe") {
+		t.Fatalf("expected failed commit re-observation, got result=%+v err=%v", result, err)
+	}
+	wantSession, sessionErr := DeriveTerminalInstanceSessionName(testContextID)
+	if sessionErr != nil {
+		t.Fatal(sessionErr)
+	}
+	if result.Context.ID != testContextID || result.Context.Launcher.Session != wantSession ||
+		!IsTerminalInstanceContext(result.Context) || !reflect.DeepEqual(result.Actions, []TerminalOpenAction{TerminalActionCreated}) {
+		t.Fatalf("partial result lost visible fresh identity: %+v", result)
+	}
+	if len(starter.specs) != 0 {
+		t.Fatalf("failed commit re-observation launched a process: %+v", starter.specs)
+	}
+}
+
+func TestTerminalManagerRejectsInvalidLabelBeforeRegistryUpdate(t *testing.T) {
+	manager := terminalTestManager(filepath.Join(t.TempDir(), "state", "sway-session"), &terminalManagerClient{id: testContextID}, &terminalManagerStarter{})
+	manager.RegistryUpdate = func(context.Context, string, func(*Registry) error) (Registry, error) {
+		t.Fatal("invalid label reached registry update")
+		return Registry{}, nil
+	}
+
+	result, err := manager.Open(context.Background(), TerminalOpenRequest{
+		New: true, Adapter: TerminalAdapterAlacritty, Cwd: t.TempDir(), Label: " terminal", Focus: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "label must not have surrounding whitespace") || result.Context.ID != "" {
+		t.Fatalf("invalid terminal label was not rejected before effects: result=%+v err=%v", result, err)
+	}
+}
+
+func TestTerminalManagerRejectsControlCharacterCwdBeforeRegistryUpdate(t *testing.T) {
+	manager := terminalTestManager(filepath.Join(t.TempDir(), "state", "sway-session"), &terminalManagerClient{id: testContextID}, &terminalManagerStarter{})
+	manager.RegistryUpdate = func(context.Context, string, func(*Registry) error) (Registry, error) {
+		t.Fatal("invalid cwd reached registry update")
+		return Registry{}, nil
+	}
+	badCwd := filepath.Join(t.TempDir(), "terminal\nwork")
+	if err := os.Mkdir(badCwd, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := manager.Open(context.Background(), TerminalOpenRequest{
+		New: true, Adapter: TerminalAdapterAlacritty, Cwd: badCwd, Focus: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "control characters") || result.Context.ID != "" {
+		t.Fatalf("invalid terminal cwd was not rejected before effects: result=%+v err=%v", result, err)
 	}
 }
 
@@ -335,9 +475,10 @@ func terminalTestManager(root string, client *terminalManagerClient, starter *te
 }
 
 type terminalManagerStarter struct {
-	mu      sync.Mutex
-	specs   []ProcessSpec
-	onStart func()
+	mu          sync.Mutex
+	specs       []ProcessSpec
+	onStart     func()
+	onStartSpec func(ProcessSpec)
 }
 
 func (starter *terminalManagerStarter) Start(spec ProcessSpec) error {
@@ -346,6 +487,9 @@ func (starter *terminalManagerStarter) Start(spec ProcessSpec) error {
 	starter.mu.Unlock()
 	if starter.onStart != nil {
 		starter.onStart()
+	}
+	if starter.onStartSpec != nil {
+		starter.onStartSpec(spec)
 	}
 	return nil
 }
@@ -400,6 +544,59 @@ func (client *terminalManagerClient) RequestContext(ctx context.Context, message
 
 type blockingTerminalManagerClient struct {
 	started chan struct{}
+}
+
+type multiTerminalManagerClient struct {
+	mu      sync.Mutex
+	windows map[string]int64
+	focused int64
+}
+
+func (client *multiTerminalManagerClient) mapProcess(spec ProcessSpec) {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	for _, argument := range spec.Arguments {
+		appID, found := strings.CutPrefix(argument, "--class=")
+		if !found {
+			appID, found = strings.CutPrefix(argument, "--app-id=")
+		}
+		if !found {
+			continue
+		}
+		containerID := int64(len(client.windows) + 40)
+		client.windows[appID] = containerID
+		client.focused = containerID
+		return
+	}
+}
+
+func (client *multiTerminalManagerClient) RequestContext(ctx context.Context, messageType swayipc.MessageType, payload []byte) (swayipc.Message, error) {
+	if err := ctx.Err(); err != nil {
+		return swayipc.Message{}, err
+	}
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	switch messageType {
+	case swayipc.GetTree:
+		workspace := &swayipc.TreeNode{ID: 2, Type: "workspace", Name: "98"}
+		for appID, containerID := range client.windows {
+			value := appID
+			workspace.Nodes = append(workspace.Nodes, &swayipc.TreeNode{
+				ID: containerID, Type: "con", AppID: &value, Focused: containerID == client.focused,
+			})
+		}
+		encoded, _ := json.Marshal(&swayipc.TreeNode{ID: 1, Type: "root", Nodes: []*swayipc.TreeNode{workspace}})
+		return swayipc.Message{Type: swayipc.GetTree, Payload: encoded}, nil
+	case swayipc.RunCommand:
+		var containerID int64
+		if _, err := fmt.Sscanf(string(payload), "[con_id=%d] focus", &containerID); err != nil {
+			return swayipc.Message{}, err
+		}
+		client.focused = containerID
+		return swayipc.Message{Type: swayipc.RunCommand, Payload: []byte(`[{"success":true}]`)}, nil
+	default:
+		return swayipc.Message{}, errors.New("unexpected request")
+	}
 }
 
 func (client *blockingTerminalManagerClient) RequestContext(ctx context.Context, _ swayipc.MessageType, _ []byte) (swayipc.Message, error) {

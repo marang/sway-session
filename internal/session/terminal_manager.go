@@ -24,6 +24,7 @@ const (
 )
 
 type TerminalOpenRequest struct {
+	New         bool
 	Identity    TerminalIdentity
 	Adapter     TerminalAdapter
 	Cwd         string
@@ -42,8 +43,8 @@ type ContextSwayRequestClient interface {
 }
 
 // TerminalManager owns the idempotent create-observe-attach-focus transaction
-// for one typed Herdr terminal context. Its dependencies are process and Sway
-// boundaries rather than command strings.
+// for one typed Herdr terminal context. Its dependencies are state, process,
+// and Sway boundaries rather than command strings.
 type TerminalManager struct {
 	StateRoot       string
 	ProcRoot        string
@@ -58,6 +59,7 @@ type TerminalManager struct {
 	Sleep           func(time.Duration)
 	SettleTimeout   time.Duration
 	BeforeWindowTxn func()
+	RegistryUpdate  func(context.Context, string, func(*Registry) error) (Registry, error)
 }
 
 // TerminalAdapterReconfigurer changes an archived identity's closed terminal
@@ -167,11 +169,38 @@ func (manager TerminalManager) Open(ctx context.Context, request TerminalOpenReq
 	if manager.SettleTimeout <= 0 {
 		manager.SettleTimeout = 10 * time.Second
 	}
+	if request.New && request.Identity != (TerminalIdentity{}) {
+		return TerminalOpenResult{}, errors.New("new terminal must not contain a reusable identity")
+	}
+	if err := ValidateContextLabel(request.Label); err != nil {
+		return TerminalOpenResult{}, err
+	}
+	if err := ValidateTerminalCwdPath(request.Cwd); err != nil {
+		return TerminalOpenResult{}, err
+	}
 
 	var newID ContextID
 	var target Context
 	created := false
-	_, err := UpdateRegistryContext(ctx, manager.StateRoot, func(registry *Registry) error {
+	updateRegistry := manager.RegistryUpdate
+	if updateRegistry == nil {
+		updateRegistry = UpdateRegistryContext
+	}
+	_, err := updateRegistry(ctx, manager.StateRoot, func(registry *Registry) error {
+		if request.New {
+			var createErr error
+			target, createErr = CreateTerminalInstanceContext(registry, TerminalInstanceRequest{
+				Adapter: request.Adapter,
+				Cwd:     request.Cwd,
+				Label:   request.Label,
+			}, func() (ContextID, error) {
+				var idErr error
+				newID, idErr = manager.NewContextID()
+				return newID, idErr
+			})
+			created = createErr == nil
+			return createErr
+		}
 		var ensureErr error
 		target, created, ensureErr = EnsureTerminalContext(registry, TerminalContextRequest{
 			Identity:    request.Identity,
@@ -191,9 +220,20 @@ func (manager TerminalManager) Open(ctx context.Context, request TerminalOpenReq
 		if !errors.As(err, &unknown) {
 			return TerminalOpenResult{}, err
 		}
-		resolved, loadErr := terminalContextByIdentity(ctx, manager.StateRoot, request.Identity)
+		var resolved Context
+		var loadErr error
+		if request.New {
+			resolved, loadErr = terminalContextByID(ctx, manager.StateRoot, newID)
+		} else {
+			resolved, loadErr = terminalContextByIdentity(ctx, manager.StateRoot, request.Identity)
+		}
 		if loadErr != nil {
-			return TerminalOpenResult{}, fmt.Errorf("terminal registry commit outcome unknown: %w; re-observe: %v", err, loadErr)
+			partial := TerminalOpenResult{}
+			if request.New && newID != "" && target.ID == newID && IsTerminalInstanceContext(target) {
+				partial.Context = target
+				partial.Actions = []TerminalOpenAction{TerminalActionCreated}
+			}
+			return partial, fmt.Errorf("terminal registry commit outcome unknown: %w; re-observe: %v", err, loadErr)
 		}
 		target = resolved
 		created = newID != "" && target.ID == newID
@@ -221,7 +261,15 @@ func (manager TerminalManager) Open(ctx context.Context, request TerminalOpenReq
 		if current.State != ContextActive {
 			return fmt.Errorf("%w: activate context %s before opening it", ErrTerminalIdentityArchived, current.ID)
 		}
-		if current.Launcher.Terminal.Identity == nil || *current.Launcher.Terminal.Identity != request.Identity {
+		if request.New {
+			sessionName, nameErr := DeriveTerminalInstanceSessionName(newID)
+			if nameErr != nil {
+				return nameErr
+			}
+			if current.ID != newID || !IsTerminalInstanceContext(current) || current.Launcher.Session != sessionName || current.Launcher.Cwd != request.Cwd {
+				return errors.New("new terminal context changed during open")
+			}
+		} else if current.Launcher.Terminal.Identity == nil || *current.Launcher.Terminal.Identity != request.Identity {
 			return errors.New("terminal context identity changed during open")
 		}
 		if current.Launcher.Terminal.Adapter != request.Adapter {
@@ -427,4 +475,16 @@ func terminalContextByIdentity(ctx context.Context, root string, identity Termin
 		}
 	}
 	return Context{}, ErrContextNotFound
+}
+
+func terminalContextByID(ctx context.Context, root string, id ContextID) (Context, error) {
+	registry := Registry{}
+	if err := RegistryFile(root).LoadIntoContext(ctx, &registry); err != nil {
+		return Context{}, err
+	}
+	index, err := ResolveContext(registry, string(id))
+	if err != nil {
+		return Context{}, err
+	}
+	return registry.Contexts[index], nil
 }

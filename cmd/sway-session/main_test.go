@@ -244,6 +244,20 @@ func TestTerminalSubcommandHelpIsSpecificAndAgentAddressable(t *testing.T) {
 	}
 }
 
+func TestTerminalHelpDocumentsExplicitFreshAndReusableModes(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"terminal", "--help"}, &stdout, &stderr)
+	if code != exitSuccess || stderr.Len() != 0 {
+		t.Fatalf("terminal help failed code=%d stderr=%q", code, stderr.String())
+	}
+	for _, expected := range []string{"--new | --project NAME | --ephemeral", "--cwd PATH"} {
+		if !strings.Contains(stdout.String(), expected) {
+			t.Fatalf("terminal help missing %q: %s", expected, stdout.String())
+		}
+	}
+}
+
 func TestInvalidArityHasActionableTextDiagnostic(t *testing.T) {
 	deps := testDependencies(t)
 	var stdout bytes.Buffer

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -31,9 +32,52 @@ func executeTerminal(ctx context.Context, arguments []string, _ bool, configPath
 	cwdFlag := set.String("cwd", "", "initial working directory")
 	label := set.String("label", "", "presentation label")
 	socketFlag := set.String("socket", "", "Sway IPC socket")
+	newTerminal := set.Bool("new", false, "create a fresh persistent terminal context")
 	ephemeral := set.Bool("ephemeral", false, "open an ordinary terminal without persistence")
 	if err := set.Parse(arguments); err != nil || set.NArg() != 0 {
 		return commandResult{}, usageFailure("terminal", "terminal accepts only typed terminal options and no positional arguments")
+	}
+	provided := make(map[string]bool)
+	set.Visit(func(option *flag.Flag) {
+		provided[option.Name] = true
+	})
+	if *newTerminal && (provided["project"] || provided["ephemeral"]) {
+		return commandResult{}, usageFailure("terminal", "--new cannot be combined with --project or --ephemeral")
+	}
+	if provided["project"] && *project == "" {
+		return commandResult{}, usageFailure("terminal", "--project requires a non-empty name")
+	}
+	if provided["cwd"] && *cwdFlag == "" {
+		return commandResult{}, failure("terminal_cwd", "validate terminal working directory", "--cwd requires a non-empty path")
+	}
+	if *ephemeral && (provided["new"] || provided["project"] || provided["label"] || provided["socket"]) {
+		return commandResult{}, usageFailure("terminal", "--ephemeral accepts only --cwd")
+	}
+	if err := sessionstate.ValidateContextLabel(*label); err != nil {
+		return commandResult{}, failure("terminal_label", "validate terminal label", err.Error())
+	}
+	var identity sessionstate.TerminalIdentity
+	if !*newTerminal {
+		identity = sessionstate.TerminalIdentity{Kind: sessionstate.TerminalIdentityDefault}
+	}
+	if *project != "" {
+		var err error
+		identity, err = sessionstate.ParseTerminalIdentity(*project)
+		if err != nil {
+			return commandResult{}, failure("terminal_identity", "validate terminal project identity", err.Error())
+		}
+	}
+	cwdExplicit := provided["cwd"]
+	cwd, err := terminalWorkingDirectory(*cwdFlag, *project, deps)
+	if err != nil {
+		return commandResult{}, failure("terminal_cwd", "resolve terminal working directory", err.Error())
+	}
+	if err := sessionstate.ValidateTerminalCwd(cwd); err != nil {
+		return commandResult{}, failure("terminal_cwd", "validate terminal working directory", err.Error())
+	}
+	socket := *socketFlag
+	if !*ephemeral && provided["socket"] && (socket == "" || !filepath.IsAbs(socket) || filepath.Clean(socket) != socket) {
+		return commandResult{}, failure("sway_socket", "a valid absolute Sway IPC socket is required", "Run inside Sway or pass --socket PATH.")
 	}
 	if deps.loadSessionConfig == nil {
 		return commandResult{}, failure("terminal_config", "load terminal configuration", "session config dependency is unavailable")
@@ -42,19 +86,8 @@ func executeTerminal(ctx context.Context, arguments []string, _ bool, configPath
 	if err != nil {
 		return commandResult{}, failure("terminal_config", "load terminal configuration", err.Error())
 	}
-	cwdExplicit := *cwdFlag != ""
-	cwd, err := terminalWorkingDirectory(*cwdFlag, *project, deps)
-	if err != nil {
-		return commandResult{}, failure("terminal_cwd", "resolve terminal working directory", err.Error())
-	}
-	if err := validateTerminalWorkingDirectory(cwd); err != nil {
-		return commandResult{}, failure("terminal_cwd", "validate terminal working directory", err.Error())
-	}
 
 	if *ephemeral {
-		if *project != "" || *label != "" || *socketFlag != "" {
-			return commandResult{}, usageFailure("terminal", "--ephemeral accepts only --cwd")
-		}
 		program, err := sessionstate.TerminalAdapterExecutableName(config.Terminal.Adapter)
 		if err != nil {
 			return commandResult{}, failure("terminal_adapter", "select terminal adapter", err.Error())
@@ -81,21 +114,13 @@ func executeTerminal(ctx context.Context, arguments []string, _ bool, configPath
 			},
 		}, nil
 	}
-
-	identity := sessionstate.TerminalIdentity{Kind: sessionstate.TerminalIdentityDefault}
-	if *project != "" {
-		identity, err = sessionstate.ParseTerminalIdentity(*project)
-		if err != nil {
-			return commandResult{}, failure("terminal_identity", "validate terminal project identity", err.Error())
-		}
-	}
-	socket := *socketFlag
 	if socket == "" {
 		socket = os.Getenv("SWAYSOCK")
 	}
 	if socket == "" || !filepath.IsAbs(socket) || filepath.Clean(socket) != socket {
 		return commandResult{}, failure("sway_socket", "a valid absolute Sway IPC socket is required", "Run inside Sway or pass --socket PATH.")
 	}
+
 	root, commandFailure := stateRoot(deps)
 	if commandFailure != nil {
 		return commandResult{}, commandFailure
@@ -124,9 +149,9 @@ func executeTerminal(ctx context.Context, arguments []string, _ bool, configPath
 		SettleTimeout:   deps.settleTimeout,
 	}
 	opened, err := manager.Open(ctx, sessionstate.TerminalOpenRequest{
-		Identity: identity, Adapter: config.Terminal.Adapter, Cwd: cwd, CwdExplicit: cwdExplicit, Label: *label, Focus: true,
+		New: *newTerminal, Identity: identity, Adapter: config.Terminal.Adapter, Cwd: cwd, CwdExplicit: cwdExplicit, Label: *label, Focus: true,
 	})
-	result := terminalOpenCommandResult(opened, identity)
+	result := terminalOpenCommandResult(opened)
 	if err != nil {
 		code := "terminal_open"
 		switch {
@@ -229,19 +254,40 @@ func terminalReconfigureResult(context sessionstate.Context, changed bool) comma
 	}
 }
 
-func terminalOpenCommandResult(opened sessionstate.TerminalOpenResult, identity sessionstate.TerminalIdentity) commandResult {
+func terminalOpenCommandResult(opened sessionstate.TerminalOpenResult) commandResult {
 	result := commandResult{Command: "terminal"}
 	if opened.Context.ID == "" || opened.Context.Launcher.Terminal == nil {
 		return result
 	}
 	result.Contexts = []sessionstate.Context{opened.Context}
+	identity := terminalResultIdentity(opened.Context)
 	result.Terminal = &terminalCommandResult{
 		ContextID: opened.Context.ID,
-		Identity:  &terminalIdentityResult{Kind: identity.Kind, Project: identity.Project},
+		Identity:  identity,
 		Adapter:   opened.Context.Launcher.Terminal.Adapter,
+		Session:   opened.Context.Launcher.Session,
 		Actions:   opened.Actions,
 	}
 	return result
+}
+
+func terminalResultIdentity(context sessionstate.Context) *terminalIdentityResult {
+	if context.Launcher.Terminal == nil {
+		return nil
+	}
+	if context.Launcher.Terminal.Identity != nil {
+		return &terminalIdentityResult{
+			Kind:    context.Launcher.Terminal.Identity.Kind,
+			Project: context.Launcher.Terminal.Identity.Project,
+		}
+	}
+	if sessionstate.IsTerminalInstanceContext(context) {
+		return &terminalIdentityResult{
+			Kind:      sessionstate.TerminalIdentityKind("instance"),
+			ContextID: context.ID,
+		}
+	}
+	return nil
 }
 
 func terminalWorkingDirectory(value string, project string, deps dependencies) (string, error) {
@@ -258,20 +304,6 @@ func terminalWorkingDirectory(value string, project string, deps dependencies) (
 		return "", errors.New("home directory dependency is unavailable")
 	}
 	return deps.homeDir()
-}
-
-func validateTerminalWorkingDirectory(path string) error {
-	if path == "" || !filepath.IsAbs(path) || filepath.Clean(path) != path {
-		return errors.New("terminal working directory must be a clean absolute path")
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		return err
-	}
-	if !info.IsDir() {
-		return errors.New("terminal working directory is not a directory")
-	}
-	return nil
 }
 
 func executeTerminalList(arguments []string, deps dependencies) (commandResult, *commandFailure) {
@@ -385,7 +417,7 @@ func loadTerminalRegistry(deps dependencies) (sessionstate.Registry, *commandFai
 	registry, err := sessionstate.ReadRegistrySnapshot(root)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		var unsupported *sessionstate.UnsupportedVersionError
-		if errors.As(err, &unsupported) && (unsupported.Got == 1 || unsupported.Got == 2) {
+		if errors.As(err, &unsupported) && unsupported.Got >= 1 && unsupported.Got < sessionstate.ContextsSchemaVersion {
 			return sessionstate.Registry{}, failure(
 				"migration_required",
 				"load terminal contexts",
@@ -408,6 +440,8 @@ func terminalInventory(contexts []sessionstate.Context) []terminalInventoryResul
 			identity = terminalIdentityResult{
 				Kind: context.Launcher.Terminal.Identity.Kind, Project: context.Launcher.Terminal.Identity.Project,
 			}
+		} else if sessionstate.IsTerminalInstanceContext(context) {
+			identity = terminalIdentityResult{Kind: sessionstate.TerminalIdentityKind("instance"), ContextID: context.ID}
 		}
 		items = append(items, terminalInventoryResult{
 			ContextID:  context.ID,

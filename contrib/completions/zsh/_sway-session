@@ -199,7 +199,7 @@ _sway-session() {
 				[[ ${arguments[-1]-} == --project || ${arguments[-1]-} == --socket ]] && return
 				_sway_session_add --project --socket --json -h --help
 			else
-				_sway_session_add list status cleanup reconfigure --project --cwd --label --socket --ephemeral --json -h --help
+				_sway_session_add list status cleanup reconfigure --new --project --cwd --label --socket --ephemeral --json -h --help
 			fi
 			;;
 		register)

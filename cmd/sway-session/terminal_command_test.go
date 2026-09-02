@@ -44,6 +44,268 @@ func TestTerminalCommandCreatesThenReusesOneAgentAddressableDefault(t *testing.T
 	}
 }
 
+func TestTerminalCommandNewCreatesIndependentAgentAddressableSessions(t *testing.T) {
+	deps := testDependencies(t)
+	client := &terminalCommandClient{id: testContextID}
+	starter := &terminalCommandStarter{onStart: func() { client.setMapped(true) }}
+	deps.newSwayClient = func(string) swayRequester { return client }
+	deps.processStarter = starter
+	ids := []sessionstate.ContextID{
+		testContextID,
+		"6ba7b810-9dad-41d1-80b4-00c04fd430c8",
+	}
+	nextID := 0
+	deps.newContextID = func() (sessionstate.ContextID, error) {
+		id := ids[nextID]
+		nextID++
+		return id, nil
+	}
+
+	first := runTerminalJSON(t, deps, "--json", "terminal", "--new", "--socket", "/run/user/1000/sway.sock")
+	client.reset(ids[1])
+	second := runTerminalJSON(t, deps, "--json", "terminal", "--new", "--socket", "/run/user/1000/sway.sock")
+	for index, result := range []*commandResult{&first, &second} {
+		if result.Terminal == nil || result.Terminal.ContextID != ids[index] || result.Terminal.Identity == nil ||
+			result.Terminal.Identity.Kind != sessionstate.TerminalIdentityKind("instance") ||
+			result.Terminal.Identity.ContextID != ids[index] ||
+			result.Terminal.Session != "sway-terminal-instance-"+string(ids[index]) ||
+			!reflect.DeepEqual(result.Terminal.Actions, []sessionstate.TerminalOpenAction{
+				sessionstate.TerminalActionCreated, sessionstate.TerminalActionAttached, sessionstate.TerminalActionFocused,
+			}) {
+			t.Fatalf("new terminal result %d is not independently addressable: %+v", index, result)
+		}
+	}
+	if len(starter.specs) != 2 {
+		t.Fatalf("two --new commands started %d processes", len(starter.specs))
+	}
+	registry := loadTestRegistry(t, deps)
+	if len(registry.Contexts) != 2 || registry.Contexts[0].Launcher.Session == registry.Contexts[1].Launcher.Session {
+		t.Fatalf("two --new commands did not persist unique sessions: %+v", registry)
+	}
+	listed := runTerminalJSON(t, deps, "--json", "terminal", "list")
+	if listed.Terminals == nil || len(*listed.Terminals) != 2 {
+		t.Fatalf("fresh terminals missing from inventory: %+v", listed)
+	}
+	for _, terminal := range *listed.Terminals {
+		if terminal.Identity.Kind != sessionstate.TerminalIdentityKind("instance") || terminal.Identity.ContextID != terminal.ContextID {
+			t.Fatalf("fresh terminal inventory lost instance identity: %+v", terminal)
+		}
+	}
+}
+
+func TestTerminalCommandNewRejectsConflictingModesWithoutEffects(t *testing.T) {
+	for name, arguments := range map[string][]string{
+		"project":                {"--json", "terminal", "--new", "--project", "LAB-106"},
+		"project-equals-empty":   {"--json", "terminal", "--new", "--project="},
+		"project-empty-argument": {"--json", "terminal", "--new", "--project", ""},
+		"ephemeral":              {"--json", "terminal", "--new", "--ephemeral"},
+		"ephemeral-false":        {"--json", "terminal", "--new", "--ephemeral=false"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			deps := testDependencies(t)
+			deps.loadSessionConfig = func(string) (sessionstate.SessionConfig, string, error) {
+				t.Fatal("invalid terminal mode loaded configuration")
+				return sessionstate.SessionConfig{}, "", nil
+			}
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			code := runWith(arguments, strings.NewReader(""), &stdout, &stderr, deps)
+			if code != exitUsage || stdout.Len() != 0 || !strings.Contains(stderr.String(), `"code":"usage"`) {
+				t.Fatalf("invalid --new mode code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+			}
+		})
+	}
+}
+
+func TestTerminalCommandRejectsEmptyProjectWithoutEffects(t *testing.T) {
+	deps := testDependencies(t)
+	deps.loadSessionConfig = func(string) (sessionstate.SessionConfig, string, error) {
+		t.Fatal("empty terminal project loaded configuration")
+		return sessionstate.SessionConfig{}, "", nil
+	}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := runWith([]string{"--json", "terminal", "--project="}, strings.NewReader(""), &stdout, &stderr, deps)
+	if code != exitUsage || stdout.Len() != 0 || !strings.Contains(stderr.String(), `"code":"usage"`) {
+		t.Fatalf("empty --project code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestTerminalCommandRejectsEmptyCwdWithoutEffects(t *testing.T) {
+	deps := testDependencies(t)
+	deps.homeDir = func() (string, error) {
+		t.Fatal("empty terminal cwd resolved home")
+		return "", nil
+	}
+	deps.loadSessionConfig = func(string) (sessionstate.SessionConfig, string, error) {
+		t.Fatal("empty terminal cwd loaded configuration")
+		return sessionstate.SessionConfig{}, "", nil
+	}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := runWith([]string{"--json", "terminal", "--cwd="}, strings.NewReader(""), &stdout, &stderr, deps)
+	if code != exitOperation || stdout.Len() != 0 || !strings.Contains(stderr.String(), `"code":"terminal_cwd"`) {
+		t.Fatalf("empty --cwd code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestTerminalCommandRejectsInvalidLabelBeforeAnyDependencyOrLegacyMigration(t *testing.T) {
+	for name, label := range map[string]string{
+		"surrounding-whitespace": " terminal",
+		"control-character":      "terminal\nname",
+		"too-long":               strings.Repeat("t", 257),
+	} {
+		t.Run(name, func(t *testing.T) {
+			deps := testDependencies(t)
+			root, err := deps.stateRoot()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(root, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			legacy := []byte(`{"version":3,"preferences":{"desktop_indicators":false},"contexts":[]}`)
+			registryPath := filepath.Join(root, sessionstate.ContextsFilename)
+			if err := os.WriteFile(registryPath, legacy, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			deps.stateRoot = func() (string, error) {
+				t.Fatal("invalid terminal label resolved state root")
+				return "", nil
+			}
+			deps.loadSessionConfig = func(string) (sessionstate.SessionConfig, string, error) {
+				t.Fatal("invalid terminal label loaded configuration")
+				return sessionstate.SessionConfig{}, "", nil
+			}
+			deps.workingDir = func() (string, error) {
+				t.Fatal("invalid terminal label resolved working directory")
+				return "", nil
+			}
+			deps.newSwayClient = func(string) swayRequester {
+				t.Fatal("invalid terminal label opened Sway")
+				return nil
+			}
+
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			code := runWith([]string{"--json", "terminal", "--label", label}, strings.NewReader(""), &stdout, &stderr, deps)
+			if code != exitOperation || stdout.Len() != 0 || !strings.Contains(stderr.String(), `"code":"terminal_label"`) {
+				t.Fatalf("invalid --label code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+			}
+			unchanged, err := os.ReadFile(registryPath)
+			if err != nil || !bytes.Equal(unchanged, legacy) {
+				t.Fatalf("invalid label changed v3 registry: data=%q err=%v", unchanged, err)
+			}
+			if _, err := os.Lstat(filepath.Join(root, sessionstate.ContextsV3BackupFilename)); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("invalid label created v3 migration backup: %v", err)
+			}
+		})
+	}
+}
+
+func TestTerminalCommandRejectsControlCharacterCwdBeforeAnyDependencyOrLegacyMigration(t *testing.T) {
+	deps := testDependencies(t)
+	root, err := deps.stateRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	legacy := []byte(`{"version":3,"preferences":{"desktop_indicators":false},"contexts":[]}`)
+	registryPath := filepath.Join(root, sessionstate.ContextsFilename)
+	if err := os.WriteFile(registryPath, legacy, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	badCwd := filepath.Join(t.TempDir(), "terminal\nwork")
+	if err := os.Mkdir(badCwd, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	deps.stateRoot = func() (string, error) {
+		t.Fatal("invalid terminal cwd resolved state root")
+		return "", nil
+	}
+	deps.loadSessionConfig = func(string) (sessionstate.SessionConfig, string, error) {
+		t.Fatal("invalid terminal cwd loaded configuration")
+		return sessionstate.SessionConfig{}, "", nil
+	}
+	deps.newSwayClient = func(string) swayRequester {
+		t.Fatal("invalid terminal cwd opened Sway")
+		return nil
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := runWith([]string{"--json", "terminal", "--new", "--cwd", badCwd, "--socket", "/run/user/1000/sway.sock"}, strings.NewReader(""), &stdout, &stderr, deps)
+	if code != exitOperation || stdout.Len() != 0 || !strings.Contains(stderr.String(), `"code":"terminal_cwd"`) {
+		t.Fatalf("invalid --cwd code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	unchanged, err := os.ReadFile(registryPath)
+	if err != nil || !bytes.Equal(unchanged, legacy) {
+		t.Fatalf("invalid cwd changed v3 registry: data=%q err=%v", unchanged, err)
+	}
+	if _, err := os.Lstat(filepath.Join(root, sessionstate.ContextsV3BackupFilename)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("invalid cwd created v3 migration backup: %v", err)
+	}
+}
+
+func TestTerminalCommandRejectsInvalidExplicitSocketWithoutEffects(t *testing.T) {
+	t.Setenv("SWAYSOCK", "/run/user/1000/environment-sway.sock")
+	for name, socket := range map[string]string{
+		"empty":    "",
+		"relative": "sway.sock",
+		"unclean":  "/run/user/1000/../sway.sock",
+	} {
+		t.Run(name, func(t *testing.T) {
+			deps := testDependencies(t)
+			deps.loadSessionConfig = func(string) (sessionstate.SessionConfig, string, error) {
+				t.Fatal("invalid explicit socket loaded configuration")
+				return sessionstate.SessionConfig{}, "", nil
+			}
+			deps.stateRoot = func() (string, error) {
+				t.Fatal("invalid explicit socket resolved state root")
+				return "", nil
+			}
+			deps.newSwayClient = func(string) swayRequester {
+				t.Fatal("invalid explicit socket opened Sway")
+				return nil
+			}
+
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			code := runWith([]string{"--json", "terminal", "--new", "--cwd", t.TempDir(), "--socket=" + socket}, strings.NewReader(""), &stdout, &stderr, deps)
+			if code != exitOperation || stdout.Len() != 0 || !strings.Contains(stderr.String(), `"code":"sway_socket"`) {
+				t.Fatalf("invalid --socket code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+			}
+		})
+	}
+}
+
+func TestTerminalCommandEphemeralRejectsPersistentOptionsWithoutEffects(t *testing.T) {
+	for name, arguments := range map[string][]string{
+		"new":           {"--json", "terminal", "--ephemeral", "--new"},
+		"new-false":     {"--json", "terminal", "--ephemeral", "--new=false"},
+		"project":       {"--json", "terminal", "--ephemeral", "--project", "LAB-106"},
+		"project-empty": {"--json", "terminal", "--ephemeral", "--project="},
+		"label":         {"--json", "terminal", "--ephemeral", "--label", "temporary"},
+		"socket":        {"--json", "terminal", "--ephemeral", "--socket", "/run/user/1000/sway.sock"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			deps := testDependencies(t)
+			deps.loadSessionConfig = func(string) (sessionstate.SessionConfig, string, error) {
+				t.Fatal("invalid ephemeral mode loaded configuration")
+				return sessionstate.SessionConfig{}, "", nil
+			}
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			code := runWith(arguments, strings.NewReader(""), &stdout, &stderr, deps)
+			if code != exitUsage || stdout.Len() != 0 || !strings.Contains(stderr.String(), `"code":"usage"`) {
+				t.Fatalf("invalid ephemeral mode code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+			}
+		})
+	}
+}
+
 func TestTerminalCommandProjectIdentityRejectsConflictingCwd(t *testing.T) {
 	deps := testDependencies(t)
 	client := &terminalCommandClient{id: testContextID}
@@ -134,7 +396,7 @@ func TestTerminalInventoryRefusesLegacySchemaWithoutMigrating(t *testing.T) {
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	legacy := []byte(`{"version":2,"preferences":{"desktop_indicators":false},"contexts":[]}`)
+	legacy := []byte(`{"version":3,"preferences":{"desktop_indicators":false},"contexts":[]}`)
 	path := filepath.Join(root, sessionstate.ContextsFilename)
 	if err := os.WriteFile(path, legacy, 0o600); err != nil {
 		t.Fatal(err)
@@ -150,30 +412,41 @@ func TestTerminalInventoryRefusesLegacySchemaWithoutMigrating(t *testing.T) {
 	if err != nil || !bytes.Equal(unchanged, legacy) {
 		t.Fatalf("read-only inventory modified legacy registry: data=%q err=%v", unchanged, err)
 	}
-	if _, err := os.Lstat(filepath.Join(root, sessionstate.ContextsV2BackupFilename)); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Lstat(filepath.Join(root, sessionstate.ContextsV3BackupFilename)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("read-only inventory created migration backup: %v", err)
 	}
 }
 
 func TestTerminalCommandReportsPartialCreatedStateWhenLaunchFails(t *testing.T) {
-	deps := testDependencies(t)
-	deps.newSwayClient = func(string) swayRequester { return &terminalCommandClient{id: testContextID} }
-	deps.processStarter = &terminalCommandStarter{err: errors.New("adapter failed")}
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
+	for name, mode := range map[string][]string{"reusable": {}, "fresh": {"--new"}} {
+		t.Run(name, func(t *testing.T) {
+			deps := testDependencies(t)
+			deps.newSwayClient = func(string) swayRequester { return &terminalCommandClient{id: testContextID} }
+			deps.processStarter = &terminalCommandStarter{err: errors.New("adapter failed")}
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			arguments := append([]string{"--json", "terminal"}, mode...)
+			arguments = append(arguments, "--socket", "/run/user/1000/sway.sock")
 
-	code := runWith([]string{"--json", "terminal", "--socket", "/run/user/1000/sway.sock"}, strings.NewReader(""), &stdout, &stderr, deps)
-
-	if code != exitOperation || !strings.Contains(stderr.String(), `"code":"terminal_open"`) {
-		t.Fatalf("launch failure code=%d stderr=%q", code, stderr.String())
-	}
-	var result commandResult
-	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
-		t.Fatalf("partial result is not JSON: %v\n%s", err, stdout.String())
-	}
-	if result.Terminal == nil || result.Terminal.ContextID != testContextID ||
-		!reflect.DeepEqual(result.Terminal.Actions, []sessionstate.TerminalOpenAction{sessionstate.TerminalActionCreated}) {
-		t.Fatalf("partial created state was hidden from agent: %+v", result)
+			code := runWith(arguments, strings.NewReader(""), &stdout, &stderr, deps)
+			if code != exitOperation || !strings.Contains(stderr.String(), `"code":"terminal_open"`) {
+				t.Fatalf("launch failure code=%d stderr=%q", code, stderr.String())
+			}
+			var result commandResult
+			if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+				t.Fatalf("partial result is not JSON: %v\n%s", err, stdout.String())
+			}
+			if result.Terminal == nil || result.Terminal.ContextID != testContextID ||
+				!reflect.DeepEqual(result.Terminal.Actions, []sessionstate.TerminalOpenAction{sessionstate.TerminalActionCreated}) {
+				t.Fatalf("partial created state was hidden from agent: %+v", result)
+			}
+			if name == "fresh" && (result.Terminal.Identity == nil ||
+				result.Terminal.Identity.Kind != sessionstate.TerminalIdentityKind("instance") ||
+				result.Terminal.Identity.ContextID != testContextID ||
+				result.Terminal.Session != "sway-terminal-instance-"+string(testContextID)) {
+				t.Fatalf("fresh partial state is not agent-addressable: %+v", result.Terminal)
+			}
+		})
 	}
 }
 
@@ -395,6 +668,14 @@ func (client *terminalCommandClient) setMapped(focused bool) {
 	defer client.mu.Unlock()
 	client.mapped = true
 	client.focused = focused
+}
+
+func (client *terminalCommandClient) reset(id sessionstate.ContextID) {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	client.id = id
+	client.mapped = false
+	client.focused = false
 }
 
 func (client *terminalCommandClient) Request(messageType swayipc.MessageType, _ []byte) (swayipc.Message, error) {

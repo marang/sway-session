@@ -35,6 +35,72 @@ func TestEnsureTerminalContextCreatesAndReusesTypedIdentity(t *testing.T) {
 	}
 }
 
+func TestCreateTerminalInstanceContextAlwaysCreatesUniqueWindowAndSession(t *testing.T) {
+	registry := Registry{Version: ContextsSchemaVersion, Contexts: []Context{}}
+	request := TerminalInstanceRequest{
+		Adapter: TerminalAdapterAlacritty,
+		Cwd:     "/work/new-terminal",
+		Label:   "Terminal",
+	}
+	ids := []ContextID{
+		testContextID,
+		"6ba7b810-9dad-41d1-80b4-00c04fd430c8",
+	}
+	index := 0
+	generate := func() (ContextID, error) {
+		id := ids[index]
+		index++
+		return id, nil
+	}
+
+	first, err := CreateTerminalInstanceContext(&registry, request, generate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := CreateTerminalInstanceContext(&registry, request, generate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ID == second.ID || first.Launcher.Session == second.Launcher.Session || len(registry.Contexts) != 2 {
+		t.Fatalf("fresh terminals were reused: first=%+v second=%+v registry=%+v", first, second, registry)
+	}
+	for _, created := range []Context{first, second} {
+		if created.Provider != TerminalContextProvider || created.Launcher.Terminal == nil ||
+			!created.Launcher.Terminal.Instance || created.Launcher.Terminal.Identity != nil ||
+			created.State != ContextActive || !IsTerminalInstanceContext(created) {
+			t.Fatalf("fresh terminal is not an independent typed context: %+v", created)
+		}
+		wantSession := "sway-terminal-instance-" + string(created.ID)
+		if created.Launcher.Session != wantSession {
+			t.Fatalf("fresh terminal session=%q want=%q", created.Launcher.Session, wantSession)
+		}
+	}
+	spoofed := first
+	spoofed.Launcher.Session = "manually-named"
+	if IsTerminalInstanceContext(spoofed) {
+		t.Fatal("provider metadata alone classified a manual context as a fresh terminal instance")
+	}
+	lookalike := first
+	lookalike.Launcher.Terminal = &TerminalLauncher{Adapter: first.Launcher.Terminal.Adapter}
+	if IsTerminalInstanceContext(lookalike) {
+		t.Fatal("pre-v4 lookalike without explicit discriminator was classified as a fresh terminal instance")
+	}
+}
+
+func TestCreateTerminalInstanceContextRejectsGeneratedIDCollisionWithoutMutation(t *testing.T) {
+	existing := testValidContext(testContextID)
+	registry := Registry{Version: ContextsSchemaVersion, Contexts: []Context{existing}}
+	before := registry
+
+	_, err := CreateTerminalInstanceContext(&registry, TerminalInstanceRequest{
+		Adapter: TerminalAdapterAlacritty,
+		Cwd:     "/work/new-terminal",
+	}, fixedTerminalContextID(testContextID))
+	if err == nil || !reflect.DeepEqual(registry, before) {
+		t.Fatalf("generated ID collision mutated registry: registry=%+v err=%v", registry, err)
+	}
+}
+
 func TestEnsureTerminalContextRejectsConflictingExplicitCwdAndSessionCollision(t *testing.T) {
 	registry := Registry{Version: ContextsSchemaVersion, Contexts: []Context{}}
 	request := TerminalContextRequest{

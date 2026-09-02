@@ -32,6 +32,17 @@ func TestHerdrTerminalConfigurationIsTypedAndRequired(t *testing.T) {
 		{name: "project with unstable name", mutate: func(context *Context) {
 			context.Launcher.Terminal.Identity = &TerminalIdentity{Kind: TerminalIdentityProject, Project: "two words"}
 		}},
+		{name: "instance with reusable identity", mutate: func(context *Context) {
+			context.Launcher.Terminal.Identity = &TerminalIdentity{Kind: TerminalIdentityDefault}
+			context.Launcher.Terminal.Instance = true
+		}},
+		{name: "instance with unreserved provider", mutate: func(context *Context) {
+			context.Launcher.Terminal.Instance = true
+		}},
+		{name: "instance with unrelated session", mutate: func(context *Context) {
+			context.Provider = TerminalContextProvider
+			context.Launcher.Terminal.Instance = true
+		}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -123,7 +134,7 @@ func TestRegistryJSONSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode registry: %v", err)
 	}
-	want := `{"version":3,"preferences":{"desktop_indicators":false},"contexts":[{"id":"123e4567-e89b-12d3-a456-426614174000","label":"LAB-80","provider":"linear","state":"active","launcher":{"kind":"herdr","session":"lab-80","cwd":"/home/example/work","terminal":{"adapter":"alacritty"}}}]}`
+	want := `{"version":4,"preferences":{"desktop_indicators":false},"contexts":[{"id":"123e4567-e89b-12d3-a456-426614174000","label":"LAB-80","provider":"linear","state":"active","launcher":{"kind":"herdr","session":"lab-80","cwd":"/home/example/work","terminal":{"adapter":"alacritty"}}}]}`
 	if string(encoded) != want {
 		t.Fatalf("unexpected registry schema:\n got: %s\nwant: %s", encoded, want)
 	}
@@ -158,7 +169,7 @@ func TestDesktopApplicationJSONSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode desktop registry: %v", err)
 	}
-	want := `{"version":3,"preferences":{"desktop_indicators":true},"contexts":[{"id":"6ba7b811-9dad-41d1-80b4-00c04fd430c8","label":"Slack","state":"active","launcher":{"kind":"flatpak","flatpak_id":"com.slack.Slack","flatpak_installation":"user"},"app":{"identity":{"protocol":"xwayland","x11_class":"Slack","x11_instance":"slack","sandbox_app_id":"com.slack.Slack"},"desired_open":true,"restore_policy":"pinned"}}]}`
+	want := `{"version":4,"preferences":{"desktop_indicators":true},"contexts":[{"id":"6ba7b811-9dad-41d1-80b4-00c04fd430c8","label":"Slack","state":"active","launcher":{"kind":"flatpak","flatpak_id":"com.slack.Slack","flatpak_installation":"user"},"app":{"identity":{"protocol":"xwayland","x11_class":"Slack","x11_instance":"slack","sandbox_app_id":"com.slack.Slack"},"desired_open":true,"restore_policy":"pinned"}}]}`
 	if string(encoded) != want {
 		t.Fatalf("unexpected desktop registry schema:\n got: %s\nwant: %s", encoded, want)
 	}
@@ -173,7 +184,7 @@ func TestRegistryRejectsUnsupportedVersion(t *testing.T) {
 	if !errors.As(err, &versionError) {
 		t.Fatalf("expected UnsupportedVersionError, got %v", err)
 	}
-	if versionError.Got != 4 || versionError.Want != ContextsSchemaVersion {
+	if versionError.Got != ContextsSchemaVersion+1 || versionError.Want != ContextsSchemaVersion {
 		t.Fatalf("unexpected version error: %+v", versionError)
 	}
 }

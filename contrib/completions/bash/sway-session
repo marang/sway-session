@@ -225,7 +225,7 @@ _sway_session() {
 				case ${arguments[-1]-} in --project|--socket) return 0 ;; esac
 				_sway_session_static '--project --socket --json -h --help'
 			else
-				_sway_session_static 'list status cleanup reconfigure --project --cwd --label --socket --ephemeral --json -h --help'
+				_sway_session_static 'list status cleanup reconfigure --new --project --cwd --label --socket --ephemeral --json -h --help'
 			fi
 			;;
 		register)

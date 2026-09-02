@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -21,6 +22,28 @@ func TestDefaultHerdrPathsKeepsDataRootSeparateFromConfigOverride(t *testing.T) 
 	}
 	if paths.Root != filepath.Join(base, "herdr") || paths.ConfigFile != filepath.Join(base, "custom.toml") {
 		t.Fatalf("unexpected Herdr paths: %+v", paths)
+	}
+}
+
+func TestValidateHerdrSessionSocketPathsChecksBothLinuxSocketNames(t *testing.T) {
+	sessionName, err := DeriveTerminalInstanceSessionName(testContextID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateHerdrSessionSocketPaths("/home/example/.config/herdr", sessionName); err != nil {
+		t.Fatalf("standard home path was rejected: %v", err)
+	}
+
+	clientOnlyRoot := "/" + strings.Repeat("a", 39)
+	err = ValidateHerdrSessionSocketPaths(clientOnlyRoot, sessionName)
+	if err == nil || !strings.Contains(err.Error(), herdrClientSocketFilename) || !strings.Contains(err.Error(), "107") {
+		t.Fatalf("overlong client socket path was not explained: %v", err)
+	}
+
+	apiRoot := "/" + strings.Repeat("a", 40)
+	err = ValidateHerdrSessionSocketPaths(apiRoot, sessionName)
+	if err == nil || !strings.Contains(err.Error(), herdrAPISocketFilename) || strings.Contains(err.Error(), herdrClientSocketFilename) {
+		t.Fatalf("overlong API socket path was not explained first: %v", err)
 	}
 }
 

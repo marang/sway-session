@@ -38,6 +38,9 @@ func TestTerminalManagerCreatesAttachesThenReusesFocusedDefault(t *testing.T) {
 	}) {
 		t.Fatalf("unexpected first open: %+v", first)
 	}
+	manager.HerdrPaths = func() (HerdrPaths, error) {
+		return HerdrPaths{}, errors.New("visible terminal must not resolve Herdr paths")
+	}
 	second, err := manager.Open(context.Background(), request)
 	if err != nil {
 		t.Fatal(err)
@@ -206,6 +209,30 @@ func TestTerminalManagerConcurrentNewCreatesIndependentContextsAndProcesses(t *t
 	if err := RegistryFile(root).LoadInto(&registry); err != nil || len(registry.Contexts) != 2 ||
 		registry.Contexts[0].Launcher.Session == registry.Contexts[1].Launcher.Session {
 		t.Fatalf("concurrent --new registry=%+v err=%v", registry, err)
+	}
+}
+
+func TestTerminalManagerNewRejectsOverlongHerdrSocketBeforePersistOrStart(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state", "sway-session")
+	starter := &terminalManagerStarter{}
+	manager := terminalTestManager(root, &terminalManagerClient{id: testContextID}, starter)
+	longHerdrRoot := "/" + strings.Repeat("a", 39)
+	manager.HerdrPaths = func() (HerdrPaths, error) {
+		return HerdrPaths{Root: longHerdrRoot, ConfigFile: filepath.Join(longHerdrRoot, "config.toml")}, nil
+	}
+
+	_, err := manager.Open(context.Background(), TerminalOpenRequest{
+		New: true, Adapter: TerminalAdapterAlacritty, Cwd: t.TempDir(), Focus: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), herdrClientSocketFilename) || !strings.Contains(err.Error(), "shorten XDG_CONFIG_HOME") {
+		t.Fatalf("overlong Herdr client socket was not rejected actionably: %v", err)
+	}
+	if len(starter.specs) != 0 {
+		t.Fatalf("overlong Herdr socket started a process: %+v", starter.specs)
+	}
+	var registry Registry
+	if err := RegistryFile(root).LoadInto(&registry); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("overlong Herdr socket persisted registry=%+v err=%v", registry, err)
 	}
 }
 
@@ -463,7 +490,7 @@ func terminalTestManager(root string, client *terminalManagerClient, starter *te
 		},
 		ResolveProgram: func(name string) (string, error) { return "/usr/bin/" + name, nil },
 		HerdrPaths: func() (HerdrPaths, error) {
-			return HerdrPaths{Root: filepath.Join(root, "herdr"), ConfigFile: filepath.Join(root, "herdr", "config.toml")}, nil
+			return HerdrPaths{Root: "/tmp/herdr-test", ConfigFile: "/tmp/herdr-test/config.toml"}, nil
 		},
 		ValidateHistory: func(HerdrPaths) error { return nil },
 		FindPending:     func(string, ProcessSpec) ([]int, error) { return nil, nil },

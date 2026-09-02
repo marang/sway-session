@@ -2,6 +2,7 @@ package session
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/marang/sway-title-animator/internal/statefile"
 	"golang.org/x/sys/unix"
@@ -19,8 +21,10 @@ import (
 const (
 	daemonLockDirectory              = "sway-session"
 	daemonLockFilename               = "daemon.lock"
+	registryMigrationLockFilename    = "registry-migration.lock"
 	daemonCompatibilityMarkerVersion = 1
 	maxDaemonCompatibilityMarkerSize = 1024
+	registryMigrationLockRetryDelay  = 10 * time.Millisecond
 )
 
 type daemonCompatibilityMarker struct {
@@ -32,7 +36,7 @@ type daemonCompatibilityMarker struct {
 
 // MarkDaemonRegistryCompatibility binds the current process and supported
 // contexts schema to the already-held daemon lock. Upgrade-time commands use
-// this evidence to distinguish a current daemon from a pre-schema-v4 daemon.
+// this evidence to distinguish a current daemon from a pre-current-schema daemon.
 func MarkDaemonRegistryCompatibility(lock *os.File) error {
 	if lock == nil {
 		return errors.New("daemon lock is nil")
@@ -146,14 +150,86 @@ func acquireDaemonMigrationGuard(root string) (func(), error) {
 	return noRelease, nil
 }
 
+// acquireRegistryMigrationLock serializes default-root writers while they
+// establish or migrate the current contexts schema. This is separate from the
+// daemon lock: a concurrent CLI writer must wait and re-observe state, whereas
+// a running daemon can make a schema transition unsafe and must be rejected.
+func acquireRegistryMigrationLock(ctx context.Context, root string) (func(), error) {
+	noRelease := func() {}
+	defaultRoot, err := DefaultStateRoot()
+	if err != nil || root != defaultRoot {
+		return noRelease, nil
+	}
+	if ctx == nil {
+		return nil, errors.New("registry migration lock context is nil")
+	}
+	runtimeRoot := os.Getenv("XDG_RUNTIME_DIR")
+	if runtimeRoot == "" || !filepath.IsAbs(runtimeRoot) || filepath.Clean(runtimeRoot) != runtimeRoot {
+		return nil, migrationDaemonCompatibilityError("XDG_RUNTIME_DIR is unavailable")
+	}
+	directory, err := statefile.OpenPrivateDirectory(filepath.Join(runtimeRoot, daemonLockDirectory), true)
+	if err != nil {
+		return nil, fmt.Errorf("prepare registry migration lock: %w", err)
+	}
+	fd, err := unix.Openat(
+		int(directory.Fd()),
+		registryMigrationLockFilename,
+		unix.O_RDWR|unix.O_CREAT|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK,
+		statefile.RegularFileMode,
+	)
+	if err != nil {
+		_ = directory.Close()
+		return nil, fmt.Errorf("open registry migration lock: %w", err)
+	}
+	lock := os.NewFile(uintptr(fd), registryMigrationLockFilename)
+	if lock == nil {
+		_ = unix.Close(fd)
+		_ = directory.Close()
+		return nil, errors.New("open registry migration lock: invalid file descriptor")
+	}
+	closeFiles := func() {
+		_ = lock.Close()
+		_ = directory.Close()
+	}
+	if err := validateCompatibilityLockFile(lock, "registry migration"); err != nil {
+		closeFiles()
+		return nil, err
+	}
+	for {
+		err := unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB)
+		if err == nil {
+			return func() {
+				_ = unix.Flock(fd, unix.LOCK_UN)
+				closeFiles()
+			}, nil
+		}
+		if !errors.Is(err, unix.EWOULDBLOCK) && !errors.Is(err, unix.EAGAIN) {
+			closeFiles()
+			return nil, fmt.Errorf("lock registry migration: %w", err)
+		}
+		timer := time.NewTimer(registryMigrationLockRetryDelay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			closeFiles()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
 func validateDaemonLockFile(lock *os.File) error {
+	return validateCompatibilityLockFile(lock, "session daemon")
+}
+
+func validateCompatibilityLockFile(lock *os.File, purpose string) error {
 	info, err := lock.Stat()
 	if err != nil {
-		return fmt.Errorf("inspect sway-session daemon lock: %w", err)
+		return fmt.Errorf("inspect %s lock: %w", purpose, err)
 	}
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if !info.Mode().IsRegular() || !ok || int(stat.Uid) != os.Geteuid() || info.Mode().Perm() != statefile.RegularFileMode || stat.Nlink != 1 {
-		return errors.New("sway-session daemon lock must be an owner-only regular file with one link")
+		return fmt.Errorf("%s lock must be an owner-only regular file with one link", purpose)
 	}
 	return nil
 }

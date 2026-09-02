@@ -199,7 +199,10 @@ func (manager TerminalManager) Open(ctx context.Context, request TerminalOpenReq
 				return newID, idErr
 			})
 			created = createErr == nil
-			return createErr
+			if createErr != nil {
+				return createErr
+			}
+			return manager.validateHerdrSessionSocketPaths(target.Launcher.Session)
 		}
 		var ensureErr error
 		target, created, ensureErr = EnsureTerminalContext(registry, TerminalContextRequest{
@@ -213,7 +216,13 @@ func (manager TerminalManager) Open(ctx context.Context, request TerminalOpenReq
 			newID, idErr = manager.NewContextID()
 			return newID, idErr
 		})
-		return ensureErr
+		if ensureErr != nil {
+			return ensureErr
+		}
+		if created {
+			return manager.validateHerdrSessionSocketPaths(target.Launcher.Session)
+		}
+		return nil
 	})
 	if err != nil {
 		var unknown *statefile.CommitOutcomeUnknownError
@@ -286,6 +295,14 @@ func (manager TerminalManager) Open(ctx context.Context, request TerminalOpenReq
 	return result, nil
 }
 
+func (manager TerminalManager) validateHerdrSessionSocketPaths(sessionName string) error {
+	paths, err := manager.HerdrPaths()
+	if err != nil {
+		return fmt.Errorf("resolve Herdr paths: %w", err)
+	}
+	return ValidateHerdrSessionSocketPaths(paths.Root, sessionName)
+}
+
 func (manager TerminalManager) ensureWindow(ctx context.Context, registry Registry, target Context, focus bool, result *TerminalOpenResult) error {
 	tree, err := manager.requestTree(ctx)
 	if err != nil {
@@ -326,6 +343,13 @@ func (manager TerminalManager) ensureWindow(ctx context.Context, registry Regist
 	if err != nil {
 		return err
 	}
+	herdrPaths, err := manager.HerdrPaths()
+	if err != nil {
+		return fmt.Errorf("resolve Herdr paths: %w", err)
+	}
+	if err := ValidateHerdrSessionSocketPaths(herdrPaths.Root, target.Launcher.Session); err != nil {
+		return err
+	}
 	pending, err := manager.FindPending(manager.ProcRoot, spec)
 	if err != nil {
 		return fmt.Errorf("observe pending terminal launch: %w", err)
@@ -335,11 +359,7 @@ func (manager TerminalManager) ensureWindow(ctx context.Context, registry Regist
 	}
 	launched := false
 	if len(pending) == 0 {
-		paths, err := manager.HerdrPaths()
-		if err != nil {
-			return fmt.Errorf("resolve Herdr paths: %w", err)
-		}
-		if err := manager.ValidateHistory(paths); err != nil {
+		if err := manager.ValidateHistory(herdrPaths); err != nil {
 			return fmt.Errorf("validate Herdr pane history: %w", err)
 		}
 		if err := manager.Starter.Start(spec); err != nil {

@@ -46,7 +46,7 @@ func TestRegistryFileRoundTripAndVersionRejectionPreserveCurrentState(t *testing
 		t.Fatalf("unexpected registry: got=%+v want=%+v", loaded, want)
 	}
 
-	unsupported := []byte(`{"version":5,"preferences":{"desktop_indicators":false},"contexts":[]}`)
+	unsupported := []byte(`{"version":6,"preferences":{"desktop_indicators":false},"contexts":[]}`)
 	if err := os.WriteFile(filepath.Join(root, ContextsFilename), unsupported, 0o600); err != nil {
 		t.Fatalf("write unsupported registry: %v", err)
 	}
@@ -240,6 +240,34 @@ func TestRegistryStoreMigratesV3LookalikeAsManualWithExactRollbackCopy(t *testin
 	}
 }
 
+func TestRegistryStoreMigratesV4WithoutRenamingInstanceAndPreservesExactRollbackCopy(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sway-session")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	legacy := []byte(`{"version":4,"preferences":{"desktop_indicators":false},"contexts":[{` +
+		`"id":"123e4567-e89b-12d3-a456-426614174000","label":"Terminal","provider":"sway-session-terminal","state":"active",` +
+		`"launcher":{"kind":"herdr","session":"sway-terminal-instance-123e4567-e89b-12d3-a456-426614174000",` +
+		`"cwd":"/home/example/work","terminal":{"adapter":"alacritty","instance":true}}}]}`)
+	if err := os.WriteFile(filepath.Join(root, ContextsFilename), legacy, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var current Registry
+	if err := RegistryFile(root).LoadInto(&current); err != nil {
+		t.Fatalf("migrate v4 registry: %v", err)
+	}
+	if current.Version != ContextsSchemaVersion || len(current.Contexts) != 1 ||
+		current.Contexts[0].Launcher.Session != "sway-terminal-instance-123e4567-e89b-12d3-a456-426614174000" ||
+		!IsTerminalInstanceContext(current.Contexts[0]) {
+		t.Fatalf("v4 instance changed identity during migration: %+v", current)
+	}
+	backup, err := os.ReadFile(filepath.Join(root, ContextsV4BackupFilename))
+	if err != nil || !bytes.Equal(backup, legacy) {
+		t.Fatalf("v4 rollback copy differs: got=%q err=%v", backup, err)
+	}
+}
+
 func TestUpdateRegistryMigratesBeforeMutation(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "sway-session")
 	if err := os.Mkdir(root, 0o700); err != nil {
@@ -300,7 +328,7 @@ func TestRegistryMigrationRejectsUnknownOrMalformedV1WithoutBackup(t *testing.T)
 	}
 }
 
-func TestRegistryStrictlyRejectsUnknownTerminalFieldsInCurrentAndV2State(t *testing.T) {
+func TestRegistryStrictlyRejectsInvalidCurrentAndLegacyTerminalState(t *testing.T) {
 	tests := []struct {
 		name       string
 		contents   string
@@ -308,10 +336,18 @@ func TestRegistryStrictlyRejectsUnknownTerminalFieldsInCurrentAndV2State(t *test
 	}{
 		{
 			name: "current terminal",
-			contents: `{"version":4,"preferences":{"desktop_indicators":false},"contexts":[{` +
+			contents: `{"version":5,"preferences":{"desktop_indicators":false},"contexts":[{` +
 				`"id":"123e4567-e89b-12d3-a456-426614174000","state":"active",` +
 				`"launcher":{"kind":"herdr","session":"work","cwd":"/work",` +
 				`"terminal":{"adapter":"alacritty","command":"sh"}}}]}`,
+		},
+		{
+			name: "v4 new instance spelling",
+			contents: `{"version":4,"preferences":{"desktop_indicators":false},"contexts":[{` +
+				`"id":"123e4567-e89b-12d3-a456-426614174000","label":"Terminal","provider":"sway-session-terminal","state":"active",` +
+				`"launcher":{"kind":"herdr","session":"sway-terminal-123e4567e89b12d3a456426614174000","cwd":"/work",` +
+				`"terminal":{"adapter":"alacritty","instance":true}}}]}`,
+			backupName: ContextsV4BackupFilename,
 		},
 		{
 			name: "v3 instance discriminator",
@@ -380,7 +416,7 @@ func TestRegistryMigrationRejectsConflictingRollbackCopy(t *testing.T) {
 }
 
 func TestRegistryWritesRefuseUnknownExistingSchemaWithoutMutation(t *testing.T) {
-	unknown := []byte(`{"version":5,"preferences":{"desktop_indicators":false},"contexts":[]}`)
+	unknown := []byte(`{"version":6,"preferences":{"desktop_indicators":false},"contexts":[]}`)
 	for name, operation := range map[string]func(string, *bool) error{
 		"save": func(root string, _ *bool) error {
 			return RegistryFile(root).Save(validRegistry())

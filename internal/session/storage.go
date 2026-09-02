@@ -19,6 +19,7 @@ const (
 	ContextsV1BackupFilename    = "contexts.v1.json"
 	ContextsV2BackupFilename    = "contexts.v2.json"
 	ContextsV3BackupFilename    = "contexts.v3.json"
+	ContextsV4BackupFilename    = "contexts.v4.json"
 	LayoutFilename              = "layout.json"
 	ApplicationSessionFilename  = "application-session.json"
 	ApplicationSessionDirectory = "application-runtime"
@@ -40,7 +41,7 @@ func DefaultStateRoot() (string, error) {
 	return filepath.Join(filepath.Clean(stateHome), "sway-session"), nil
 }
 
-// RegistryStore wraps the current JSON document with the supported v1-v3
+// RegistryStore wraps the current JSON document with the supported v1-v4
 // contexts.json migrations. Versioned backups are rollback evidence only and
 // are never used as an automatic fallback.
 type RegistryStore struct {
@@ -56,9 +57,11 @@ func (store RegistryStore) Save(value Registry) error {
 	if err := value.Validate(); err != nil {
 		return fmt.Errorf("validate %s: %w", ContextsFilename, err)
 	}
-	if err := store.ensureCurrent(context.Background()); err != nil {
+	releaseDaemon, err := store.prepareWrite(context.Background())
+	if err != nil {
 		return err
 	}
+	defer releaseDaemon()
 	return store.current.Save(value)
 }
 
@@ -126,7 +129,75 @@ func (store RegistryStore) ensureCurrent(ctx context.Context) error {
 	return err
 }
 
+func (store RegistryStore) prepareWrite(ctx context.Context) (func(), error) {
+	noRelease := func() {}
+	var current Registry
+	err := store.current.LoadSnapshotInto(&current)
+	if err == nil {
+		return noRelease, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) && !isLegacyRegistryVersion(err) {
+		return nil, err
+	}
+	releaseMigration, err := acquireRegistryMigrationLock(ctx, store.root)
+	if err != nil {
+		return nil, err
+	}
+	keepMigration := false
+	defer func() {
+		if !keepMigration {
+			releaseMigration()
+		}
+	}()
+
+	// Another writer may have established or migrated the registry while this
+	// writer waited. Re-observe before consulting the daemon exclusion lock.
+	err = store.current.LoadSnapshotInto(&current)
+	if err == nil {
+		return noRelease, nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		releaseDaemon, guardErr := acquireDaemonMigrationGuard(store.root)
+		if guardErr != nil {
+			return nil, guardErr
+		}
+		keepMigration = true
+		return func() {
+			releaseDaemon()
+			releaseMigration()
+		}, nil
+	}
+	if !isLegacyRegistryVersion(err) {
+		return nil, err
+	}
+	if _, _, err := store.migrateLegacyWhileSerialized(ctx, legacyRegistryVersion(err)); err != nil {
+		return nil, err
+	}
+	return noRelease, nil
+}
+
 func (store RegistryStore) migrateLegacyContext(ctx context.Context, version int) (Registry, bool, error) {
+	releaseMigration, err := acquireRegistryMigrationLock(ctx, store.root)
+	if err != nil {
+		return Registry{}, false, err
+	}
+	defer releaseMigration()
+	return store.migrateLegacyWhileSerialized(ctx, version)
+}
+
+// migrateLegacyWhileSerialized re-observes the file while the caller holds
+// the registry migration lock, then takes the daemon exclusion lock only if a
+// legacy document still needs replacement.
+func (store RegistryStore) migrateLegacyWhileSerialized(ctx context.Context, version int) (Registry, bool, error) {
+	var current Registry
+	err := store.current.LoadSnapshotInto(&current)
+	if err == nil {
+		return current, false, nil
+	}
+	if !isLegacyRegistryVersion(err) {
+		return Registry{}, false, err
+	}
+	version = legacyRegistryVersion(err)
 	releaseDaemon, err := acquireDaemonMigrationGuard(store.root)
 	if err != nil {
 		return Registry{}, false, err
@@ -140,6 +211,8 @@ func (store RegistryStore) migrateLegacyContext(ctx context.Context, version int
 		backupName = ContextsV2BackupFilename
 	case 3:
 		backupName = ContextsV3BackupFilename
+	case 4:
+		backupName = ContextsV4BackupFilename
 	default:
 		return Registry{}, false, &UnsupportedVersionError{
 			Document: "context registry",
@@ -172,9 +245,11 @@ func UpdateRegistry(root string, mutate func(*Registry) error) (Registry, error)
 func UpdateRegistryContext(ctx context.Context, root string, mutate func(*Registry) error) (Registry, error) {
 	store := RegistryFile(root)
 	initial := emptyRegistry()
-	if err := store.ensureCurrent(ctx); err != nil {
+	releaseDaemon, err := store.prepareWrite(ctx)
+	if err != nil {
 		return initial, err
 	}
+	defer releaseDaemon()
 	return store.current.UpdateContext(ctx, initial, mutate)
 }
 
@@ -220,6 +295,12 @@ type registryV3 struct {
 	Version     int                 `json:"version"`
 	Preferences RegistryPreferences `json:"preferences"`
 	Contexts    []contextV3         `json:"contexts"`
+}
+
+type registryV4 struct {
+	Version     int                 `json:"version"`
+	Preferences RegistryPreferences `json:"preferences"`
+	Contexts    []Context           `json:"contexts"`
 }
 
 type contextV3 struct {
@@ -390,6 +471,25 @@ func decodeRegistryMigration(data []byte) (Registry, bool, error) {
 			Version:     ContextsSchemaVersion,
 			Preferences: legacy.Preferences,
 			Contexts:    contexts,
+		}, true, nil
+	case 4:
+		var legacy registryV4
+		if err := decodeRegistryStrict(data, &legacy); err != nil {
+			return Registry{}, false, err
+		}
+		if legacy.Contexts == nil {
+			return Registry{}, false, errors.New("legacy context registry must contain a contexts array")
+		}
+		for _, contextValue := range legacy.Contexts {
+			if contextValue.Launcher.Terminal != nil && contextValue.Launcher.Terminal.Instance &&
+				contextValue.Launcher.Session != legacyTerminalInstanceSessionName(contextValue.ID) {
+				return Registry{}, false, errors.New("schema-v4 terminal instance session must use the legacy context-ID derivation")
+			}
+		}
+		return Registry{
+			Version:     ContextsSchemaVersion,
+			Preferences: legacy.Preferences,
+			Contexts:    legacy.Contexts,
 		}, true, nil
 	default:
 		return Registry{}, false, &UnsupportedVersionError{

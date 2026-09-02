@@ -2,6 +2,7 @@ package session
 
 import (
 	"errors"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -70,9 +71,13 @@ func TestCreateTerminalInstanceContextAlwaysCreatesUniqueWindowAndSession(t *tes
 			created.State != ContextActive || !IsTerminalInstanceContext(created) {
 			t.Fatalf("fresh terminal is not an independent typed context: %+v", created)
 		}
-		wantSession := "sway-terminal-instance-" + string(created.ID)
+		wantSession := "sway-terminal-" + strings.ReplaceAll(string(created.ID), "-", "")
 		if created.Launcher.Session != wantSession {
 			t.Fatalf("fresh terminal session=%q want=%q", created.Launcher.Session, wantSession)
+		}
+		clientSocket := filepath.Join("/home/example/.config/herdr", "sessions", created.Launcher.Session, "herdr-client.sock")
+		if len(clientSocket) > 107 {
+			t.Fatalf("fresh terminal client socket path has %d bytes, exceeds Linux limit: %q", len(clientSocket), clientSocket)
 		}
 	}
 	spoofed := first
@@ -84,6 +89,14 @@ func TestCreateTerminalInstanceContextAlwaysCreatesUniqueWindowAndSession(t *tes
 	lookalike.Launcher.Terminal = &TerminalLauncher{Adapter: first.Launcher.Terminal.Adapter}
 	if IsTerminalInstanceContext(lookalike) {
 		t.Fatal("pre-v4 lookalike without explicit discriminator was classified as a fresh terminal instance")
+	}
+	legacy := first
+	legacy.Launcher.Session = "sway-terminal-instance-" + string(first.ID)
+	if !IsTerminalInstanceContext(legacy) {
+		t.Fatal("v4 terminal instance became invalid after shortening new session names")
+	}
+	if err := legacy.Validate(); err != nil {
+		t.Fatalf("v4 terminal instance no longer validates: %v", err)
 	}
 }
 

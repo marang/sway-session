@@ -47,7 +47,7 @@ func (*daemonLoopRequester) Close() {}
 
 func TestSessionDaemonLoopOwnsPlacementAndCaptureWithoutAnimator(t *testing.T) {
 	stateHome := filepath.Join(t.TempDir(), "state")
-	t.Setenv("XDG_STATE_HOME", stateHome)
+	setSessionTestStateHome(t, stateHome)
 	root := filepath.Join(stateHome, "sway-session")
 	registry := sessionRegistry(testManagedContextID)
 	if err := sessionstate.RegistryFile(root).Save(registry); err != nil {

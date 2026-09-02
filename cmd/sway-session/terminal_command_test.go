@@ -68,7 +68,7 @@ func TestTerminalCommandNewCreatesIndependentAgentAddressableSessions(t *testing
 		if result.Terminal == nil || result.Terminal.ContextID != ids[index] || result.Terminal.Identity == nil ||
 			result.Terminal.Identity.Kind != sessionstate.TerminalIdentityKind("instance") ||
 			result.Terminal.Identity.ContextID != ids[index] ||
-			result.Terminal.Session != "sway-terminal-instance-"+string(ids[index]) ||
+			result.Terminal.Session != "sway-terminal-"+strings.ReplaceAll(string(ids[index]), "-", "") ||
 			!reflect.DeepEqual(result.Terminal.Actions, []sessionstate.TerminalOpenAction{
 				sessionstate.TerminalActionCreated, sessionstate.TerminalActionAttached, sessionstate.TerminalActionFocused,
 			}) {
@@ -443,7 +443,7 @@ func TestTerminalCommandReportsPartialCreatedStateWhenLaunchFails(t *testing.T) 
 			if name == "fresh" && (result.Terminal.Identity == nil ||
 				result.Terminal.Identity.Kind != sessionstate.TerminalIdentityKind("instance") ||
 				result.Terminal.Identity.ContextID != testContextID ||
-				result.Terminal.Session != "sway-terminal-instance-"+string(testContextID)) {
+				result.Terminal.Session != "sway-terminal-"+strings.ReplaceAll(string(testContextID), "-", "")) {
 				t.Fatalf("fresh partial state is not agent-addressable: %+v", result.Terminal)
 			}
 		})

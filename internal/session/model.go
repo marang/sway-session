@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	ContextsSchemaVersion = 4
+	ContextsSchemaVersion = 5
 	LayoutSchemaVersion   = 1
 	MaxContexts           = 128
 )
@@ -377,8 +377,7 @@ func (context *Context) validate() error {
 			if context.Provider != TerminalContextProvider {
 				return errors.New("terminal instance must use the reserved provider")
 			}
-			sessionName, err := DeriveTerminalInstanceSessionName(context.ID)
-			if err != nil || context.Launcher.Session != sessionName {
+			if !terminalInstanceSessionMatches(context.ID, context.Launcher.Session) {
 				return errors.New("terminal instance session must be derived from its context ID")
 			}
 		}

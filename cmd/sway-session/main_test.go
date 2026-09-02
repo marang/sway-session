@@ -567,6 +567,54 @@ func TestRestoreRejectsMissingTerminalCwdBeforeProcessStart(t *testing.T) {
 	}
 }
 
+func TestRestoreRejectsLegacyInstanceWithOverlongHerdrSocketBeforeStart(t *testing.T) {
+	deps := testDependencies(t)
+	cwd := t.TempDir()
+	legacy := sessionstate.Context{
+		ID:       testContextID,
+		Label:    "Terminal",
+		Provider: sessionstate.TerminalContextProvider,
+		State:    sessionstate.ContextActive,
+		Launcher: sessionstate.Launcher{
+			Kind:    sessionstate.LauncherHerdr,
+			Session: "sway-terminal-instance-" + string(testContextID),
+			Cwd:     cwd,
+			Terminal: &sessionstate.TerminalLauncher{
+				Adapter:  sessionstate.TerminalAdapterAlacritty,
+				Instance: true,
+			},
+		},
+	}
+	root, err := deps.stateRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sessionstate.RegistryFile(root).Save(sessionstate.Registry{
+		Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{legacy},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	deps.herdrPaths = func() (sessionstate.HerdrPaths, error) {
+		return sessionstate.HerdrPaths{
+			Root: "/home/example/.config/herdr", ConfigFile: "/home/example/.config/herdr/config.toml",
+		}, nil
+	}
+	deps.newSwayClient = func(string) swayRequester {
+		return &fakeSwayClient{trees: []*swayipc.TreeNode{treeWithContexts()}}
+	}
+	starter := &recordingStarter{}
+	deps.processStarter = starter
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	code := runWith([]string{"--json", "restore", "--socket", "/run/user/1000/sway.sock"}, strings.NewReader(""), &stdout, &stderr, deps)
+
+	if code != exitOperation || len(starter.calls) != 0 || !strings.Contains(stderr.String(), `"code":"herdr_path"`) ||
+		!strings.Contains(stderr.String(), "herdr-client.sock") || !strings.Contains(stderr.String(), "terminal --new") {
+		t.Fatalf("overlong legacy restore code=%d starts=%v stdout=%q stderr=%q", code, starter.calls, stdout.String(), stderr.String())
+	}
+}
+
 func TestRestorePendingProcessPreventsDuplicateLaunch(t *testing.T) {
 	deps := testDependencies(t)
 	registered := registerTestContext(t, deps)
@@ -824,11 +872,16 @@ func testDependencies(t *testing.T) dependencies {
 	base := t.TempDir()
 	root := filepath.Join(base, "state", "sway-session")
 	project := filepath.Join(base, "project")
-	herdrRoot := filepath.Join(base, "config", "herdr")
-	if err := os.MkdirAll(project, 0o700); err != nil {
+	herdrRoot, err := os.MkdirTemp("", "herdr-test-")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(herdrRoot, 0o700); err != nil {
+	t.Cleanup(func() {
+		if err := os.RemoveAll(herdrRoot); err != nil {
+			t.Errorf("remove Herdr test root: %v", err)
+		}
+	})
+	if err := os.MkdirAll(project, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	return dependencies{

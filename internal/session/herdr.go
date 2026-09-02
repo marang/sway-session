@@ -20,14 +20,40 @@ import (
 )
 
 const (
-	maxHerdrConfigSize  = 1024 * 1024
-	maxHerdrOutputSize  = 1024 * 1024
-	herdrCommandTimeout = 20 * time.Second
+	maxHerdrConfigSize          = 1024 * 1024
+	maxHerdrOutputSize          = 1024 * 1024
+	herdrCommandTimeout         = 20 * time.Second
+	maxHerdrUnixSocketPathBytes = len(unix.RawSockaddrUnix{}.Path) - 1
+	herdrAPISocketFilename      = "herdr.sock"
+	herdrClientSocketFilename   = "herdr-client.sock"
 )
 
 type HerdrPaths struct {
 	Root       string
 	ConfigFile string
+}
+
+// ValidateHerdrSessionSocketPaths checks both filesystem-backed Unix sockets
+// which Herdr derives for a named session. Linux reserves one byte in
+// sockaddr_un.sun_path for the terminating NUL.
+func ValidateHerdrSessionSocketPaths(rootPath string, sessionName string) error {
+	if !filepath.IsAbs(rootPath) || filepath.Clean(rootPath) != rootPath {
+		return errors.New("herdr state root must be a clean absolute path")
+	}
+	if !validSessionName(sessionName) || sessionName == "default" {
+		return fmt.Errorf("refuse unsafe Herdr session name %q", sessionName)
+	}
+	sessionRoot := filepath.Join(rootPath, "sessions", sessionName)
+	for _, filename := range []string{herdrAPISocketFilename, herdrClientSocketFilename} {
+		path := filepath.Join(sessionRoot, filename)
+		if len(path) > maxHerdrUnixSocketPathBytes {
+			return fmt.Errorf(
+				"herdr %s path requires %d bytes; Linux pathname Unix sockets allow at most %d; shorten XDG_CONFIG_HOME",
+				filename, len(path), maxHerdrUnixSocketPathBytes,
+			)
+		}
+	}
+	return nil
 }
 
 // DefaultHerdrPaths follows Herdr's XDG configuration contract. A config-file

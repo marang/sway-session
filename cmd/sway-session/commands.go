@@ -395,6 +395,14 @@ func executeRestore(ctx context.Context, arguments []string, deps dependencies) 
 				delete(waiting, id)
 				continue
 			}
+			if err := sessionstate.ValidateHerdrSessionSocketPaths(paths.Root, target.Launcher.Session); err != nil {
+				operationDiagnostics = append(operationDiagnostics, diagnosticForContext(
+					"herdr_path", target, err,
+					"Shorten XDG_CONFIG_HOME, or purge this context and create a fresh terminal with sway-session terminal --new.",
+				))
+				delete(waiting, id)
+				continue
+			}
 			programName, err := sessionstate.TerminalAdapterExecutableName(target.Launcher.Terminal.Adapter)
 			if err != nil {
 				operationDiagnostics = append(operationDiagnostics, diagnosticForContext("terminal_adapter", target, err, "Use a supported typed terminal adapter."))

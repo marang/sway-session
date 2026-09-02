@@ -141,7 +141,7 @@ func (requester *recordingRequester) Request(messageType swayipc.MessageType, pa
 
 func TestSessionRuntimeMovesThenMarksNewWindowAndCapturesStableTree(t *testing.T) {
 	stateHome := filepath.Join(t.TempDir(), "state")
-	t.Setenv("XDG_STATE_HOME", stateHome)
+	setSessionTestStateHome(t, stateHome)
 	root := filepath.Join(stateHome, "sway-session")
 	registry := sessionRegistry(testManagedContextID)
 	if err := sessionstate.RegistryFile(root).Save(registry); err != nil {
@@ -791,7 +791,7 @@ func testApplicationRuntime(t *testing.T) (*sessionRuntime, *recordingRequester,
 
 func TestSessionRuntimeCapturesManualMoveOfMarkedWindowAfterDebounce(t *testing.T) {
 	stateHome := filepath.Join(t.TempDir(), "state")
-	t.Setenv("XDG_STATE_HOME", stateHome)
+	setSessionTestStateHome(t, stateHome)
 	root := filepath.Join(stateHome, "sway-session")
 	if err := sessionstate.RegistryFile(root).Save(sessionRegistry(testManagedContextID)); err != nil {
 		t.Fatalf("save registry: %v", err)
@@ -831,7 +831,7 @@ func TestSessionRuntimeCapturesManualMoveOfMarkedWindowAfterDebounce(t *testing.
 
 func TestSessionRuntimeSchedulesPeriodicObservationToDiscoverFirstRegistry(t *testing.T) {
 	stateHome := filepath.Join(t.TempDir(), "state")
-	t.Setenv("XDG_STATE_HOME", stateHome)
+	setSessionTestStateHome(t, stateHome)
 	runtime, err := newSessionRuntime(&recordingRequester{})
 	if err != nil {
 		t.Fatalf("create runtime: %v", err)
@@ -868,7 +868,7 @@ func TestSessionRuntimeSchedulesPeriodicObservationToDiscoverFirstRegistry(t *te
 
 func TestSessionRuntimeObservesWithoutStartingRestoreWhenRegistryIsMissing(t *testing.T) {
 	stateHome := filepath.Join(t.TempDir(), "state")
-	t.Setenv("XDG_STATE_HOME", stateHome)
+	setSessionTestStateHome(t, stateHome)
 	root := filepath.Join(stateHome, "sway-session")
 	if err := sessionstate.LayoutFile(root).Save(placementOnlySnapshot("2", testManagedContextID)); err != nil {
 		t.Fatalf("save layout without registry: %v", err)
@@ -891,7 +891,7 @@ func TestSessionRuntimeObservesWithoutStartingRestoreWhenRegistryIsMissing(t *te
 
 func TestSessionRuntimeArmsRetryBeforeInitialTreeObservation(t *testing.T) {
 	stateHome := filepath.Join(t.TempDir(), "state")
-	t.Setenv("XDG_STATE_HOME", stateHome)
+	setSessionTestStateHome(t, stateHome)
 	root := filepath.Join(stateHome, "sway-session")
 	if err := sessionstate.RegistryFile(root).Save(sessionRegistry(testManagedContextID)); err != nil {
 		t.Fatalf("save registry: %v", err)
@@ -912,7 +912,7 @@ func TestSessionRuntimeArmsRetryBeforeInitialTreeObservation(t *testing.T) {
 
 func TestNewSessionRuntimeRejectsMalformedRegistryOnceAtStartup(t *testing.T) {
 	stateHome := filepath.Join(t.TempDir(), "state")
-	t.Setenv("XDG_STATE_HOME", stateHome)
+	setSessionTestStateHome(t, stateHome)
 	root := filepath.Join(stateHome, "sway-session")
 	malformed := sessionstate.Registry{Version: sessionstate.ContextsSchemaVersion, Contexts: nil}
 	if err := sessionstate.RegistryFile(root).Save(malformed); err == nil {
@@ -936,7 +936,7 @@ func TestNewSessionRuntimeRejectsMalformedRegistryOnceAtStartup(t *testing.T) {
 
 func TestSessionRuntimeStartupAndShutdownGuardsKeepPreviousLayout(t *testing.T) {
 	stateHome := filepath.Join(t.TempDir(), "state")
-	t.Setenv("XDG_STATE_HOME", stateHome)
+	setSessionTestStateHome(t, stateHome)
 	root := filepath.Join(stateHome, "sway-session")
 	if err := sessionstate.RegistryFile(root).Save(sessionRegistry(testManagedContextID)); err != nil {
 		t.Fatalf("save registry: %v", err)
@@ -976,7 +976,7 @@ func TestSessionRuntimeStartupAndShutdownGuardsKeepPreviousLayout(t *testing.T) 
 func TestSessionRuntimeSettlingTimeoutUnblocksCompleteWorkspaces(t *testing.T) {
 	secondID := sessionstate.ContextID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
 	stateHome := filepath.Join(t.TempDir(), "state")
-	t.Setenv("XDG_STATE_HOME", stateHome)
+	setSessionTestStateHome(t, stateHome)
 	root := filepath.Join(stateHome, "sway-session")
 	if err := sessionstate.RegistryFile(root).Save(sessionRegistryIDs(testManagedContextID, secondID)); err != nil {
 		t.Fatalf("save registry: %v", err)
@@ -1017,7 +1017,7 @@ func TestSessionRuntimeSettlingTimeoutUnblocksCompleteWorkspaces(t *testing.T) {
 func TestSessionRuntimeRestoresContextWhichMapsAfterStartupTimeout(t *testing.T) {
 	secondID := sessionstate.ContextID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
 	stateHome := filepath.Join(t.TempDir(), "state")
-	t.Setenv("XDG_STATE_HOME", stateHome)
+	setSessionTestStateHome(t, stateHome)
 	root := filepath.Join(stateHome, "sway-session")
 	if err := sessionstate.RegistryFile(root).Save(sessionRegistryIDs(testManagedContextID, secondID)); err != nil {
 		t.Fatalf("save registry: %v", err)
@@ -1071,7 +1071,7 @@ func TestSessionRuntimeRestoresContextWhichMapsAfterStartupTimeout(t *testing.T)
 
 func TestSessionRuntimeRequestsFreshTreeAfterUnknownMoveOutcome(t *testing.T) {
 	stateHome := filepath.Join(t.TempDir(), "state")
-	t.Setenv("XDG_STATE_HOME", stateHome)
+	setSessionTestStateHome(t, stateHome)
 	root := filepath.Join(stateHome, "sway-session")
 	if err := sessionstate.RegistryFile(root).Save(sessionRegistry(testManagedContextID)); err != nil {
 		t.Fatalf("save registry: %v", err)
@@ -1094,7 +1094,7 @@ func TestSessionRuntimeRequestsFreshTreeAfterUnknownMoveOutcome(t *testing.T) {
 
 func TestSessionRuntimeKeepsRestoreEligibilityAfterUnknownMarkOutcome(t *testing.T) {
 	stateHome := filepath.Join(t.TempDir(), "state")
-	t.Setenv("XDG_STATE_HOME", stateHome)
+	setSessionTestStateHome(t, stateHome)
 	root := filepath.Join(stateHome, "sway-session")
 	if err := sessionstate.RegistryFile(root).Save(sessionRegistry(testManagedContextID)); err != nil {
 		t.Fatalf("save registry: %v", err)
@@ -1121,7 +1121,7 @@ func TestSessionRuntimeKeepsRestoreEligibilityAfterUnknownMarkOutcome(t *testing
 func TestSessionRuntimeDoesNotUseUnpersistedDegradationAsMergeBase(t *testing.T) {
 	secondID := sessionstate.ContextID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
 	stateHome := filepath.Join(t.TempDir(), "state")
-	t.Setenv("XDG_STATE_HOME", stateHome)
+	setSessionTestStateHome(t, stateHome)
 	root := filepath.Join(stateHome, "sway-session")
 	registry := sessionRegistryIDs(testManagedContextID, secondID)
 	if err := sessionstate.RegistryFile(root).Save(registry); err != nil {
@@ -1161,7 +1161,7 @@ func TestSessionRuntimeDoesNotUseUnpersistedDegradationAsMergeBase(t *testing.T)
 func TestSessionRuntimeDoesNotPersistImmediateFailedRestoreDegradation(t *testing.T) {
 	secondID := sessionstate.ContextID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
 	stateHome := filepath.Join(t.TempDir(), "state")
-	t.Setenv("XDG_STATE_HOME", stateHome)
+	setSessionTestStateHome(t, stateHome)
 	root := filepath.Join(stateHome, "sway-session")
 	if err := sessionstate.RegistryFile(root).Save(sessionRegistryIDs(testManagedContextID, secondID)); err != nil {
 		t.Fatalf("save registry: %v", err)
@@ -1229,7 +1229,7 @@ func TestSessionRuntimeRendersRestoreCommandsWithoutShellEvaluation(t *testing.T
 
 func TestSessionRuntimeReobservesAmbiguousRestoreCommand(t *testing.T) {
 	stateHome := filepath.Join(t.TempDir(), "state")
-	t.Setenv("XDG_STATE_HOME", stateHome)
+	setSessionTestStateHome(t, stateHome)
 	root := filepath.Join(stateHome, "sway-session")
 	secondID := sessionstate.ContextID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
 	if err := sessionstate.RegistryFile(root).Save(sessionRegistryIDs(testManagedContextID, secondID)); err != nil {

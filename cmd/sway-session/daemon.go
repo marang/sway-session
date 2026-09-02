@@ -54,6 +54,9 @@ func runSessionDaemon(ctx context.Context, swaySocket string, reportError func(e
 	if err != nil {
 		return err
 	}
+	if _, err := sessionstate.UpdateRegistryContext(ctx, stateRoot, func(*sessionstate.Registry) error { return nil }); err != nil {
+		return fmt.Errorf("initialize context registry: %w", err)
+	}
 	compositorID, err := compositorIdentity(swaySocket)
 	if err != nil {
 		return fmt.Errorf("identify Sway compositor session: %w", err)

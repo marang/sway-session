@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 var (
@@ -79,7 +80,22 @@ func DeriveTerminalInstanceSessionName(id ContextID) (string, error) {
 	if err := id.Validate(); err != nil {
 		return "", fmt.Errorf("invalid terminal context ID: %w", err)
 	}
-	return "sway-terminal-instance-" + string(id), nil
+	return "sway-terminal-" + strings.ReplaceAll(string(id), "-", ""), nil
+}
+
+func terminalInstanceSessionMatches(id ContextID, sessionName string) bool {
+	current, err := DeriveTerminalInstanceSessionName(id)
+	if err != nil {
+		return false
+	}
+	// v4 registries created by sway-session 0.6.0 used the longer spelling.
+	// Keep recognizing it so an upgrade never invalidates or silently abandons
+	// an already usable Herdr session.
+	return sessionName == current || sessionName == legacyTerminalInstanceSessionName(id)
+}
+
+func legacyTerminalInstanceSessionName(id ContextID) string {
+	return "sway-terminal-instance-" + string(id)
 }
 
 // IsTerminalInstanceContext recognizes only the complete invariant emitted by
@@ -90,8 +106,7 @@ func IsTerminalInstanceContext(context Context) bool {
 		context.Launcher.Terminal == nil || !context.Launcher.Terminal.Instance || context.Launcher.Terminal.Identity != nil {
 		return false
 	}
-	sessionName, err := DeriveTerminalInstanceSessionName(context.ID)
-	return err == nil && context.Launcher.Session == sessionName
+	return terminalInstanceSessionMatches(context.ID, context.Launcher.Session)
 }
 
 // CreateTerminalInstanceContext always registers a fresh context. Unlike

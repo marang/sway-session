@@ -85,7 +85,8 @@ or window recorder.
    approved user-local desktop entries, and Flatpak application IDs. Schema
    version 3 adds a closed terminal adapter (`alacritty` or `foot`), optional
    stable terminal identity, and `archived_at`; version 4 adds an explicit
-   fresh-terminal-instance discriminator. No state file contains a generic
+   fresh-terminal-instance discriminator; version 5 shortens newly generated
+   instance session names while preserving existing v4 names. No state file contains a generic
    command, argument vector, environment, or value interpreted by a shell.
 10. Codex does not receive access to the general Herdr control socket. Native
     resume metadata crosses a narrow, validated reporting boundary.
@@ -179,22 +180,25 @@ ${XDG_STATE_HOME:-$HOME/.local/state}/sway-session/
 ```
 
 It contains three active documents with separate purposes and, after migration,
-up to three dedicated rollback documents:
+up to four dedicated rollback documents:
 
 ```text
 contexts.json   # written by sway-session lifecycle commands and brokers
-contexts.v1.json # exact rollback evidence after the v1 -> v4 migration
-contexts.v2.json # exact rollback evidence after the v2 -> v4 migration
-contexts.v3.json # exact rollback evidence after the v3 -> v4 migration
+contexts.v1.json # exact rollback evidence after the v1 -> v5 migration
+contexts.v2.json # exact rollback evidence after the v2 -> v5 migration
+contexts.v3.json # exact rollback evidence after the v3 -> v5 migration
+contexts.v4.json # exact rollback evidence after the v4 -> v5 migration
 layout.json     # written by sway-session daemon
 application-runtime/
   application-session.json # per-compositor conservative launch attempts
 desktop-approvals/ # immutable approved user-local .desktop snapshots
 ```
 
-Short-lived confirmation tokens live in the owner-only runtime directory, not
-the persistent state root. At most 256 token files are retained; expired tokens
-are pruned and every confirmation consumes its token before applying work.
+The owner-only `${XDG_RUNTIME_DIR}/sway-session/` directory contains the
+exclusive `daemon.lock`, a separate cancelable `registry-migration.lock`, and
+short-lived confirmation tokens rather than persistent state. At most 256
+token files are retained; expired tokens are pruned and every confirmation
+consumes its token before applying work.
 
 The directory uses mode `0700`; regular state files use mode `0600`. The state
 directory is opened without following symlinks, then all reads, temporary-file
@@ -224,9 +228,9 @@ performing dependent external side effects.
 "Preserve the last valid version" has a deliberately fail-closed meaning: an
 invalid new candidate never replaces the valid on-disk file, and a failed load
 never replaces a caller's already loaded in-memory value. Supported migrations
-preserve the exact valid version-1, version-2, or version-3 bytes as owner-only
-`contexts.v1.json`, `contexts.v2.json`, or `contexts.v3.json`, respectively,
-before atomically installing version 4. These rollback files are evidence for
+preserve the exact valid version-1 through version-4 bytes as the matching
+owner-only `contexts.v1.json` through `contexts.v4.json` file before atomically
+installing version 5. These rollback files are evidence for
 deliberate manual recovery and are never automatic fallbacks. Malformed or
 unknown-version input is left byte-for-byte untouched and does not create a
 rollback file. A general disk-recovery design would require generations or
@@ -234,27 +238,31 @@ tombstones so an old backup cannot resurrect an archived or purged context.
 
 ### Context registry
 
-The registry schema is version 4. Existing valid version-1, version-2, and
-version-3 registries are migrated automatically as described above. Legacy
+The registry schema is version 5. Existing valid version-1 through version-4
+registries are migrated automatically as described above. Legacy
 Herdr contexts receive `alacritty` and no stable terminal identity (reported
 as manual inventory), and no migration invents an archive time. Version 4
 persists an explicit terminal-instance discriminator; v3 migration always
-leaves it false instead of inferring it from provider or session text.
+leaves it false instead of inferring it from provider or session text. Version
+5 shortens names for newly created instances; v4 migration keeps existing
+long-form names unchanged so their Herdr state remains addressable.
 
-Migration first checks the exclusive
-`${XDG_RUNTIME_DIR}/sway-session/daemon.lock`.
-The schema-v4 daemon writes a bounded marker containing its PID, process start
+Creation and migration contenders first serialize on the cancelable
+`${XDG_RUNTIME_DIR}/sway-session/registry-migration.lock` and re-read the
+registry. A writer which still sees missing or legacy state then checks the
+exclusive `${XDG_RUNTIME_DIR}/sway-session/daemon.lock`.
+The schema-v5 daemon writes a bounded marker containing its PID, process start
 time, and supported registry schema while it owns that lock. A held legacy or
 otherwise unverifiable lock blocks migration without modifying the registry;
 the diagnostic tells the user to restart the complete Sway session with the
 upgraded daemon and retry. This prevents a new one-shot CLI from replacing a
-pre-v4 registry underneath a still-running pre-v4 daemon.
+pre-v5 registry underneath a still-running pre-v5 daemon.
 
 The registry's Herdr-compatible shape is:
 
 ```json
 {
-  "version": 4,
+  "version": 5,
   "preferences": {
     "desktop_indicators": false
   },
@@ -330,7 +338,7 @@ template, environment, or shell configuration fields.
 `terminal list`, `terminal status`, and `terminal cleanup
 --archived-before YYYY-MM-DD` are registry-only, read-only inventory and
 preview operations. They use a non-migrating current-schema snapshot and
-return `migration_required` without modifying a legacy v1/v2/v3 registry; the
+return `migration_required` without modifying a legacy v1/v2/v3/v4 registry; the
 existing top-level `list` command is the explicit validated migration path.
 The cleanup command returns only archived typed-terminal
 contexts before the UTC date and never purges. All global `--json` results have
@@ -909,6 +917,14 @@ invocations into one context. A real isolated headless-Sway end-to-end run on
 marking, restore without the animator, independent archive/activate/purge, and
 complete cleanup using Herdr 0.8.2.
 
+Schema v5 fresh Herdr names retain the complete UUID while removing its
+separators. The shorter spelling leaves room for Herdr's longer
+`herdr-client.sock` name under a standard home directory. Both pathname-socket
+lengths are validated against Linux's `sockaddr_un` limit before a new context
+is committed; an unusually long custom `XDG_CONFIG_HOME` fails with an
+actionable diagnostic. The v4 long spelling remains valid for existing
+registries so an upgrade never silently renames or abandons usable Herdr state.
+
 Schema v4 records fresh instances with an explicit discriminator and migrates
 valid v3 registries with an exact owner-only backup. Existing v3 manual
 contexts remain manual even when their provider and session text happen to
@@ -935,8 +951,8 @@ Automated tests must cover:
 - floating geometry clamping;
 - one-window-per-context duplicate prevention;
 - registry-wide typed launcher-identity uniqueness;
-- version-1, version-2, and version-3 to version-4 registry migration with
-  exact version-matched owner-only rollback evidence, Alacritty/manual legacy
+- version-1 through version-4 to version-5 registry migration with exact
+  version-matched owner-only rollback evidence, Alacritty/manual legacy
   Herdr terminal data, no inferred instance discriminator, no invented archive
   time, and no fallback for malformed or unknown input;
 - mixed Herdr, system-desktop, approved user-local, and Flatpak identities;

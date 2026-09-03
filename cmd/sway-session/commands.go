@@ -105,16 +105,50 @@ func executeRegister(ctx context.Context, arguments []string, deps dependencies)
 	if commandFailure != nil {
 		return commandResult{}, commandFailure
 	}
-	_, err = sessionstate.UpdateRegistryContext(ctx, root, func(registry *sessionstate.Registry) error {
-		return sessionstate.AddContext(registry, created)
+	err = sessionstate.WithTerminalLifecycleLockContext(ctx, root, func() error {
+		_, registerErr := sessionstate.UpdateRegistryContext(ctx, root, func(registry *sessionstate.Registry) error {
+			return sessionstate.AddContext(registry, created)
+		})
+		if registerErr != nil && !committedContextContext(ctx, root, created.ID, func(context sessionstate.Context) bool {
+			return contextsEqual(context, created)
+		}, registerErr) {
+			return registerErr
+		}
+		if activityErr := sessionstate.RecordTerminalCreationContext(ctx, root, created.ID, deps.now()); activityErr != nil {
+			cleanupContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+			defer cancel()
+			if rollbackErr := rollbackRegisteredContext(cleanupContext, root, created); rollbackErr != nil {
+				return errors.Join(activityErr, rollbackErr)
+			}
+			return activityErr
+		}
+		return nil
 	})
 	if err != nil {
-		if committedContextContext(ctx, root, created.ID, func(context sessionstate.Context) bool { return contextsEqual(context, created) }, err) {
-			return commandResult{Command: "register", Contexts: []sessionstate.Context{created}}, nil
-		}
 		return commandResult{}, classifyStateError("register context", err)
 	}
 	return commandResult{Command: "register", Contexts: []sessionstate.Context{created}}, nil
+}
+
+func rollbackRegisteredContext(ctx context.Context, root string, created sessionstate.Context) error {
+	_, err := sessionstate.UpdateRegistryContext(ctx, root, func(registry *sessionstate.Registry) error {
+		index, resolveErr := sessionstate.ResolveContext(*registry, string(created.ID))
+		if resolveErr != nil {
+			return resolveErr
+		}
+		if !contextsEqual(registry.Contexts[index], created) {
+			return errors.New("registered context changed before activity rollback")
+		}
+		_, removeErr := sessionstate.RemoveContext(registry, string(created.ID))
+		return removeErr
+	})
+	if err != nil && !registryMissingContext(ctx, root, created.ID, err) {
+		return fmt.Errorf("roll back context registration: %w", err)
+	}
+	if err := sessionstate.RemoveTerminalActivityContext(ctx, root, created.ID); err != nil {
+		return fmt.Errorf("remove context activity after rollback: %w", err)
+	}
+	return nil
 }
 
 func registrationID(value string, deps dependencies) (sessionstate.ContextID, error) {
@@ -282,27 +316,38 @@ func executePurge(ctx context.Context, arguments []string, stdin io.Reader, stde
 		}
 		return nil
 	}
-	for attempt := 0; attempt < 2; attempt++ {
-		externalReconciled = false
-		_, err = sessionstate.UpdateRegistryContext(ctx, root, mutate)
-		if err == nil {
-			break
+	activityWarning := ""
+	err = sessionstate.WithTerminalLifecycleLockContext(ctx, root, func() error {
+		var purgeErr error
+		for attempt := 0; attempt < 2; attempt++ {
+			externalReconciled = false
+			_, purgeErr = sessionstate.UpdateRegistryContext(ctx, root, mutate)
+			if purgeErr == nil {
+				break
+			}
+			if registryMissingContext(ctx, root, target.ID, purgeErr) {
+				purgeErr = nil
+				break
+			}
+			if !externalReconciled {
+				break
+			}
 		}
-		if registryMissingContext(ctx, root, target.ID, err) {
-			err = nil
-			break
+		if purgeErr != nil {
+			return purgeErr
 		}
-		if !externalReconciled {
-			break
+		if cleanupErr := sessionstate.RemoveTerminalActivityContext(ctx, root, target.ID); cleanupErr != nil {
+			activityWarning = "Context and Herdr state were purged, but stale presentation activity could not be removed: " + cleanupErr.Error()
 		}
-	}
+		return nil
+	})
 	if err != nil {
 		if purgeCode != "" {
 			return commandResult{}, failure(purgeCode, "purge context", err.Error())
 		}
 		return commandResult{}, classifyStateError("purge context", err)
 	}
-	return commandResult{Command: "purge", Contexts: []sessionstate.Context{target}, Actions: []string{"purged"}}, nil
+	return commandResult{Command: "purge", Contexts: []sessionstate.Context{target}, Actions: []string{"purged"}, Message: activityWarning}, nil
 }
 
 func executeRestore(ctx context.Context, arguments []string, deps dependencies) (commandResult, *commandFailure) {

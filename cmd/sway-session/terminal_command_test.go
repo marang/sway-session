@@ -15,6 +15,7 @@ import (
 
 	"github.com/marang/sway-title-animator/internal/herdrinit"
 	sessionstate "github.com/marang/sway-title-animator/internal/session"
+	"github.com/marang/sway-title-animator/internal/statefile"
 	"github.com/marang/sway-title-animator/internal/swayipc"
 )
 
@@ -694,8 +695,19 @@ func TestTerminalListStatusAndCleanupAreReadOnlyAgentInventory(t *testing.T) {
 	projectIdentity := sessionstate.TerminalIdentity{Kind: sessionstate.TerminalIdentityProject, Project: "LAB-105"}
 	active := terminalInventoryContext(testContextID, defaultIdentity, sessionstate.ContextActive, nil)
 	archived := terminalInventoryContext("22222222-2222-4222-8222-222222222222", projectIdentity, sessionstate.ContextArchived, &archivedAt)
+	createdAt := deps.now().UTC().Add(-72 * time.Hour)
+	lastFocusedAt := deps.now().UTC().Add(-time.Hour)
 	if err := sessionstate.RegistryFile(root).Save(sessionstate.Registry{
 		Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{archived, active},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sessionstate.UpdateTerminalActivity(root, func(activity *sessionstate.TerminalActivityState) error {
+		if _, _, mutationErr := sessionstate.RecordTerminalCreatedAt(activity, active.ID, createdAt); mutationErr != nil {
+			return mutationErr
+		}
+		_, _, mutationErr := sessionstate.RecordTerminalFocusedAt(activity, active.ID, lastFocusedAt)
+		return mutationErr
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -707,6 +719,11 @@ func TestTerminalListStatusAndCleanupAreReadOnlyAgentInventory(t *testing.T) {
 	listed := runTerminalJSON(t, deps, "--json", "terminal", "list")
 	if listed.Terminals == nil || len(*listed.Terminals) != 2 || (*listed.Terminals)[0].ContextID != active.ID || (*listed.Terminals)[1].ContextID != archived.ID {
 		t.Fatalf("terminal list is not stable and sorted: %+v", listed.Terminals)
+	}
+	if (*listed.Terminals)[0].Label != active.Label || (*listed.Terminals)[0].CreatedAt == nil ||
+		!(*listed.Terminals)[0].CreatedAt.Equal(createdAt) || (*listed.Terminals)[0].LastFocusedAt == nil ||
+		!(*listed.Terminals)[0].LastFocusedAt.Equal(lastFocusedAt) {
+		t.Fatalf("terminal inventory omitted presentation metadata: %+v", (*listed.Terminals)[0])
 	}
 	status := runTerminalJSON(t, deps, "--json", "terminal", "status")
 	if status.Terminals == nil || len(*status.Terminals) != 1 || (*status.Terminals)[0].ContextID != active.ID {
@@ -722,6 +739,64 @@ func TestTerminalListStatusAndCleanupAreReadOnlyAgentInventory(t *testing.T) {
 	}
 	if got := loadTestRegistry(t, deps); !reflect.DeepEqual(got.Contexts, []sessionstate.Context{archived, active}) {
 		t.Fatalf("inventory mutated registry: %+v", got)
+	}
+}
+
+func TestTerminalRenameChangesOnlyValidatedPresentationLabel(t *testing.T) {
+	deps := testDependencies(t)
+	root, err := deps.stateRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	contextValue := terminalInventoryContext(testContextID, sessionstate.TerminalIdentity{Kind: sessionstate.TerminalIdentityDefault}, sessionstate.ContextActive, nil)
+	if err := sessionstate.RegistryFile(root).Save(sessionstate.Registry{Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{contextValue}}); err != nil {
+		t.Fatal(err)
+	}
+
+	result := runTerminalJSON(t, deps, "--json", "terminal", "rename", "--label", "Build monitor", string(contextValue.ID))
+	if len(result.Contexts) != 1 || result.Contexts[0].Label != "Build monitor" || result.Actions[0] != "renamed" {
+		t.Fatalf("rename result=%+v", result)
+	}
+	want := contextValue
+	want.Label = "Build monitor"
+	if got := loadTestRegistry(t, deps).Contexts[0]; !reflect.DeepEqual(got, want) {
+		t.Fatalf("rename changed terminal identity: got=%+v want=%+v", got, want)
+	}
+
+	for _, arguments := range [][]string{
+		{"--json", "terminal", "rename", "--label", "", string(contextValue.ID)},
+		{"--json", "terminal", "rename", "--label", " bad", string(contextValue.ID)},
+	} {
+		var stdout bytes.Buffer
+		var stderr bytes.Buffer
+		if code := runWith(arguments, strings.NewReader(""), &stdout, &stderr, deps); code != exitUsage {
+			t.Fatalf("invalid rename %v returned code=%d stdout=%q stderr=%q", arguments, code, stdout.String(), stderr.String())
+		}
+	}
+}
+
+func TestTerminalRenameReconcilesVisibleUnknownCommit(t *testing.T) {
+	deps := testDependencies(t)
+	root, err := deps.stateRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := terminalInventoryContext(testContextID, sessionstate.TerminalIdentity{Kind: sessionstate.TerminalIdentityDefault}, sessionstate.ContextActive, nil)
+	changed.Label = "Visible rename"
+	if err := sessionstate.RegistryFile(root).Save(sessionstate.Registry{
+		Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{changed},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	unknown := &statefile.CommitOutcomeUnknownError{Cause: errors.New("directory sync failed")}
+	if !committedContextContext(t.Context(), root, changed.ID, func(current sessionstate.Context) bool {
+		return contextsEqual(current, changed)
+	}, unknown) {
+		t.Fatal("visible renamed context was not reconciled after unknown commit outcome")
+	}
+	result := terminalRenameResult(changed, "renamed")
+	if len(result.Contexts) != 1 || result.Contexts[0].Label != changed.Label || result.Actions[0] != "renamed" {
+		t.Fatalf("reconciled rename result = %+v", result)
 	}
 }
 

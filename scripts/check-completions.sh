@@ -114,12 +114,28 @@ fi
 COMP_WORDS=(sway-session terminal '')
 COMP_CWORD=2
 _sway_session
-for expected in list status cleanup reconfigure --new --project --cwd --label --socket --ephemeral; do
+for expected in manage list status cleanup rename reconfigure --new --project --cwd --label --socket --ephemeral; do
 	if [[ " ${COMPREPLY[*]} " != *" $expected "* ]]; then
 		printf 'bash terminal completion omitted %s: %q\n' "$expected" "${COMPREPLY[*]-}" >&2
 		exit 1
 	fi
 done
+
+COMP_WORDS=(sway-session terminal manage '')
+COMP_CWORD=3
+_sway_session
+if [[ " ${COMPREPLY[*]} " != *' --socket '* ]] || [[ " ${COMPREPLY[*]} " == *' --json '* ]]; then
+	printf 'bash terminal manage completion is invalid: %q\n' "${COMPREPLY[*]-}" >&2
+	exit 1
+fi
+
+COMP_WORDS=(sway-session terminal rename --label 'Release work' 111)
+COMP_CWORD=5
+_sway_session
+if [ "${#COMPREPLY[@]}" -ne 1 ] || [ "${COMPREPLY[0]}" != 11111111-1111-4111-8111-111111111111 ]; then
+	printf 'bash terminal rename completion did not insert the canonical UUID: %q\n' "${COMPREPLY[*]-}" >&2
+	exit 1
+fi
 
 COMP_WORDS=(sway-session terminal reconfigure '')
 COMP_CWORD=3
@@ -397,6 +413,26 @@ unset SWAY_SESSION_COMPLETION_FAIL
 
 captured_values=()
 captured_descriptions=()
+words=(sway-session terminal manage '')
+CURRENT=${#words}
+_sway-session
+if (( ${captured_values[(Ie)--socket]} == 0 )) || (( ${captured_values[(Ie)--json]} != 0 )); then
+	print -u2 -r -- "zsh terminal manage completion is invalid: ${(j:,:)captured_values}"
+	exit 1
+fi
+
+captured_values=()
+captured_descriptions=()
+words=(sway-session terminal rename --label 'Release work' 111)
+CURRENT=${#words}
+_sway-session
+if (( ${captured_values[(Ie)11111111-1111-4111-8111-111111111111]} == 0 )); then
+	print -u2 -r -- "zsh terminal rename completion omitted canonical UUID: ${(j:,:)captured_values}"
+	exit 1
+fi
+
+captured_values=()
+captured_descriptions=()
 words=(sway-session -- '')
 CURRENT=${#words}
 _sway-session
@@ -595,6 +631,29 @@ if command -v fish >/dev/null 2>&1; then
 	done
 	active_output=$(PATH="$temporary:$PATH" SWAY_SESSION_COMPLETION_SENTINEL="$sentinel" \
 		fish -c "source '$fish_completion'; complete -C 'sway-session restore --require-active '")
+	manage_output=$(fish -c "source '$fish_completion'; complete -C 'sway-session terminal manage '")
+	case $manage_output in
+	*--socket*) ;;
+	*)
+		echo "fish terminal manage completion omitted --socket: $manage_output" >&2
+		exit 1
+		;;
+	esac
+	case $manage_output in
+	*--json*)
+		echo "fish terminal manage completion proposed --json: $manage_output" >&2
+		exit 1
+		;;
+	esac
+	rename_output=$(PATH="$temporary:$PATH" SWAY_SESSION_COMPLETION_SENTINEL="$sentinel" \
+		fish -c "source '$fish_completion'; complete -C 'sway-session terminal rename --label Release 111'")
+	case $rename_output in
+	*11111111-1111-4111-8111-111111111111*) ;;
+	*)
+		echo "fish terminal rename completion omitted canonical UUID: $rename_output" >&2
+		exit 1
+		;;
+	esac
 	case $active_output in
 	*11111111-1111-4111-8111-111111111111*) ;;
 	*)

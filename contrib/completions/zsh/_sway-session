@@ -28,7 +28,7 @@ _sway_session_context_pending() {
 			continue
 		fi
 		case $word in
-			--socket|--desktop-id) skip_next=1 ;;
+			--socket|--desktop-id|--label) skip_next=1 ;;
 			--json|-h|--help|--yes|--require-active) ;;
 			--*) ;;
 			*) return 1 ;;
@@ -189,6 +189,9 @@ _sway-session() {
 			esac
 			if [[ ${arguments[2]-} == list ]]; then
 				_sway_session_add --json -h --help
+			elif [[ ${arguments[2]-} == manage ]]; then
+				[[ ${arguments[-1]-} == --socket ]] && { _files; return; }
+				_sway_session_add --socket -h --help
 			elif [[ ${arguments[2]-} == status ]]; then
 				_sway_session_add --project --json -h --help
 				if [[ $cur != -* ]] && _sway_session_context_pending terminal-status "${arguments[@]:2}"; then
@@ -200,8 +203,14 @@ _sway-session() {
 			elif [[ ${arguments[2]-} == reconfigure ]]; then
 				[[ ${arguments[-1]-} == --project || ${arguments[-1]-} == --socket ]] && return
 				_sway_session_add --project --socket --json -h --help
+			elif [[ ${arguments[2]-} == rename ]]; then
+				[[ ${arguments[-1]-} == --label ]] && return
+				_sway_session_add --label --json -h --help
+				if [[ $cur != -* ]] && _sway_session_context_pending terminal-status "${arguments[@]:2}"; then
+					_sway_session_contexts terminal-status "$cur"
+				fi
 			else
-				_sway_session_add list status cleanup reconfigure --new --context --project --cwd --label --socket --role --ephemeral --json -h --help
+				_sway_session_add manage list status cleanup rename reconfigure --new --context --project --cwd --label --socket --role --ephemeral --json -h --help
 			fi
 			;;
 		register)

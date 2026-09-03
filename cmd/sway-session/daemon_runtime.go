@@ -24,6 +24,10 @@ const (
 	applicationCloseGrace     = 2 * time.Second
 	applicationLaunchTimeout  = 10 * time.Second
 	maxApplicationPreflights  = 2
+	terminalFocusBatchDelay   = time.Second
+	terminalFocusWriteTimeout = 250 * time.Millisecond
+	terminalFocusRetryMaximum = 30 * time.Second
+	terminalFocusReportEvery  = time.Minute
 	moveBarrierPrefix         = "_sway_session_move_v1:"
 )
 
@@ -54,36 +58,40 @@ type sessionRuntimeOptions struct {
 }
 
 type sessionRuntime struct {
-	ctx                 context.Context
-	client              swayRequester
-	root                string
-	persisted           sessionstate.LayoutSnapshot
-	desired             sessionstate.LayoutSnapshot
-	debouncer           *sessionstate.SnapshotDebouncer
-	registryPresent     bool
-	restoreProgress     *sessionstate.RestoreProgress
-	restoreEligible     map[sessionstate.ContextID]struct{}
-	restoreExcluded     map[string]struct{}
-	restoreSkipped      map[string]struct{}
-	restoreFailures     map[string]error
-	lateRestorePending  bool
-	originalFocusID     int64
-	originalFocusSet    bool
-	originalFocusDone   bool
-	startupComplete     bool
-	startupDeadline     time.Time
-	observeDeadline     time.Time
-	shutdown            bool
-	applications        *sessionstate.ApplicationRestoreCoordinator
-	applicationLauncher applicationContextLauncher
-	applicationCursor   sessionstate.ContextID
-	expectedMoves       map[int64][]uint64
-	nextMoveSequence    uint64
-	eventStreamReady    bool
-	eventStreamEpoch    uint64
-	eventStreamState    eventStreamGuard
-	indicatorCatalog    func() (sessionstate.DesktopCatalog, error)
-	indicatorOperations func() ([]sessionstate.ApplicationOperation, error)
+	ctx                   context.Context
+	client                swayRequester
+	root                  string
+	persisted             sessionstate.LayoutSnapshot
+	desired               sessionstate.LayoutSnapshot
+	debouncer             *sessionstate.SnapshotDebouncer
+	registryPresent       bool
+	restoreProgress       *sessionstate.RestoreProgress
+	restoreEligible       map[sessionstate.ContextID]struct{}
+	restoreExcluded       map[string]struct{}
+	restoreSkipped        map[string]struct{}
+	restoreFailures       map[string]error
+	lateRestorePending    bool
+	originalFocusID       int64
+	originalFocusSet      bool
+	originalFocusDone     bool
+	startupComplete       bool
+	startupDeadline       time.Time
+	observeDeadline       time.Time
+	shutdown              bool
+	applications          *sessionstate.ApplicationRestoreCoordinator
+	applicationLauncher   applicationContextLauncher
+	applicationCursor     sessionstate.ContextID
+	expectedMoves         map[int64][]uint64
+	nextMoveSequence      uint64
+	eventStreamReady      bool
+	eventStreamEpoch      uint64
+	eventStreamState      eventStreamGuard
+	indicatorCatalog      func() (sessionstate.DesktopCatalog, error)
+	indicatorOperations   func() ([]sessionstate.ApplicationOperation, error)
+	pendingTerminalFocus  map[sessionstate.ContextID]time.Time
+	terminalFocusDeadline time.Time
+	terminalFocusRetry    time.Duration
+	terminalFocusReported time.Time
 }
 
 func (runtime *sessionRuntime) context() context.Context {
@@ -236,7 +244,7 @@ func (runtime *sessionRuntime) ReconcileIndicators(root *Node) (bool, error) {
 // HandleEvent records live user intent before the next tree reconciliation.
 // Binding, focus, close, and non-daemon move activity supersede conflicting
 // startup reconstruction; application launch/adoption remains independent.
-func (runtime *sessionRuntime) HandleEvent(event swayipc.Event, _ time.Time) {
+func (runtime *sessionRuntime) HandleEvent(event swayipc.Event, now time.Time) {
 	if runtime == nil || runtime.shutdown {
 		return
 	}
@@ -271,6 +279,9 @@ func (runtime *sessionRuntime) HandleEvent(event swayipc.Event, _ time.Time) {
 		event.Type == swayipc.EventWindow && event.Change == "focus" ||
 			event.Type == swayipc.EventWorkspace && event.Change == "focus"
 	if event.Type == swayipc.EventBinding || interactiveFocus {
+		if event.Type == swayipc.EventWindow && event.Change == "focus" {
+			runtime.queueTerminalFocus(event.Container, now)
+		}
 		runtime.cancelConflictingRestore()
 		return
 	}
@@ -283,6 +294,57 @@ func (runtime *sessionRuntime) HandleEvent(event swayipc.Event, _ time.Time) {
 	if runtime.restoreProgress != nil || runtime.lateRestorePending {
 		runtime.cancelConflictingRestore()
 	}
+}
+
+func (runtime *sessionRuntime) queueTerminalFocus(node *Node, observedAt time.Time) {
+	if runtime == nil || runtime.shutdown || observedAt.IsZero() || node == nil {
+		return
+	}
+	id, ok := focusedManagedContextID(node)
+	if !ok {
+		return
+	}
+	if runtime.pendingTerminalFocus == nil {
+		runtime.pendingTerminalFocus = make(map[sessionstate.ContextID]time.Time)
+	}
+	if _, exists := runtime.pendingTerminalFocus[id]; !exists && len(runtime.pendingTerminalFocus) >= sessionstate.MaxContexts {
+		return
+	}
+	canonical := observedAt.UTC()
+	if current, exists := runtime.pendingTerminalFocus[id]; !exists || canonical.After(current) {
+		runtime.pendingTerminalFocus[id] = canonical
+	}
+	if runtime.terminalFocusDeadline.IsZero() {
+		runtime.terminalFocusDeadline = observedAt.Add(terminalFocusBatchDelay)
+	}
+}
+
+func focusedManagedContextID(node *Node) (sessionstate.ContextID, bool) {
+	identities := make(map[sessionstate.ContextID]struct{})
+	for _, mark := range node.Marks {
+		if !strings.HasPrefix(mark, sessionstate.MarkPrefix) {
+			continue
+		}
+		id, err := sessionstate.ParseMark(mark)
+		if err != nil {
+			return "", false
+		}
+		identities[id] = struct{}{}
+	}
+	if node.AppID != nil && strings.HasPrefix(*node.AppID, sessionstate.AppIDPrefix) {
+		id, err := sessionstate.ParseAppID(*node.AppID)
+		if err != nil {
+			return "", false
+		}
+		identities[id] = struct{}{}
+	}
+	if len(identities) != 1 {
+		return "", false
+	}
+	for id := range identities {
+		return id, true
+	}
+	return "", false
 }
 
 func (runtime *sessionRuntime) restoreMayConflictWithUserIntent() bool {
@@ -1133,6 +1195,11 @@ func (runtime *sessionRuntime) Deadline() (time.Time, bool) {
 		deadline = runtime.observeDeadline
 		scheduled = true
 	}
+	if !runtime.terminalFocusDeadline.IsZero() &&
+		(!scheduled || runtime.terminalFocusDeadline.Before(deadline)) {
+		deadline = runtime.terminalFocusDeadline
+		scheduled = true
+	}
 	if !runtime.startupComplete && !runtime.startupDeadline.IsZero() &&
 		(!scheduled || runtime.startupDeadline.Before(deadline)) {
 		return runtime.startupDeadline, true
@@ -1172,14 +1239,15 @@ func (runtime *sessionRuntime) Flush(now time.Time) error {
 	if runtime == nil || runtime.shutdown {
 		return nil
 	}
+	focusErr := runtime.flushTerminalFocus(now)
 	candidate, due := runtime.debouncer.Due(now)
 	if !due {
-		return nil
+		return focusErr
 	}
 	err := sessionstate.LayoutFile(runtime.root).SaveContext(runtime.context(), candidate)
 	if err == nil {
 		runtime.persisted = candidate
-		return runtime.debouncer.MarkPersisted(candidate)
+		return errors.Join(focusErr, runtime.debouncer.MarkPersisted(candidate))
 	}
 
 	var unknown *statefile.CommitOutcomeUnknownError
@@ -1187,23 +1255,95 @@ func (runtime *sessionRuntime) Flush(now time.Time) error {
 		var visible sessionstate.LayoutSnapshot
 		if loadErr := sessionstate.LayoutFile(runtime.root).LoadIntoContext(runtime.context(), &visible); loadErr != nil {
 			runtime.debouncer.Postpone(now)
-			return errors.Join(err, fmt.Errorf("reload layout after unknown commit outcome: %w", loadErr))
+			return errors.Join(focusErr, err, fmt.Errorf("reload layout after unknown commit outcome: %w", loadErr))
 		}
 		candidateHash, candidateErr := sessionstate.SemanticSnapshotHash(candidate)
 		visibleHash, visibleErr := sessionstate.SemanticSnapshotHash(visible)
 		if candidateErr != nil || visibleErr != nil || candidateHash != visibleHash {
 			runtime.debouncer.Postpone(now)
-			return errors.Join(err, candidateErr, visibleErr, errors.New("visible layout differs from the candidate after unknown commit outcome"))
+			return errors.Join(focusErr, err, candidateErr, visibleErr, errors.New("visible layout differs from the candidate after unknown commit outcome"))
 		}
 		runtime.desired = visible
 		runtime.persisted = visible
 		if markErr := runtime.debouncer.MarkPersisted(visible); markErr != nil {
-			return errors.Join(err, markErr)
+			return errors.Join(focusErr, err, markErr)
 		}
-		return err
+		return errors.Join(focusErr, err)
 	}
 	runtime.debouncer.Postpone(now)
-	return err
+	return errors.Join(focusErr, err)
+}
+
+func (runtime *sessionRuntime) flushTerminalFocus(now time.Time) error {
+	if runtime == nil || runtime.terminalFocusDeadline.IsZero() || now.Before(runtime.terminalFocusDeadline) {
+		return nil
+	}
+	writeContext, cancel := context.WithTimeout(runtime.context(), terminalFocusWriteTimeout)
+	defer cancel()
+	processed := make(map[sessionstate.ContextID]struct{}, len(runtime.pendingTerminalFocus))
+	err := sessionstate.WithTerminalLifecycleLockContext(writeContext, runtime.root, func() error {
+		registry, loadErr := sessionstate.ReadRegistrySnapshotContext(writeContext, runtime.root)
+		if loadErr != nil {
+			return fmt.Errorf("load terminal contexts for focus activity: %w", loadErr)
+		}
+		eligible := make(map[sessionstate.ContextID]time.Time, len(runtime.pendingTerminalFocus))
+		for id, observedAt := range runtime.pendingTerminalFocus {
+			index, resolveErr := sessionstate.ResolveContext(registry, string(id))
+			if resolveErr != nil {
+				if errors.Is(resolveErr, sessionstate.ErrContextNotFound) {
+					processed[id] = struct{}{}
+					continue
+				}
+				return fmt.Errorf("resolve terminal focus activity: %w", resolveErr)
+			}
+			current := registry.Contexts[index]
+			if current.Launcher.Kind != sessionstate.LauncherHerdr || current.Launcher.Terminal == nil {
+				processed[id] = struct{}{}
+				continue
+			}
+			eligible[id] = observedAt
+		}
+		if err := sessionstate.RecordTerminalFocusBatchContext(writeContext, runtime.root, eligible); err != nil {
+			return err
+		}
+		for id := range eligible {
+			processed[id] = struct{}{}
+		}
+		return nil
+	})
+	if err == nil {
+		for id := range processed {
+			delete(runtime.pendingTerminalFocus, id)
+		}
+		if len(runtime.pendingTerminalFocus) == 0 {
+			runtime.terminalFocusDeadline = time.Time{}
+			runtime.terminalFocusRetry = 0
+			runtime.terminalFocusReported = time.Time{}
+			return nil
+		}
+		runtime.terminalFocusDeadline = now.Add(terminalFocusBatchDelay)
+		return nil
+	}
+	runtime.scheduleTerminalFocusRetry(now)
+	if errors.Is(err, context.DeadlineExceeded) && runtime.context().Err() == nil {
+		return nil
+	}
+	if runtime.terminalFocusReported.IsZero() || now.Sub(runtime.terminalFocusReported) >= terminalFocusReportEvery {
+		runtime.terminalFocusReported = now
+		return fmt.Errorf("persist terminal focus activity: %w", err)
+	}
+	return nil
+}
+
+func (runtime *sessionRuntime) scheduleTerminalFocusRetry(now time.Time) {
+	delay := runtime.terminalFocusRetry
+	if delay <= 0 {
+		delay = terminalFocusBatchDelay
+	} else {
+		delay = min(delay*2, terminalFocusRetryMaximum)
+	}
+	runtime.terminalFocusRetry = delay
+	runtime.terminalFocusDeadline = now.Add(delay)
 }
 
 func (runtime *sessionRuntime) Shutdown() {
@@ -1213,6 +1353,10 @@ func (runtime *sessionRuntime) Shutdown() {
 	runtime.shutdown = true
 	runtime.startupDeadline = time.Time{}
 	runtime.observeDeadline = time.Time{}
+	runtime.terminalFocusDeadline = time.Time{}
+	runtime.terminalFocusRetry = 0
+	runtime.terminalFocusReported = time.Time{}
+	clear(runtime.pendingTerminalFocus)
 	runtime.restoreProgress = nil
 	runtime.debouncer.Cancel()
 }

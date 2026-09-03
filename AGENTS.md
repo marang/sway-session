@@ -49,8 +49,8 @@ project checkpoint, whichever comes first.
 - `cmd/sway-session`: persistent work-session CLI and its explicit long-running
   `daemon`, including desktop-app presence/lifecycle, bounded launch adoption,
   capture, marking, placement, layout restore, typed terminal launch
-  and inventory, the closed `TerminalSessionManager` adapters, and the existing
-  narrow broker endpoints.
+  and inventory, the interactive typed-terminal management TUI, the closed
+  `TerminalSessionManager` adapters, and the existing narrow broker endpoints.
 - `internal/herdrinit`: fixed initialization logic used only behind the typed
   Herdr terminal-session-manager adapter; it has no standalone executable.
 - `internal/sessionrequest`: owner-only typed session-start protocol and broker
@@ -62,7 +62,8 @@ project checkpoint, whichever comes first.
   state.
 - `internal/session`: validated context/application and terminal identity,
   strict typed terminal-adapter configuration (`alacritty` or `foot` only),
-  versioned session state, and the pure desktop-app restore coordinator.
+  versioned session state, separately versioned terminal presentation activity,
+  and the pure desktop-app restore coordinator.
 - `internal/statefile`: owner-only, bounded, transactional JSON state
   persistence.
 - `internal/diagnostic`: structured and human-readable CLI diagnostics.

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	sessionstate "github.com/marang/sway-title-animator/internal/session"
+	"github.com/marang/sway-title-animator/internal/statefile"
 	"github.com/marang/sway-title-animator/internal/swayipc"
 )
 
@@ -149,6 +150,205 @@ func TestSessionRuntimeFocusActivityCancelsConflictingRestore(t *testing.T) {
 		if runtime.restoreProgress != nil || !runtime.originalFocusDone || !runtime.startupComplete {
 			t.Fatalf("%s focus did not cancel conflicting restore state: %+v", event.Type, runtime)
 		}
+	}
+}
+
+func TestSessionRuntimeBatchesConfirmedTerminalFocusActivity(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state", "sway-session")
+	registry := sessionRegistry(testManagedContextID)
+	createdAt := time.Date(2026, 9, 3, 17, 0, 0, 0, time.UTC)
+	if err := sessionstate.RegistryFile(root).Save(registry); err != nil {
+		t.Fatal(err)
+	}
+	if err := sessionstate.RecordTerminalCreationContext(t.Context(), root, testManagedContextID, createdAt); err != nil {
+		t.Fatal(err)
+	}
+	registryBefore, err := os.ReadFile(filepath.Join(root, sessionstate.ContextsFilename))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := newSessionRuntimeWithOptions(&recordingRequester{}, sessionRuntimeOptions{Root: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first := createdAt.Add(time.Hour)
+	second := first.Add(500 * time.Millisecond)
+	leaf := managedDaemonLeaf(t, 42, testManagedContextID)
+	leaf.Focused = true
+	runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "focus", Container: leaf}, first)
+	deadline, scheduled := runtime.Deadline()
+	if !scheduled || !deadline.Equal(first.Add(terminalFocusBatchDelay)) {
+		t.Fatalf("focus batch deadline=%v scheduled=%t", deadline, scheduled)
+	}
+	runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "focus", Container: leaf}, second)
+	if deadlineAfter, _ := runtime.Deadline(); !deadlineAfter.Equal(deadline) {
+		t.Fatalf("focus storm postponed bounded deadline: first=%v after=%v", deadline, deadlineAfter)
+	}
+
+	activityBefore, err := sessionstate.ReadTerminalActivitySnapshot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, _ := sessionstate.FindTerminalActivity(activityBefore, testManagedContextID)
+	if before.LastFocusedAt != nil {
+		t.Fatalf("focus was persisted before batch deadline: %+v", before)
+	}
+	if err := runtime.Flush(deadline); err != nil {
+		t.Fatal(err)
+	}
+	afterState, err := sessionstate.ReadTerminalActivitySnapshot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, _ := sessionstate.FindTerminalActivity(afterState, testManagedContextID)
+	if after.LastFocusedAt == nil || !after.LastFocusedAt.Equal(second) {
+		t.Fatalf("latest confirmed focus was not persisted: %+v", after)
+	}
+	registryAfter, err := os.ReadFile(filepath.Join(root, sessionstate.ContextsFilename))
+	if err != nil || string(registryAfter) != string(registryBefore) {
+		t.Fatalf("focus activity changed contexts.json: err=%v\nbefore=%s\nafter=%s", err, registryBefore, registryAfter)
+	}
+	if runtime.terminalFocusDeadline != (time.Time{}) || len(runtime.pendingTerminalFocus) != 0 {
+		t.Fatalf("persisted focus batch remained armed: deadline=%v pending=%v", runtime.terminalFocusDeadline, runtime.pendingTerminalFocus)
+	}
+}
+
+func TestSessionRuntimeFocusPrunesCapacityFullOrphanActivity(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state", "sway-session")
+	if err := sessionstate.RegistryFile(root).Save(sessionRegistry(testManagedContextID)); err != nil {
+		t.Fatal(err)
+	}
+	focusedAt := time.Date(2026, 9, 3, 18, 30, 0, 0, time.UTC)
+	orphans := sessionstate.TerminalActivityState{
+		Version:   sessionstate.TerminalActivitySchemaVersion,
+		Terminals: make([]sessionstate.TerminalActivity, 0, sessionstate.MaxContexts),
+	}
+	for index := 0; index < sessionstate.MaxContexts; index++ {
+		id := sessionstate.ContextID(fmt.Sprintf("%08x-1111-4111-8111-%012x", index+2000, index+2000))
+		orphans.Terminals = append(orphans.Terminals, sessionstate.TerminalActivity{ContextID: id, LastFocusedAt: &focusedAt})
+	}
+	if err := sessionstate.TerminalActivityFile(root).Save(orphans); err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := newSessionRuntimeWithOptions(&recordingRequester{}, sessionRuntimeOptions{Root: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	observedAt := focusedAt.Add(time.Minute)
+	runtime.HandleEvent(swayipc.Event{
+		Type: swayipc.EventWindow, Change: "focus", Container: managedDaemonLeaf(t, 42, testManagedContextID),
+	}, observedAt)
+	if err := runtime.Flush(observedAt.Add(terminalFocusBatchDelay)); err != nil {
+		t.Fatalf("capacity-full orphan focus did not converge: %v", err)
+	}
+	activity, err := sessionstate.ReadTerminalActivitySnapshot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorded, exists := sessionstate.FindTerminalActivity(activity, testManagedContextID)
+	if len(activity.Terminals) != 1 || !exists || recorded.LastFocusedAt == nil || !recorded.LastFocusedAt.Equal(observedAt) {
+		t.Fatalf("orphan activity was not pruned to the focused terminal: %+v", activity)
+	}
+	if len(runtime.pendingTerminalFocus) != 0 || runtime.terminalFocusRetry != 0 || !runtime.terminalFocusDeadline.IsZero() {
+		t.Fatalf("successful pruned focus retained retry state: pending=%v retry=%v deadline=%v", runtime.pendingTerminalFocus, runtime.terminalFocusRetry, runtime.terminalFocusDeadline)
+	}
+}
+
+func TestSessionRuntimeIgnoresUntrustedOrNonTerminalFocusActivity(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state", "sway-session")
+	desktop := sessionstate.Context{
+		ID: testManagedContextID, Label: "Example", Provider: "desktop", State: sessionstate.ContextActive,
+		Launcher: sessionstate.Launcher{Kind: sessionstate.LauncherDesktop, DesktopID: "example.desktop", DesktopOrigin: sessionstate.DesktopEntrySystem, DesktopPath: "/usr/share/applications/example.desktop"},
+		App:      &sessionstate.Application{Identity: sessionstate.ApplicationIdentity{Protocol: sessionstate.WindowWayland, WaylandAppID: "example"}, DesiredOpen: true, RestorePolicy: sessionstate.ApplicationRestoreFollow},
+	}
+	if err := sessionstate.RegistryFile(root).Save(sessionstate.Registry{Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{desktop}}); err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := newSessionRuntimeWithOptions(&recordingRequester{}, sessionRuntimeOptions{Root: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 3, 18, 0, 0, 0, time.UTC)
+	conflictingAppID, _ := sessionstate.ContextID("22222222-2222-4222-8222-222222222222").AppID()
+	mark, _ := testManagedContextID.Mark()
+	for _, event := range []swayipc.Event{
+		{Type: swayipc.EventWorkspace, Change: "focus", Current: &Node{ID: 3}},
+		{Type: swayipc.EventWindow, Change: "title", Container: managedDaemonLeaf(t, 42, testManagedContextID)},
+		{Type: swayipc.EventWindow, Change: "focus", Container: &Node{ID: 42, Marks: []string{mark}, AppID: &conflictingAppID}},
+	} {
+		runtime.HandleEvent(event, now)
+	}
+	if len(runtime.pendingTerminalFocus) != 0 {
+		t.Fatalf("untrusted focus event was queued: %+v", runtime.pendingTerminalFocus)
+	}
+
+	desktopLeaf := managedDaemonLeaf(t, 43, testManagedContextID)
+	runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "focus", Container: desktopLeaf}, now)
+	if err := runtime.Flush(now.Add(terminalFocusBatchDelay)); err != nil {
+		t.Fatal(err)
+	}
+	after, err := sessionstate.ReadTerminalActivitySnapshot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after.Terminals) != 0 {
+		t.Fatalf("desktop focus was recorded as terminal activity: %+v", after)
+	}
+}
+
+func TestSessionRuntimeFocusActivityUsesSilentBackoffDuringLifecycleContention(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state", "sway-session")
+	if err := sessionstate.RegistryFile(root).Save(sessionRegistry(testManagedContextID)); err != nil {
+		t.Fatal(err)
+	}
+	if err := sessionstate.RecordTerminalCreationContext(t.Context(), root, testManagedContextID, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := newSessionRuntimeWithOptions(&recordingRequester{}, sessionRuntimeOptions{Root: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	observedAt := time.Now().UTC()
+	runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "focus", Container: managedDaemonLeaf(t, 42, testManagedContextID)}, observedAt)
+
+	locked := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- statefile.WithPrivateDirectoryLockContext(context.Background(), filepath.Join(root, sessionstate.TerminalActivityDirectory), func(*statefile.LockedPrivateDirectory) error {
+			close(locked)
+			<-release
+			return nil
+		})
+	}()
+	<-locked
+	err = runtime.Flush(observedAt.Add(terminalFocusBatchDelay))
+	if err != nil || len(runtime.pendingTerminalFocus) != 1 || runtime.terminalFocusRetry != terminalFocusBatchDelay {
+		t.Fatalf("locked activity flush err=%v pending=%v", err, runtime.pendingTerminalFocus)
+	}
+	firstRetry := runtime.terminalFocusDeadline
+	if err := runtime.Flush(firstRetry); err != nil || runtime.terminalFocusRetry != 2*terminalFocusBatchDelay ||
+		!runtime.terminalFocusDeadline.Equal(firstRetry.Add(2*terminalFocusBatchDelay)) {
+		t.Fatalf("sustained contention did not back off silently: err=%v delay=%v deadline=%v", err, runtime.terminalFocusRetry, runtime.terminalFocusDeadline)
+	}
+	close(release)
+	if lockErr := <-done; lockErr != nil {
+		t.Fatal(lockErr)
+	}
+	if err := runtime.Flush(runtime.terminalFocusDeadline); err != nil {
+		t.Fatal(err)
+	}
+	activity, err := sessionstate.ReadTerminalActivitySnapshot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorded, exists := sessionstate.FindTerminalActivity(activity, testManagedContextID)
+	if !exists || recorded.LastFocusedAt == nil || !recorded.LastFocusedAt.Equal(observedAt) || len(runtime.pendingTerminalFocus) != 0 {
+		t.Fatalf("focus retry did not converge: activity=%+v pending=%v", activity, runtime.pendingTerminalFocus)
+	}
+	if runtime.terminalFocusRetry != 0 || !runtime.terminalFocusReported.IsZero() {
+		t.Fatalf("successful focus persistence retained backoff state: delay=%v reported=%v", runtime.terminalFocusRetry, runtime.terminalFocusReported)
 	}
 }
 

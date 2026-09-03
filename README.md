@@ -197,8 +197,14 @@ unknown, malformed, or otherwise invalid `contexts.json` fails closed: the
 command does not interpret or replace it, and its bytes remain unchanged.
 Schema 5 records typed terminal adapters, stable terminal identities, archive
 timestamps, desktop-application registrations, and the explicit fresh-terminal
-instance discriminator. Fresh instance session names retain the complete UUID
-without separators so Herdr's derived Unix socket paths remain bounded.
+instance discriminator. Terminal creation and last-focused observations live
+in the independently versioned, owner-only
+`terminal-runtime/terminal-activity.json` presentation state, so current
+writers do not change the strict schema-5 registry format. A missing activity
+file simply displays unknown timestamps; malformed activity fails closed
+without changing `contexts.json`. Fresh instance session names retain the
+complete UUID without separators so Herdr's derived Unix socket paths remain
+bounded.
 
 Pre-release state is not upgraded. Before first use of this release, stop every
 `sway-session daemon` process and reset the private session-state directory:
@@ -278,6 +284,17 @@ active so the next restore opens it again; archive or purge contexts that
 should no longer return. Each active or archived instance occupies one of the
 registry's bounded 128 context slots until it is purged.
 
+Use `sway-session terminal manage` to see these contexts as a friendly,
+keyboard-first Bubble Tea list rather than raw UUIDs. It shows creation time,
+last-active time, project, directory, session, and the full UUID in its detail
+panel and supports open/focus, filtering, archive/activate, refresh, and
+deliberate permanent deletion. Press `e` to edit the selected terminal's
+display title. The title is presentation metadata only; renaming never changes
+its UUID, Herdr session, working directory, or restore identity. Purge names
+the target and consequence and requires a separate `y` confirmation before the
+existing exact-ID transaction runs. Nothing is deleted automatically.
+`NO_COLOR` disables styling without hiding textual state markers.
+
 `sway-session terminal` opens or reuses one stable default typed terminal
 identity. It starts or attaches its Herdr session and focuses the existing
 window instead of creating another one. This compatibility behavior is not the
@@ -345,7 +362,10 @@ is suited to agents: `terminal list` returns typed-terminal records in stable
 context-ID order, `terminal status [context]` or `terminal status --project
 NAME` returns one record (the default identity when omitted), and cleanup is a
 read-only candidate preview.
-Inventory and open results expose `session_manager` explicitly. A requested
+Inventory and open results expose `session_manager` explicitly. Inventory joins
+the registry with presentation activity and contains the editable `label` and
+optional UTC `created_at` and `last_focused_at` fields. `last_focused_at` means
+a confirmed Sway focus event, not shell-input activity. A requested
 Herdr layout uses exactly two `--role` values containing one `shell` and one
 compiled-in Herdr agent kind. If agent startup fails after the terminal was
 created, the partial JSON result retains the exact context UUID; retry with
@@ -361,6 +381,7 @@ sway-session --json terminal status
 sway-session --json terminal status --project LAB-105
 sway-session --json terminal cleanup --archived-before 2026-09-02
 sway-session --json terminal reconfigure --project LAB-105
+sway-session terminal rename --label "Release work" 8f33d6d0-7c54-4da1-9e38-2bd290ef85ca
 ```
 
 `terminal cleanup` only lists archived terminal contexts before the supplied

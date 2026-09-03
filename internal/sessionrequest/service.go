@@ -100,6 +100,7 @@ type Service struct {
 	NewSway      func() SwayRequester
 	Restore      RestoreRunner
 	Initializer  SessionInitializer
+	Now          func() time.Time
 
 	mu sync.Mutex
 }
@@ -176,6 +177,15 @@ func (service *Service) Handle(ctx context.Context, request Request) (Response, 
 		rollback := func(cause error) error {
 			_, rollbackErr := rollbackCreatedRegistration(service.StateRoot, request, contextValue, created, cause)
 			return rollbackErr
+		}
+		if created {
+			now := time.Now
+			if service.Now != nil {
+				now = service.Now
+			}
+			if activityErr := sessionstate.RecordTerminalCreationContext(ctx, service.StateRoot, contextValue.ID, now()); activityErr != nil {
+				return rollback(fmt.Errorf("record terminal creation activity: %w", activityErr))
+			}
 		}
 		tree, prepareErr = requestTree(ctx, client)
 		if prepareErr != nil {
@@ -437,26 +447,27 @@ func rollbackCreatedRegistration(root string, request Request, contextValue sess
 		}
 		return nil
 	})
-	if err == nil {
-		return Response{}, cause
-	}
+	removed := err == nil
 	var unknown *statefile.CommitOutcomeUnknownError
-	if errors.As(err, &unknown) {
+	if !removed && errors.As(err, &unknown) {
 		visible, loadErr := loadRegistryContext(cleanupContext, root)
 		if loadErr == nil {
-			removed := true
+			removed = true
 			for _, current := range visible.Contexts {
 				if current.ID == contextValue.ID {
 					removed = false
 					break
 				}
 			}
-			if removed {
-				return Response{}, cause
-			}
 		} else {
 			err = errors.Join(err, fmt.Errorf("reload registration rollback: %w", loadErr))
 		}
+	}
+	if removed {
+		if activityErr := sessionstate.RemoveTerminalActivityContext(cleanupContext, root, contextValue.ID); activityErr != nil {
+			return Response{}, errors.Join(cause, fmt.Errorf("remove rolled-back terminal activity: %w", activityErr))
+		}
+		return Response{}, cause
 	}
 	return Response{}, errors.Join(cause, fmt.Errorf("roll back created context registration: %w", err))
 }

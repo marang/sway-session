@@ -60,7 +60,7 @@ _sway_session_context_pending() {
 			continue
 		fi
 		case $word in
-			--socket|--desktop-id)
+			--socket|--desktop-id|--label)
 				skip_next=1
 				;;
 			--json|-h|--help|--yes|--require-active)
@@ -213,9 +213,12 @@ _sway_session() {
 				--role) _sway_session_static 'shell agy amp claude cline codex copilot cursor devin droid gemini grok hermes kilo kimi kiro maki mastracode omp opencode pi qodercli qwen'; return 0 ;;
 				--project|--label|--socket) return 0 ;;
 			esac
-			if [[ ${arguments[1]-} == list ]]; then
-				_sway_session_static '--json -h --help'
-			elif [[ ${arguments[1]-} == status ]]; then
+		if [[ ${arguments[1]-} == list ]]; then
+			_sway_session_static '--json -h --help'
+		elif [[ ${arguments[1]-} == manage ]]; then
+			case ${arguments[-1]-} in --socket) _sway_session_files; return 0 ;; esac
+			_sway_session_static '--socket -h --help'
+		elif [[ ${arguments[1]-} == status ]]; then
 				_sway_session_static '--project --json -h --help'
 				if [[ $cur != -* ]] && _sway_session_context_pending terminal-status "${arguments[@]:2}"; then
 					_sway_session_contexts terminal-status "$cur"
@@ -223,11 +226,17 @@ _sway_session() {
 			elif [[ ${arguments[1]-} == cleanup ]]; then
 				case ${arguments[-1]-} in --archived-before) return 0 ;; esac
 				_sway_session_static '--archived-before --json -h --help'
-			elif [[ ${arguments[1]-} == reconfigure ]]; then
+		elif [[ ${arguments[1]-} == reconfigure ]]; then
 				case ${arguments[-1]-} in --project|--socket) return 0 ;; esac
-				_sway_session_static '--project --socket --json -h --help'
-			else
-				_sway_session_static 'list status cleanup reconfigure --new --context --project --cwd --label --socket --role --ephemeral --json -h --help'
+			_sway_session_static '--project --socket --json -h --help'
+		elif [[ ${arguments[1]-} == rename ]]; then
+			case ${arguments[-1]-} in --label) return 0 ;; esac
+			_sway_session_static '--label --json -h --help'
+			if [[ $cur != -* ]] && _sway_session_context_pending terminal-status "${arguments[@]:2}"; then
+				_sway_session_contexts terminal-status "$cur"
+			fi
+		else
+			_sway_session_static 'manage list status cleanup rename reconfigure --new --context --project --cwd --label --socket --role --ephemeral --json -h --help'
 			fi
 			;;
 		register)

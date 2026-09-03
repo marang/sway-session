@@ -128,6 +128,37 @@ func SetContextStateAt(registry *Registry, selector string, state ContextState, 
 	return registry.Contexts[index], nil
 }
 
+// RenameTerminalContext changes only presentation metadata for one typed
+// terminal. Stable registry, Sway, and session-manager identities are kept.
+func RenameTerminalContext(registry *Registry, selector string, label string) (Context, bool, error) {
+	if registry == nil {
+		return Context{}, false, errors.New("context registry is nil")
+	}
+	if label == "" {
+		return Context{}, false, errors.New("terminal label must be non-empty")
+	}
+	if err := ValidateContextLabel(label); err != nil {
+		return Context{}, false, err
+	}
+	index, err := ResolveContext(*registry, selector)
+	if err != nil {
+		return Context{}, false, err
+	}
+	current := registry.Contexts[index]
+	if current.Launcher.Kind != LauncherHerdr || current.Launcher.Terminal == nil {
+		return Context{}, false, errors.New("context is not a terminal")
+	}
+	if current.Label == label {
+		return current, false, nil
+	}
+	registry.Contexts[index].Label = label
+	if err := registry.Validate(); err != nil {
+		registry.Contexts[index] = current
+		return Context{}, false, err
+	}
+	return registry.Contexts[index], true, nil
+}
+
 func RemoveContext(registry *Registry, selector string) (Context, error) {
 	if registry == nil {
 		return Context{}, errors.New("context registry is nil")

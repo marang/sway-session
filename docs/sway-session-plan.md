@@ -2,8 +2,8 @@
 
 Status: Core Herdr work-session restore, the dedicated session-daemon process,
 explicit desktop application group restore and visible integration, shell
-completion, and the typed terminal adapter contract are implemented
-through LAB-112.
+completion, the typed terminal adapter contract, interactive environment
+isolation, and friendly terminal management are implemented through LAB-114.
 
 Tracking issue: [LAB-80](https://linear.app/riotbox/issue/LAB-80/add-persistent-sway-work-session-restoration)
 
@@ -272,7 +272,29 @@ The registry's Herdr-compatible shape is:
 }
 ```
 
-`provider` and `label` are optional presentation metadata. Launcher fields are
+`provider` and `label` are optional presentation metadata. `label` can change
+without changing the UUID, launcher, Herdr session, cwd, or restore identity.
+Canonical UTC terminal activity is deliberately stored outside this strict
+schema-5 registry in `terminal-runtime/terminal-activity.json`, schema 1:
+
+```json
+{
+  "version": 1,
+  "terminals": [
+    {
+      "context_id": "123e4567-e89b-12d3-a456-426614174000",
+      "created_at": "2026-09-03T08:30:00Z",
+      "last_focused_at": "2026-09-03T10:45:00Z"
+    }
+  ]
+}
+```
+
+This file is presentation-only: registry membership remains authoritative and
+an activity-only UUID never resurrects a context. `last_focused_at` comes only
+from a confirmed Sway window-focus event and does not claim shell-input
+activity. Missing activity displays unknown timestamps; malformed activity
+fails closed without changing the registry. Launcher fields are
 validated values, not executable command fragments. Executable paths and fixed
 argument templates come from trusted program configuration or compiled adapter
 policy. The registry remains bounded at 128 contexts, matching the worst-case
@@ -575,12 +597,21 @@ sway-session app reapprove [--yes] <context>
 sway-session app pin|unpin|archive|activate <context>
 sway-session app forget --yes <context>
 sway-session terminal [--new | --project <name> | --ephemeral] [--cwd <path>]
+sway-session terminal manage [--socket <path>]
 sway-session terminal list
 sway-session terminal status [context] [--project <name>]
 sway-session terminal cleanup [--archived-before YYYY-MM-DD]
+sway-session terminal rename --label <name> <context>
 sway-session terminal reconfigure [--project <name>] [--socket <path>]
 sway-session completion contexts <archive|activate|restore|restore-active|purge|terminal-status|app-forget>
 ```
+
+`sway-session terminal manage` is an interactive Bubble Tea view over the same
+typed terminal operations. It offers friendly editable titles, local display
+of creation and last-focus times, filtering, open/focus, archive/activate,
+refresh, and an explicit confirmation dialog for the existing exact-ID purge
+transaction. It never deletes automatically, does not accept `--json`, and
+keeps states understandable without relying on color.
 
 `sway-session --json app list` returns only desktop-application contexts in a
 stable UUID order. `sway-session --json terminal list` returns typed terminal
@@ -1003,6 +1034,20 @@ trusted context-specific overrides continue across the launch seam.
 This policy applies to newly started process trees. A running Herdr server's
 environment cannot be rewritten; a previously affected server must be stopped
 and recreated deliberately rather than being restarted automatically.
+
+### Phase 15: Friendly persistent-terminal management (LAB-114)
+
+Implemented: `sway-session terminal manage` presents only typed persistent
+terminals through a responsive Bubble Tea interface. Human-readable editable
+titles lead the list while UUID, manager session, project, cwd, creation time,
+last confirmed Sway focus, and lifecycle state remain available in details.
+The timestamps use the independently versioned owner-only terminal activity
+document; `contexts.json` remains byte-compatible schema 5.
+The TUI delegates open, archive/activate, rename, and purge to the same typed
+operations as the CLI. Permanent deletion has a modal `y` confirmation and
+revalidates the exact UUID through the existing transactional purge path; no
+automatic age-based deletion exists. `NO_COLOR` retains all textual state and
+keyboard affordances without ANSI styling.
 
 ## Test matrix
 

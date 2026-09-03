@@ -274,7 +274,9 @@ func TestTerminalSubcommandHelpIsSpecificAndAgentAddressable(t *testing.T) {
 	}{
 		{subcommand: "status", want: []string{"terminal status [context] [--project NAME]"}, reject: "--ephemeral"},
 		{subcommand: "cleanup", want: []string{"terminal cleanup [--archived-before YYYY-MM-DD]", "Preview"}, reject: "--cwd"},
+		{subcommand: "manage", want: []string{"terminal manage [--socket PATH]", "Interactively"}, reject: "--json"},
 		{subcommand: "reconfigure", want: []string{"terminal reconfigure [--project NAME] [--socket PATH]", "archived and stopped"}, reject: "--label"},
+		{subcommand: "rename", want: []string{"terminal rename --label NAME <context>", "presentation title"}, reject: "--cwd"},
 	} {
 		t.Run(test.subcommand, func(t *testing.T) {
 			var stdout bytes.Buffer
@@ -477,6 +479,14 @@ func TestPurgeStopsDeletesAndThenRemovesRegistryEntry(t *testing.T) {
 	if len(loadTestRegistry(t, deps).Contexts) != 0 {
 		t.Fatal("purged context remains in registry")
 	}
+	root, _ := deps.stateRoot()
+	activity, err := sessionstate.ReadTerminalActivitySnapshot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := sessionstate.FindTerminalActivity(activity, registered.ID); exists {
+		t.Fatalf("purged context retained terminal activity: %+v", activity)
+	}
 	wantCalls := [][]string{
 		{"session", "list", "--json"},
 		{"session", "stop", "lab-80", "--json"},
@@ -522,6 +532,14 @@ func TestPurgeRefusesWhenActiveAgentPreventsSessionStop(t *testing.T) {
 	registry := loadTestRegistry(t, deps)
 	if len(registry.Contexts) != 1 || registry.Contexts[0].ID != registered.ID {
 		t.Fatalf("refused purge changed registry: %+v", registry)
+	}
+	root, _ := deps.stateRoot()
+	activity, err := sessionstate.ReadTerminalActivitySnapshot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := sessionstate.FindTerminalActivity(activity, registered.ID); !exists {
+		t.Fatalf("refused purge removed terminal activity: %+v", activity)
 	}
 }
 

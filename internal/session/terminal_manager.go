@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"time"
 
 	"github.com/marang/sway-title-animator/internal/statefile"
@@ -42,9 +43,20 @@ type TerminalOpenResult struct {
 	Initialization *TerminalSessionInitialization
 }
 
+type terminalWindowOutcome struct {
+	ContainerID    int64
+	AdapterStarted bool
+}
+
 type TerminalSessionManagerKind string
 
 const TerminalSessionManagerHerdr TerminalSessionManagerKind = "herdr"
+
+const defaultTerminalMappingStabilityDelay = time.Second
+
+const terminalRollbackTimeout = 2 * time.Second
+
+var ErrTerminalWindowUnavailable = errors.New("terminal window is unavailable")
 
 func (kind TerminalSessionManagerKind) Validate() error {
 	switch kind {
@@ -89,10 +101,12 @@ type TerminalManager struct {
 	ResolveProgram  func(string) (string, error)
 	SessionManager  TerminalSessionManager
 	FindPending     func(string, ProcessSpec) ([]int, error)
+	FindProcesses   func(string, ContextID) ([]int, error)
 	Starter         ProcessStarter
 	Now             func() time.Time
 	Sleep           func(time.Duration)
 	SettleTimeout   time.Duration
+	StabilityDelay  time.Duration
 	BeforeWindowTxn func()
 	RegistryUpdate  func(context.Context, string, func(*Registry) error) (Registry, error)
 }
@@ -195,6 +209,9 @@ func (manager TerminalManager) Open(ctx context.Context, request TerminalOpenReq
 	if manager.FindPending == nil {
 		manager.FindPending = FindPendingProcessLaunches
 	}
+	if manager.FindProcesses == nil {
+		manager.FindProcesses = FindTerminalAdapterProcesses
+	}
 	if manager.Now == nil {
 		manager.Now = time.Now
 	}
@@ -203,6 +220,9 @@ func (manager TerminalManager) Open(ctx context.Context, request TerminalOpenReq
 	}
 	if manager.SettleTimeout <= 0 {
 		manager.SettleTimeout = 10 * time.Second
+	}
+	if manager.StabilityDelay <= 0 {
+		manager.StabilityDelay = defaultTerminalMappingStabilityDelay
 	}
 	if request.New && (request.ContextID != "" || request.Identity != (TerminalIdentity{})) {
 		return TerminalOpenResult{}, errors.New("new terminal must not contain a reusable identity")
@@ -321,6 +341,8 @@ func (manager TerminalManager) Open(ctx context.Context, request TerminalOpenReq
 	if manager.BeforeWindowTxn != nil {
 		manager.BeforeWindowTxn()
 	}
+	windowFailed := false
+	managerMayHoldState := false
 	err = InspectRegistryLockedContext(ctx, manager.StateRoot, func(registry Registry) error {
 		index, resolveErr := ResolveContext(registry, string(target.ID))
 		if resolveErr != nil {
@@ -355,109 +377,194 @@ func (manager TerminalManager) Open(ctx context.Context, request TerminalOpenReq
 		if request.ContextID == "" && request.CwdExplicit && current.Launcher.Cwd != request.Cwd {
 			return fmt.Errorf("%w: persisted cwd is %q, requested %q", ErrTerminalIdentityConflict, current.Launcher.Cwd, request.Cwd)
 		}
-		if err := manager.ensureWindow(ctx, registry, current, request.Focus, &result); err != nil {
+		completedActions := len(result.Actions)
+		window, err := manager.ensureWindow(ctx, registry, current, request.Focus, &result)
+		managerMayHoldState = window.AdapterStarted
+		if err != nil {
+			windowFailed = true
 			return err
 		}
 		if len(request.Roles) != 0 {
+			managerMayHoldState = true
 			initialized, initializeErr := manager.SessionManager.Initialize(ctx, current, request.Roles)
 			result.Initialization = &initialized
-			if initializeErr != nil {
-				return initializeErr
+			confirmErr := manager.confirmWindow(ctx, registry, current.ID, window.ContainerID, request.Focus)
+			if confirmErr != nil {
+				result.Actions = result.Actions[:completedActions]
+				windowFailed = true
 			}
+			return errors.Join(initializeErr, confirmErr)
 		}
 		return nil
 	})
 	if err != nil {
+		if created {
+			if managerMayHoldState {
+				if windowFailed {
+					return result, fmt.Errorf("%w; context %s remains active because the session manager may hold recoverable state", err, target.ID)
+				}
+				return result, err
+			}
+			rollbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), terminalRollbackTimeout)
+			defer cancel()
+			if rollbackErr := manager.rollbackCreatedContext(rollbackCtx, target); rollbackErr == nil {
+				return TerminalOpenResult{}, fmt.Errorf("%w; new context %s was rolled back", err, target.ID)
+			} else {
+				return result, errors.Join(err, fmt.Errorf("roll back new context %s: %w", target.ID, rollbackErr))
+			}
+		}
 		return result, err
 	}
 	return result, nil
 }
 
-func (manager TerminalManager) ensureWindow(ctx context.Context, registry Registry, target Context, focus bool, result *TerminalOpenResult) error {
-	tree, err := manager.requestTree(ctx)
-	if err != nil {
-		return err
-	}
-	window, focused, exists, err := observedTerminalWindow(tree, registry, target.ID)
-	if err != nil {
-		return err
-	}
-	if exists {
-		if !focus || focused {
-			result.Actions = append(result.Actions, TerminalActionNoChange)
-			return nil
-		}
-		if err := manager.focusWindow(ctx, window.ContainerID, registry, target.ID); err != nil {
-			return err
-		}
-		result.Actions = append(result.Actions, TerminalActionFocused)
-		return nil
-	}
-
-	if err := ValidateTerminalCwd(target.Launcher.Cwd); err != nil {
-		return err
-	}
-	programName, err := TerminalAdapterExecutableName(target.Launcher.Terminal.Adapter)
-	if err != nil {
-		return err
-	}
-	terminalExecutable, err := manager.ResolveProgram(programName)
-	if err != nil {
-		return fmt.Errorf("resolve %s terminal adapter: %w", target.Launcher.Terminal.Adapter, err)
-	}
-	spec, err := manager.SessionManager.BuildProcessSpec(target, terminalExecutable)
-	if err != nil {
-		return err
-	}
-	pending, err := manager.FindPending(manager.ProcRoot, spec)
-	if err != nil {
-		return fmt.Errorf("observe pending terminal launch: %w", err)
-	}
-	if len(pending) > 1 {
-		return fmt.Errorf("multiple pending terminal processes %v", pending)
-	}
+func (manager TerminalManager) ensureWindow(ctx context.Context, registry Registry, target Context, focus bool, result *TerminalOpenResult) (terminalWindowOutcome, error) {
+	outcome := terminalWindowOutcome{}
+	var spec ProcessSpec
+	specReady := false
 	launched := false
-	if len(pending) == 0 {
-		if err := manager.Starter.Start(spec); err != nil {
-			return fmt.Errorf("start terminal adapter: %w", err)
-		}
-		launched = true
-		result.Actions = append(result.Actions, TerminalActionAttached)
-	}
-
+	focusedByManager := false
 	deadline := manager.Now().Add(manager.SettleTimeout)
 	for {
 		if err := ctx.Err(); err != nil {
-			return err
+			return outcome, err
 		}
-		tree, err = manager.requestTree(ctx)
+		tree, err := manager.requestTree(ctx)
 		if err != nil {
-			return err
+			return outcome, err
 		}
-		window, focused, exists, err = observedTerminalWindow(tree, registry, target.ID)
+		window, focused, exists, err := observedTerminalWindow(tree, registry, target.ID)
 		if err != nil {
-			return err
+			return outcome, err
 		}
 		if exists {
-			if focus {
-				if !focused {
-					if err := manager.focusWindow(ctx, window.ContainerID, registry, target.ID); err != nil {
-						return err
-					}
+			if focus && !focused {
+				if err := manager.focusWindow(ctx, window.ContainerID, registry, target.ID); err != nil {
+					return outcome, err
 				}
-				if launched || !focused {
+				focusedByManager = true
+			}
+			manager.Sleep(manager.StabilityDelay)
+			confirmedTree, confirmErr := manager.requestTree(ctx)
+			if confirmErr != nil {
+				return outcome, confirmErr
+			}
+			confirmed, confirmedFocused, confirmedExists, confirmErr := observedTerminalWindow(confirmedTree, registry, target.ID)
+			if confirmErr != nil {
+				return outcome, confirmErr
+			}
+			if confirmedExists && confirmed.ContainerID == window.ContainerID && (!focus || confirmedFocused) {
+				if launched {
+					result.Actions = append(result.Actions, TerminalActionAttached)
+				}
+				if focus && (launched || focusedByManager) {
 					result.Actions = append(result.Actions, TerminalActionFocused)
 				} else if !launched {
 					result.Actions = append(result.Actions, TerminalActionNoChange)
 				}
+				outcome.ContainerID = confirmed.ContainerID
+				return outcome, nil
 			}
-			return nil
+			return outcome, fmt.Errorf("%w: terminal container %d did not remain mapped and focused through confirmation", ErrTerminalWindowUnavailable, window.ContainerID)
+		}
+		if !specReady {
+			if err := ValidateTerminalCwd(target.Launcher.Cwd); err != nil {
+				return outcome, err
+			}
+			programName, err := TerminalAdapterExecutableName(target.Launcher.Terminal.Adapter)
+			if err != nil {
+				return outcome, err
+			}
+			terminalExecutable, err := manager.ResolveProgram(programName)
+			if err != nil {
+				return outcome, fmt.Errorf("resolve %s terminal adapter: %w", target.Launcher.Terminal.Adapter, err)
+			}
+			spec, err = manager.SessionManager.BuildProcessSpec(target, terminalExecutable)
+			if err != nil {
+				return outcome, err
+			}
+			specReady = true
+		}
+		pending, err := manager.FindPending(manager.ProcRoot, spec)
+		if err != nil {
+			return outcome, fmt.Errorf("observe pending terminal launch: %w", err)
+		}
+		if len(pending) > 1 {
+			return outcome, fmt.Errorf("multiple pending terminal processes %v", pending)
+		}
+		if len(pending) == 0 {
+			if launched {
+				return outcome, fmt.Errorf("%w: terminal adapter exited before its window remained mapped", ErrTerminalWindowUnavailable)
+			}
+			if err := manager.Starter.Start(spec); err != nil {
+				return outcome, fmt.Errorf("start terminal adapter: %w", err)
+			}
+			launched = true
+			outcome.AdapterStarted = true
 		}
 		if !manager.Now().Before(deadline) {
-			return errors.New("terminal window did not appear before the mapping deadline")
+			return outcome, fmt.Errorf("%w: terminal window did not appear before the mapping deadline", ErrTerminalWindowUnavailable)
 		}
 		manager.Sleep(100 * time.Millisecond)
 	}
+}
+
+func (manager TerminalManager) confirmWindow(ctx context.Context, registry Registry, id ContextID, containerID int64, requireFocus bool) error {
+	manager.Sleep(manager.StabilityDelay)
+	tree, err := manager.requestTree(ctx)
+	if err != nil {
+		return err
+	}
+	window, focused, exists, err := observedTerminalWindow(tree, registry, id)
+	if err != nil {
+		return err
+	}
+	if !exists || window.ContainerID != containerID || (requireFocus && !focused) {
+		return fmt.Errorf("%w: terminal window disappeared during session initialization", ErrTerminalWindowUnavailable)
+	}
+	return nil
+}
+
+func (manager TerminalManager) rollbackCreatedContext(ctx context.Context, target Context) error {
+	_, err := UpdateRegistryContext(ctx, manager.StateRoot, func(registry *Registry) error {
+		index, resolveErr := ResolveContext(*registry, string(target.ID))
+		if resolveErr != nil {
+			return resolveErr
+		}
+		current := registry.Contexts[index]
+		if !reflect.DeepEqual(current, target) {
+			return errors.New("new terminal context changed before rollback")
+		}
+		tree, observeErr := manager.requestTree(ctx)
+		if observeErr != nil {
+			return fmt.Errorf("re-observe terminal before rollback: %w", observeErr)
+		}
+		_, _, exists, observeErr := observedTerminalWindow(tree, *registry, target.ID)
+		if observeErr != nil {
+			return observeErr
+		}
+		if exists {
+			return errors.New("terminal window remapped before rollback")
+		}
+		pending, observeErr := manager.FindProcesses(manager.ProcRoot, current.ID)
+		if observeErr != nil {
+			return observeErr
+		}
+		if len(pending) != 0 {
+			return fmt.Errorf("terminal process %v remained pending before rollback", pending)
+		}
+		_, removeErr := RemoveContext(registry, string(target.ID))
+		return removeErr
+	})
+	if err != nil {
+		var unknown *statefile.CommitOutcomeUnknownError
+		if errors.As(err, &unknown) {
+			if _, loadErr := terminalContextByID(ctx, manager.StateRoot, target.ID); errors.Is(loadErr, ErrContextNotFound) {
+				return nil
+			}
+		}
+	}
+	return err
 }
 
 func (manager TerminalManager) focusWindow(ctx context.Context, containerID int64, registry Registry, id ContextID) error {

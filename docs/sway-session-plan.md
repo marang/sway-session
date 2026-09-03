@@ -3,7 +3,7 @@
 Status: Core Herdr work-session restore, the dedicated session-daemon process,
 explicit desktop application group restore and visible integration, shell
 completion, and the typed terminal adapter contract are implemented
-through LAB-106.
+through LAB-112.
 
 Tracking issue: [LAB-80](https://linear.app/riotbox/issue/LAB-80/add-persistent-sway-work-session-restoration)
 
@@ -756,6 +756,12 @@ refresh, so windows mapped around that observation cannot escape subsequent
 reconciliation. The animator may start, stop, or be absent without changing
 session capture or restore behavior.
 
+Sway's `exec` is intentionally one-shot startup configuration, not supervision.
+Adding the stanza followed only by `swaymsg reload`, or stopping the daemon
+later, leaves it absent until it is started manually or the compositor session
+is restarted. Terminal creation and one-shot terminal restore still use their
+own bounded Sway clients and do not depend on the daemon being alive.
+
 Session persistence is opt-in and disabled by default for existing users until
 configured. Removing the one-shot restore line stops automatic Herdr context
 launches without deleting state. Desired-open desktop applications are restored
@@ -770,6 +776,21 @@ behavior, or stop configuring the daemon.
   context only.
 - A missing project directory is reported and not silently replaced with the
   home directory.
+- Terminal creation, attachment, focus, and one-shot restore are successful
+  only after the same exact Sway container survives a bounded second
+  observation. A newly created registry entry is compensated only when process
+  start was rejected before the session manager could run and fresh
+  Sway/process observation proves no matching live launch exists. Once start is
+  accepted, the manager may already have persistent state, so the context
+  remains active as its recovery identity.
+- A missing outer window does not make an existing active terminal context
+  inactive. Reopening by project or explicit restore starts only the configured
+  terminal adapter against the existing named session. Restore does not replay
+  roles; a terminal retry with explicit roles runs the idempotent initializer,
+  which leaves a nonempty session unchanged.
+- Launched terminal adapters and desktop applications enter a new Unix process
+  session before exec. Their lifetime is therefore independent of short-lived
+  CLI shells and agent command runners which clean up their own process session.
 - A newly launched outer context removes inherited `HERDR_*` pane metadata and
   `CODEX_THREAD_ID` so manual restore from inside Herdr cannot become an
   accidental nested-Herdr launch. It then injects only the trusted

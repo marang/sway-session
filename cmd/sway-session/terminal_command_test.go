@@ -150,6 +150,53 @@ func TestTerminalCommandNewInitializesRolesAndExactRetryConverges(t *testing.T) 
 	}
 }
 
+func TestTerminalCommandProjectRecoversMissingWindowWithoutRestartingOccupiedAgent(t *testing.T) {
+	deps := testDependencies(t)
+	identity, err := sessionstate.ParseTerminalIdentity("LAB-112")
+	if err != nil {
+		t.Fatal(err)
+	}
+	contextValue := terminalInventoryContext(testContextID, identity, sessionstate.ContextActive, nil)
+	contextValue.Launcher.Cwd = t.TempDir()
+	root, err := deps.stateRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sessionstate.RegistryFile(root).Save(sessionstate.Registry{
+		Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{contextValue},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	client := &terminalCommandClient{id: contextValue.ID}
+	deps.newSwayClient = func(string) swayRequester { return client }
+	starter := &terminalCommandStarter{onStart: func() { client.setMapped(true) }}
+	deps.processStarter = starter
+	initializations := 0
+	deps.initializeHerdr = func(_ context.Context, contextValue sessionstate.Context, roles []string, _ herdrinit.Runner) (herdrinit.Result, error) {
+		initializations++
+		return herdrinit.Result{
+			ContextID: contextValue.ID, Session: contextValue.Launcher.Session, Roles: append([]string(nil), roles...),
+			Reason: "Herdr session was not proven empty and was left unchanged",
+		}, nil
+	}
+
+	result := runTerminalJSON(t, deps,
+		"--json", "terminal", "--project", "LAB-112", "--socket", "/run/user/1000/sway.sock",
+		"--role", "codex", "--role", "shell",
+	)
+
+	if result.Terminal == nil || result.Terminal.ContextID != contextValue.ID || result.Terminal.Session != contextValue.Launcher.Session ||
+		result.Terminal.Initialization == nil || result.Terminal.Initialization.Initialized || initializations != 1 ||
+		!reflect.DeepEqual(result.Terminal.Actions, []sessionstate.TerminalOpenAction{
+			sessionstate.TerminalActionReused, sessionstate.TerminalActionAttached, sessionstate.TerminalActionFocused,
+		}) {
+		t.Fatalf("unexpected recovery result: %+v", result)
+	}
+	if len(starter.specs) != 1 {
+		t.Fatalf("recovery launched %d terminal adapters", len(starter.specs))
+	}
+}
+
 func TestTerminalCommandRejectsManagerRoleBeforeStateOrSway(t *testing.T) {
 	deps := testDependencies(t)
 	deps.stateRoot = func() (string, error) {
@@ -486,7 +533,7 @@ func TestTerminalInventoryRefusesUnsupportedSchemaWithoutMutation(t *testing.T) 
 	}
 }
 
-func TestTerminalCommandReportsPartialCreatedStateWhenLaunchFails(t *testing.T) {
+func TestTerminalCommandDoesNotReportRolledBackContextWhenLaunchFails(t *testing.T) {
 	for name, mode := range map[string][]string{"reusable": {}, "fresh": {"--new"}} {
 		t.Run(name, func(t *testing.T) {
 			deps := testDependencies(t)
@@ -501,19 +548,14 @@ func TestTerminalCommandReportsPartialCreatedStateWhenLaunchFails(t *testing.T) 
 			if code != exitOperation || !strings.Contains(stderr.String(), `"code":"terminal_open"`) {
 				t.Fatalf("launch failure code=%d stderr=%q", code, stderr.String())
 			}
-			var result commandResult
-			if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
-				t.Fatalf("partial result is not JSON: %v\n%s", err, stdout.String())
+			if !strings.Contains(stderr.String(), "was rolled back") {
+				t.Fatalf("launch failure did not report registry rollback: %q", stderr.String())
 			}
-			if result.Terminal == nil || result.Terminal.ContextID != testContextID ||
-				!reflect.DeepEqual(result.Terminal.Actions, []sessionstate.TerminalOpenAction{sessionstate.TerminalActionCreated}) {
-				t.Fatalf("partial created state was hidden from agent: %+v", result)
+			if stdout.Len() != 0 {
+				t.Fatalf("rolled-back context was reported as active: %q", stdout.String())
 			}
-			if name == "fresh" && (result.Terminal.Identity == nil ||
-				result.Terminal.Identity.Kind != sessionstate.TerminalIdentityKind("instance") ||
-				result.Terminal.Identity.ContextID != testContextID ||
-				result.Terminal.Session != "sway-terminal-"+strings.ReplaceAll(string(testContextID), "-", "")) {
-				t.Fatalf("fresh partial state is not agent-addressable: %+v", result.Terminal)
+			if registry := loadTestRegistry(t, deps); len(registry.Contexts) != 0 {
+				t.Fatalf("launch failure left an active context: %+v", registry.Contexts)
 			}
 		})
 	}

@@ -38,6 +38,37 @@ The automated `make verify` gate includes a dependency/source boundary check,
 an animator fake-Sway integration test with all session roots absent, daemon
 capture/placement/layout tests, and the existing broker security tests.
 
+## Terminal lifecycle recovery procedure (LAB-112)
+
+Use an isolated context on workspace `98: LAB-112 E2E`; never reuse or purge an
+unrelated terminal context. Start a fresh named project terminal with one agent
+and one shell role, record its context UUID and Herdr session, then close only
+the outer terminal window. Re-run the same `terminal --project` command and
+verify that the original UUID/session is reused, one Alacritty window remains
+mapped, and the existing agent is not started a second time. Close the outer
+window again and run `sway-session restore <uuid>`; the same session must become
+visible without the title animator running.
+
+The automated fake-Sway coverage also forces the otherwise timing-sensitive
+`absent -> mapped -> absent` sequence before and after role initialization. It
+requires an operational error rather than `created, attached, focused`, removes
+a fresh registry entry when adapter start itself is rejected, retains the
+recovery identity after any accepted manager-backed launch, rechecks the window
+even when role initialization fails, and confirms that a refused Herdr stop
+leaves both its session state and registry entry intact.
+
+On 2026-09-03, the procedure was also exercised against Sway 1.12 on an
+isolated headless output and workspace 98 with Alacritty 0.17.0 and Herdr
+0.8.2. Ending the short-lived command runner reproduced the original immediate
+window loss before process-session detachment. With the fix, the outer window
+remained mapped after the invoking command exited; closing it and invoking
+both `terminal --project` and one-shot `restore` recreated the adapter with the
+same context UUID and named Herdr session. A two-pane Codex+shell session kept
+exactly one agent across explicit-role recovery. Exact-context purge removed
+only the isolated registry entry and Herdr session. The compositor, state, and
+configuration roots were deleted afterward; no interactive Sway workspace or
+unrelated persistent context was opened or changed.
+
 ## Desktop application group procedure (LAB-98)
 
 Use an isolated XDG state root and disposable workspace 98 or higher. Register
@@ -284,9 +315,9 @@ window.
 
 Cleanup closed only the two exact test application IDs, stopped and deleted
 the three isolated Herdr sessions, stopped the isolated daemon, removed the
-two validated temporary roots, returned to workspace 1, and restarted the
-installed animator. The real sway-session registry was never opened or
-changed.
+two validated temporary roots, returned to the original non-test workspace,
+and restarted the installed animator. The real sway-session registry was never
+opened or changed.
 
 This document records the manual LAB-80 evidence gathered on 2026-08-29. It
 separates the outer Sway restore from components which were not available in

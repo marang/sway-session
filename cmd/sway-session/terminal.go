@@ -182,6 +182,7 @@ func executeTerminal(ctx context.Context, arguments []string, _ bool, configPath
 		Now:            deps.now,
 		Sleep:          deps.sleep,
 		SettleTimeout:  deps.settleTimeout,
+		StabilityDelay: deps.stabilityDelay,
 	}
 	opened, err := manager.Open(ctx, sessionstate.TerminalOpenRequest{
 		New: *newTerminal, ContextID: contextID, Identity: identity, Adapter: config.Terminal.Adapter, Cwd: cwd, CwdExplicit: cwdExplicit, Label: *label, Focus: true, Roles: roles,

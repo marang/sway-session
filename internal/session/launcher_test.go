@@ -42,6 +42,16 @@ func TestFindPendingProcessLaunchesUsesTheExactTypedProcessSpec(t *testing.T) {
 	}
 }
 
+func TestDetachedProcessCommandConfiguresANewSession(t *testing.T) {
+	command, err := detachedProcessCommand(ProcessSpec{Name: "/usr/bin/true"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if command.SysProcAttr == nil || !command.SysProcAttr.Setsid {
+		t.Fatalf("launched application remains in the caller session: %+v", command.SysProcAttr)
+	}
+}
+
 func TestObserveManagedWindowsIncludesRestoreStagingAndRejectsDuplicates(t *testing.T) {
 	context := testValidContext(testContextID)
 	registry := Registry{Version: ContextsSchemaVersion, Contexts: []Context{context}}

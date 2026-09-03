@@ -82,6 +82,7 @@ type dependencies struct {
 	now                func() time.Time
 	sleep              func(time.Duration)
 	settleTimeout      time.Duration
+	stabilityDelay     time.Duration
 	stdinTerminal      func() bool
 	reportCodexHook    func(context.Context, io.Reader, func(string) string) error
 	requestStart       func(context.Context, sessionrequest.Request) (sessionrequest.Response, error)
@@ -118,6 +119,7 @@ func defaultDependencies(stdin io.Reader) dependencies {
 		now:                time.Now,
 		sleep:              time.Sleep,
 		settleTimeout:      10 * time.Second,
+		stabilityDelay:     time.Second,
 		stdinTerminal: func() bool {
 			file, ok := stdin.(*os.File)
 			return ok && term.IsTerminal(int(file.Fd()))

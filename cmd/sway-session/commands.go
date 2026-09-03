@@ -367,18 +367,21 @@ func executeRestore(ctx context.Context, arguments []string, deps dependencies) 
 			issueByID[issue.ContextID] = issue.Cause
 		}
 		waiting := make(map[sessionstate.ContextID]sessionstate.Context)
+		accepted := make(map[sessionstate.ContextID]int64)
 		for _, target := range targets {
 			if issue := issueByID[target.ID]; issue != nil {
 				operationDiagnostics = append(operationDiagnostics, diagnosticForContext("duplicate_window", target, issue, "Resolve this context's duplicate or structurally invalid managed window before retrying."))
 				continue
 			}
-			if _, exists := observed[target.ID]; exists {
+			if window, exists := observed[target.ID]; exists {
 				result.Contexts = append(result.Contexts, target)
+				accepted[target.ID] = window.ContainerID
 				continue
 			}
 			waiting[target.ID] = target
 		}
 		if len(waiting) == 0 {
+			confirmRestoreMappings(ctx, client, registry, deps, accepted, &result, &operationDiagnostics)
 			return nil
 		}
 		for _, id := range sortedWaitingIDs(waiting) {
@@ -450,6 +453,7 @@ func executeRestore(ctx context.Context, arguments []string, deps dependencies) 
 			}
 		}
 		if len(waiting) == 0 {
+			confirmRestoreMappings(ctx, client, registry, deps, accepted, &result, &operationDiagnostics)
 			return nil
 		}
 		deadline := deps.now().Add(deps.settleTimeout)
@@ -457,11 +461,13 @@ func executeRestore(ctx context.Context, arguments []string, deps dependencies) 
 			tree, err = requestTree(ctx, client)
 			if err != nil {
 				appendAllRestoreFailures(&operationDiagnostics, waiting, "sway_tree", err, "The launched process remains detectable; retry after Sway IPC recovers.")
+				confirmRestoreMappings(ctx, client, registry, deps, accepted, &result, &operationDiagnostics)
 				return nil
 			}
 			observed, observationIssues, err = sessionstate.ObserveManagedWindowsIsolated(tree, registry)
 			if err != nil {
 				appendAllRestoreFailures(&operationDiagnostics, waiting, "sway_tree", err, "Resolve malformed managed identities before retrying.")
+				confirmRestoreMappings(ctx, client, registry, deps, accepted, &result, &operationDiagnostics)
 				return nil
 			}
 			for _, issue := range observationIssues {
@@ -473,16 +479,19 @@ func executeRestore(ctx context.Context, arguments []string, deps dependencies) 
 				delete(waiting, issue.ContextID)
 			}
 			for id, target := range waiting {
-				if _, exists := observed[id]; exists {
+				if window, exists := observed[id]; exists {
 					result.Contexts = append(result.Contexts, target)
+					accepted[id] = window.ContainerID
 					delete(waiting, id)
 				}
 			}
 			if len(waiting) == 0 {
+				confirmRestoreMappings(ctx, client, registry, deps, accepted, &result, &operationDiagnostics)
 				return nil
 			}
 			if !deps.now().Before(deadline) {
 				appendAllRestoreFailures(&operationDiagnostics, waiting, "mapping_timeout", errors.New("window did not appear before the restore deadline"), "A matching pending process prevents duplicate launches; retry after it maps or exits.")
+				confirmRestoreMappings(ctx, client, registry, deps, accepted, &result, &operationDiagnostics)
 				return nil
 			}
 			deps.sleep(100 * time.Millisecond)
@@ -496,6 +505,71 @@ func executeRestore(ctx context.Context, arguments []string, deps dependencies) 
 		return result, failures(operationDiagnostics)
 	}
 	return result, nil
+}
+
+func confirmRestoreMappings(
+	ctx context.Context,
+	client swayRequester,
+	registry sessionstate.Registry,
+	deps dependencies,
+	accepted map[sessionstate.ContextID]int64,
+	result *commandResult,
+	diagnostics *[]diagnostic.Diagnostic,
+) {
+	if len(accepted) == 0 {
+		return
+	}
+	deps.sleep(deps.stabilityDelay)
+	tree, err := requestTree(ctx, client)
+	if err != nil {
+		removeUnstableRestoreResults(accepted, result, diagnostics, nil, nil, err)
+		return
+	}
+	observed, issues, err := sessionstate.ObserveManagedWindowsIsolated(tree, registry)
+	if err != nil {
+		removeUnstableRestoreResults(accepted, result, diagnostics, nil, nil, err)
+		return
+	}
+	issueByID := make(map[sessionstate.ContextID]error, len(issues))
+	for _, issue := range issues {
+		issueByID[issue.ContextID] = issue.Cause
+	}
+	removeUnstableRestoreResults(accepted, result, diagnostics, observed, issueByID, nil)
+}
+
+func removeUnstableRestoreResults(
+	accepted map[sessionstate.ContextID]int64,
+	result *commandResult,
+	diagnostics *[]diagnostic.Diagnostic,
+	observed map[sessionstate.ContextID]sessionstate.ManagedWindow,
+	issues map[sessionstate.ContextID]error,
+	observationErr error,
+) {
+	stable := result.Contexts[:0]
+	for _, target := range result.Contexts {
+		expected, mustConfirm := accepted[target.ID]
+		if !mustConfirm {
+			stable = append(stable, target)
+			continue
+		}
+		cause := observationErr
+		if cause == nil {
+			cause = issues[target.ID]
+		}
+		window, exists := observed[target.ID]
+		if cause == nil && (!exists || window.ContainerID != expected) {
+			cause = errors.New("terminal window disappeared after it was mapped")
+		}
+		if cause == nil {
+			stable = append(stable, target)
+			continue
+		}
+		*diagnostics = append(*diagnostics, diagnosticForContext(
+			"mapping_unstable", target, cause,
+			"The registry remains active; retry sway-session terminal or restore to attach the existing session again.",
+		))
+	}
+	result.Contexts = stable
 }
 
 var errNotDesktopApplication = errors.New("selected context is not a desktop application")

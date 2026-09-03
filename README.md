@@ -176,7 +176,9 @@ animator uses `exec_always`; the daemon and one-shot restore deliberately use
 `exec`, so a config reload cannot launch or restore the session again. Restart
 the Sway session once after first adding this stanza; a plain config reload
 starts only the animator and intentionally does not perform the initial daemon
-start or one-shot restore. Later animator/config updates can be applied with:
+start or one-shot restore. `exec` is not a process supervisor: if the daemon is
+stopped or exits later, start `/usr/bin/sway-session daemon` manually or restart
+Sway. Later animator/config updates can be applied with:
 
 ```sh
 swaymsg reload
@@ -210,6 +212,26 @@ desktop-application approvals, and runtime launch-attempt state. It does not
 delete Herdr sessions or pane history; remove those separately only when that
 is also intended. The owner-only runtime `daemon.lock` continues to prevent two
 session daemons from running concurrently.
+
+Persistent terminal success is based on the outer Sway window, not merely on a
+successful process spawn. `terminal` and one-shot `restore` require the same
+exact Sway container to remain mapped across a short bounded stability check;
+role initialization receives another check before success is reported. A fresh
+context whose process start is rejected before the session manager can run is
+removed again when Sway and the process table prove that no matching window or
+launch survives. Once adapter start is accepted, the manager may already have
+created persistent state even if the outer window disappears; the active
+context is retained as that state's recovery identity. Likewise, any existing
+active context remains desired state: `terminal --project ...` and `restore`
+recreate its adapter and attach the existing Herdr session without restarting
+an agent in an occupied pane. An explicit retry with roles runs the idempotent
+initializer, which leaves a nonempty session unchanged instead of replaying an
+agent start. Alacritty intentionally runs the Herdr client as its `-e`
+child, so an exiting client closes only the outer Alacritty window; the named
+Herdr server, panes, and agents can remain available for this recovery path.
+Processes launched by `sway-session` start in their own Unix session. This
+keeps the terminal adapter alive when a short-lived shell or agent command
+runner cleans up its own process session after the CLI invocation returns.
 
 The independent session daemon groups every matching top-level window into one
 application presence, adopts one unambiguous window as the optional layout

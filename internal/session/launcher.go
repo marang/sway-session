@@ -31,18 +31,9 @@ type ProcessSpec struct {
 }
 
 func (ExecProcessStarter) Start(spec ProcessSpec) error {
-	command := exec.Command(spec.Name, spec.Arguments...)
-	if len(spec.Environment) != 0 || len(spec.UnsetInheritedEnvironment) != 0 || len(spec.UnsetInheritedEnvironmentPrefixes) != 0 {
-		environment, err := mergeEnvironment(
-			os.Environ(),
-			spec.Environment,
-			spec.UnsetInheritedEnvironment,
-			spec.UnsetInheritedEnvironmentPrefixes,
-		)
-		if err != nil {
-			return err
-		}
-		command.Env = environment
+	command, err := detachedProcessCommand(spec)
+	if err != nil {
+		return err
 	}
 	if err := command.Start(); err != nil {
 		return err
@@ -51,6 +42,28 @@ func (ExecProcessStarter) Start(spec ProcessSpec) error {
 		return fmt.Errorf("release launched process: %w", err)
 	}
 	return nil
+}
+
+func detachedProcessCommand(spec ProcessSpec) (*exec.Cmd, error) {
+	command := exec.Command(spec.Name, spec.Arguments...)
+	// CLI callers can be short-lived shells or agent command sandboxes which
+	// clean up their own process session at command completion. A launched
+	// desktop application owns an independent lifetime and must not disappear
+	// merely because the sway-session invocation returned.
+	command.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if len(spec.Environment) != 0 || len(spec.UnsetInheritedEnvironment) != 0 || len(spec.UnsetInheritedEnvironmentPrefixes) != 0 {
+		environment, err := mergeEnvironment(
+			os.Environ(),
+			spec.Environment,
+			spec.UnsetInheritedEnvironment,
+			spec.UnsetInheritedEnvironmentPrefixes,
+		)
+		if err != nil {
+			return nil, err
+		}
+		command.Env = environment
+	}
+	return command, nil
 }
 
 func mergeEnvironment(base []string, overrides []string, unset []string, unsetPrefixes []string) ([]string, error) {

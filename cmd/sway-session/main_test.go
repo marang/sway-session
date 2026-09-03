@@ -455,6 +455,42 @@ func TestPurgeStopsDeletesAndThenRemovesRegistryEntry(t *testing.T) {
 	}
 }
 
+func TestPurgeRefusesWhenActiveAgentPreventsSessionStop(t *testing.T) {
+	deps := testDependencies(t)
+	registered := registerTestContext(t, deps)
+	paths, _ := deps.herdrPaths()
+	sessionPath := filepath.Join(paths.Root, "sessions", "lab-80")
+	if err := os.MkdirAll(sessionPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	runner := &recordingHerdrRunner{
+		responses: []string{herdrList(paths.Root, true), ""},
+		errors:    []error{nil, errors.New("active agent refused shutdown")},
+	}
+	deps.herdrRunner = runner
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	code := runWith([]string{"--json", "purge", "--yes", string(registered.ID)}, strings.NewReader(""), &stdout, &stderr, deps)
+
+	if code != exitOperation || stdout.Len() != 0 || !strings.Contains(stderr.String(), `"code":"herdr"`) ||
+		!strings.Contains(stderr.String(), "active agent refused shutdown") {
+		t.Fatalf("active-agent purge code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if !reflect.DeepEqual(runner.calls, [][]string{
+		{"session", "list", "--json"}, {"session", "stop", "lab-80", "--json"},
+	}) {
+		t.Fatalf("purge continued after refused stop: %v", runner.calls)
+	}
+	if _, err := os.Stat(sessionPath); err != nil {
+		t.Fatalf("refused purge removed Herdr session state: %v", err)
+	}
+	registry := loadTestRegistry(t, deps)
+	if len(registry.Contexts) != 1 || registry.Contexts[0].ID != registered.ID {
+		t.Fatalf("refused purge changed registry: %+v", registry)
+	}
+}
+
 func TestPurgeAcceptsFullIDFromInteractiveTerminal(t *testing.T) {
 	deps := testDependencies(t)
 	registerTestContext(t, deps)
@@ -659,6 +695,34 @@ func TestRestoreLaunchesMissingContextWithTypedArgumentsAndWaitsForMapping(t *te
 	}
 	if !reflect.DeepEqual(starter.calls[0], want) {
 		t.Fatalf("launcher argv differs:\ngot  %q\nwant %q", starter.calls[0], want)
+	}
+}
+
+func TestRestoreRejectsTerminalThatDisappearsAfterInitialMapping(t *testing.T) {
+	deps := testDependencies(t)
+	registered := registerTestContext(t, deps)
+	client := &fakeSwayClient{trees: []*swayipc.TreeNode{
+		treeWithContexts(),
+		treeWithContexts(registered.ID),
+		treeWithContexts(),
+	}}
+	deps.newSwayClient = func(string) swayRequester { return client }
+	starter := &recordingStarter{}
+	deps.processStarter = starter
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	code := runWith([]string{"--json", "restore", "--socket", "/run/user/1000/sway.sock", string(registered.ID)}, strings.NewReader(""), &stdout, &stderr, deps)
+
+	if code != exitOperation || len(starter.calls) != 1 || !strings.Contains(stderr.String(), `"code":"mapping_unstable"`) {
+		t.Fatalf("transient mapping code=%d starts=%v stdout=%q stderr=%q", code, starter.calls, stdout.String(), stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("transient mapping was reported as restored: %q", stdout.String())
+	}
+	registry := loadTestRegistry(t, deps)
+	if len(registry.Contexts) != 1 || registry.Contexts[0].ID != registered.ID || registry.Contexts[0].State != sessionstate.ContextActive {
+		t.Fatalf("restore failure changed desired registry state: %+v", registry)
 	}
 }
 
@@ -1038,6 +1102,7 @@ func testDependencies(t *testing.T) dependencies {
 		now:                time.Now,
 		sleep:              func(time.Duration) {},
 		settleTimeout:      time.Second,
+		stabilityDelay:     time.Millisecond,
 		stdinTerminal:      func() bool { return false },
 	}
 }
@@ -1155,7 +1220,7 @@ func (starter *mappingStarter) Start(sessionstate.ProcessSpec) error {
 }
 
 func treeWithContexts(ids ...sessionstate.ContextID) *swayipc.TreeNode {
-	workspace := &swayipc.TreeNode{ID: 3, Type: "workspace", Name: "1", Nodes: []*swayipc.TreeNode{}, FloatingNodes: []*swayipc.TreeNode{}}
+	workspace := &swayipc.TreeNode{ID: 3, Type: "workspace", Name: "98", Nodes: []*swayipc.TreeNode{}, FloatingNodes: []*swayipc.TreeNode{}}
 	for index, id := range ids {
 		appID, _ := id.AppID()
 		workspace.Nodes = append(workspace.Nodes, &swayipc.TreeNode{ID: int64(10 + index), Type: "con", AppID: &appID, Nodes: []*swayipc.TreeNode{}, FloatingNodes: []*swayipc.TreeNode{}})
@@ -1169,6 +1234,7 @@ func treeWithContexts(ids ...sessionstate.ContextID) *swayipc.TreeNode {
 
 type recordingHerdrRunner struct {
 	responses  []string
+	errors     []error
 	calls      [][]string
 	deletePath string
 }
@@ -1180,6 +1246,14 @@ func (runner *recordingHerdrRunner) CombinedOutput(_ context.Context, _ string, 
 	}
 	response := runner.responses[0]
 	runner.responses = runner.responses[1:]
+	var responseErr error
+	if len(runner.errors) != 0 {
+		responseErr = runner.errors[0]
+		runner.errors = runner.errors[1:]
+	}
+	if responseErr != nil {
+		return []byte(response), responseErr
+	}
 	if len(arguments) >= 2 && arguments[0] == "session" && arguments[1] == "delete" && runner.deletePath != "" {
 		if err := os.RemoveAll(runner.deletePath); err != nil {
 			return nil, err

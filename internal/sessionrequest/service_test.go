@@ -124,7 +124,13 @@ func testService(t *testing.T) (*Service, Request, *fakeSwayRequester, *fakeRest
 	request := Request{Version: ProtocolVersion, Session: "reboot-e2e", Cwd: t.TempDir(), Label: "REBOOT-E2E", Provider: "local", Workspace: 7}
 	client := &fakeSwayRequester{}
 	runner := &fakeRestoreRunner{mapped: &client.mapped}
-	service := &Service{StateRoot: filepath.Join(t.TempDir(), "state"), NewContextID: func() (sessionstate.ContextID, error) { return testContextID, nil }, NewSway: func() SwayRequester { return client }, Restore: runner}
+	service := &Service{
+		StateRoot:    filepath.Join(t.TempDir(), "state"),
+		NewContextID: func() (sessionstate.ContextID, error) { return testContextID, nil },
+		NewSway:      func() SwayRequester { return client },
+		Restore:      runner,
+		Now:          func() time.Time { return time.Date(2026, 9, 3, 19, 0, 0, 0, time.UTC) },
+	}
 	return service, request, client, runner
 }
 
@@ -139,6 +145,14 @@ func TestServiceCreatesFocusesAndRestoresOneContext(t *testing.T) {
 	}
 	if !reflect.DeepEqual(client.commands, []string{"workspace number 7"}) || !reflect.DeepEqual(runner.calls, []sessionstate.ContextID{testContextID}) {
 		t.Fatalf("unexpected effects: commands=%v restores=%v", client.commands, runner.calls)
+	}
+	activity, err := sessionstate.ReadTerminalActivitySnapshot(service.StateRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, exists := sessionstate.FindTerminalActivity(activity, testContextID)
+	if !exists || created.CreatedAt == nil || !created.CreatedAt.Equal(service.Now()) {
+		t.Fatalf("broker creation activity=%+v exists=%t", created, exists)
 	}
 }
 
@@ -500,6 +514,13 @@ func TestServiceRollsBackNewRegistrationWhenWorkspaceBecomesOccupiedBeforeRestor
 	if loadErr != nil || len(registry.Contexts) != 0 || len(client.commands) != 0 || len(runner.calls) != 0 {
 		t.Fatalf("pre-restore failure leaked a registration: registry=%+v err=%v commands=%v restores=%v", registry, loadErr, client.commands, runner.calls)
 	}
+	activity, activityErr := sessionstate.ReadTerminalActivitySnapshot(service.StateRoot)
+	if activityErr != nil {
+		t.Fatal(activityErr)
+	}
+	if _, exists := sessionstate.FindTerminalActivity(activity, testContextID); exists {
+		t.Fatalf("pre-restore rollback retained activity: %+v", activity)
+	}
 }
 
 func TestServiceKeepsReusedRegistrationWhenWorkspaceBecomesOccupiedBeforeRestore(t *testing.T) {
@@ -530,6 +551,13 @@ func TestServiceKeepsRegistrationForRetryAfterRestoreFailure(t *testing.T) {
 	registry, loadErr := loadRegistry(service.StateRoot)
 	if loadErr != nil || len(registry.Contexts) != 1 || len(runner.calls) != 1 {
 		t.Fatalf("failed restore is not retryable: registry=%+v err=%v", registry, loadErr)
+	}
+	activity, activityErr := sessionstate.ReadTerminalActivitySnapshot(service.StateRoot)
+	if activityErr != nil {
+		t.Fatal(activityErr)
+	}
+	if created, exists := sessionstate.FindTerminalActivity(activity, testContextID); !exists || created.CreatedAt == nil {
+		t.Fatalf("retryable registration lost creation activity: %+v", activity)
 	}
 }
 

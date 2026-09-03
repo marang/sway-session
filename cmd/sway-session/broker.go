@@ -111,6 +111,7 @@ func startSessionRequestBroker(swaySocket string, reportError func(error)) (*ses
 		NewContextID: sessionstate.NewContextID,
 		NewSway:      func() sessionrequest.SwayRequester { return swayipc.NewClient(swaySocket) },
 		Restore:      sessionrequest.ExecRestoreRunner{Executable: restoreExecutable, SwaySocket: swaySocket},
+		Now:          time.Now,
 		Initializer: sessionRequestTerminalInitializer{
 			stateRoot: stateRoot,
 			manager:   brokerTerminalSessionManager(),

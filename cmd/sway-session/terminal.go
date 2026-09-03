@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -22,9 +23,11 @@ func (roles *terminalRoleFlags) Set(value string) error {
 	return nil
 }
 
-func executeTerminal(ctx context.Context, arguments []string, _ bool, configPath string, deps dependencies) (commandResult, *commandFailure) {
+func executeTerminal(ctx context.Context, arguments []string, stdin io.Reader, stdout io.Writer, structured bool, configPath string, deps dependencies) (commandResult, *commandFailure) {
 	if len(arguments) > 0 {
 		switch arguments[0] {
+		case "manage":
+			return executeTerminalManage(ctx, arguments[1:], stdin, stdout, structured, configPath, deps)
 		case "list":
 			return executeTerminalList(arguments[1:], deps)
 		case "status":
@@ -33,6 +36,8 @@ func executeTerminal(ctx context.Context, arguments []string, _ bool, configPath
 			return executeTerminalCleanup(arguments[1:], deps)
 		case "reconfigure":
 			return executeTerminalReconfigure(ctx, arguments[1:], configPath, deps)
+		case "rename":
+			return executeTerminalRename(ctx, arguments[1:], deps)
 		}
 	}
 	set := newFlagSet("terminal")
@@ -213,6 +218,48 @@ func executeTerminal(ctx context.Context, arguments []string, _ bool, configPath
 	return result, nil
 }
 
+func executeTerminalRename(ctx context.Context, arguments []string, deps dependencies) (commandResult, *commandFailure) {
+	set := newFlagSet("terminal rename")
+	label := set.String("label", "", "human-readable presentation title")
+	if err := set.Parse(arguments); err != nil || set.NArg() != 1 || *label == "" {
+		return commandResult{}, usageFailure("terminal", "terminal rename requires --label NAME and exactly one context")
+	}
+	if err := sessionstate.ValidateContextLabel(*label); err != nil {
+		return commandResult{}, usageFailure("terminal", "terminal rename label is invalid: "+err.Error())
+	}
+	root, commandFailure := stateRoot(deps)
+	if commandFailure != nil {
+		return commandResult{}, commandFailure
+	}
+	var changed sessionstate.Context
+	action := "no_change"
+	_, err := sessionstate.UpdateRegistryContext(ctx, root, func(registry *sessionstate.Registry) error {
+		var renamed bool
+		var mutationErr error
+		changed, renamed, mutationErr = sessionstate.RenameTerminalContext(registry, set.Arg(0), *label)
+		if renamed {
+			action = "renamed"
+		}
+		return mutationErr
+	})
+	if err != nil {
+		if changed.ID != "" && committedContextContext(ctx, root, changed.ID, func(context sessionstate.Context) bool {
+			return contextsEqual(context, changed)
+		}, err) {
+			return terminalRenameResult(changed, action), nil
+		}
+		return commandResult{}, classifyStateError("rename terminal", err)
+	}
+	return terminalRenameResult(changed, action), nil
+}
+
+func terminalRenameResult(changed sessionstate.Context, action string) commandResult {
+	return commandResult{
+		Command: "terminal rename", Contexts: []sessionstate.Context{changed}, Actions: []string{action},
+		Message: fmt.Sprintf("Terminal %s renamed to %s.", changed.ID, changed.Label),
+	}
+}
+
 func executeTerminalReconfigure(ctx context.Context, arguments []string, configPath string, deps dependencies) (commandResult, *commandFailure) {
 	set := newFlagSet("terminal reconfigure")
 	project := set.String("project", "", "stable project identity")
@@ -355,7 +402,11 @@ func executeTerminalList(arguments []string, deps dependencies) (commandResult, 
 	if commandFailure != nil {
 		return commandResult{}, commandFailure
 	}
-	items := terminalInventory(registry.Contexts)
+	activity, commandFailure := loadTerminalActivity(deps)
+	if commandFailure != nil {
+		return commandResult{}, commandFailure
+	}
+	items := terminalInventory(registry.Contexts, activity)
 	return commandResult{Command: "terminal list", Terminals: &items}, nil
 }
 
@@ -408,7 +459,11 @@ func executeTerminalStatus(arguments []string, deps dependencies) (commandResult
 			return commandResult{}, failure("context_not_found", "select default terminal context", "Run sway-session terminal to create it.")
 		}
 	}
-	items := terminalInventory([]sessionstate.Context{selected})
+	activity, commandFailure := loadTerminalActivity(deps)
+	if commandFailure != nil {
+		return commandResult{}, commandFailure
+	}
+	items := terminalInventory([]sessionstate.Context{selected}, activity)
 	if len(items) != 1 {
 		return commandResult{}, failure("terminal_context", "selected context is not a Herdr terminal", string(selected.ID))
 	}
@@ -443,7 +498,11 @@ func executeTerminalCleanup(arguments []string, deps dependencies) (commandResul
 		}
 		candidates = append(candidates, context)
 	}
-	items := terminalInventory(candidates)
+	activity, commandFailure := loadTerminalActivity(deps)
+	if commandFailure != nil {
+		return commandResult{}, commandFailure
+	}
+	items := terminalInventory(candidates, activity)
 	return commandResult{
 		Command: "terminal cleanup", Terminals: &items, Preview: true, Actions: []string{"preview"},
 		Message: "Preview only; use sway-session purge --yes <context-uuid> after reviewing each candidate.",
@@ -462,7 +521,19 @@ func loadTerminalRegistry(deps dependencies) (sessionstate.Registry, *commandFai
 	return registry, nil
 }
 
-func terminalInventory(contexts []sessionstate.Context) []terminalInventoryResult {
+func loadTerminalActivity(deps dependencies) (sessionstate.TerminalActivityState, *commandFailure) {
+	root, commandFailure := stateRoot(deps)
+	if commandFailure != nil {
+		return sessionstate.TerminalActivityState{}, commandFailure
+	}
+	activity, err := sessionstate.ReadTerminalActivitySnapshot(root)
+	if err != nil {
+		return sessionstate.TerminalActivityState{}, classifyStateError("load terminal activity", err)
+	}
+	return activity, nil
+}
+
+func terminalInventory(contexts []sessionstate.Context, activityState ...sessionstate.TerminalActivityState) []terminalInventoryResult {
 	items := make([]terminalInventoryResult, 0, len(contexts))
 	for _, context := range contexts {
 		if context.Launcher.Kind != sessionstate.LauncherHerdr || context.Launcher.Terminal == nil {
@@ -476,15 +547,22 @@ func terminalInventory(contexts []sessionstate.Context) []terminalInventoryResul
 		} else if sessionstate.IsTerminalInstanceContext(context) {
 			identity = terminalIdentityResult{Kind: sessionstate.TerminalIdentityKind("instance"), ContextID: context.ID}
 		}
+		var activity sessionstate.TerminalActivity
+		if len(activityState) != 0 {
+			activity, _ = sessionstate.FindTerminalActivity(activityState[0], context.ID)
+		}
 		items = append(items, terminalInventoryResult{
-			ContextID:  context.ID,
-			Identity:   identity,
-			Adapter:    context.Launcher.Terminal.Adapter,
-			Manager:    sessionstate.TerminalSessionManagerHerdr,
-			State:      context.State,
-			Session:    context.Launcher.Session,
-			Cwd:        context.Launcher.Cwd,
-			ArchivedAt: context.ArchivedAt,
+			ContextID:     context.ID,
+			Label:         context.Label,
+			Identity:      identity,
+			Adapter:       context.Launcher.Terminal.Adapter,
+			Manager:       sessionstate.TerminalSessionManagerHerdr,
+			State:         context.State,
+			Session:       context.Launcher.Session,
+			Cwd:           context.Launcher.Cwd,
+			CreatedAt:     activity.CreatedAt,
+			LastFocusedAt: activity.LastFocusedAt,
+			ArchivedAt:    context.ArchivedAt,
 		})
 	}
 	sort.Slice(items, func(left int, right int) bool { return items[left].ContextID < items[right].ContextID })

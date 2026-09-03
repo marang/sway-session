@@ -30,7 +30,7 @@ function __sway_session_command
             case --config
                 set skip_next 1
                 set -e tokens[1]
-            case --config=*
+            case '--config=*'
                 set -e tokens[1]
             case --json -h --help
                 set -e tokens[1]
@@ -228,7 +228,7 @@ function __sway_session_terminal_subcommand --argument-names wanted
             switch $token
                 case --config
                     set skip_next 1
-                case --config=*
+                case '--config=*'
                 case --json -h --help
                 case terminal
                     set seen_terminal 1
@@ -248,6 +248,19 @@ function __sway_session_terminal_subcommand --argument-names wanted
     return 1
 end
 
+function __sway_session_terminal_manage_socket_pending
+    __sway_session_terminal_subcommand manage
+    or return 1
+
+    for token in (commandline -opc)
+        switch $token
+            case --socket '--socket=*' --
+                return 1
+        end
+    end
+    return 0
+end
+
 function __sway_session_terminal_status_context_pending
     set -l tokens (commandline -opc)
     set -e tokens[1]
@@ -261,7 +274,7 @@ function __sway_session_terminal_status_context_pending
         switch $token
             case --config
                 set skip_next 1
-            case --config=* --json -h --help
+            case '--config=*' --json -h --help
             case terminal
                 test -z "$state"
                 or return 1
@@ -275,6 +288,36 @@ function __sway_session_terminal_status_context_pending
         end
     end
     test "$state" = status
+end
+
+function __sway_session_terminal_rename_context_pending
+    __sway_session_terminal_subcommand rename
+    or return 1
+    set -l tokens (commandline -opc)
+    set -e tokens[1]
+    set -l seen_rename 0
+    set -l skip_next 0
+    for token in $tokens
+        if test $skip_next -eq 1
+            set skip_next 0
+            continue
+        end
+        if test $seen_rename -eq 0
+            test "$token" = rename
+            and set seen_rename 1
+            continue
+        end
+        switch $token
+            case --label
+                set skip_next 1
+            case --json -h --help
+            case --'*'
+            case '*'
+                return 1
+        end
+    end
+    test $seen_rename -eq 1
+    and test $skip_next -eq 0
 end
 
 function __sway_session_is_command --argument-names wanted
@@ -512,7 +555,7 @@ function __sway_session_app_context_pending --argument-names wanted
 end
 
 complete -c sway-session -f
-complete -c sway-session -n '__sway_session_global_options_open' -l json -d 'Emit machine-readable results and diagnostics'
+complete -c sway-session -n '__sway_session_global_options_open; and not __sway_session_terminal_subcommand manage' -l json -d 'Emit machine-readable results and diagnostics'
 complete -c sway-session -n '__sway_session_global_options_open' -s h -d 'Show help'
 complete -c sway-session -n '__sway_session_global_options_open' -l help -d 'Show help'
 complete -c sway-session -n '__sway_session_global_options_open' -l config -r -F
@@ -541,15 +584,19 @@ complete -c sway-session -n '__sway_session_is_command request-start; and __sway
 complete -c sway-session -n '__sway_session_is_command request-start; and __sway_session_options_open' -l provider -x
 complete -c sway-session -n '__sway_session_is_command request-start; and __sway_session_options_open' -l workspace -x
 
-complete -c sway-session -n '__sway_session_is_command terminal; and __sway_session_options_open; and not __sway_session_terminal_subcommand list; and not __sway_session_terminal_subcommand status; and not __sway_session_terminal_subcommand cleanup; and not __sway_session_terminal_subcommand reconfigure' -l project -x
-complete -c sway-session -n '__sway_session_is_command terminal; and __sway_session_options_open; and not __sway_session_terminal_subcommand list; and not __sway_session_terminal_subcommand status; and not __sway_session_terminal_subcommand cleanup; and not __sway_session_terminal_subcommand reconfigure' -l context -x -a '(__sway_session_contexts terminal-status)'
-complete -c sway-session -n '__sway_session_is_command terminal; and __sway_session_options_open; and not __sway_session_terminal_subcommand list; and not __sway_session_terminal_subcommand status; and not __sway_session_terminal_subcommand cleanup; and not __sway_session_terminal_subcommand reconfigure' -l cwd -r -F
-complete -c sway-session -n '__sway_session_is_command terminal; and __sway_session_options_open; and not __sway_session_terminal_subcommand list; and not __sway_session_terminal_subcommand status; and not __sway_session_terminal_subcommand cleanup; and not __sway_session_terminal_subcommand reconfigure' -l label -x
-complete -c sway-session -n '__sway_session_is_command terminal; and __sway_session_options_open; and not __sway_session_terminal_subcommand list; and not __sway_session_terminal_subcommand status; and not __sway_session_terminal_subcommand cleanup; and not __sway_session_terminal_subcommand reconfigure' -l socket -r -F
-complete -c sway-session -n '__sway_session_is_command terminal; and __sway_session_options_open; and not __sway_session_terminal_subcommand list; and not __sway_session_terminal_subcommand status; and not __sway_session_terminal_subcommand cleanup; and not __sway_session_terminal_subcommand reconfigure' -l role -x -a 'shell agy amp claude cline codex copilot cursor devin droid gemini grok hermes kilo kimi kiro maki mastracode omp opencode pi qodercli qwen'
-complete -c sway-session -n '__sway_session_is_command terminal; and __sway_session_options_open; and not __sway_session_terminal_subcommand list; and not __sway_session_terminal_subcommand status; and not __sway_session_terminal_subcommand cleanup; and not __sway_session_terminal_subcommand reconfigure' -l new
-complete -c sway-session -n '__sway_session_is_command terminal; and __sway_session_options_open; and not __sway_session_terminal_subcommand list; and not __sway_session_terminal_subcommand status; and not __sway_session_terminal_subcommand cleanup; and not __sway_session_terminal_subcommand reconfigure' -l ephemeral
-complete -c sway-session -n '__sway_session_is_command terminal; and __sway_session_options_open' -a 'list status cleanup reconfigure'
+complete -c sway-session -n '__sway_session_is_command terminal; and __sway_session_options_open; and not __sway_session_terminal_subcommand list; and not __sway_session_terminal_subcommand status; and not __sway_session_terminal_subcommand cleanup; and not __sway_session_terminal_subcommand manage; and not __sway_session_terminal_subcommand rename; and not __sway_session_terminal_subcommand reconfigure' -l project -x
+complete -c sway-session -n '__sway_session_is_command terminal; and __sway_session_options_open; and not __sway_session_terminal_subcommand list; and not __sway_session_terminal_subcommand status; and not __sway_session_terminal_subcommand cleanup; and not __sway_session_terminal_subcommand manage; and not __sway_session_terminal_subcommand rename; and not __sway_session_terminal_subcommand reconfigure' -l context -x -a '(__sway_session_contexts terminal-status)'
+complete -c sway-session -n '__sway_session_is_command terminal; and __sway_session_options_open; and not __sway_session_terminal_subcommand list; and not __sway_session_terminal_subcommand status; and not __sway_session_terminal_subcommand cleanup; and not __sway_session_terminal_subcommand manage; and not __sway_session_terminal_subcommand rename; and not __sway_session_terminal_subcommand reconfigure' -l cwd -r -F
+complete -c sway-session -n '__sway_session_is_command terminal; and __sway_session_options_open; and not __sway_session_terminal_subcommand list; and not __sway_session_terminal_subcommand status; and not __sway_session_terminal_subcommand cleanup; and not __sway_session_terminal_subcommand manage; and not __sway_session_terminal_subcommand rename; and not __sway_session_terminal_subcommand reconfigure' -l label -x
+complete -c sway-session -n '__sway_session_is_command terminal; and __sway_session_options_open; and not __sway_session_terminal_subcommand list; and not __sway_session_terminal_subcommand status; and not __sway_session_terminal_subcommand cleanup; and not __sway_session_terminal_subcommand manage; and not __sway_session_terminal_subcommand rename; and not __sway_session_terminal_subcommand reconfigure' -l socket -r -F
+complete -c sway-session -n '__sway_session_is_command terminal; and __sway_session_options_open; and not __sway_session_terminal_subcommand list; and not __sway_session_terminal_subcommand status; and not __sway_session_terminal_subcommand cleanup; and not __sway_session_terminal_subcommand manage; and not __sway_session_terminal_subcommand rename; and not __sway_session_terminal_subcommand reconfigure' -l role -x -a 'shell agy amp claude cline codex copilot cursor devin droid gemini grok hermes kilo kimi kiro maki mastracode omp opencode pi qodercli qwen'
+complete -c sway-session -n '__sway_session_is_command terminal; and __sway_session_options_open; and not __sway_session_terminal_subcommand list; and not __sway_session_terminal_subcommand status; and not __sway_session_terminal_subcommand cleanup; and not __sway_session_terminal_subcommand manage; and not __sway_session_terminal_subcommand rename; and not __sway_session_terminal_subcommand reconfigure' -l new
+complete -c sway-session -n '__sway_session_is_command terminal; and __sway_session_options_open; and not __sway_session_terminal_subcommand list; and not __sway_session_terminal_subcommand status; and not __sway_session_terminal_subcommand cleanup; and not __sway_session_terminal_subcommand manage; and not __sway_session_terminal_subcommand rename; and not __sway_session_terminal_subcommand reconfigure' -l ephemeral
+complete -c sway-session -n '__sway_session_is_command terminal; and __sway_session_options_open; and not __sway_session_terminal_subcommand list; and not __sway_session_terminal_subcommand status; and not __sway_session_terminal_subcommand cleanup; and not __sway_session_terminal_subcommand manage; and not __sway_session_terminal_subcommand rename; and not __sway_session_terminal_subcommand reconfigure' -a 'manage list status cleanup rename reconfigure'
+complete -c sway-session -n '__sway_session_terminal_manage_socket_pending; and __sway_session_options_open' -a '--socket'
+complete -c sway-session -n '__sway_session_terminal_subcommand manage; and __sway_session_options_open' -l socket -r -F
+complete -c sway-session -n '__sway_session_terminal_subcommand rename; and __sway_session_options_open' -l label -x
+complete -c sway-session -n '__sway_session_terminal_rename_context_pending' -a '(__sway_session_contexts terminal-status)'
 complete -c sway-session -n '__sway_session_terminal_subcommand reconfigure; and __sway_session_options_open' -l project -x
 complete -c sway-session -n '__sway_session_terminal_subcommand reconfigure; and __sway_session_options_open' -l socket -r -F
 complete -c sway-session -n '__sway_session_terminal_status_context_pending' -a '(__sway_session_contexts terminal-status)'

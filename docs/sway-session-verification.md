@@ -88,6 +88,31 @@ terminal process seam for persistent and ephemeral specifications. It also
 proves that unrelated `FORCE_COLOR`, `CLICOLOR`, and `CLICOLOR_FORCE` values are
 preserved and that `sway-session list` output remains byte-identical.
 
+## Persistent terminal manager procedure (LAB-114)
+
+Open `sway-session terminal manage` in an existing terminal. The inventory may
+show real contexts, but create and mutate only a disposable context whose
+window is on workspace `98: LAB-114 E2E` or higher. Verify that the list uses a
+friendly title, displays its full UUID and Herdr session only in details, and
+shows both creation time and the most recent confirmed Sway focus time. Press
+`e`, rename the disposable entry, and confirm that its UUID, cwd, manager
+session, window mapping, and restore behavior remain unchanged. Exercise
+filtering, archive/activate, refresh, and open/focus. Finally open the delete
+dialog, cancel once, then confirm with `y`; only the selected disposable
+registry context and matching Herdr session may disappear.
+
+Repeat the UI with `NO_COLOR=1` and at 80×24. Active and archived entries,
+selection, confirmation, errors, help, and quit must remain understandable
+without color. Do not run the manager with `--json`; automation continues to
+use `terminal list`, `terminal rename`, lifecycle commands, and exact-ID
+`purge --yes`.
+
+Automated model tests use injected operations and synthetic Bubble Tea events
+for loading, empty state, navigation, filtering, rename, lifecycle changes,
+confirmation isolation, asynchronous errors, selection-preserving reloads,
+responsive layouts, and colorless rendering. CLI tests additionally cover the
+interactive-only dispatch and non-TTY rejection without control output.
+
 ## Desktop application group procedure (LAB-98)
 
 Use an isolated XDG state root and disposable workspace 98 or higher. Register

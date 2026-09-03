@@ -88,6 +88,7 @@ type dependencies struct {
 	requestStart       func(context.Context, sessionrequest.Request) (sessionrequest.Response, error)
 	runBroker          func(context.Context, string, func(error)) error
 	runDaemon          func(context.Context, string, func(error)) error
+	runTerminalManage  terminalManageRunner
 }
 
 func defaultDependencies(stdin io.Reader) dependencies {
@@ -132,8 +133,9 @@ func defaultDependencies(stdin io.Reader) dependencies {
 			}
 			return sessionrequest.Send(ctx, socketPath, request)
 		},
-		runBroker: runSessionRequestBroker,
-		runDaemon: runSessionDaemon,
+		runBroker:         runSessionRequestBroker,
+		runDaemon:         runSessionDaemon,
+		runTerminalManage: runTerminalManager,
 	}
 	deps.presentApproval = func(message string, choices []sessionstate.ApprovalChoice) error {
 		swaynag, err := deps.resolveSystem("swaynag")
@@ -211,7 +213,7 @@ func runWithContext(ctx context.Context, arguments []string, stdin io.Reader, st
 		return exitSuccess
 	}
 
-	result, commandFailure := executeCommand(ctx, name, arguments[1:], stdin, stderr, structured, configPath, deps)
+	result, commandFailure := executeCommand(ctx, name, arguments[1:], stdin, stdout, stderr, structured, configPath, deps)
 	if commandFailure != nil {
 		if len(result.Contexts) != 0 || result.Message != "" {
 			if err := writeResult(stdout, structured, result); err != nil {
@@ -265,14 +267,17 @@ type terminalIdentityResult struct {
 }
 
 type terminalInventoryResult struct {
-	ContextID  sessionstate.ContextID                  `json:"context_id"`
-	Identity   terminalIdentityResult                  `json:"identity"`
-	Adapter    sessionstate.TerminalAdapter            `json:"adapter"`
-	Manager    sessionstate.TerminalSessionManagerKind `json:"session_manager"`
-	State      sessionstate.ContextState               `json:"state"`
-	Session    string                                  `json:"session"`
-	Cwd        string                                  `json:"cwd"`
-	ArchivedAt *time.Time                              `json:"archived_at,omitempty"`
+	ContextID     sessionstate.ContextID                  `json:"context_id"`
+	Label         string                                  `json:"label,omitempty"`
+	Identity      terminalIdentityResult                  `json:"identity"`
+	Adapter       sessionstate.TerminalAdapter            `json:"adapter"`
+	Manager       sessionstate.TerminalSessionManagerKind `json:"session_manager"`
+	State         sessionstate.ContextState               `json:"state"`
+	Session       string                                  `json:"session"`
+	Cwd           string                                  `json:"cwd"`
+	CreatedAt     *time.Time                              `json:"created_at,omitempty"`
+	LastFocusedAt *time.Time                              `json:"last_focused_at,omitempty"`
+	ArchivedAt    *time.Time                              `json:"archived_at,omitempty"`
 }
 
 type commandFailure struct {
@@ -471,7 +476,7 @@ func writeCommandUsage(writer io.Writer, name string, spec commandSpec) {
 	}
 	if name == "terminal" {
 		_, _ = fmt.Fprintln(writer, "Options: [--new | --context UUID | --project NAME | --ephemeral] [--cwd PATH] [--label LABEL] [--socket PATH] [--role LEFT --role RIGHT]")
-		_, _ = fmt.Fprintln(writer, "Subcommands: list, status, cleanup, reconfigure [--project NAME] [--socket PATH]")
+		_, _ = fmt.Fprintln(writer, "Subcommands: manage [--socket PATH], list, status, cleanup, rename --label NAME <context>, reconfigure [--project NAME] [--socket PATH]")
 	}
 	if name == "request-start" {
 		_, _ = fmt.Fprintln(writer, "Options: --session NAME --workspace NUMBER [--cwd PATH] [--label LABEL] [--provider NAME]")
@@ -504,23 +509,33 @@ func writeCommandUsageForArguments(writer io.Writer, name string, spec commandSp
 	case "cleanup":
 		usage = "terminal cleanup [--archived-before YYYY-MM-DD]"
 		summary = "Preview archived typed terminal cleanup candidates"
+	case "manage":
+		usage = "terminal manage [--socket PATH]"
+		summary = "Interactively open, rename, archive, activate, or purge persistent terminals"
 	case "reconfigure":
 		usage = "[--config PATH] terminal reconfigure [--project NAME] [--socket PATH]"
 		summary = "Change the closed adapter of one archived and stopped terminal identity"
+	case "rename":
+		usage = "terminal rename --label NAME <context>"
+		summary = "Change a terminal's presentation title without changing its identity"
 	default:
 		writeCommandUsage(writer, name, spec)
 		return
 	}
-	_, _ = fmt.Fprintf(writer, "Usage: sway-session [--json] %s\n\n%s.\n", usage, summary)
+	globalOptions := "[--json] "
+	if arguments[0] == "manage" {
+		globalOptions = ""
+	}
+	_, _ = fmt.Fprintf(writer, "Usage: sway-session %s%s\n\n%s.\n", globalOptions, usage, summary)
 }
 
-func executeCommand(ctx context.Context, name string, arguments []string, stdin io.Reader, stderr io.Writer, structured bool, configPath string, deps dependencies) (commandResult, *commandFailure) {
+func executeCommand(ctx context.Context, name string, arguments []string, stdin io.Reader, stdout io.Writer, stderr io.Writer, structured bool, configPath string, deps dependencies) (commandResult, *commandFailure) {
 	if configPath != "" && name != "terminal" {
 		return commandResult{}, usageFailure(name, "--config is only valid with the terminal command")
 	}
 	switch name {
 	case "terminal":
-		return executeTerminal(ctx, arguments, structured, configPath, deps)
+		return executeTerminal(ctx, arguments, stdin, stdout, structured, configPath, deps)
 	case "register":
 		return executeRegister(ctx, arguments, deps)
 	case "list":

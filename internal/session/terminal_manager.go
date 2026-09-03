@@ -258,6 +258,7 @@ func (manager TerminalManager) Open(ctx context.Context, request TerminalOpenReq
 func (manager TerminalManager) openSerialized(ctx context.Context, request TerminalOpenRequest) (TerminalOpenResult, error) {
 	var newID ContextID
 	var target Context
+	var createdAt time.Time
 	created := false
 	updateRegistry := manager.RegistryUpdate
 	if updateRegistry == nil {
@@ -290,6 +291,9 @@ func (manager TerminalManager) openSerialized(ctx context.Context, request Termi
 				return newID, idErr
 			})
 			created = createErr == nil
+			if created {
+				createdAt = manager.Now().UTC()
+			}
 			if createErr != nil {
 				return createErr
 			}
@@ -311,6 +315,7 @@ func (manager TerminalManager) openSerialized(ctx context.Context, request Termi
 			return ensureErr
 		}
 		if created {
+			createdAt = manager.Now().UTC()
 			return manager.SessionManager.ValidateContext(target)
 		}
 		return nil
@@ -339,6 +344,26 @@ func (manager TerminalManager) openSerialized(ctx context.Context, request Termi
 		}
 		target = resolved
 		created = newID != "" && target.ID == newID
+	}
+	if created {
+		if err := RecordTerminalCreationContext(ctx, manager.StateRoot, target.ID, createdAt); err != nil {
+			rollbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), terminalRollbackTimeout)
+			defer cancel()
+			rolledBack, rollbackErr := manager.rollbackUnlaunchedContext(rollbackCtx, target)
+			if rollbackErr != nil && !rolledBack {
+				return TerminalOpenResult{Context: target, Actions: []TerminalOpenAction{TerminalActionCreated}}, errors.Join(
+					fmt.Errorf("record terminal creation activity: %w", err),
+					fmt.Errorf("roll back new context %s: %w", target.ID, rollbackErr),
+				)
+			}
+			if rollbackErr != nil {
+				return TerminalOpenResult{}, errors.Join(
+					fmt.Errorf("record terminal creation activity: %w", err),
+					fmt.Errorf("clean up activity after rolling back new context %s: %w", target.ID, rollbackErr),
+				)
+			}
+			return TerminalOpenResult{}, fmt.Errorf("record terminal creation activity: %w; new context %s was rolled back", err, target.ID)
+		}
 	}
 
 	result := TerminalOpenResult{Context: target, Manager: manager.SessionManager.Kind()}
@@ -577,11 +602,50 @@ func (manager TerminalManager) rollbackCreatedContext(ctx context.Context, targe
 		var unknown *statefile.CommitOutcomeUnknownError
 		if errors.As(err, &unknown) {
 			if _, loadErr := terminalContextByID(ctx, manager.StateRoot, target.ID); errors.Is(loadErr, ErrContextNotFound) {
-				return nil
+				err = nil
 			}
 		}
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	if activityErr := RemoveTerminalActivityContext(ctx, manager.StateRoot, target.ID); activityErr != nil {
+		return fmt.Errorf("remove terminal creation activity: %w", activityErr)
+	}
+	return nil
+}
+
+// rollbackUnlaunchedContext removes a newly committed registry generation
+// before any process or Sway side effect has begun. It deliberately needs no
+// compositor or /proc observation: the lifecycle lock is still held and the
+// exact context value proves that no concurrent generation is removed.
+func (manager TerminalManager) rollbackUnlaunchedContext(ctx context.Context, target Context) (bool, error) {
+	_, err := UpdateRegistryContext(ctx, manager.StateRoot, func(registry *Registry) error {
+		index, resolveErr := ResolveContext(*registry, string(target.ID))
+		if resolveErr != nil {
+			return resolveErr
+		}
+		if !reflect.DeepEqual(registry.Contexts[index], target) {
+			return errors.New("new terminal context changed before pre-launch rollback")
+		}
+		_, removeErr := RemoveContext(registry, string(target.ID))
+		return removeErr
+	})
+	if err != nil {
+		var unknown *statefile.CommitOutcomeUnknownError
+		if errors.As(err, &unknown) {
+			if _, loadErr := terminalContextByID(ctx, manager.StateRoot, target.ID); errors.Is(loadErr, ErrContextNotFound) {
+				err = nil
+			}
+		}
+	}
+	if err != nil {
+		return false, err
+	}
+	if activityErr := RemoveTerminalActivityContext(ctx, manager.StateRoot, target.ID); activityErr != nil {
+		return true, fmt.Errorf("remove terminal creation activity after pre-launch rollback: %w", activityErr)
+	}
+	return true, nil
 }
 
 func (manager TerminalManager) focusWindow(ctx context.Context, containerID int64, registry Registry, id ContextID) error {

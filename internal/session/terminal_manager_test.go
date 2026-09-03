@@ -22,6 +22,8 @@ func TestTerminalManagerCreatesAttachesThenReusesFocusedDefault(t *testing.T) {
 	client := &terminalManagerClient{id: testContextID}
 	starter := &terminalManagerStarter{onStart: func() { client.setMapped(true) }}
 	manager := terminalTestManager(root, client, starter)
+	createdAt := time.Date(2026, 9, 3, 18, 0, 0, 0, time.UTC)
+	manager.Now = func() time.Time { return createdAt }
 	request := TerminalOpenRequest{
 		Identity: TerminalIdentity{Kind: TerminalIdentityDefault},
 		Adapter:  TerminalAdapterAlacritty,
@@ -38,7 +40,16 @@ func TestTerminalManagerCreatesAttachesThenReusesFocusedDefault(t *testing.T) {
 	}) {
 		t.Fatalf("unexpected first open: %+v", first)
 	}
+	activity, err := ReadTerminalActivitySnapshot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	createdActivity, exists := FindTerminalActivity(activity, first.Context.ID)
+	if !exists || createdActivity.CreatedAt == nil || !createdActivity.CreatedAt.Equal(createdAt) || createdActivity.LastFocusedAt != nil {
+		t.Fatalf("terminal creation activity = %+v, exists=%t", createdActivity, exists)
+	}
 	manager.SessionManager = failingTerminalSessionManager{err: errors.New("visible terminal must not resolve session manager")}
+	manager.Now = func() time.Time { return createdAt.Add(2 * time.Minute) }
 	second, err := manager.Open(context.Background(), request)
 	if err != nil {
 		t.Fatal(err)
@@ -50,6 +61,14 @@ func TestTerminalManagerCreatesAttachesThenReusesFocusedDefault(t *testing.T) {
 	}
 	if len(starter.specs) != 1 {
 		t.Fatalf("repeated open launched %d processes", len(starter.specs))
+	}
+	activity, err = ReadTerminalActivitySnapshot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reusedActivity, exists := FindTerminalActivity(activity, first.Context.ID)
+	if !exists || !reflect.DeepEqual(reusedActivity, createdActivity) {
+		t.Fatalf("reuse or manager focus changed daemon-owned activity: got=%+v want=%+v", reusedActivity, createdActivity)
 	}
 }
 
@@ -105,6 +124,43 @@ func TestTerminalManagerCancellationAfterRegistryCommitRollsBackNewContext(t *te
 	if loadErr := RegistryFile(root).LoadInto(&registry); loadErr != nil || len(registry.Contexts) != 0 {
 		t.Fatalf("post-commit cancellation left registry=%+v err=%v", registry, loadErr)
 	}
+	activity, loadErr := ReadTerminalActivitySnapshot(root)
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if _, exists := FindTerminalActivity(activity, testContextID); exists {
+		t.Fatalf("rolled-back context retained activity: %+v", activity)
+	}
+}
+
+func TestTerminalManagerActivityFailureRollsBackWithoutSwayOrProcessObservation(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state", "sway-session")
+	activityDirectory := filepath.Join(root, TerminalActivityDirectory)
+	if err := os.MkdirAll(activityDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(activityDirectory, TerminalActivityFilename), []byte(`{"version":1,"terminals":[],"unexpected":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manager := terminalTestManager(root, nil, &terminalManagerStarter{})
+	manager.Client = failingTerminalManagerClient{err: errors.New("Sway unavailable")}
+	manager.FindProcesses = func(string, ContextID) ([]int, error) {
+		return nil, errors.New("proc unavailable")
+	}
+
+	result, err := manager.Open(t.Context(), TerminalOpenRequest{
+		New: true, Adapter: TerminalAdapterAlacritty, Cwd: t.TempDir(), Focus: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "record terminal creation activity") {
+		t.Fatalf("malformed activity state was not reported: result=%+v err=%v", result, err)
+	}
+	if !reflect.DeepEqual(result, TerminalOpenResult{}) {
+		t.Fatalf("failed pre-launch creation returned an active context: %+v", result)
+	}
+	registry, loadErr := ReadRegistrySnapshot(root)
+	if loadErr != nil || len(registry.Contexts) != 0 {
+		t.Fatalf("pre-launch rollback depended on failed observation: registry=%+v err=%v", registry, loadErr)
+	}
 }
 
 func TestTerminalManagerPreservesNewContextWhenAdapterSurvivesCanceledOpen(t *testing.T) {
@@ -123,6 +179,13 @@ func TestTerminalManagerPreservesNewContextWhenAdapterSurvivesCanceledOpen(t *te
 	var registry Registry
 	if loadErr := RegistryFile(root).LoadInto(&registry); loadErr != nil || len(registry.Contexts) != 1 || registry.Contexts[0].ID != testContextID {
 		t.Fatalf("live adapter lost recovery identity: registry=%+v err=%v", registry, loadErr)
+	}
+	activity, loadErr := ReadTerminalActivitySnapshot(root)
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if created, exists := FindTerminalActivity(activity, testContextID); !exists || created.CreatedAt == nil {
+		t.Fatalf("recoverable context lost creation activity: %+v", activity)
 	}
 }
 
@@ -957,6 +1020,14 @@ type terminalManagerClient struct {
 	focused        bool
 	ambiguousFocus bool
 	focusCommands  int
+}
+
+type failingTerminalManagerClient struct {
+	err error
+}
+
+func (client failingTerminalManagerClient) RequestContext(context.Context, swayipc.MessageType, []byte) (swayipc.Message, error) {
+	return swayipc.Message{}, client.err
 }
 
 type sequencedTerminalManagerClient struct {

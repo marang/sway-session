@@ -196,6 +196,13 @@ func executePurge(ctx context.Context, arguments []string, stdin io.Reader, stde
 		return commandResult{}, classifyStateError("select context to purge", err)
 	}
 	target := registry.Contexts[index]
+	if target.Launcher.Kind != sessionstate.LauncherHerdr {
+		return commandResult{}, failure(
+			"context_kind",
+			"purge accepts only Herdr terminal contexts",
+			"Use sway-session app forget --yes "+string(target.ID)+" so live marks and launcher approval are removed transactionally.",
+		)
+	}
 	if *yes && set.Arg(0) != string(target.ID) {
 		return commandResult{
 			Command:  "purge",

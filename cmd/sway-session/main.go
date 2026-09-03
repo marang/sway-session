@@ -43,7 +43,7 @@ var commandSpecs = map[string]commandSpec{
 	"list":                 {usage: "list", summary: "List registered contexts"},
 	"archive":              {usage: "archive <context>", summary: "Exclude a context from automatic restore"},
 	"activate":             {usage: "activate <context>", summary: "Return an archived context to automatic restore"},
-	"purge":                {usage: "purge [--yes] <context>", summary: "Permanently remove a context and its saved Herdr state"},
+	"purge":                {usage: "purge [--yes] <context>", summary: "Permanently remove a Herdr terminal context and its saved session"},
 	"broker":               {usage: "broker [--socket <path>]", summary: "Serve typed work-session start requests"},
 	"daemon":               {usage: "daemon [--socket <path>]", summary: "Observe and restore persistent Sway session state"},
 	"request-start":        {usage: "request-start --session <name> --workspace <number> [options]", summary: "Request a typed ensure-and-start operation"},
@@ -460,6 +460,9 @@ func writeCommandUsage(writer io.Writer, name string, spec commandSpec) {
 	_, _ = fmt.Fprintf(writer, "Usage: sway-session [--json] %s\n\n%s.\n", spec.usage, spec.summary)
 	if slices.Contains([]string{"archive", "activate", "purge", "restore"}, name) {
 		_, _ = fmt.Fprintln(writer, "A context is an unambiguous exact UUID or label.")
+	}
+	if name == "purge" {
+		_, _ = fmt.Fprintln(writer, "Desktop and Flatpak registrations must use sway-session app forget --yes <context> so live marks and launcher approval are removed transactionally.")
 	}
 	if name == "register" {
 		_, _ = fmt.Fprintln(writer, "Options: --session NAME [--cwd PATH] [--label LABEL] [--provider NAME] [--id UUID]")

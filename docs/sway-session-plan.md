@@ -610,8 +610,11 @@ scope for `restore --require-active` and excludes every archived context.
 
 `restore` is idempotent. `archive` removes a context from automatic restore but
 keeps its registry record and Herdr state. `activate` reverses archive. `purge`
-requires deliberate confirmation in an interactive terminal, with an explicit
-`--yes` non-interactive confirmation flag and exact canonical UUID for automation. In `--json` mode it
+accepts only Herdr terminal contexts and requires deliberate confirmation in an
+interactive terminal, with an explicit `--yes` non-interactive confirmation
+flag and exact canonical UUID for automation. Desktop and Flatpak registrations
+must use `app forget --yes <context>` so their live marks and protected launcher
+approval are removed transactionally. In `--json` mode `purge`
 never prompts: without `--yes`, it emits a preview plus confirmation
 diagnostic.
 

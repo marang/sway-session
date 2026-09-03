@@ -553,8 +553,11 @@ limited to Herdr contexts, matching the command's current deletion semantics;
 desktop-application registrations use `app forget`.
 
 Archive excludes a context from automatic restore while retaining its Herdr
-state. Purge stops and deletes the exact named Herdr session before removing
-the registry entry; without `--yes`, it requires a terminal and the full UUID.
+state. Top-level `purge` accepts only Herdr terminal contexts: it stops and
+deletes the exact named Herdr session before removing the registry entry;
+without `--yes`, it requires a terminal and the full UUID. Desktop and Flatpak
+registrations must use `sway-session app forget --yes <context>` so their live
+marks and protected launcher approval are removed transactionally.
 Use the global option before a command, for example `sway-session --json list`,
 for stable machine-readable results and diagnostics. The complete automatic
 startup stanza is documented in [Sway Setup](#sway-setup) and shipped as

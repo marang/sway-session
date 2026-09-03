@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -78,6 +79,22 @@ func TestCompletionHelpDocumentsStableReadOnlyRecordContract(t *testing.T) {
 	} {
 		if !strings.Contains(stdout.String(), expected) {
 			t.Fatalf("completion help missing %q:\n%s", expected, stdout.String())
+		}
+	}
+}
+
+func TestPurgeHelpDocumentsHerdrOnlyContract(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := run([]string{"purge", "--help"}, &stdout, &stderr)
+
+	if exitCode != exitSuccess || stderr.Len() != 0 {
+		t.Fatalf("purge help failed code=%d stderr=%q", exitCode, stderr.String())
+	}
+	for _, expected := range []string{"Herdr terminal context", "sway-session app forget --yes <context>", "live marks", "launcher approval"} {
+		if !strings.Contains(stdout.String(), expected) {
+			t.Fatalf("purge help missing %q:\n%s", expected, stdout.String())
 		}
 	}
 }
@@ -491,6 +508,98 @@ func TestPurgeYesRejectsLabelWithCanonicalUUIDPreview(t *testing.T) {
 	}
 	if len(loadTestRegistry(t, deps).Contexts) != 1 {
 		t.Fatal("rejected label purge modified registry")
+	}
+}
+
+func TestPurgeRejectsApplicationContextsBeforeConfirmationOrHerdrAccess(t *testing.T) {
+	applicationContexts := []sessionstate.Context{
+		{
+			ID: "22222222-2222-4222-8222-222222222222", Label: "Desktop App", Provider: "desktop", State: sessionstate.ContextActive,
+			Launcher: sessionstate.Launcher{Kind: sessionstate.LauncherDesktop, DesktopID: "org.example.App.desktop", DesktopOrigin: sessionstate.DesktopEntrySystem, DesktopPath: "/usr/share/applications/org.example.App.desktop"},
+			App:      &sessionstate.Application{Identity: sessionstate.ApplicationIdentity{Protocol: sessionstate.WindowWayland, WaylandAppID: "org.example.App"}, DesiredOpen: true, RestorePolicy: sessionstate.ApplicationRestoreFollow},
+		},
+		{
+			ID: "33333333-3333-4333-8333-333333333333", Label: "Flatpak App", Provider: "flatpak", State: sessionstate.ContextActive,
+			Launcher: sessionstate.Launcher{Kind: sessionstate.LauncherFlatpak, FlatpakID: "org.example.Flatpak", FlatpakInstallation: sessionstate.FlatpakUser},
+			App:      &sessionstate.Application{Identity: sessionstate.ApplicationIdentity{Protocol: sessionstate.WindowWayland, WaylandAppID: "org.example.Flatpak", SandboxAppID: "org.example.Flatpak"}, DesiredOpen: true, RestorePolicy: sessionstate.ApplicationRestorePinned},
+		},
+	}
+	for _, contextValue := range applicationContexts {
+		for _, herdrRootExists := range []bool{true, false} {
+			t.Run(string(contextValue.Launcher.Kind)+"/herdr-root-exists="+strconv.FormatBool(herdrRootExists), func(t *testing.T) {
+				deps := testDependencies(t)
+				paths, pathErr := deps.herdrPaths()
+				if pathErr != nil {
+					t.Fatal(pathErr)
+				}
+				root, err := deps.stateRoot()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := sessionstate.RegistryFile(root).Save(sessionstate.Registry{Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{contextValue}}); err != nil {
+					t.Fatal(err)
+				}
+				if !herdrRootExists {
+					if err := os.Remove(paths.Root); err != nil {
+						t.Fatal(err)
+					}
+				}
+				deps.herdrPaths = func() (sessionstate.HerdrPaths, error) {
+					t.Fatal("application purge must not resolve Herdr paths")
+					return sessionstate.HerdrPaths{}, errors.New("unreachable")
+				}
+				deps.stdinTerminal = func() bool { t.Fatal("application purge must not request confirmation"); return false }
+				var stdout bytes.Buffer
+				var stderr bytes.Buffer
+
+				code := runWith([]string{"--json", "purge", "--yes", string(contextValue.ID)}, strings.NewReader(""), &stdout, &stderr, deps)
+
+				if code != exitOperation || stdout.Len() != 0 {
+					t.Fatalf("application purge code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+				}
+				for _, want := range []string{`"code":"context_kind"`, "purge accepts only Herdr terminal contexts", "sway-session app forget --yes " + string(contextValue.ID)} {
+					if !strings.Contains(stderr.String(), want) {
+						t.Fatalf("application purge diagnostic missing %q: %s", want, stderr.String())
+					}
+				}
+				registry := loadTestRegistry(t, deps)
+				if len(registry.Contexts) != 1 || !reflect.DeepEqual(registry.Contexts[0], contextValue) {
+					t.Fatalf("rejected application purge modified registry: %+v", registry)
+				}
+			})
+		}
+	}
+}
+
+func TestPurgeRejectsApplicationContextBeforeConfirmationPreview(t *testing.T) {
+	deps := testDependencies(t)
+	contextValue := sessionstate.Context{
+		ID: "22222222-2222-4222-8222-222222222222", Label: "Desktop App", Provider: "desktop", State: sessionstate.ContextActive,
+		Launcher: sessionstate.Launcher{Kind: sessionstate.LauncherDesktop, DesktopID: "org.example.App.desktop", DesktopOrigin: sessionstate.DesktopEntrySystem, DesktopPath: "/usr/share/applications/org.example.App.desktop"},
+		App:      &sessionstate.Application{Identity: sessionstate.ApplicationIdentity{Protocol: sessionstate.WindowWayland, WaylandAppID: "org.example.App"}, DesiredOpen: true, RestorePolicy: sessionstate.ApplicationRestoreFollow},
+	}
+	root, err := deps.stateRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sessionstate.RegistryFile(root).Save(sessionstate.Registry{Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{contextValue}}); err != nil {
+		t.Fatal(err)
+	}
+	deps.herdrPaths = func() (sessionstate.HerdrPaths, error) {
+		t.Fatal("application purge must not resolve Herdr paths")
+		return sessionstate.HerdrPaths{}, errors.New("unreachable")
+	}
+	deps.stdinTerminal = func() bool { t.Fatal("application purge must not request confirmation"); return false }
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	code := runWith([]string{"--json", "purge", "Desktop App"}, strings.NewReader(""), &stdout, &stderr, deps)
+
+	if code != exitOperation || stdout.Len() != 0 || !strings.Contains(stderr.String(), `"code":"context_kind"`) {
+		t.Fatalf("application purge was not rejected before preview: code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if registry := loadTestRegistry(t, deps); len(registry.Contexts) != 1 || !reflect.DeepEqual(registry.Contexts[0], contextValue) {
+		t.Fatalf("rejected application purge modified registry: %+v", registry)
 	}
 }
 

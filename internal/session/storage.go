@@ -15,6 +15,7 @@ const (
 	LayoutFilename              = "layout.json"
 	ApplicationSessionFilename  = "application-session.json"
 	ApplicationSessionDirectory = "application-runtime"
+	terminalLifecycleDirectory  = "terminal-lifecycle"
 )
 
 // DefaultStateRoot resolves the private sway-session XDG state directory.
@@ -127,6 +128,21 @@ func InspectRegistryLocked(root string, inspect func(Registry) error) error {
 // InspectRegistryLockedContext is InspectRegistryLocked with cancelable lock acquisition.
 func InspectRegistryLockedContext(ctx context.Context, root string, inspect func(Registry) error) error {
 	return RegistryFile(root).current.InspectLockedContext(ctx, emptyRegistry(), inspect)
+}
+
+// WithTerminalLifecycleLockContext serializes manager-backed terminal
+// creation, restore, and initialization across sway-session processes. The
+// lifecycle lock is always acquired before the registry lock.
+func WithTerminalLifecycleLockContext(ctx context.Context, root string, action func() error) error {
+	if root == "" || !filepath.IsAbs(root) || filepath.Clean(root) != root {
+		return errors.New("terminal lifecycle state root must be a clean absolute path")
+	}
+	if action == nil {
+		return errors.New("terminal lifecycle action is nil")
+	}
+	return statefile.WithPrivateDirectoryLockContext(ctx, filepath.Join(root, terminalLifecycleDirectory), func(*statefile.LockedPrivateDirectory) error {
+		return action()
+	})
 }
 
 func LayoutFile(root string) statefile.JSONFile[LayoutSnapshot] {

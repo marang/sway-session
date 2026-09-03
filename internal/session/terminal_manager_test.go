@@ -107,21 +107,17 @@ func TestTerminalManagerCancellationAfterRegistryCommitRollsBackNewContext(t *te
 	}
 }
 
-func TestTerminalManagerPreservesNewContextWhenAdapterSurvivesFailedMapping(t *testing.T) {
+func TestTerminalManagerPreservesNewContextWhenAdapterSurvivesCanceledOpen(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "state", "sway-session")
-	client := &sequencedTerminalManagerClient{
-		id:      testContextID,
-		mapped:  []bool{true, false, false},
-		focused: true,
-	}
-	manager := terminalTestManager(root, nil, &terminalManagerStarter{})
-	manager.Client = client
+	manager := terminalTestManager(root, &terminalManagerClient{id: testContextID}, &terminalManagerStarter{})
 	manager.FindProcesses = func(string, ContextID) ([]int, error) { return []int{4321}, nil }
+	ctx, cancel := context.WithCancel(context.Background())
+	manager.BeforeWindowTxn = cancel
 
-	_, err := manager.Open(context.Background(), TerminalOpenRequest{
+	_, err := manager.Open(ctx, TerminalOpenRequest{
 		New: true, Adapter: TerminalAdapterAlacritty, Cwd: t.TempDir(), Focus: true,
 	})
-	if !errors.Is(err, ErrTerminalWindowUnavailable) || !strings.Contains(err.Error(), "remained pending before rollback") {
+	if !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "remained pending before rollback") {
 		t.Fatalf("live adapter did not prevent rollback: %v", err)
 	}
 	var registry Registry
@@ -294,6 +290,63 @@ func TestTerminalManagerRejectsAlreadyFocusedContainerReplacement(t *testing.T) 
 	}
 }
 
+func TestTerminalManagerAcceptsMappedContainerAfterUserChangesFocus(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state", "sway-session")
+	contextValue := testValidContext(testContextID)
+	contextValue.Launcher.Cwd = t.TempDir()
+	identity := TerminalIdentity{Kind: TerminalIdentityDefault}
+	contextValue.Launcher.Terminal.Identity = &identity
+	if err := RegistryFile(root).Save(Registry{Version: ContextsSchemaVersion, Contexts: []Context{contextValue}}); err != nil {
+		t.Fatal(err)
+	}
+	client := &sequencedTerminalManagerClient{
+		id:            testContextID,
+		mapped:        []bool{true, true},
+		focusedStates: []bool{true, false},
+	}
+	manager := terminalTestManager(root, nil, &terminalManagerStarter{})
+	manager.Client = client
+
+	result, err := manager.Open(context.Background(), TerminalOpenRequest{
+		Identity: identity, Adapter: TerminalAdapterAlacritty, Cwd: contextValue.Launcher.Cwd, Focus: true,
+	})
+	if err != nil {
+		t.Fatalf("healthy terminal failed after user focus change: result=%+v err=%v", result, err)
+	}
+	if !reflect.DeepEqual(result.Actions, []TerminalOpenAction{TerminalActionReused, TerminalActionNoChange}) {
+		t.Fatalf("unexpected result after user focus change: %+v", result)
+	}
+}
+
+func TestTerminalManagerAcceptsMappedContainerAfterFocusChangesDuringInitialization(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state", "sway-session")
+	contextValue := testValidContext(testContextID)
+	contextValue.Launcher.Cwd = t.TempDir()
+	identity := TerminalIdentity{Kind: TerminalIdentityDefault}
+	contextValue.Launcher.Terminal.Identity = &identity
+	if err := RegistryFile(root).Save(Registry{Version: ContextsSchemaVersion, Contexts: []Context{contextValue}}); err != nil {
+		t.Fatal(err)
+	}
+	client := &sequencedTerminalManagerClient{
+		id:            testContextID,
+		mapped:        []bool{true, true, true},
+		focusedStates: []bool{true, true, false},
+	}
+	manager := terminalTestManager(root, nil, &terminalManagerStarter{})
+	manager.Client = client
+
+	result, err := manager.Open(context.Background(), TerminalOpenRequest{
+		Identity: identity, Adapter: TerminalAdapterAlacritty, Cwd: contextValue.Launcher.Cwd,
+		Focus: true, Roles: []string{"codex", "shell"},
+	})
+	if err != nil {
+		t.Fatalf("healthy terminal failed after focus changed during initialization: result=%+v err=%v", result, err)
+	}
+	if !reflect.DeepEqual(result.Actions, []TerminalOpenAction{TerminalActionReused, TerminalActionNoChange}) || result.Initialization == nil || !result.Initialization.Initialized {
+		t.Fatalf("unexpected initialized result after user focus change: %+v", result)
+	}
+}
+
 func TestTerminalManagerConcurrentOpenCreatesOneContextAndOneProcess(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "state", "sway-session")
 	client := &terminalManagerClient{id: testContextID}
@@ -356,6 +409,108 @@ func TestTerminalManagerConcurrentOpenCreatesOneContextAndOneProcess(t *testing.
 	var registry Registry
 	if err := RegistryFile(root).LoadInto(&registry); err != nil || len(registry.Contexts) != 1 {
 		t.Fatalf("concurrent open registry=%+v err=%v", registry, err)
+	}
+}
+
+func TestTerminalManagerSerializesCreationThroughWindowTransaction(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state", "sway-session")
+	client := &terminalManagerClient{id: testContextID}
+	starter := &terminalManagerStarter{onStart: func() { client.setMapped(true) }}
+	creator := terminalTestManager(root, client, starter)
+	request := TerminalOpenRequest{
+		Identity: TerminalIdentity{Kind: TerminalIdentityDefault},
+		Adapter:  TerminalAdapterAlacritty,
+		Cwd:      t.TempDir(),
+		Focus:    true,
+	}
+	creatorPaused := make(chan struct{})
+	releaseCreator := make(chan struct{})
+	creator.BeforeWindowTxn = func() {
+		close(creatorPaused)
+		<-releaseCreator
+	}
+	creatorDone := make(chan error, 1)
+	go func() {
+		_, err := creator.Open(context.Background(), request)
+		creatorDone <- err
+	}()
+	select {
+	case <-creatorPaused:
+	case <-time.After(time.Second):
+		t.Fatal("creator did not reach the window transaction")
+	}
+
+	reuser := terminalTestManager(root, client, starter)
+	registryUpdates := 0
+	reuser.RegistryUpdate = func(ctx context.Context, root string, mutate func(*Registry) error) (Registry, error) {
+		registryUpdates++
+		return UpdateRegistryContext(ctx, root, mutate)
+	}
+	reuseCtx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if _, err := reuser.Open(reuseCtx, request); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("concurrent reuser bypassed lifecycle serialization: %v", err)
+	}
+	if registryUpdates != 0 {
+		t.Fatalf("concurrent reuser entered registry transaction %d times", registryUpdates)
+	}
+	close(releaseCreator)
+	select {
+	case err := <-creatorDone:
+		if err != nil {
+			t.Fatalf("creator failed after serialized reuser cancellation: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("creator did not finish after release")
+	}
+}
+
+func TestTerminalManagerRetainsContextAfterConcurrentPendingLaunchMayCreateManagerState(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state", "sway-session")
+	manager := terminalTestManager(root, &terminalManagerClient{id: testContextID}, &terminalManagerStarter{})
+	ctx, cancel := context.WithCancel(context.Background())
+	manager.FindPending = func(string, ProcessSpec) ([]int, error) {
+		cancel()
+		return []int{4321}, nil
+	}
+	manager.FindProcesses = func(string, ContextID) ([]int, error) { return nil, nil }
+
+	result, err := manager.Open(ctx, TerminalOpenRequest{
+		New: true, Adapter: TerminalAdapterAlacritty, Cwd: t.TempDir(), Focus: true,
+	})
+	if !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "remains active") {
+		t.Fatalf("pending concurrent launch did not preserve the recovery identity: result=%+v err=%v", result, err)
+	}
+	if !reflect.DeepEqual(result.Actions, []TerminalOpenAction{TerminalActionCreated}) {
+		t.Fatalf("failed creator reported completed actions: %+v", result.Actions)
+	}
+	var registry Registry
+	if loadErr := RegistryFile(root).LoadInto(&registry); loadErr != nil || len(registry.Contexts) != 1 || registry.Contexts[0].ID != testContextID {
+		t.Fatalf("pending manager state lost its recovery identity: registry=%+v err=%v", registry, loadErr)
+	}
+}
+
+func TestTerminalManagerRetainsContextAfterConflictingTargetWindowsDisappear(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state", "sway-session")
+	client := &sequencedTerminalManagerClient{
+		id:         testContextID,
+		mapped:     []bool{true, false},
+		duplicates: []bool{true, false},
+		focused:    true,
+	}
+	manager := terminalTestManager(root, nil, &terminalManagerStarter{})
+	manager.Client = client
+	manager.FindProcesses = func(string, ContextID) ([]int, error) { return nil, nil }
+
+	result, err := manager.Open(context.Background(), TerminalOpenRequest{
+		New: true, Adapter: TerminalAdapterAlacritty, Cwd: t.TempDir(), Focus: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "appears in containers") || !strings.Contains(err.Error(), "remains active") {
+		t.Fatalf("conflicting target windows did not preserve the recovery identity: result=%+v err=%v", result, err)
+	}
+	var registry Registry
+	if loadErr := RegistryFile(root).LoadInto(&registry); loadErr != nil || len(registry.Contexts) != 1 || registry.Contexts[0].ID != testContextID {
+		t.Fatalf("conflicting manager windows lost their recovery identity: registry=%+v err=%v", registry, loadErr)
 	}
 }
 
@@ -484,7 +639,8 @@ func TestTerminalManagerNewReturnsIdentityWhenVisibleCommitCannotBeReobserved(t 
 }
 
 func TestTerminalManagerRejectsInvalidLabelBeforeRegistryUpdate(t *testing.T) {
-	manager := terminalTestManager(filepath.Join(t.TempDir(), "state", "sway-session"), &terminalManagerClient{id: testContextID}, &terminalManagerStarter{})
+	root := filepath.Join(t.TempDir(), "state", "sway-session")
+	manager := terminalTestManager(root, &terminalManagerClient{id: testContextID}, &terminalManagerStarter{})
 	manager.RegistryUpdate = func(context.Context, string, func(*Registry) error) (Registry, error) {
 		t.Fatal("invalid label reached registry update")
 		return Registry{}, nil
@@ -496,10 +652,14 @@ func TestTerminalManagerRejectsInvalidLabelBeforeRegistryUpdate(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "label must not have surrounding whitespace") || result.Context.ID != "" {
 		t.Fatalf("invalid terminal label was not rejected before effects: result=%+v err=%v", result, err)
 	}
+	if _, statErr := os.Stat(root); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("invalid terminal label created state root: %v", statErr)
+	}
 }
 
 func TestTerminalManagerRejectsControlCharacterCwdBeforeRegistryUpdate(t *testing.T) {
-	manager := terminalTestManager(filepath.Join(t.TempDir(), "state", "sway-session"), &terminalManagerClient{id: testContextID}, &terminalManagerStarter{})
+	root := filepath.Join(t.TempDir(), "state", "sway-session")
+	manager := terminalTestManager(root, &terminalManagerClient{id: testContextID}, &terminalManagerStarter{})
 	manager.RegistryUpdate = func(context.Context, string, func(*Registry) error) (Registry, error) {
 		t.Fatal("invalid cwd reached registry update")
 		return Registry{}, nil
@@ -514,6 +674,9 @@ func TestTerminalManagerRejectsControlCharacterCwdBeforeRegistryUpdate(t *testin
 	})
 	if err == nil || !strings.Contains(err.Error(), "control characters") || result.Context.ID != "" {
 		t.Fatalf("invalid terminal cwd was not rejected before effects: result=%+v err=%v", result, err)
+	}
+	if _, statErr := os.Stat(root); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("invalid terminal cwd created state root: %v", statErr)
 	}
 }
 
@@ -797,12 +960,14 @@ type terminalManagerClient struct {
 }
 
 type sequencedTerminalManagerClient struct {
-	mu           sync.Mutex
-	id           ContextID
-	mapped       []bool
-	containerIDs []int64
-	focused      bool
-	requests     int
+	mu            sync.Mutex
+	id            ContextID
+	mapped        []bool
+	containerIDs  []int64
+	focused       bool
+	focusedStates []bool
+	duplicates    []bool
+	requests      int
 }
 
 func (client *sequencedTerminalManagerClient) RequestContext(ctx context.Context, messageType swayipc.MessageType, payload []byte) (swayipc.Message, error) {
@@ -814,12 +979,29 @@ func (client *sequencedTerminalManagerClient) RequestContext(ctx context.Context
 	switch messageType {
 	case swayipc.GetTree:
 		mapped := false
+		requestIndex := client.requests
 		if len(client.mapped) != 0 {
-			index := client.requests
+			index := requestIndex
 			if index >= len(client.mapped) {
 				index = len(client.mapped) - 1
 			}
 			mapped = client.mapped[index]
+		}
+		focused := client.focused
+		if len(client.focusedStates) != 0 {
+			index := requestIndex
+			if index >= len(client.focusedStates) {
+				index = len(client.focusedStates) - 1
+			}
+			focused = client.focusedStates[index]
+		}
+		duplicate := false
+		if len(client.duplicates) != 0 {
+			index := requestIndex
+			if index >= len(client.duplicates) {
+				index = len(client.duplicates) - 1
+			}
+			duplicate = client.duplicates[index]
 		}
 		client.requests++
 		workspace := &swayipc.TreeNode{ID: 2, Type: "workspace", Name: "98"}
@@ -833,7 +1015,10 @@ func (client *sequencedTerminalManagerClient) RequestContext(ctx context.Context
 				}
 				containerID = client.containerIDs[index]
 			}
-			workspace.Nodes = []*swayipc.TreeNode{{ID: containerID, Type: "con", AppID: &appID, Focused: client.focused}}
+			workspace.Nodes = []*swayipc.TreeNode{{ID: containerID, Type: "con", AppID: &appID, Focused: focused}}
+			if duplicate {
+				workspace.Nodes = append(workspace.Nodes, &swayipc.TreeNode{ID: containerID + 1, Type: "con", AppID: &appID})
+			}
 		}
 		encoded, _ := json.Marshal(&swayipc.TreeNode{ID: 1, Type: "root", Nodes: []*swayipc.TreeNode{workspace}})
 		return swayipc.Message{Type: swayipc.GetTree, Payload: encoded}, nil

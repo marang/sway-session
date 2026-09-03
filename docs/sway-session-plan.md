@@ -971,6 +971,23 @@ profile are removed. The unchanged request-start broker performs the fixed
 Codex+shell layout internally and therefore does not gain role or command
 fields.
 
+### Phase 13: Recover orphaned persistent terminals (LAB-112)
+
+Implemented: launch terminal adapters in an independent Unix process session,
+and report terminal or one-shot restore success only after the same exact Sway
+container remains mapped through a bounded stability check. A later user focus
+change does not make a healthy mapping unstable. Missing outer windows reattach
+the existing named manager session, and the idempotent initializer never
+restarts an agent in an occupied pane.
+
+Terminal creation, one-shot restore, broker registration preparation, and
+manager initialization serialize through one owner-only terminal-lifecycle
+lock before taking the registry lock. Any observed target window, accepted
+adapter start, or matching in-flight adapter is treated as possible persistent
+manager state. Creation rollback is therefore allowed only while no serialized
+manager-backed entry point or concrete process/window evidence can have exposed
+recoverable state.
+
 ## Test matrix
 
 Automated tests must cover:

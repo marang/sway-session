@@ -44,8 +44,8 @@ type TerminalOpenResult struct {
 }
 
 type terminalWindowOutcome struct {
-	ContainerID    int64
-	AdapterStarted bool
+	ContainerID          int64
+	ManagerStatePossible bool
 }
 
 type TerminalSessionManagerKind string
@@ -246,7 +246,16 @@ func (manager TerminalManager) Open(ctx context.Context, request TerminalOpenReq
 	if err := ValidateTerminalCwdPath(request.Cwd); err != nil {
 		return TerminalOpenResult{}, err
 	}
+	var result TerminalOpenResult
+	err := WithTerminalLifecycleLockContext(ctx, manager.StateRoot, func() error {
+		var openErr error
+		result, openErr = manager.openSerialized(ctx, request)
+		return openErr
+	})
+	return result, err
+}
 
+func (manager TerminalManager) openSerialized(ctx context.Context, request TerminalOpenRequest) (TerminalOpenResult, error) {
 	var newID ContextID
 	var target Context
 	created := false
@@ -379,7 +388,7 @@ func (manager TerminalManager) Open(ctx context.Context, request TerminalOpenReq
 		}
 		completedActions := len(result.Actions)
 		window, err := manager.ensureWindow(ctx, registry, current, request.Focus, &result)
-		managerMayHoldState = window.AdapterStarted
+		managerMayHoldState = window.ManagerStatePossible
 		if err != nil {
 			windowFailed = true
 			return err
@@ -388,7 +397,7 @@ func (manager TerminalManager) Open(ctx context.Context, request TerminalOpenReq
 			managerMayHoldState = true
 			initialized, initializeErr := manager.SessionManager.Initialize(ctx, current, request.Roles)
 			result.Initialization = &initialized
-			confirmErr := manager.confirmWindow(ctx, registry, current.ID, window.ContainerID, request.Focus)
+			confirmErr := manager.confirmWindow(ctx, registry, current.ID, window.ContainerID)
 			if confirmErr != nil {
 				result.Actions = result.Actions[:completedActions]
 				windowFailed = true
@@ -435,9 +444,14 @@ func (manager TerminalManager) ensureWindow(ctx context.Context, registry Regist
 		}
 		window, focused, exists, err := observedTerminalWindow(tree, registry, target.ID)
 		if err != nil {
+			var issue ManagedWindowIssue
+			if errors.As(err, &issue) && issue.ContextID == target.ID {
+				outcome.ManagerStatePossible = true
+			}
 			return outcome, err
 		}
 		if exists {
+			outcome.ManagerStatePossible = true
 			if focus && !focused {
 				if err := manager.focusWindow(ctx, window.ContainerID, registry, target.ID); err != nil {
 					return outcome, err
@@ -449,11 +463,11 @@ func (manager TerminalManager) ensureWindow(ctx context.Context, registry Regist
 			if confirmErr != nil {
 				return outcome, confirmErr
 			}
-			confirmed, confirmedFocused, confirmedExists, confirmErr := observedTerminalWindow(confirmedTree, registry, target.ID)
+			confirmed, _, confirmedExists, confirmErr := observedTerminalWindow(confirmedTree, registry, target.ID)
 			if confirmErr != nil {
 				return outcome, confirmErr
 			}
-			if confirmedExists && confirmed.ContainerID == window.ContainerID && (!focus || confirmedFocused) {
+			if confirmedExists && confirmed.ContainerID == window.ContainerID {
 				if launched {
 					result.Actions = append(result.Actions, TerminalActionAttached)
 				}
@@ -465,7 +479,7 @@ func (manager TerminalManager) ensureWindow(ctx context.Context, registry Regist
 				outcome.ContainerID = confirmed.ContainerID
 				return outcome, nil
 			}
-			return outcome, fmt.Errorf("%w: terminal container %d did not remain mapped and focused through confirmation", ErrTerminalWindowUnavailable, window.ContainerID)
+			return outcome, fmt.Errorf("%w: terminal container %d did not remain mapped through confirmation", ErrTerminalWindowUnavailable, window.ContainerID)
 		}
 		if !specReady {
 			if err := ValidateTerminalCwd(target.Launcher.Cwd); err != nil {
@@ -489,6 +503,9 @@ func (manager TerminalManager) ensureWindow(ctx context.Context, registry Regist
 		if err != nil {
 			return outcome, fmt.Errorf("observe pending terminal launch: %w", err)
 		}
+		if len(pending) != 0 {
+			outcome.ManagerStatePossible = true
+		}
 		if len(pending) > 1 {
 			return outcome, fmt.Errorf("multiple pending terminal processes %v", pending)
 		}
@@ -500,7 +517,7 @@ func (manager TerminalManager) ensureWindow(ctx context.Context, registry Regist
 				return outcome, fmt.Errorf("start terminal adapter: %w", err)
 			}
 			launched = true
-			outcome.AdapterStarted = true
+			outcome.ManagerStatePossible = true
 		}
 		if !manager.Now().Before(deadline) {
 			return outcome, fmt.Errorf("%w: terminal window did not appear before the mapping deadline", ErrTerminalWindowUnavailable)
@@ -509,17 +526,17 @@ func (manager TerminalManager) ensureWindow(ctx context.Context, registry Regist
 	}
 }
 
-func (manager TerminalManager) confirmWindow(ctx context.Context, registry Registry, id ContextID, containerID int64, requireFocus bool) error {
+func (manager TerminalManager) confirmWindow(ctx context.Context, registry Registry, id ContextID, containerID int64) error {
 	manager.Sleep(manager.StabilityDelay)
 	tree, err := manager.requestTree(ctx)
 	if err != nil {
 		return err
 	}
-	window, focused, exists, err := observedTerminalWindow(tree, registry, id)
+	window, _, exists, err := observedTerminalWindow(tree, registry, id)
 	if err != nil {
 		return err
 	}
-	if !exists || window.ContainerID != containerID || (requireFocus && !focused) {
+	if !exists || window.ContainerID != containerID {
 		return fmt.Errorf("%w: terminal window disappeared during session initialization", ErrTerminalWindowUnavailable)
 	}
 	return nil

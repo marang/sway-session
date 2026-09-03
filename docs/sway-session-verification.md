@@ -55,7 +55,10 @@ requires an operational error rather than `created, attached, focused`, removes
 a fresh registry entry when adapter start itself is rejected, retains the
 recovery identity after any accepted manager-backed launch, rechecks the window
 even when role initialization fails, and confirms that a refused Herdr stop
-leaves both its session state and registry entry intact.
+leaves both its session state and registry entry intact. It also covers a user
+focus change during both stability checks, pending or structurally conflicting
+target windows as manager-state evidence, and lifecycle-lock serialization
+across terminal, restore, and broker registration entry points.
 
 On 2026-09-03, the procedure was also exercised against Sway 1.12 on an
 isolated headless output and workspace 98 with Alacritty 0.17.0 and Herdr

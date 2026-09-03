@@ -132,55 +132,75 @@ func (service *Service) Handle(ctx context.Context, request Request) (Response, 
 		return Response{}, errors.New("sway client is nil")
 	}
 	defer client.Close()
-	registry, err := loadRegistryContext(ctx, service.StateRoot)
-	if err != nil {
-		return Response{}, err
-	}
-	tree, err := requestTree(ctx, client)
-	if err != nil {
-		return Response{}, err
-	}
-	if contextValue, found, err := matchingContext(registry, request); err != nil {
-		return Response{}, err
-	} else if found {
-		if window, mapped, err := observeRequestedContext(tree, registry, contextValue.ID); err != nil {
-			return Response{}, err
-		} else if mapped {
-			response, focusErr := service.focusMappedActiveContext(ctx, request, client, window.Workspace)
-			return service.initializeResponse(ctx, response, focusErr)
+	var contextValue sessionstate.Context
+	var created bool
+	var focusedResponse *Response
+	err = sessionstate.WithTerminalLifecycleLockContext(ctx, service.StateRoot, func() error {
+		registry, prepareErr := loadRegistryContext(ctx, service.StateRoot)
+		if prepareErr != nil {
+			return prepareErr
 		}
-		if err := requireCompatibleSavedWorkspace(ctx, service.StateRoot, contextValue.ID, request.Workspace); err != nil {
-			return Response{}, err
+		tree, prepareErr := requestTree(ctx, client)
+		if prepareErr != nil {
+			return prepareErr
 		}
-	}
-	if err := requireWorkspaceEmpty(tree, request.Workspace); err != nil {
+		if current, found, matchErr := matchingContext(registry, request); matchErr != nil {
+			return matchErr
+		} else if found {
+			if window, mapped, observeErr := observeRequestedContext(tree, registry, current.ID); observeErr != nil {
+				return observeErr
+			} else if mapped {
+				response, focusErr := service.focusMappedActiveContext(ctx, request, client, window.Workspace)
+				if focusErr != nil {
+					return focusErr
+				}
+				focusedResponse = &response
+				return nil
+			}
+			if prepareErr := requireCompatibleSavedWorkspace(ctx, service.StateRoot, current.ID, request.Workspace); prepareErr != nil {
+				return prepareErr
+			}
+		}
+		if prepareErr := requireWorkspaceEmpty(tree, request.Workspace); prepareErr != nil {
+			return prepareErr
+		}
+		contextValue, _, created, prepareErr = service.ensureContext(ctx, request)
+		if prepareErr != nil {
+			return prepareErr
+		}
+		if !created {
+			if prepareErr := requireCompatibleSavedWorkspace(ctx, service.StateRoot, contextValue.ID, request.Workspace); prepareErr != nil {
+				return prepareErr
+			}
+		}
+		rollback := func(cause error) error {
+			_, rollbackErr := rollbackCreatedRegistration(service.StateRoot, request, contextValue, created, cause)
+			return rollbackErr
+		}
+		tree, prepareErr = requestTree(ctx, client)
+		if prepareErr != nil {
+			return rollback(prepareErr)
+		}
+		if prepareErr := requireWorkspaceEmpty(tree, request.Workspace); prepareErr != nil {
+			return rollback(prepareErr)
+		}
+		if prepareErr := focusWorkspace(ctx, client, request.Workspace); prepareErr != nil {
+			return rollback(prepareErr)
+		}
+		tree, prepareErr = requestTree(ctx, client)
+		if prepareErr != nil {
+			return rollback(prepareErr)
+		}
+		if prepareErr := requireWorkspaceEmpty(tree, request.Workspace); prepareErr != nil {
+			return rollback(prepareErr)
+		}
+		return nil
+	})
+	if err != nil {
 		return Response{}, err
 	}
-	contextValue, _, created, err := service.ensureContext(ctx, request)
-	if err != nil {
-		return Response{}, err
-	}
-	if !created {
-		if err := requireCompatibleSavedWorkspace(ctx, service.StateRoot, contextValue.ID, request.Workspace); err != nil {
-			return Response{}, err
-		}
-	}
-	tree, err = requestTree(ctx, client)
-	if err != nil {
-		return rollbackCreatedRegistration(service.StateRoot, request, contextValue, created, err)
-	}
-	if err := requireWorkspaceEmpty(tree, request.Workspace); err != nil {
-		return rollbackCreatedRegistration(service.StateRoot, request, contextValue, created, err)
-	}
-	if err := focusWorkspace(ctx, client, request.Workspace); err != nil {
-		return rollbackCreatedRegistration(service.StateRoot, request, contextValue, created, err)
-	}
-	tree, err = requestTree(ctx, client)
-	if err != nil {
-		return rollbackCreatedRegistration(service.StateRoot, request, contextValue, created, err)
-	}
-	if err := requireWorkspaceEmpty(tree, request.Workspace); err != nil {
-		return rollbackCreatedRegistration(service.StateRoot, request, contextValue, created, err)
+	if focusedResponse != nil {
+		return service.initializeResponse(ctx, *focusedResponse, nil)
 	}
 	if err := service.Restore.Restore(ctx, contextValue.ID); err != nil {
 		return Response{}, err

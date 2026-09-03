@@ -199,6 +199,42 @@ func TestServiceStopsWaitingForRegistryLockAfterCancellation(t *testing.T) {
 	}
 }
 
+func TestServiceWaitsForTerminalLifecycleLockBeforeRegistration(t *testing.T) {
+	service, request, client, runner := testService(t)
+	request.Workspace = 98
+	locked := make(chan struct{})
+	release := make(chan struct{})
+	lockDone := make(chan error, 1)
+	go func() {
+		lockDone <- sessionstate.WithTerminalLifecycleLockContext(context.Background(), service.StateRoot, func() error {
+			close(locked)
+			<-release
+			return nil
+		})
+	}()
+	<-locked
+	defer func() {
+		close(release)
+		if lockErr := <-lockDone; lockErr != nil {
+			t.Errorf("release terminal lifecycle lock: %v", lockErr)
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	_, err := service.Handle(ctx, request)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("locked session request returned %v, want context deadline", err)
+	}
+	if client.treeRequests != 0 || len(runner.calls) != 0 {
+		t.Fatalf("session request crossed lifecycle lock: trees=%d restores=%v", client.treeRequests, runner.calls)
+	}
+	var registry sessionstate.Registry
+	if loadErr := sessionstate.RegistryFile(service.StateRoot).LoadInto(&registry); !errors.Is(loadErr, os.ErrNotExist) {
+		t.Fatalf("locked session request created registry=%+v err=%v", registry, loadErr)
+	}
+}
+
 func TestServiceRepeatedRequestReusesMappedContext(t *testing.T) {
 	service, request, client, runner := testService(t)
 	first, err := service.Handle(context.Background(), request)

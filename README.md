@@ -226,7 +226,12 @@ active context remains desired state: `terminal --project ...` and `restore`
 recreate its adapter and attach the existing Herdr session without restarting
 an agent in an occupied pane. An explicit retry with roles runs the idempotent
 initializer, which leaves a nonempty session unchanged instead of replaying an
-agent start. Alacritty intentionally runs the Herdr client as its `-e`
+agent start. A later user focus change does not invalidate an otherwise stable
+mapping. Terminal creation, one-shot restore, broker registration preparation,
+and manager initialization share an owner-only lifecycle lock, always acquired
+before the registry lock. This prevents a concurrent entry point from exposing
+manager state and then losing its only recovery identity to creation rollback.
+Alacritty intentionally runs the Herdr client as its `-e`
 child, so an exiting client closes only the outer Alacritty window; the named
 Herdr server, panes, and agents can remain available for this recovery path.
 Processes launched by `sway-session` start in their own Unix session. This

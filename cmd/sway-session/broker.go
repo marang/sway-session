@@ -35,18 +35,20 @@ func (initializer sessionRequestTerminalInitializer) Initialize(ctx context.Cont
 	if initializer.manager == nil {
 		return errors.New("terminal session initializer is unavailable")
 	}
-	return sessionstate.InspectRegistryLockedContext(ctx, initializer.stateRoot, func(registry sessionstate.Registry) error {
-		index, err := sessionstate.ResolveContext(registry, string(requested.ID))
-		if err != nil {
+	return sessionstate.WithTerminalLifecycleLockContext(ctx, initializer.stateRoot, func() error {
+		return sessionstate.InspectRegistryLockedContext(ctx, initializer.stateRoot, func(registry sessionstate.Registry) error {
+			index, err := sessionstate.ResolveContext(registry, string(requested.ID))
+			if err != nil {
+				return err
+			}
+			current := registry.Contexts[index]
+			if current.State != sessionstate.ContextActive || current.Launcher.Kind != sessionstate.LauncherHerdr ||
+				current.Launcher.Session != requested.Launcher.Session || current.Launcher.Cwd != requested.Launcher.Cwd {
+				return errors.New("requested terminal context changed before initialization")
+			}
+			_, err = initializer.manager.Initialize(ctx, current, codexSessionRoles())
 			return err
-		}
-		current := registry.Contexts[index]
-		if current.State != sessionstate.ContextActive || current.Launcher.Kind != sessionstate.LauncherHerdr ||
-			current.Launcher.Session != requested.Launcher.Session || current.Launcher.Cwd != requested.Launcher.Cwd {
-			return errors.New("requested terminal context changed before initialization")
-		}
-		_, err = initializer.manager.Initialize(ctx, current, codexSessionRoles())
-		return err
+		})
 	})
 }
 

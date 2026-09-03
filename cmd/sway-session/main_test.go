@@ -941,6 +941,46 @@ func TestConcurrentRestoreInvocationsLaunchContextOnce(t *testing.T) {
 	}
 }
 
+func TestRestoreWaitsForTerminalLifecycleLock(t *testing.T) {
+	deps := testDependencies(t)
+	root, err := deps.stateRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	locked := make(chan struct{})
+	release := make(chan struct{})
+	lockDone := make(chan error, 1)
+	go func() {
+		lockDone <- sessionstate.WithTerminalLifecycleLockContext(context.Background(), root, func() error {
+			close(locked)
+			<-release
+			return nil
+		})
+	}()
+	<-locked
+	defer func() {
+		close(release)
+		if lockErr := <-lockDone; lockErr != nil {
+			t.Errorf("release terminal lifecycle lock: %v", lockErr)
+		}
+	}()
+	clientCalls := 0
+	deps.newSwayClient = func(string) swayRequester {
+		clientCalls++
+		return &fakeSwayClient{trees: []*swayipc.TreeNode{treeWithContexts()}}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	_, commandFailure := executeRestore(ctx, []string{"--socket", "/run/user/1000/sway.sock"}, deps)
+	if commandFailure == nil || len(commandFailure.diagnostics) != 1 || !strings.Contains(commandFailure.diagnostics[0].Hint, context.DeadlineExceeded.Error()) {
+		t.Fatalf("locked restore did not return context deadline: %+v", commandFailure)
+	}
+	if clientCalls != 0 {
+		t.Fatalf("restore contacted Sway before acquiring lifecycle lock: %d", clientCalls)
+	}
+}
+
 func TestRestoreDuplicateContextDoesNotPreventIndependentLaunch(t *testing.T) {
 	deps := testDependencies(t)
 	first := registerTestContext(t, deps)

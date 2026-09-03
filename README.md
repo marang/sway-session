@@ -519,10 +519,16 @@ protocol versions before mutation. A partial failure is rolled back to one idle
 shell and the same `request-start` can be retried safely. Existing Herdr layouts
 are never reshaped. The broker launches only root-owned system `sway-session`
 and Herdr binaries through a system-only executable search path. The outer
-Herdr launcher removes inherited `HERDR_*` pane metadata
-and `CODEX_THREAD_ID` before starting a distinct context, then injects its new
-registered context ID and the validated `HERDR_CONFIG_PATH` resolved for that
-context. Do not allow-list a user-writable source-install copy.
+Herdr launcher removes inherited `HERDR_*` pane metadata, `CODEX_THREAD_ID`,
+and the caller-only `NO_COLOR` setting before starting a distinct interactive
+context, then injects its new registered context ID and the validated
+`HERDR_CONFIG_PATH` resolved for that context. It preserves terminal
+capabilities and unrelated user environment, including explicit color-enabling
+settings. This changes only the launched terminal environment; `sway-session`
+retains `NO_COLOR` for its own output. A Herdr server which was already started
+with `NO_COLOR` keeps that immutable process environment until it is
+deliberately stopped and recreated. Do not allow-list a user-writable
+source-install copy.
 
 For other agent roles, invoke the unconfined typed terminal command directly,
 for example `sway-session terminal --new --role opencode --role shell`. Pane

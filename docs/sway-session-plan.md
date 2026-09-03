@@ -791,10 +791,13 @@ behavior, or stop configuring the daemon.
 - Launched terminal adapters and desktop applications enter a new Unix process
   session before exec. Their lifetime is therefore independent of short-lived
   CLI shells and agent command runners which clean up their own process session.
-- A newly launched outer context removes inherited `HERDR_*` pane metadata and
-  `CODEX_THREAD_ID` so manual restore from inside Herdr cannot become an
-  accidental nested-Herdr launch. It then injects only the trusted
-  `HERDR_CONFIG_PATH` resolved by `sway-session` plus the new context ID.
+- A newly launched outer context removes inherited `HERDR_*` pane metadata,
+  `CODEX_THREAD_ID`, and caller-only `NO_COLOR` so manual restore from inside
+  Herdr cannot become an accidental nested-Herdr launch and command-oriented
+  output preferences cannot disable color in the new interactive terminal. It
+  then injects only the trusted `HERDR_CONFIG_PATH` resolved by `sway-session`
+  plus the new context ID. Terminal capability and unrelated user environment
+  values remain inherited.
 - A duplicate stable application ID is treated as an ambiguity and does not
   launch another window.
 - A missing workspace is created by moving the window to its saved workspace;
@@ -987,6 +990,19 @@ adapter start, or matching in-flight adapter is treated as possible persistent
 manager state. Creation rollback is therefore allowed only while no serialized
 manager-backed entry point or concrete process/window evidence can have exposed
 recoverable state.
+
+### Phase 14: Isolate interactive terminal color policy (LAB-113)
+
+Implemented: persistent and ephemeral terminal process specifications remove
+the exact inherited `NO_COLOR` key at the terminal-adapter launch seam. The
+invoking `sway-session` process remains unchanged, as do non-terminal command
+output and unrelated environment controls such as `FORCE_COLOR`, `CLICOLOR`,
+and `CLICOLOR_FORCE`. `TERM`, `COLORTERM`, ordinary inherited values, and the
+trusted context-specific overrides continue across the launch seam.
+
+This policy applies to newly started process trees. A running Herdr server's
+environment cannot be rewritten; a previously affected server must be stopped
+and recreated deliberately rather than being restarted automatically.
 
 ## Test matrix
 

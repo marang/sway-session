@@ -72,6 +72,22 @@ only the isolated registry entry and Herdr session. The compositor, state, and
 configuration roots were deleted afterward; no interactive Sway workspace or
 unrelated persistent context was opened or changed.
 
+## Interactive terminal environment procedure (LAB-113)
+
+Use a fresh isolated Herdr session on workspace `98: LAB-113 E2E`; do not reuse,
+stop, or purge an unrelated context. Invoke `sway-session terminal` with
+`NO_COLOR=1`, `TERM`, `COLORTERM`, and one harmless sentinel value. From the
+disposable pane, report only the presence or expected value of those four names
+rather than dumping the complete environment. Verify that `NO_COLOR` is absent
+while the terminal capability values and sentinel remain available. Repeat the
+check for `terminal --ephemeral`, and compare one non-terminal command's output
+with and without `NO_COLOR`.
+
+Automated subprocess coverage observes the effective environment after the
+terminal process seam for persistent and ephemeral specifications. It also
+proves that unrelated `FORCE_COLOR`, `CLICOLOR`, and `CLICOLOR_FORCE` values are
+preserved and that `sway-session list` output remains byte-identical.
+
 ## Desktop application group procedure (LAB-98)
 
 Use an isolated XDG state root and disposable workspace 98 or higher. Register

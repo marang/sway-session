@@ -76,7 +76,7 @@ func BuildTerminalProcessSpec(context Context, terminalExecutable string, herdrE
 			"SWAY_SESSION_CONTEXT_ID=" + string(context.ID),
 			"HERDR_CONFIG_PATH=" + herdrConfigPath,
 		},
-		UnsetInheritedEnvironment:         []string{"CODEX_THREAD_ID"},
+		UnsetInheritedEnvironment:         []string{"CODEX_THREAD_ID", "NO_COLOR"},
 		UnsetInheritedEnvironmentPrefixes: []string{"HERDR_"},
 	}, nil
 }
@@ -96,7 +96,7 @@ func BuildEphemeralTerminalProcessSpec(adapter TerminalAdapter, cwd string, term
 	return ProcessSpec{
 		Name:                              terminalExecutable,
 		Arguments:                         []string{"--working-directory=" + cwd},
-		UnsetInheritedEnvironment:         []string{"CODEX_THREAD_ID", "SWAY_SESSION_CONTEXT_ID"},
+		UnsetInheritedEnvironment:         []string{"CODEX_THREAD_ID", "NO_COLOR", "SWAY_SESSION_CONTEXT_ID"},
 		UnsetInheritedEnvironmentPrefixes: []string{"HERDR_"},
 	}, nil
 }

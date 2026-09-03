@@ -41,6 +41,40 @@ func TestHelpListsImplementedCommandContract(t *testing.T) {
 	}
 }
 
+func TestNoColorDoesNotChangeNonTerminalCommandOutput(t *testing.T) {
+	previous, wasSet := os.LookupEnv("NO_COLOR")
+	t.Cleanup(func() {
+		if wasSet {
+			if err := os.Setenv("NO_COLOR", previous); err != nil {
+				t.Errorf("restore NO_COLOR: %v", err)
+			}
+			return
+		}
+		if err := os.Unsetenv("NO_COLOR"); err != nil {
+			t.Errorf("unset NO_COLOR: %v", err)
+		}
+	})
+	deps := testDependencies(t)
+	runList := func() (int, string, string) {
+		var stdout bytes.Buffer
+		var stderr bytes.Buffer
+		code := runWith([]string{"list"}, strings.NewReader(""), &stdout, &stderr, deps)
+		return code, stdout.String(), stderr.String()
+	}
+	if err := os.Unsetenv("NO_COLOR"); err != nil {
+		t.Fatal(err)
+	}
+	wantCode, wantStdout, wantStderr := runList()
+	if err := os.Setenv("NO_COLOR", "1"); err != nil {
+		t.Fatal(err)
+	}
+	gotCode, gotStdout, gotStderr := runList()
+
+	if gotCode != wantCode || gotStdout != wantStdout || gotStderr != wantStderr {
+		t.Fatalf("NO_COLOR changed list output: got=(%d,%q,%q) want=(%d,%q,%q)", gotCode, gotStdout, gotStderr, wantCode, wantStdout, wantStderr)
+	}
+}
+
 func TestAppHelpDocumentsMachineReadableInventoryAndIndicatorStates(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer

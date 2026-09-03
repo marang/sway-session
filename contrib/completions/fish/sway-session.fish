@@ -30,7 +30,7 @@ function __sway_session_command
             case --config
                 set skip_next 1
                 set -e tokens[1]
-            case --config=*
+            case '--config=*'
                 set -e tokens[1]
             case --json -h --help
                 set -e tokens[1]
@@ -228,7 +228,7 @@ function __sway_session_terminal_subcommand --argument-names wanted
             switch $token
                 case --config
                     set skip_next 1
-                case --config=*
+                case '--config=*'
                 case --json -h --help
                 case terminal
                     set seen_terminal 1
@@ -261,7 +261,7 @@ function __sway_session_terminal_status_context_pending
         switch $token
             case --config
                 set skip_next 1
-            case --config=* --json -h --help
+            case '--config=*' --json -h --help
             case terminal
                 test -z "$state"
                 or return 1

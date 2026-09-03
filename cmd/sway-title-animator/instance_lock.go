@@ -17,10 +17,22 @@ import (
 
 var errInstanceRunning = errors.New("sway-title-animator is already running")
 
+const (
+	instanceRecordVersion         = 1
+	procfsDeletedExecutableSuffix = " (deleted)"
+)
+
+type executableIdentity struct {
+	Device uint64 `json:"device"`
+	Inode  uint64 `json:"inode"`
+}
+
 type instanceRecord struct {
-	PID        int    `json:"pid"`
-	StartTime  uint64 `json:"start_time"`
-	Executable string `json:"executable"`
+	Version            int                 `json:"version,omitempty"`
+	PID                int                 `json:"pid"`
+	StartTime          uint64              `json:"start_time"`
+	Executable         string              `json:"executable"`
+	ExecutableIdentity *executableIdentity `json:"executable_identity,omitempty"`
 }
 
 type instanceLock struct {
@@ -198,10 +210,23 @@ func writeInstanceRecord(file *os.File) error {
 	if err != nil {
 		return fmt.Errorf("read current executable: %w", err)
 	}
+	executableInfo, err := os.Stat("/proc/self/exe")
+	if err != nil {
+		return fmt.Errorf("inspect current executable identity: %w", err)
+	}
+	executableStat, ok := executableInfo.Sys().(*syscall.Stat_t)
+	if !ok {
+		return errors.New("inspect current executable identity: unsupported stat data")
+	}
 	record := instanceRecord{
+		Version:    instanceRecordVersion,
 		PID:        os.Getpid(),
 		StartTime:  startTime,
 		Executable: filepath.Base(executable),
+		ExecutableIdentity: &executableIdentity{
+			Device: uint64(executableStat.Dev),
+			Inode:  executableStat.Ino,
+		},
 	}
 	data, err := json.Marshal(record)
 	if err != nil {
@@ -224,18 +249,75 @@ func processMatchesRecord(record instanceRecord) bool {
 	if record.PID <= 0 || record.PID == os.Getpid() || record.StartTime == 0 || record.Executable == "" {
 		return false
 	}
+	if record.Version != 0 && record.Version != instanceRecordVersion {
+		return false
+	}
+	if record.Version == instanceRecordVersion && record.ExecutableIdentity == nil {
+		return false
+	}
+	if record.Version == 0 && record.ExecutableIdentity != nil {
+		return false
+	}
 	if err := syscall.Kill(record.PID, 0); err != nil && !errors.Is(err, syscall.EPERM) {
 		return false
 	}
-	executable, err := os.Readlink(filepath.Join("/proc", strconv.Itoa(record.PID), "exe"))
+	executableLink := filepath.Join("/proc", strconv.Itoa(record.PID), "exe")
+	executable, err := os.Readlink(executableLink)
 	if err != nil {
 		return false
 	}
-	if filepath.Base(executable) != filepath.Base(record.Executable) {
+	deletedMarkerVerified := false
+	if strings.HasSuffix(executable, procfsDeletedExecutableSuffix) {
+		info, err := os.Stat(executableLink)
+		if err != nil {
+			return false
+		}
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok {
+			return false
+		}
+		if record.ExecutableIdentity != nil {
+			if uint64(stat.Dev) != record.ExecutableIdentity.Device || stat.Ino != record.ExecutableIdentity.Inode {
+				return false
+			}
+		} else if stat.Nlink != 0 {
+			return false
+		}
+		confirmed, err := os.Readlink(executableLink)
+		if err != nil || confirmed != executable {
+			return false
+		}
+		deletedMarkerVerified = true
+	} else if record.ExecutableIdentity != nil {
+		info, err := os.Stat(executableLink)
+		if err != nil {
+			return false
+		}
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok || uint64(stat.Dev) != record.ExecutableIdentity.Device || stat.Ino != record.ExecutableIdentity.Inode {
+			return false
+		}
+	}
+	if !processExecutableMatches(executable, record.Executable, deletedMarkerVerified) {
 		return false
 	}
 	startTime, err := processStartTime(record.PID)
 	return err == nil && startTime == record.StartTime
+}
+
+func processExecutableMatches(observed string, recorded string, deletedMarkerVerified bool) bool {
+	if filepath.Base(observed) == filepath.Base(recorded) {
+		return true
+	}
+	if strings.HasSuffix(observed, procfsDeletedExecutableSuffix) {
+		// A live executable may literally end in " (deleted)". Only an
+		// independently verified inode permits treating the suffix as metadata.
+		if !deletedMarkerVerified {
+			return false
+		}
+		observed = strings.TrimSuffix(observed, procfsDeletedExecutableSuffix)
+	}
+	return filepath.Base(observed) == filepath.Base(recorded)
 }
 
 func processStartTime(pid int) (uint64, error) {

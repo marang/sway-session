@@ -67,6 +67,19 @@ with read/write access to Contents and Pull requests. A separate token is used
 instead of the workflow's `GITHUB_TOKEN` so that the generated pull request runs
 the repository's normal pull-request checks.
 
+After creating or changing that token, verify both required permissions without
+publishing a release:
+
+```sh
+gh workflow run aur.yml --ref main -f operation=verify-sync-token
+```
+
+The verification job creates a uniquely named temporary branch and pull
+request, requires its normal pull-request checks to start and pass without
+manual approval, then uses an always-running cleanup step to close it and delete
+the exact probe commit even when a later verification step fails. It never
+publishes to the AUR or changes `main`.
+
 Optional GitHub secrets:
 
 ```text

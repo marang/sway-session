@@ -645,6 +645,22 @@ if command -v fish >/dev/null 2>&1; then
 		exit 1
 		;;
 	esac
+	manage_socket_value_output=$(fish -c "source '$fish_completion'; complete -C 'sway-session terminal manage --socket '")
+	if printf '%s\n' "$manage_socket_value_output" | grep -Fx -- '--socket' >/dev/null; then
+		echo "fish terminal manage completion proposed --socket as its own value: $manage_socket_value_output" >&2
+		exit 1
+	fi
+	if [ -z "$manage_socket_value_output" ]; then
+		echo "fish terminal manage completion omitted filesystem socket candidates" >&2
+		exit 1
+	fi
+	manage_json_output=$(fish -c "source '$fish_completion'; complete -C 'sway-session terminal manage --j'")
+	case $manage_json_output in
+	*--json*)
+		echo "fish terminal manage completion proposed unsupported --json prefix: $manage_json_output" >&2
+		exit 1
+		;;
+	esac
 	rename_output=$(PATH="$temporary:$PATH" SWAY_SESSION_COMPLETION_SENTINEL="$sentinel" \
 		fish -c "source '$fish_completion'; complete -C 'sway-session terminal rename --label Release 111'")
 	case $rename_output in

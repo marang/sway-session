@@ -62,10 +62,10 @@ project checkpoint, whichever comes first.
   state.
 - `internal/session`: validated context/application and terminal identity,
   strict typed terminal-adapter configuration (`alacritty` or `foot` only),
-  versioned session state, separately versioned terminal presentation activity,
-  and the pure desktop-app restore coordinator.
-- `internal/statefile`: owner-only, bounded, transactional JSON state
-  persistence.
+  owner-only SQLite runtime state, terminal presentation activity, and the pure
+  desktop-app restore coordinator.
+- `internal/statefile`: owner-only private-directory and lock primitives used by
+  session persistence and the remaining file-backed artifacts.
 - `internal/diagnostic`: structured and human-readable CLI diagnostics.
 
 Keep new responsibilities in the matching module instead of growing `main.go`.
@@ -75,8 +75,17 @@ long-running behavior.
 `sway-title-animator` must remain usable without a registry or running
 `sway-session daemon`. It must not depend on `internal/session`,
 `internal/sessionrequest`, `internal/codexreport`, `internal/herdrinit`, or
-`internal/statefile`, and must never open session state files or sockets.
+`internal/statefile`, and must never open `state.sqlite3`, its WAL/SHM sidecars,
+other session state files, or session sockets.
 Conversely, session capture and restore must not depend on the animator.
+
+Session runtime state belongs in the owner-only `state.sqlite3` database;
+configuration remains in strict text files. Do not impose an arbitrary total
+context-count limit. Keep Sway IPC work bounded per reconciliation pass and
+resumable from a fresh observation when more work remains. SQLite transactions
+must be short and must never contain external Sway, Herdr, process, or desktop
+launcher calls; coordinate those effects as explicit retryable sagas around
+durable database transitions.
 
 ## Animation invariants
 

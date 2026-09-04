@@ -189,10 +189,25 @@ func TestRegistryRejectsUnsupportedVersion(t *testing.T) {
 	}
 }
 
-func TestRegistryBoundsContextCount(t *testing.T) {
-	registry := Registry{Version: ContextsSchemaVersion, Contexts: make([]Context, MaxContexts+1)}
-	if err := registry.Validate(); err == nil {
-		t.Fatal("expected oversized context registry rejection")
+func TestRegistryAcceptsLargePersistentInventory(t *testing.T) {
+	registry := Registry{Version: ContextsSchemaVersion, Contexts: make([]Context, 0, 300)}
+	for index := range 300 {
+		registry.Contexts = append(registry.Contexts, Context{
+			ID:    ContextID(fmt.Sprintf("00000000-0000-4000-8000-%012x", index)),
+			State: ContextArchived,
+			Launcher: Launcher{
+				Kind:    LauncherHerdr,
+				Session: fmt.Sprintf("stored-session-%d", index),
+				Cwd:     "/tmp",
+				Terminal: &TerminalLauncher{
+					Adapter: TerminalAdapterAlacritty,
+				},
+			},
+		})
+	}
+
+	if err := registry.Validate(); err != nil {
+		t.Fatalf("validate large persistent inventory: %v", err)
 	}
 }
 

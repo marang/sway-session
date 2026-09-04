@@ -3,7 +3,8 @@
 Status: Core Herdr work-session restore, the dedicated session-daemon process,
 explicit desktop application group restore and visible integration, shell
 completion, the typed terminal adapter contract, interactive environment
-isolation, and friendly terminal management are implemented through LAB-114.
+isolation, friendly terminal management, and SQLite runtime persistence are
+implemented through LAB-115.
 
 Tracking issue: [LAB-80](https://linear.app/riotbox/issue/LAB-80/add-persistent-sway-work-session-restoration)
 
@@ -80,12 +81,13 @@ or window recorder.
    creating duplicates. LAB-105 additionally gives `sway-session terminal`
    its own stable default identity and hashed named project identities; it does
    not solve arbitrary per-window application identity, which remains LAB-93.
-9. Launch metadata is a validated tagged union. Registry schema version 5 is
-   the only supported on-disk form. It models Herdr, system desktop entries,
+9. Launch metadata is a validated tagged union. Context payload encoding
+   version 5 is the only supported form inside database schema 1. It models
+   Herdr, system desktop entries,
    approved user-local desktop entries, Flatpak application IDs, a closed
    terminal adapter (`alacritty` or `foot`), optional stable terminal identity,
    archive time, and an explicit fresh-terminal-instance discriminator. Fresh
-   instance session names use the UUID without separators. No state file
+   instance session names use the UUID without separators. No persistent state
    contains a generic command, argument vector, environment, or value
    interpreted by a shell.
 10. Codex does not receive access to the general Herdr control socket. Native
@@ -101,6 +103,11 @@ or window recorder.
     underscore-prefixed, container-scoped Sway mark per eligible window. The
     daemon derives it from registry and approval state; the animator renders it
     without reading session state.
+14. Persistent runtime state uses an owner-only SQLite database through a
+    pure-Go driver so `CGO_ENABLED=0` remains supported. Configuration stays in
+    strict text files. The registry has no arbitrary total-context cap; fixed
+    action limits bound individual Sway reconciliation passes, which resume
+    from fresh observation until convergence.
 
 ## Architecture
 
@@ -179,14 +186,14 @@ The default state root is:
 ${XDG_STATE_HOME:-$HOME/.local/state}/sway-session/
 ```
 
-It contains the active session documents with separate purposes:
+It contains the runtime database and the remaining file-backed approval
+artifacts:
 
 ```text
-contexts.json   # written by sway-session lifecycle commands and brokers
-layout.json     # written by sway-session daemon
-application-runtime/
-  application-session.json # per-compositor conservative launch attempts
-desktop-approvals/ # immutable approved user-local .desktop snapshots
+state.sqlite3       # registry, layout, activity, compositor, launch attempts
+state.sqlite3-wal   # SQLite WAL sidecar while present
+state.sqlite3-shm   # SQLite shared-memory sidecar while present
+desktop-approvals/  # immutable approved user-local .desktop snapshots
 ```
 
 The owner-only `${XDG_RUNTIME_DIR}/sway-session/` directory contains the
@@ -194,54 +201,79 @@ exclusive `daemon.lock` and short-lived confirmation tokens rather than
 persistent state. At most 256 token files are retained; expired tokens are
 pruned and every confirmation consumes its token before applying work.
 
-The directory uses mode `0700`; regular state files use mode `0600`. The state
-directory is opened without following symlinks, then all reads, temporary-file
-creation, renames, cleanup, and directory syncs are performed relative to that
-held directory descriptor. Non-regular files are opened non-blocking and
-rejected after descriptor-based type, owner, mode, and link-count checks.
+The directory uses mode `0700`. The database and every SQLite WAL, SHM, or
+rollback-journal sidecar are required to be regular, single-link, current-user
+owned files with mode `0600`. Preflight opens the directory without following
+symlinks, addresses the database through that descriptor, and revalidates its
+inode across open. SQLite's Unix VFS subsequently canonicalizes that spelling
+to a normal path; moving or replacing the state root while operations run is
+unsupported. Traversal rejects non-sticky group/world-writable ancestors and
+accepts sticky shared ancestors only when both ancestor and entry are owned by
+the current user or root. Unconfined processes of the same UID are trusted state owners and
+can already modify the owner-only database directly. SQLite runs in WAL mode with full
+synchronous commits, foreign keys, defensive validation, automatic checkpoint
+and journal-size targets, one connection per store handle, and a 250 ms busy
+timeout. An oversized main database is rejected before SQLite opens it.
+Sidecars have no pre-open size ceiling because a valid WAL or rollback journal
+may grow while a reader pins old frames or crash recovery is pending; SQLite
+must remain able to recover and checkpoint them. The pure-Go driver
+preserves the repository's `CGO_ENABLED=0` build contract. Context-aware
+operations interrupt on cancellation; busy/locked outcomes are surfaced as
+retryable state rather than hidden behind an unbounded retry loop.
 
-Writes use a temporary file in the held directory followed by an atomic rename.
-Every read-modify-write operation holds the state-directory lock from load
-through validation, mutation, rename, and directory sync so concurrent CLI
-processes cannot lose each other's changes. The documents include explicit
-schema versions.
+The Codex AppArmor profile denies the complete default
+`~/.local/state/sway-session/{,**}` tree, so the main database and WAL/SHM
+sidecars remain covered without filename-specific rules. It also denies writes
+to the `.local/` and `.local/state/` directory objects so a confined process
+cannot replace an ancestor with a prepared tree after SQLite canonicalizes the
+database path. Static checks assert the ancestor denies; the live probe verifies
+the protected state tree without renaming real user directories. This filesystem rule must not be
+misrepresented as reliable pathname-socket connection mediation on kernels
+where AppArmor does not provide it.
 
-`application-session.json` identifies one compositor lifetime from the
-current-user-owned Sway socket inode and records each desktop launch intent before the
-typed process starter runs. A config reload retains that identity; replacing
-the compositor socket creates a fresh session and attempt budget. This is not a
-process watchdog: a failed, ambiguous, crashed, or deliberately closed app is
-not automatically retried in the same compositor lifetime.
+Database schema 1 stores registry metadata and preferences, one validated
+schema-5 payload per context, terminal activity keyed to its context, the
+singleton layout payload, the current compositor identity, and per-context
+application launch attempts. Foreign-key cascade makes context removal and its
+dependent runtime rows atomic. The compositor row identifies one lifetime from
+the current-user-owned Sway socket inode; replacing that socket starts a fresh
+attempt budget, while a config reload retains it.
 
-If the atomic rename succeeds but the following directory sync fails, the new
-document is already visible while its crash durability is unknown. The state
-layer reports that condition with a typed error and returns the visible
-candidate; callers must reload and reconcile before retrying the mutation or
-performing dependent external side effects.
+Transactions contain only database validation and mutation. Sway IPC, Herdr,
+process inspection, desktop-entry resolution, and process launch are external
+effects and never run inside a SQLite transaction. Callers coordinate them as
+short observe/record/act/reconcile sagas: durable intent precedes an ambiguous
+launch, fresh observation resolves ambiguous IPC, and compensating mutations
+or later reconciliation repair partial failure. This keeps writer lock hold
+times bounded without pretending an external compositor or session manager can
+participate in an ACID transaction.
 
-"Preserve the last valid version" has a deliberately fail-closed meaning: an
-invalid new candidate never replaces the valid on-disk file, and a failed load
-never replaces a caller's already loaded in-memory value. Schema version 5 is
-the sole accepted registry form. Version 1 through version 4, malformed, and
-unknown-version input is left byte-for-byte untouched and is never partially
-interpreted. A general disk-recovery design would require generations or
-tombstones so stale state cannot resurrect an archived or purged context.
+This is an explicit pre-1.0 transition boundary. If `state.sqlite3` is
+absent and any legacy `contexts.json`, `layout.json`,
+`application-runtime/application-session.json`, or
+`terminal-runtime/terminal-activity.json` exists, state opening fails closed
+without importing, deleting, or rewriting anything. `terminal manage` keeps an
+explicit `m` action available in that failure state. It strictly reads the
+legacy documents and initializes schema 1 plus all imported rows in one
+transaction, leaves the JSON byte-identical, and is safe to retry. Unknown
+database schema or invalid payload versions likewise fail closed.
+The migration holds every legacy document lock in a fixed order until the
+SQLite commit completes. A lost commit acknowledgement is reconciled by
+reloading and comparing every imported document before success is reported.
+Dependent activity and launch-attempt rows for contexts
+already absent from the legacy registry are skipped with explicit counts rather
+than silently disappearing.
 
 ### Context registry
 
-The registry schema is version 5. Its terminal-instance discriminator and
-short UUID-derived session spelling are validated as current-schema invariants;
-provider or session text cannot infer an instance identity. Earlier pre-release
-schemas are unsupported and fail closed without changing the file.
+Each context row carries a version-5 payload. Its terminal-instance
+discriminator and short UUID-derived session spelling are validated as current
+encoding invariants; provider or session text cannot infer an instance
+identity. Earlier payload encodings and unknown database schemas are
+unsupported and fail closed without changing the database.
 
-Before first use of this release, stop every `sway-session daemon` process and
-remove `${XDG_STATE_HOME:-$HOME/.local/state}/sway-session/`. This one-time
-reset deliberately forgets contexts, layouts, desktop approvals, and
-application runtime state; it does not automatically remove Herdr sessions or
-pane history. Normal registry mutations serialize on the state-directory lock;
-the independent owner-only runtime `daemon.lock` still excludes a second daemon.
-
-The registry's Herdr-compatible shape is:
+The registry projection reconstructed from those rows has this
+Herdr-compatible logical shape:
 
 ```json
 {
@@ -274,31 +306,32 @@ The registry's Herdr-compatible shape is:
 
 `provider` and `label` are optional presentation metadata. `label` can change
 without changing the UUID, launcher, Herdr session, cwd, or restore identity.
-Canonical UTC terminal activity is deliberately stored outside this strict
-schema-5 registry in `terminal-runtime/terminal-activity.json`, schema 1:
-
-```json
-{
-  "version": 1,
-  "terminals": [
-    {
-      "context_id": "123e4567-e89b-12d3-a456-426614174000",
-      "created_at": "2026-09-03T08:30:00Z",
-      "last_focused_at": "2026-09-03T10:45:00Z"
-    }
-  ]
-}
-```
-
-This file is presentation-only: registry membership remains authoritative and
-an activity-only UUID never resurrects a context. `last_focused_at` comes only
-from a confirmed Sway window-focus event and does not claim shell-input
-activity. Missing activity displays unknown timestamps; malformed activity
-fails closed without changing the registry. Launcher fields are
+Canonical UTC terminal activity lives in normalized database rows keyed by a
+context foreign key. It remains presentation-only: registry membership is
+authoritative and activity cannot resurrect a context. `last_focused_at` comes
+only from a confirmed Sway window-focus event and does not claim shell-input
+activity. Missing activity displays unknown timestamps; invalid activity fails
+closed without changing registry rows. Launcher fields are
 validated values, not executable command fragments. Executable paths and fixed
 argument templates come from trusted program configuration or compiled adapter
-policy. The registry remains bounded at 128 contexts, matching the worst-case
-two placement operations per context under the 256-action planner limit.
+policy. The registry has no arbitrary numeric context limit. Placement and
+indicator planners return a bounded rotating action batch for one reconciliation
+pass; their cursors advance after planning even when every action is rejected;
+application launch preparation rotates across at most two candidates per pass;
+and layout reconstruction emits one Sway mutation before re-observation, then
+yields after at most eight in-memory transitions per daemon invocation. The
+per-phase convergence budget scales with the saved layout's node count so a
+large valid tree may perform more than 1024 distinct actions while a small
+cyclic restore remains bounded. A second guard rejects 1024 repetitions of the
+same unchanged action. Automatic
+terminal restore starts at most two missing adapters per lifecycle-locked wave
+and reloads both registry and Sway state between waves. A wave which reaches
+its mapping deadline stops the automatic run before any additional adapters
+start and reports how many contexts were deferred; an explicit UUID restore
+remains a single immediate wave. None of these
+operational limits restricts the number of durable contexts. The separate
+128-item approval-request and maximum application-concurrency guards likewise
+bound one operation or configuration value, not registry capacity.
 `desktop_indicators` is a durable activation latch: it starts false, becomes
 true in the first successful desktop-registration transaction, and is not reset
 by later archive or forget operations.
@@ -309,7 +342,7 @@ by later archive or forget operations.
 every invocation. The context UUID is also its unique Sway application
 identity and deterministically names its unique Herdr session. Fresh contexts
 have no reusable lookup key: agents address each one by the UUID returned in
-the versioned JSON result. Concurrent calls serialize registry creation but
+the versioned JSON result. Concurrent calls serialize database creation but
 produce separate UUIDs, sessions, processes, and independently restorable
 windows.
 
@@ -326,8 +359,10 @@ adapter produces a typed conflict rather than a silent launcher change. The
 non-destructive switch sequence is archive, close the mapped terminal,
 `terminal reconfigure` (optionally with `--project NAME`), then activate;
 context ID, Herdr session, cwd, and pane history remain unchanged. Reconfigure
-holds the registry transaction while it proves through Sway and exact process
-observation that no window or pending old-adapter launch remains. Reusing an
+holds the lifecycle lock while it proves through Sway and exact process
+observation that no window or pending old-adapter launch remains; the database
+transaction used to persist the new adapter is opened only after those external
+checks. Reusing an
 archived identity fails with its UUID and requires an explicit `activate`; it
 is never launched outside daemon management while still archived.
 
@@ -352,7 +387,7 @@ without allocating another window or session.
 
 `terminal list`, `terminal status`, and `terminal cleanup
 --archived-before YYYY-MM-DD` are registry-only, read-only inventory and
-preview operations. They use a current-schema snapshot and return an
+preview operations. They use a validated SQLite read snapshot and return an
 unsupported-version or state diagnostic without modifying unsupported input.
 The cleanup command returns only archived typed-terminal
 contexts before the UTC date and never purges. All global `--json` results have
@@ -627,8 +662,8 @@ Human-readable output uses labels first and retains the full UUID so duplicate
 labels remain operable. Machine consumers receive an explicit structured-output
 option rather than parsing presentation text.
 
-The completion endpoint is a public, bounded, read-only projection. It reads
-one lock-free current-schema snapshot, never creates or changes state, and
+The completion endpoint is a public, read-only projection. It reads one
+validated SQLite snapshot, never changes state, and
 does not contact Sway, Herdr, or the network. Each successful text record is a
 canonical UUID plus one presentation-only description separated by a tab.
 Bash, Zsh, and Fish adapters own only the static command grammar and native
@@ -649,10 +684,10 @@ approval are removed transactionally. In `--json` mode `purge`
 never prompts: without `--yes`, it emits a preview plus confirmation
 diagnostic.
 
-Desktop registration is explicit and applies an optimistic stable mark only as
-part of the serialized registry transaction. A rejected mark or failed state
-commit compensates the other side; an ambiguous IPC outcome is resolved with a
-fresh tree instead of replaying the command. User-local launcher source or
+Desktop registration is explicit and applies an optimistic stable mark as an
+external saga around a short serialized database mutation. A rejected mark or
+failed commit compensates the other side; an ambiguous IPC outcome is resolved
+with a fresh tree instead of replaying the command. User-local launcher source or
 executable changes block until `reapprove`. `rebind-focused` shows and then
 atomically replaces the old launcher/identity while transferring the stable
 mark. Administrative and indirect entries (`pkexec`, `sudo`, shells, `env`, and
@@ -660,7 +695,8 @@ similar wrappers) are rejected; privileged launch support remains LAB-94.
 
 Herdr session names follow Herdr's 64-byte ASCII name contract. The reserved
 name `default` is rejected because Herdr maps it to non-deletable default state.
-Concurrent restores hold the registry lock across observation and launch.
+Concurrent restores hold the filesystem lifecycle lock across observation and
+launch, but no SQLite transaction spans either external operation.
 They also recognize an exact pending typed terminal-adapter argument vector in
 `/proc`, so a process which started before its Wayland window mapped is not
 launched again after a mapping timeout.
@@ -708,7 +744,7 @@ known context UUID + valid Codex session ID -> record association
 ```
 
 The reporter cannot inject pane input, run Herdr commands, select arbitrary
-executables, change launch metadata, or expose the underlying state files. It
+executables, change launch metadata, or expose the underlying state database. It
 runs as a narrow broker outside the Codex confinement boundary; the supported
 integration path exposes only that broker's validated reporting endpoint. A
 complete boundary would require negative tests to prove the general Herdr
@@ -748,8 +784,8 @@ are tracked in
 
 Pane initialization remains outside the animator and behind `sway-session`'s
 typed terminal-session-manager seam. The Herdr adapter loads one exact active
-context under the registry lock, derives the named Herdr session and cwd, and
-calls the ordinary Herdr CLI with fixed
+context while holding the lifecycle lock, closes its read transaction, derives
+the named Herdr session and cwd, and calls the ordinary Herdr CLI with fixed
 `snapshot`, `pane split`, and typed `agent start` argument shapes. It mutates
 only a session proven to use the supported snapshot protocol and to have one
 workspace, one tab, one pane, and no agent; every other existing or ambiguous
@@ -801,8 +837,10 @@ behavior, or stop configuring the daemon.
 
 ## Failure behavior
 
-- A malformed registry or layout file produces one actionable diagnostic and
-  never triggers partial interpretation as executable input.
+- An invalid database schema or context/layout payload produces one actionable
+  diagnostic and never triggers partial interpretation as executable input.
+  Recognized legacy JSON blocks ordinary database creation until the explicit
+  `terminal manage` migration action succeeds.
 - A missing Herdr or selected terminal-adapter executable fails the affected
   context only.
 - A missing project directory is reported and not silently replaced with the
@@ -935,7 +973,7 @@ behavior, or stop configuring the daemon.
 
 ### Phase 9: Shell completion
 
-- Expose one bounded read-only completion projection from `sway-session`.
+- Expose one read-only completion projection from `sway-session`.
 - Install static Bash, Zsh, and Fish adapters in their standard package vendor
   directories and include them in release archives and source installs.
 - Insert canonical context UUIDs while showing safe label, state, launcher,
@@ -949,8 +987,9 @@ Implemented: add the closed Alacritty/Foot adapter contract, the initial strict
 terminal configuration schema (superseded by version 2 in LAB-110), stable
 default and hashed project identities, the
 non-persistent ephemeral terminal path, and read-only terminal inventory and
-cleanup preview. The release registry contract is schema 5 only; older
-pre-release state is reset rather than interpreted.
+cleanup preview. Context payload encoding 5 remains the only accepted form in
+database schema 1; the one-time import accepts current valid schema-5 JSON but
+never guesses at or interprets older payload encodings.
 
 Automated verification covers adapter/config validation, identity reuse and cwd
 conflicts, ephemeral non-persistence, stable JSON actions, read-only inventory,
@@ -984,9 +1023,9 @@ lengths are validated against Linux's `sockaddr_un` limit before a new context
 is committed; an unusually long custom `XDG_CONFIG_HOME` fails with an
 actionable diagnostic.
 
-Only the schema-5 short spelling is supported by the release. Pre-release
-registries use the one-time state reset described above rather than retaining
-an alternate terminal-instance identity.
+Only the schema-5 short spelling is supported by the release. The explicit
+one-time JSON import accepts only already-valid schema-5 identities; it does not
+retain or reinterpret older terminal-instance encodings.
 
 ### Phase 12: Configurable terminal session manager (LAB-110)
 
@@ -997,8 +1036,9 @@ forbidden. `terminal --new` and exact `terminal --context UUID` invocations can
 request one agent plus one shell with repeated typed `--role` options.
 
 The Herdr adapter owns launch preflight and rollback-safe empty-session
-initialization. Initialization runs while the registry lock proves the context
-active, so archive and purge cannot race the dependent Herdr mutations. A
+initialization. Initialization runs while the lifecycle lock protects the
+active context, so archive and purge cannot race the dependent Herdr mutations;
+the Herdr calls remain outside SQLite transactions. A
 failed agent start retains the context UUID and rolls back to a retryable single
 shell. The separately installed `sway-herdr-init` binary and its AppArmor child
 profile are removed. The unchanged request-start broker performs the fixed
@@ -1016,7 +1056,8 @@ restarts an agent in an occupied pane.
 
 Terminal creation, one-shot restore, broker registration preparation, and
 manager initialization serialize through one owner-only terminal-lifecycle
-lock before taking the registry lock. Any observed target window, accepted
+lock. Each durable transition uses a separate short SQLite transaction. Any
+observed target window, accepted
 adapter start, or matching in-flight adapter is treated as possible persistent
 manager state. Creation rollback is therefore allowed only while no serialized
 manager-backed entry point or concrete process/window evidence can have exposed
@@ -1041,28 +1082,49 @@ Implemented: `sway-session terminal manage` presents only typed persistent
 terminals through a responsive Bubble Tea interface. Human-readable editable
 titles lead the list while UUID, manager session, project, cwd, creation time,
 last confirmed Sway focus, and lifecycle state remain available in details.
-The timestamps use the independently versioned owner-only terminal activity
-document; `contexts.json` remains byte-compatible schema 5.
+The timestamps use normalized owner-only terminal-activity rows; the context
+payload encoding remains schema 5.
 The TUI delegates open, archive/activate, rename, and purge to the same typed
 operations as the CLI. Permanent deletion has a modal `y` confirmation and
 revalidates the exact UUID through the existing transactional purge path; no
 automatic age-based deletion exists. `NO_COLOR` retains all textual state and
-keyboard affordances without ANSI styling.
+keyboard affordances without ANSI styling. A grouped footer separates
+navigation, selected-context operations, and global actions; the global `m`
+action remains available when legacy JSON prevents the first inventory load.
+
+### Phase 16: SQLite session runtime state (LAB-115)
+
+Implemented: replace the context, layout, terminal-activity, and application
+session JSON documents with owner-only database schema 1 in `state.sqlite3`.
+The pure-Go SQLite driver preserves `CGO_ENABLED=0`; WAL mode, `0600` database
+and sidecar enforcement, context cancellation, bounded busy handling, foreign
+keys, startup integrity checks, revision-cached daemon reads, and validated
+row-level operations make the multi-process store fail closed without rescanning
+all historical contexts on every observation.
+
+Legacy files block ordinary database creation until the operator explicitly
+presses `m` in `terminal manage`; this narrow, temporary upgrade action imports
+them atomically and keeps the source files untouched. The total
+registry no longer has a numeric context cap. Placement, indicator, launch, and
+restore work remains bounded in resumable per-pass batches, with all Sway,
+Herdr, process, and launcher calls outside short database transactions.
 
 ## Test matrix
 
 Automated tests must cover:
 
 - UUID and mark validation;
-- schema-version rejection with byte-for-byte preservation of unsupported input;
-- safe path, ownership, mode, symlink, and atomic-write behavior;
-- non-blocking rejection of FIFOs and descriptor-relative operation after a
-  directory-path replacement;
-- coordinated two-process read-modify-write serialization;
-- post-rename directory-sync failure reporting and visible-state
-  reconciliation;
-- preservation of the on-disk file after an invalid write candidate and the
-  in-memory value after an invalid load;
+- database schema, application ID, WAL mode, foreign-key, and integrity checks;
+- database/WAL/SHM ownership, `0600` mode, regular-file, hard-link, leaf-symlink,
+  and state-root path validation under the documented same-UID trust model;
+- fail-closed legacy-JSON detection for ordinary commands, explicit atomic and
+  idempotent `m` import, and no deletion or legacy-byte mutation;
+- coordinated multi-process read/write serialization, bounded busy outcomes,
+  cancellation, and unknown-commit reconciliation;
+- atomic registry plus terminal-creation updates and foreign-key cleanup of
+  activity and launch-attempt rows;
+- rejection of invalid context/layout payloads and unknown database or payload
+  versions without partial interpretation;
 - semantic snapshot hashing and debounce behavior;
 - startup and shutdown empty-tree guards;
 - restore planning for nested split, tabbed, and stacked trees;
@@ -1070,8 +1132,9 @@ Automated tests must cover:
 - floating geometry clamping;
 - one-window-per-context duplicate prevention;
 - registry-wide typed launcher-identity uniqueness;
-- version-1 through version-4 and unknown registry rejection, with no
-  mutation, no inferred instance discriminator, and no partial interpretation;
+- version-1 through version-4 context-payload and unknown database-schema
+  rejection, with no mutation, inferred instance discriminator, or partial
+  interpretation;
 - mixed Herdr, system-desktop, approved user-local, and Flatpak identities;
 - Wayland, XWayland, sandbox, and ambiguous application-identity fixtures;
 - application-group adoption, profile-picker transitions, last-window close
@@ -1089,7 +1152,15 @@ Automated tests must cover:
   ordering, and read-only archive cleanup previews;
 - closed terminal-session-manager selection, role rejection before state/Sway
   access, bounded fresh-shell readiness, exact-context initialization retry,
-  broker-fixed Codex/shell roles, and registry-serialized Herdr mutation;
+  broker-fixed Codex/shell roles, lifecycle-serialized Herdr mutation, and no
+  external Herdr call inside a database transaction;
+- more than 128 durable contexts plus rotating bounded placement and indicator
+  planning that advances after a rejected batch and resumes from fresh Sway
+  observation;
+- automatic terminal restore waves with at most two pending mappings, registry
+  revalidation between waves, and exact-context restore that remains immediate;
+- exact-layout restore beyond 1024 distinct actions plus bounded detection of
+  repeated actions and multi-action cycles;
 - per-context and per-workspace failure isolation;
 - IPC reconnects, bounded payload handling, and no replay of ambiguous
   mutating commands; and

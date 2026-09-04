@@ -41,6 +41,15 @@ unrelated branch content. This keeps the package metadata in this source
 repository directly buildable without maintaining another Git repository
 beyond the AUR repository itself.
 
+The Arch package keeps only `sway` as a runtime dependency. Go is a
+`makedepends` entry because AUR builds compile from source, but installed
+GoReleaser binaries do not require Go. Audio (`libpulse`), terminal adapters
+(`alacritty` or `foot`), Herdr, Flatpak/GIO application restore, and the
+AppArmor verification boundary remain feature-specific `optdepends`. The
+SQLite driver is pure Go and built with `CGO_ENABLED=0`, so neither SQLite nor
+a C runtime/toolchain is a package dependency. DEB and RPM recommendations
+carry the same Herdr 0.8.2 minimum as the Arch metadata.
+
 If the AUR workflow infrastructure fails after a GitHub release has already
 been published, rerun the fixed workflow for the existing immutable tag rather
 than moving the tag or creating a replacement release:
@@ -100,7 +109,7 @@ through a separate trusted path, then update both the workflow key and
 fingerprint plus the packaging regression check in one reviewed change.
 
 The release tag is created only after the real Sway/Herdr end-to-end release
-check has passed. That check starts with a fresh schema-5 session-state root;
-pre-release registries are reset, not upgraded. Pushing the tag starts the
+check has passed. That check exercises both a fresh schema-1 SQLite state root
+and the explicit, source-preserving pre-1.0 JSON migration. Pushing the tag starts the
 GitHub release and AUR workflows; it is not the point at which the end-to-end
 check is performed.

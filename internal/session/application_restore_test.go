@@ -1,8 +1,10 @@
 package session
 
 import (
+	"fmt"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -88,6 +90,21 @@ func TestObserveApplicationGroupsIgnoresArchivedApplication(t *testing.T) {
 	}
 }
 
+func TestObserveApplicationGroupsRejectsSandboxlessWindowSharedBySandboxSpecificContexts(t *testing.T) {
+	first := flatpakApplicationContext("org.example.First", "org.example.App")
+	first.ID, first.Label, first.Provider = testContextID, "First", "desktop"
+	second := flatpakApplicationContext("org.example.Second", "org.example.App")
+	second.ID, second.Label, second.Provider = "22222222-2222-4222-8222-222222222222", "Second", "desktop"
+	window := appWindow(41, true, "org.example.App", "", "", "")
+
+	_, err := ObserveApplicationGroups(applicationTree(window), Registry{
+		Version: ContextsSchemaVersion, Contexts: []Context{first, second},
+	})
+	if err == nil || !strings.Contains(err.Error(), "without a sandbox ID overlaps 2 registered contexts") {
+		t.Fatalf("ambiguous sandboxless window error = %v", err)
+	}
+}
+
 func TestPlanApplicationPlacementMarksOnlyOneUniqueAnchor(t *testing.T) {
 	context := applicationContextWithID(testContextID, "org.example.App")
 	desired := LayoutSnapshot{Version: LayoutSchemaVersion, Workspaces: []WorkspaceLayout{{
@@ -116,23 +133,70 @@ func TestPlanApplicationPlacementMarksOnlyOneUniqueAnchor(t *testing.T) {
 	}
 }
 
-func TestApplicationSessionFilePersistsConservativeAttemptEvidence(t *testing.T) {
+func TestPlanApplicationPlacementRotatesPastRejectedBoundedPrefix(t *testing.T) {
+	groups := make(map[ContextID]ApplicationGroup, maxPlacementActions+1)
+	for index := range maxPlacementActions + 1 {
+		id := ContextID(fmt.Sprintf("00000000-0000-4000-8000-%012x", index+1))
+		anchor := WindowApplication{ContainerID: int64(index + 1), Workspace: "98: apps"}
+		groups[id] = ApplicationGroup{Windows: []WindowApplication{anchor}, Anchor: &anchor}
+	}
+	desired := LayoutSnapshot{Version: LayoutSchemaVersion, Workspaces: []WorkspaceLayout{}}
+	first, err := PlanApplicationPlacementActions(groups, desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first) != maxPlacementActions {
+		t.Fatalf("first action count = %d, want %d", len(first), maxPlacementActions)
+	}
+	next, err := PlanApplicationPlacementActionsAfter(groups, desired, &first[len(first)-1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(next) == 0 || next[0].ContainerID != int64(maxPlacementActions+1) {
+		t.Fatalf("rotated batch did not advance beyond rejected prefix: %+v", next)
+	}
+}
+
+func TestApplicationSessionStorePersistsConservativeAttemptEvidence(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "state")
 	started := time.Date(2026, 8, 31, 18, 0, 0, 0, time.UTC)
+	registered := flatpakApplicationContext("org.example.App", "org.example.App")
+	registered.ID = testContextID
+	if err := RegistryStoreFor(root).Save(Registry{Version: ContextsSchemaVersion, Contexts: []Context{registered}}); err != nil {
+		t.Fatal(err)
+	}
 	want := ApplicationSessionState{
 		Version:      ApplicationSessionSchemaVersion,
 		CompositorID: stringsOfLength("d", 64),
 		Attempts:     []ApplicationLaunchAttempt{{ContextID: testContextID, StartedAt: started}},
 	}
-	if err := ApplicationSessionFile(root).Save(want); err != nil {
+	if err := ApplicationSessionStoreFor(root).Save(want); err != nil {
 		t.Fatal(err)
 	}
 	var got ApplicationSessionState
-	if err := ApplicationSessionFile(root).LoadInto(&got); err != nil {
+	if err := ApplicationSessionStoreFor(root).LoadInto(&got); err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("attempt evidence changed across persistence: got=%+v want=%+v", got, want)
+	}
+}
+
+func TestApplicationSessionStateAcceptsLargeAttemptInventory(t *testing.T) {
+	state := ApplicationSessionState{
+		Version:      ApplicationSessionSchemaVersion,
+		CompositorID: stringsOfLength("d", 64),
+		Attempts:     make([]ApplicationLaunchAttempt, 0, 300),
+	}
+	startedAt := time.Date(2026, 8, 31, 18, 0, 0, 0, time.UTC)
+	for index := range 300 {
+		state.Attempts = append(state.Attempts, ApplicationLaunchAttempt{
+			ContextID: ContextID(fmt.Sprintf("00000000-0000-4000-8000-%012x", index)),
+			StartedAt: startedAt,
+		})
+	}
+	if err := state.Validate(); err != nil {
+		t.Fatalf("validate large application attempt inventory: %v", err)
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -224,6 +225,104 @@ func TestOpenStateDirectorySyncsParentAfterConcurrentCreation(t *testing.T) {
 	}
 	if mkdirCalls != 1 || syncCalls != 1 {
 		t.Fatalf("unexpected operation counts: mkdir=%d sync=%d", mkdirCalls, syncCalls)
+	}
+}
+
+func TestOpenStateDirectoryRejectsReplaceableAncestor(t *testing.T) {
+	for name, mode := range map[string]os.FileMode{
+		"group writable": 0o770,
+		"world writable": 0o707,
+	} {
+		t.Run(name, func(t *testing.T) {
+			base := t.TempDir()
+			ancestor := filepath.Join(base, "replaceable")
+			if err := os.Mkdir(ancestor, DirectoryMode); err != nil {
+				t.Fatalf("create ancestor: %v", err)
+			}
+			if err := os.Chmod(ancestor, mode); err != nil {
+				t.Fatalf("set ancestor mode: %v", err)
+			}
+			root := filepath.Join(ancestor, "state")
+
+			directory, err := OpenPrivateDirectory(root, true)
+			if directory != nil {
+				_ = directory.Close()
+				t.Fatal("state directory was returned below a replaceable ancestor")
+			}
+			if err == nil || !strings.Contains(err.Error(), "group- or world-writable without the sticky bit") {
+				t.Fatalf("expected replaceable-ancestor error, got %v", err)
+			}
+			if _, statErr := os.Lstat(root); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("state directory was created below rejected ancestor: %v", statErr)
+			}
+		})
+	}
+}
+
+func TestOpenStateDirectoryAllowsStickyAndNonWritableAncestors(t *testing.T) {
+	base := t.TempDir()
+	privateAncestor := filepath.Join(base, "private")
+	if err := os.Mkdir(privateAncestor, DirectoryMode); err != nil {
+		t.Fatalf("create private ancestor: %v", err)
+	}
+	stickyAncestor := filepath.Join(privateAncestor, "sticky")
+	if err := os.Mkdir(stickyAncestor, DirectoryMode); err != nil {
+		t.Fatalf("create sticky ancestor: %v", err)
+	}
+	if err := os.Chmod(stickyAncestor, 0o777|os.ModeSticky); err != nil {
+		t.Fatalf("set sticky ancestor mode: %v", err)
+	}
+
+	root := filepath.Join(stickyAncestor, "state")
+	directory, err := OpenPrivateDirectory(root, true)
+	if err != nil {
+		t.Fatalf("open state directory below sticky and private ancestors: %v", err)
+	}
+	if err := directory.Close(); err != nil {
+		t.Fatalf("close state directory: %v", err)
+	}
+}
+
+func TestStateDirectoryAncestorModePolicy(t *testing.T) {
+	for name, test := range map[string]struct {
+		mode    os.FileMode
+		wantErr bool
+	}{
+		"root style 0755":      {mode: 0o755},
+		"user private 0700":    {mode: 0o700},
+		"sticky tmp style":     {mode: 0o777 | os.ModeSticky},
+		"group writable":       {mode: 0o770, wantErr: true},
+		"world writable":       {mode: 0o707, wantErr: true},
+		"group world writable": {mode: 0o777, wantErr: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := checkStateDirectoryAncestorMode(test.mode)
+			if (err != nil) != test.wantErr {
+				t.Fatalf("check mode %v returned %v, wantErr=%v", test.mode, err, test.wantErr)
+			}
+		})
+	}
+}
+
+func TestStickyStateDirectoryAncestorsTrustOnlyRootAndCurrentUser(t *testing.T) {
+	const userID uint32 = 1000
+	for name, test := range map[string]struct {
+		parent uint32
+		child  uint32
+		valid  bool
+	}{
+		"root tmp and user entry":      {parent: 0, child: userID, valid: true},
+		"user parent and user entry":   {parent: userID, child: userID, valid: true},
+		"foreign parent and user leaf": {parent: 2000, child: userID},
+		"user parent and foreign leaf": {parent: userID, child: 2000},
+		"foreign parent and root leaf": {parent: 2000, child: 0},
+	} {
+		t.Run(name, func(t *testing.T) {
+			valid := trustedStateDirectoryOwner(test.parent, userID) && trustedStateDirectoryOwner(test.child, userID)
+			if valid != test.valid {
+				t.Fatalf("trusted owner pair (%d, %d) = %t, want %t", test.parent, test.child, valid, test.valid)
+			}
+		})
 	}
 }
 
@@ -741,6 +840,28 @@ func TestPrivateFileCreateConsumeAndReplayProtection(t *testing.T) {
 	}
 	if _, err := ConsumePrivateFile(directory, "token.json"); err == nil {
 		t.Fatal("private file was replayable")
+	}
+}
+
+func TestPrivateFileCreateReportsVisibleUnknownOutcomeWhenDirectorySyncFails(t *testing.T) {
+	directoryPath := filepath.Join(t.TempDir(), "private")
+	if err := os.Mkdir(directoryPath, DirectoryMode); err != nil {
+		t.Fatal(err)
+	}
+	directory, err := OpenPrivateDirectory(directoryPath, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer directory.Close()
+	want := errors.New("directory sync failed")
+	err = createPrivateFileAtWithDirectorySync(directory, "state.sqlite3", nil, func() error { return want })
+	var unknown *CommitOutcomeUnknownError
+	if !errors.As(err, &unknown) || !errors.Is(err, want) {
+		t.Fatalf("directory sync failure returned %v", err)
+	}
+	info, statErr := os.Stat(filepath.Join(directoryPath, "state.sqlite3"))
+	if statErr != nil || !info.Mode().IsRegular() || info.Mode().Perm() != RegularFileMode {
+		t.Fatalf("visible created file was removed after unknown outcome: info=%v err=%v", info, statErr)
 	}
 }
 

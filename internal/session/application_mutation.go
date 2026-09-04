@@ -485,7 +485,7 @@ func registryContainsApplicationMutation(ctx context.Context, root string, want 
 
 func registryContainsApplicationMutations(ctx context.Context, root string, want []Context) (bool, error) {
 	var registry Registry
-	if err := RegistryFile(root).LoadIntoContext(ctx, &registry); err != nil {
+	if err := RegistryStoreFor(root).LoadIntoContext(ctx, &registry); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return false, nil
 		}
@@ -522,7 +522,7 @@ func registryContainsContextID(ctx context.Context, root string, id ContextID) (
 		return true, nil
 	}
 	var registry Registry
-	if err := RegistryFile(root).LoadIntoContext(ctx, &registry); err != nil {
+	if err := RegistryStoreFor(root).LoadIntoContext(ctx, &registry); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return false, nil
 		}

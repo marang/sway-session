@@ -82,6 +82,18 @@ func CaptureLayout(root *swayipc.TreeNode, registry Registry) (LayoutSnapshot, e
 // workspaces; already marked windows remain user-controlled and are captured
 // at their current workspace instead of being moved back.
 func PlanPlacementActions(root *swayipc.TreeNode, registry Registry, desired LayoutSnapshot) ([]PlacementAction, error) {
+	return PlanPlacementActionsAfter(root, registry, desired, nil)
+}
+
+// PlanPlacementActionsAfter returns the next bounded, rotating action batch.
+// Advancing the cursor after planning prevents a permanently rejected prefix
+// from starving unrelated contexts on later reconciliation passes.
+func PlanPlacementActionsAfter(
+	root *swayipc.TreeNode,
+	registry Registry,
+	desired LayoutSnapshot,
+	after *PlacementAction,
+) ([]PlacementAction, error) {
 	if root == nil {
 		return nil, errors.New("sway tree is nil")
 	}
@@ -109,20 +121,14 @@ func PlanPlacementActions(root *swayipc.TreeNode, registry Registry, desired Lay
 				ContainerID: context.containerID,
 				Workspace:   target,
 			})
-			if len(actions) > maxPlacementActions {
-				return nil, fmt.Errorf("placement plan exceeds %d actions", maxPlacementActions)
-			}
 		}
 		actions = append(actions, PlacementAction{
 			Kind:        PlacementAddMark,
 			ContextID:   context.id,
 			ContainerID: context.containerID,
 		})
-		if len(actions) > maxPlacementActions {
-			return nil, fmt.Errorf("placement plan exceeds %d actions", maxPlacementActions)
-		}
 	}
-	return actions, nil
+	return boundedPlacementActionsAfter(actions, after), nil
 }
 
 func registeredContextIDs(registry Registry) map[ContextID]struct{} {

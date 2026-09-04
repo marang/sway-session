@@ -4,6 +4,134 @@
 > workspace. Create a disposable named workspace numbered 98 or higher, and
 > verify every target workspace before issuing a move, restore, or close.
 
+## SQLite runtime-state procedure (LAB-115)
+
+Use an isolated XDG state root and keep the interactive desktop's real state
+out of scope. First prove the explicit pre-1.0 migration boundary with all four
+legacy runtime documents. The stale IDs deliberately exercise filtered-row
+counts without weakening the authoritative registry:
+
+```sh
+migration_state="$(mktemp -d)"
+export XDG_STATE_HOME="$migration_state"
+legacy_root="$XDG_STATE_HOME/sway-session"
+install -d -m 0700 "$legacy_root"
+install -d -m 0700 \
+  "$legacy_root/application-runtime" \
+  "$legacy_root/terminal-runtime"
+cat > "$legacy_root/contexts.json" <<'JSON'
+{"version":5,"preferences":{"desktop_indicators":true},"contexts":[{"id":"123e4567-e89b-12d3-a456-426614174000","label":"Migration terminal","provider":"verification","state":"active","launcher":{"kind":"herdr","session":"migration-terminal","cwd":"/tmp","terminal":{"adapter":"alacritty"}}},{"id":"6ba7b811-9dad-41d1-80b4-00c04fd430c8","label":"Migration app","state":"active","launcher":{"kind":"flatpak","flatpak_id":"com.slack.Slack","flatpak_installation":"user"},"app":{"identity":{"protocol":"xwayland","x11_class":"Slack","x11_instance":"slack","sandbox_app_id":"com.slack.Slack"},"desired_open":true,"restore_policy":"pinned"}}]}
+JSON
+cat > "$legacy_root/layout.json" <<'JSON'
+{"version":1,"workspaces":[{"name":"98: migration","restore_mode":"placement_only","placement_contexts":["123e4567-e89b-12d3-a456-426614174000","6ba7b811-9dad-41d1-80b4-00c04fd430c8"]}]}
+JSON
+cat > "$legacy_root/application-runtime/application-session.json" <<'JSON'
+{"version":1,"compositor_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","attempts":[{"context_id":"6ba7b811-9dad-41d1-80b4-00c04fd430c8","started_at":"2026-09-04T10:00:00Z"},{"context_id":"77777777-7777-4777-8777-777777777777","started_at":"2026-09-04T10:00:00Z"}]}
+JSON
+cat > "$legacy_root/terminal-runtime/terminal-activity.json" <<'JSON'
+{"version":1,"terminals":[{"context_id":"123e4567-e89b-12d3-a456-426614174000","created_at":"2026-09-04T09:00:00Z","last_focused_at":"2026-09-04T10:00:00Z"},{"context_id":"77777777-7777-4777-8777-777777777777","last_focused_at":"2026-09-04T10:00:00Z"}]}
+JSON
+chmod 0600 \
+  "$legacy_root/contexts.json" \
+  "$legacy_root/layout.json" \
+  "$legacy_root/application-runtime/application-session.json" \
+  "$legacy_root/terminal-runtime/terminal-activity.json"
+legacy_manifest="$(cd "$legacy_root" && sha256sum \
+  contexts.json layout.json \
+  application-runtime/application-session.json \
+  terminal-runtime/terminal-activity.json)"
+sway-session list && exit 1
+test ! -e "$legacy_root/state.sqlite3"
+test "$legacy_manifest" = "$(cd "$legacy_root" && sha256sum \
+  contexts.json layout.json \
+  application-runtime/application-session.json \
+  terminal-runtime/terminal-activity.json)"
+sway-session terminal manage
+test -f "$legacy_root/state.sqlite3"
+test "$legacy_manifest" = "$(cd "$legacy_root" && sha256sum \
+  contexts.json layout.json \
+  application-runtime/application-session.json \
+  terminal-runtime/terminal-activity.json)"
+test "$(sqlite3 "$legacy_root/state.sqlite3" 'SELECT count(*) FROM contexts')" -eq 2
+test "$(sqlite3 "$legacy_root/state.sqlite3" 'SELECT count(*) FROM layout_state')" -eq 1
+test "$(sqlite3 "$legacy_root/state.sqlite3" 'SELECT count(*) FROM application_launch_attempts')" -eq 1
+test "$(sqlite3 "$legacy_root/state.sqlite3" 'SELECT count(*) FROM terminal_activity')" -eq 1
+```
+
+The first command must fail with the explicit migration diagnostic and must not
+create the database. In the TUI, press `m`; the database must appear while the
+four-file manifest remains unchanged. The result must report two skipped stale
+runtime rows. Repeating `m` is an idempotent no-op. Keep the legacy files until
+the imported inventory and restore have been verified.
+Migration holds all legacy document locks through the SQLite commit and reports
+the count of stale activity or launch-attempt records skipped because their
+registry context was already absent.
+Configuration must remain in
+`${XDG_CONFIG_HOME:-$HOME/.config}/sway-session/config.toml`; no configuration
+table belongs in the database.
+
+Separately prove schema-1 creation without legacy input, then create another
+fresh isolated root for the real Sway exercise:
+
+```sh
+fresh_probe="$(mktemp -d)"
+XDG_STATE_HOME="$fresh_probe" sway-session register \
+  --id 88888888-8888-4888-8888-888888888888 \
+  --session fresh-schema-probe --cwd /tmp --label 'Fresh schema probe'
+test -f "$fresh_probe/sway-session/state.sqlite3"
+test "$(sqlite3 "$fresh_probe/sway-session/state.sqlite3" 'PRAGMA user_version')" -eq 1
+rm -rf -- "$fresh_probe"
+
+test_state="$(mktemp -d)"
+export XDG_STATE_HOME="$test_state"
+```
+
+Create and exercise disposable terminal and desktop-application contexts only
+on workspace 98 or higher. After capture, focus activity, and one application
+launch attempt, verify that no legacy JSON documents were recreated and inspect
+the database invariants. The external `sqlite3` program is optional and is used
+only for this diagnostic inspection; the product itself uses a pure-Go driver.
+
+```sh
+state_root="$XDG_STATE_HOME/sway-session"
+state_db="$state_root/state.sqlite3"
+stat -c '%a %U %h %n' "$state_db"
+find "$state_root" -maxdepth 1 \
+  \( -name 'state.sqlite3-wal' -o -name 'state.sqlite3-shm' \
+     -o -name 'state.sqlite3-journal' \) \
+  -exec stat -c '%a %U %h %n' {} +
+sqlite3 "$state_db" \
+  'PRAGMA journal_mode; PRAGMA user_version; PRAGMA quick_check;'
+test ! -e "$state_root/contexts.json"
+test ! -e "$state_root/layout.json"
+test ! -e "$state_root/application-runtime/application-session.json"
+test ! -e "$state_root/terminal-runtime/terminal-activity.json"
+```
+
+Expect WAL mode, database schema version `1`, `ok`, and mode `600`, one link,
+and the current user for every database or sidecar file present. Exercise
+concurrent reads and writes while the daemon reconciles; contention beyond the
+250 ms busy timeout may return a retryable diagnostic, but cancellation must
+remain prompt and a later read plus `quick_check` must succeed. Sway IPC,
+Herdr, process inspection, and launch calls must be covered by seam tests
+proving they occur outside the short database transactions; ambiguous effects
+are resolved by fresh observation and reconciliation.
+
+Automated coverage must persist more than 128 contexts. Separately verify that
+placement and indicator planners emit bounded rotating batches and advance
+past a completely rejected batch, application preflight
+rotates candidates across passes after its two-candidate bound, and layout
+restore re-observes after each mutation and resumes after its bounded in-memory
+yield. A per-pass IPC batch limit is a latency and request-size bound, not a
+registry-capacity bound.
+Run the AppArmor policy checks and, when the profile can be loaded safely, the
+live state-root denial probe: the whole default
+`~/.local/state/sway-session/{,**}` rule must cover `state.sqlite3` and any
+WAL/SHM sidecars. Do not infer pathname-socket mediation from that file rule.
+Stop every process using the isolated roots, then remove only the disposable
+state root, test windows, and high-numbered workspaces created by
+this procedure.
+
 ## Current process-boundary procedure (LAB-101)
 
 Current builds run session observation and restore in `sway-session daemon`.
@@ -22,12 +150,14 @@ Then request the one-shot context launch from a second terminal:
 
 With at least one registered context, verify that the daemon repairs its
 `persist:<uuid>` mark, restores its saved workspace and layout after remapping,
-and updates `layout.json` after the debounce interval. Then stop only the title
-animator and repeat placement/layout restore; it must still converge. Finally,
+and updates the layout row in `state.sqlite3` after the debounce interval. Then
+stop only the title animator and repeat placement/layout restore; it must still
+converge. Finally,
 restart the animator with the session daemon stopped and verify title animation
-continues while neither `contexts.json`, `layout.json`, nor either session
-socket is opened or created by the animator. Re-run the narrow broker boundary
-check separately because moving its server did not change either protocol:
+continues while neither `state.sqlite3`, its WAL/SHM sidecars, nor either
+session socket is opened or created by the animator. Re-run the narrow broker
+boundary check separately because moving its server did not change either
+protocol:
 
 ```sh
 /usr/share/doc/sway-title-animator/scripts/verify-codex-boundary.sh \
@@ -120,7 +250,7 @@ one ordinary application, save its placement, close its last top-level window,
 and confirm follow mode changes `desired_open` only after the two-second grace.
 Queue it with `sway-session restore <context>` and verify the daemon launches it
 after the five-second adoption interval, moves and marks only one unique anchor,
-and writes `application-session.json` before the window maps.
+and commits its launch-attempt row in `state.sqlite3` before the window maps.
 
 Repeat with two indistinguishable top-level windows: the group must count as
 present, no duplicate process may launch, and neither window may be guessed as
@@ -173,6 +303,9 @@ checkpoint. Remove only the isolated roots, test entries, windows, and
 workspaces created by this procedure.
 
 ### LAB-98 live evidence (2026-08-31)
+
+This evidence predates LAB-115 and therefore names the then-current legacy JSON
+files. It does not verify the SQLite store.
 
 The source-built daemon was exercised against the real Sway compositor with
 isolated XDG state/runtime roots and a disposable user desktop entry launching
@@ -267,7 +400,7 @@ the compositor started. The only workspaces were `98: LAB-106 A` and
   UUID-derived application IDs, and Herdr session names, and mapped exactly one
   marked window to each workspace.
 - The post-review rerun persisted registry schema 4 and therefore predates the
-  current schema-5 release candidate and its reset-only state contract. It
+  current schema-5 release candidate and its strict migration contract. It
   remains evidence for the outer-window and independent-instance behavior only;
   it is not schema-5 release evidence.
 - `terminal list` reported both as independent `instance` identities, while
@@ -288,9 +421,11 @@ limit, and exact temporary-root identity checks. It terminated all private
 compositor descendants and removed the isolated root after the successful
 run. It never addressed or mutated the interactive Sway compositor.
 
-### Required schema-5 release rerun
+### Historical required schema-5 JSON release rerun
 
-Before releasing a build whose registry schema is 5, repeat the isolated
+This pre-LAB-115 requirement was completed by LAB-109 below. It is retained as
+historical context, not as the current SQLite release gate. Before releasing
+that build, the required procedure was to repeat the isolated
 headless procedure on workspace 98 or higher from a fresh schema-5 state root.
 Create a fresh terminal instance, verify that `contexts.json` validates as
 schema 5, and verify:
@@ -307,7 +442,11 @@ Record the date, installed/source commit, Sway and Herdr versions, isolated
 workspace numbers, and cleanup result here. Until that record exists, the
 LAB-106 entry above is not sufficient schema-5 release evidence.
 
-### LAB-109 schema-5 release evidence (2026-09-02)
+### LAB-109 pre-SQLite schema-5 release evidence (2026-09-02)
+
+This evidence validates the context payload and terminal behavior of the
+legacy JSON implementation; it predates database schema 1 and does not replace
+the LAB-115 procedure above.
 
 The source code at commit `74cdf49` was built with the repository's Go 1.26.5
 toolchain and exercised with Sway 1.12, Alacritty, and Herdr 0.8.2 in a fresh
@@ -332,6 +471,9 @@ or a single-digit workspace.
   changed.
 
 ### LAB-110 session-manager evidence (2026-09-02)
+
+This session-manager evidence also predates LAB-115; references to a registry
+hash describe the then-current JSON store.
 
 The source worktree was built with Go 1.26.5 and exercised against the real
 Sway 1.12 compositor, Alacritty, and Herdr 0.8.2 using isolated XDG config,

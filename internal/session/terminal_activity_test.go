@@ -1,14 +1,12 @@
 package session
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
-	"strings"
 	"testing"
 	"time"
 )
@@ -46,9 +44,6 @@ func TestTerminalActivityStateValidatesStrictBoundedCanonicalEntries(t *testing.
 			state.Terminals[0].CreatedAt = nil
 			state.Terminals[0].LastFocusedAt = nil
 		},
-		"too many entries": func(state *TerminalActivityState) {
-			state.Terminals = make([]TerminalActivity, MaxContexts+1)
-		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			candidate := valid
@@ -58,6 +53,18 @@ func TestTerminalActivityStateValidatesStrictBoundedCanonicalEntries(t *testing.
 				t.Fatal("invalid activity state passed validation")
 			}
 		})
+	}
+}
+
+func TestTerminalActivityAcceptsLargePersistentInventory(t *testing.T) {
+	focusedAt := time.Date(2026, 9, 3, 10, 0, 0, 0, time.UTC)
+	state := TerminalActivityState{Version: TerminalActivitySchemaVersion, Terminals: make([]TerminalActivity, 0, 300)}
+	for index := range 300 {
+		id := ContextID(fmt.Sprintf("00000000-0000-4000-8000-%012x", index))
+		state.Terminals = append(state.Terminals, TerminalActivity{ContextID: id, LastFocusedAt: &focusedAt})
+	}
+	if err := state.Validate(); err != nil {
+		t.Fatalf("validate large terminal activity inventory: %v", err)
 	}
 }
 
@@ -75,8 +82,11 @@ func TestTerminalActivitySnapshotMissingFileIsEmptyAndReadOnly(t *testing.T) {
 	}
 }
 
-func TestTerminalActivityFileIsStrictAndTransactional(t *testing.T) {
+func TestTerminalActivityStoreIsStrictAndTransactional(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "sway-session")
+	if err := RegistryStoreFor(root).Save(validRegistry()); err != nil {
+		t.Fatal(err)
+	}
 	createdAt := time.Date(2026, 9, 3, 11, 0, 0, 0, time.FixedZone("CEST", 2*60*60))
 	focusedAt := createdAt.Add(time.Minute)
 	updated, err := UpdateTerminalActivity(root, func(state *TerminalActivityState) error {
@@ -99,34 +109,11 @@ func TestTerminalActivityFileIsStrictAndTransactional(t *testing.T) {
 	}
 
 	var loaded TerminalActivityState
-	if err := TerminalActivityFile(root).LoadInto(&loaded); err != nil || !reflect.DeepEqual(loaded, updated) {
+	if err := TerminalActivityStoreFor(root).LoadInto(&loaded); err != nil || !reflect.DeepEqual(loaded, updated) {
 		t.Fatalf("activity file round trip: state=%+v err=%v", loaded, err)
 	}
-	path := filepath.Join(root, TerminalActivityDirectory, TerminalActivityFilename)
-	contents, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(contents), `"created_at": "2026-09-03T09:00:00Z"`) ||
-		!strings.Contains(string(contents), `"last_focused_at": "2026-09-03T09:01:00Z"`) {
-		t.Fatalf("activity file did not encode canonical UTC values: %s", contents)
-	}
-	info, err := os.Stat(path)
-	if err != nil || info.Mode().Perm() != 0o600 {
-		t.Fatalf("activity state is not private: info=%v err=%v", info, err)
-	}
-
-	unsafe := []byte(`{"version":1,"terminals":[],"command":"sh"}`)
-	if err := os.WriteFile(path, unsafe, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	target := updated
-	if err := TerminalActivityFile(root).LoadInto(&target); err == nil {
-		t.Fatal("unknown activity field passed strict load")
-	}
-	after, err := os.ReadFile(path)
-	if err != nil || !bytes.Equal(after, unsafe) {
-		t.Fatalf("strict load changed rejected file: data=%q err=%v", after, err)
+	if _, err := os.Stat(filepath.Join(root, legacyTerminalActivityDirectory, legacyTerminalActivityFilename)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("activity still wrote legacy JSON: %v", err)
 	}
 }
 
@@ -180,9 +167,66 @@ func TestTerminalActivityContextHonorsCancellation(t *testing.T) {
 	if _, err := UpdateTerminalActivityContext(ctx, root, func(*TerminalActivityState) error { return nil }); !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled update error = %v", err)
 	}
+	if _, err := ReadTerminalInventorySnapshotContext(ctx, root); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled inventory snapshot error = %v", err)
+	}
 }
 
-func TestRecordTerminalCreationPrunesOrphansBeforeCapacityCheck(t *testing.T) {
+func TestTerminalInventoryReadsRegistryAndActivityTogether(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sway-session")
+	registry := validRegistry()
+	if err := RegistryStoreFor(root).Save(registry); err != nil {
+		t.Fatal(err)
+	}
+	createdAt := time.Date(2026, 9, 4, 20, 0, 0, 0, time.UTC)
+	if err := RecordTerminalCreationContext(t.Context(), root, registry.Contexts[0].ID, createdAt); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := ReadTerminalInventorySnapshotContext(t.Context(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(snapshot.Registry, registry) {
+		t.Fatalf("inventory registry = %+v, want %+v", snapshot.Registry, registry)
+	}
+	activity, found := FindTerminalActivity(snapshot.Activity, registry.Contexts[0].ID)
+	if !found || activity.CreatedAt == nil || !activity.CreatedAt.Equal(createdAt) {
+		t.Fatalf("inventory activity = %+v", snapshot.Activity)
+	}
+}
+
+func TestTerminalFocusWriteHonorsContextWhileDatabaseIsBusy(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sway-session")
+	if err := RegistryStoreFor(root).Save(validRegistry()); err != nil {
+		t.Fatal(err)
+	}
+	database, err := openStateDatabase(t.Context(), root, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	tx, err := beginStateWrite(t.Context(), database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(t.Context(), "UPDATE registry_preferences SET desktop_indicators = desktop_indicators WHERE id = 1"); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	err = RecordTerminalFocusBatchContext(ctx, root, map[ContextID]time.Time{testContextID: time.Now().UTC()})
+	if !errors.Is(err, context.DeadlineExceeded) && !IsStateDatabaseBusy(err) {
+		t.Fatalf("busy focus write returned %v, want deadline or retryable busy error", err)
+	}
+	if elapsed := time.Since(started); elapsed > 200*time.Millisecond {
+		t.Fatalf("busy focus write ignored context for %v", elapsed)
+	}
+}
+
+func TestRegistryRemovalCascadesTerminalActivity(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "sway-session")
 	registry := Registry{Version: ContextsSchemaVersion, Preferences: RegistryPreferences{}, Contexts: []Context{}}
 	created, err := CreateTerminalInstanceContext(&registry, TerminalInstanceRequest{
@@ -193,30 +237,25 @@ func TestRecordTerminalCreationPrunesOrphansBeforeCapacityCheck(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := RegistryFile(root).Save(registry); err != nil {
+	if err := RegistryStoreFor(root).Save(registry); err != nil {
 		t.Fatal(err)
 	}
 
-	focusedAt := time.Date(2026, 9, 3, 13, 0, 0, 0, time.UTC)
-	orphans := TerminalActivityState{Version: TerminalActivitySchemaVersion, Terminals: make([]TerminalActivity, 0, MaxContexts)}
-	for index := 0; index < MaxContexts; index++ {
-		id := ContextID(fmt.Sprintf("%08x-1111-4111-8111-%012x", index+1000, index+1000))
-		orphans.Terminals = append(orphans.Terminals, TerminalActivity{ContextID: id, LastFocusedAt: &focusedAt})
-	}
-	if err := TerminalActivityFile(root).Save(orphans); err != nil {
-		t.Fatal(err)
-	}
-
-	createdAt := focusedAt.Add(time.Hour)
+	createdAt := time.Date(2026, 9, 3, 14, 0, 0, 0, time.UTC)
 	if err := RecordTerminalCreationContext(t.Context(), root, created.ID, createdAt); err != nil {
-		t.Fatalf("orphaned activity blocked authoritative terminal creation: %v", err)
+		t.Fatalf("record terminal creation: %v", err)
+	}
+	if _, err := UpdateRegistry(root, func(registry *Registry) error {
+		_, removeErr := RemoveContext(registry, string(created.ID))
+		return removeErr
+	}); err != nil {
+		t.Fatalf("remove terminal context: %v", err)
 	}
 	activity, err := ReadTerminalActivitySnapshot(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(activity.Terminals) != 1 || activity.Terminals[0].ContextID != created.ID ||
-		activity.Terminals[0].CreatedAt == nil || !activity.Terminals[0].CreatedAt.Equal(createdAt) {
-		t.Fatalf("activity was not pruned to the authoritative terminal: %+v", activity)
+	if len(activity.Terminals) != 0 {
+		t.Fatalf("removed context retained terminal activity: %+v", activity)
 	}
 }

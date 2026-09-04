@@ -4,14 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	sessionstate "github.com/marang/sway-title-animator/internal/session"
-	"github.com/marang/sway-title-animator/internal/statefile"
 	"github.com/marang/sway-title-animator/internal/swayipc"
 )
 
@@ -19,6 +18,7 @@ type recordingRequester struct {
 	commands []string
 	barriers []string
 	failAt   int
+	failAll  bool
 	failure  error
 }
 
@@ -157,13 +157,13 @@ func TestSessionRuntimeBatchesConfirmedTerminalFocusActivity(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "state", "sway-session")
 	registry := sessionRegistry(testManagedContextID)
 	createdAt := time.Date(2026, 9, 3, 17, 0, 0, 0, time.UTC)
-	if err := sessionstate.RegistryFile(root).Save(registry); err != nil {
+	if err := sessionstate.RegistryStoreFor(root).Save(registry); err != nil {
 		t.Fatal(err)
 	}
 	if err := sessionstate.RecordTerminalCreationContext(t.Context(), root, testManagedContextID, createdAt); err != nil {
 		t.Fatal(err)
 	}
-	registryBefore, err := os.ReadFile(filepath.Join(root, sessionstate.ContextsFilename))
+	registryBefore, err := sessionstate.ReadRegistrySnapshot(root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,53 +205,28 @@ func TestSessionRuntimeBatchesConfirmedTerminalFocusActivity(t *testing.T) {
 	if after.LastFocusedAt == nil || !after.LastFocusedAt.Equal(second) {
 		t.Fatalf("latest confirmed focus was not persisted: %+v", after)
 	}
-	registryAfter, err := os.ReadFile(filepath.Join(root, sessionstate.ContextsFilename))
-	if err != nil || string(registryAfter) != string(registryBefore) {
-		t.Fatalf("focus activity changed contexts.json: err=%v\nbefore=%s\nafter=%s", err, registryBefore, registryAfter)
+	registryAfter, err := sessionstate.ReadRegistrySnapshot(root)
+	if err != nil || !reflect.DeepEqual(registryAfter, registryBefore) {
+		t.Fatalf("focus activity changed registry: err=%v\nbefore=%+v\nafter=%+v", err, registryBefore, registryAfter)
 	}
 	if runtime.terminalFocusDeadline != (time.Time{}) || len(runtime.pendingTerminalFocus) != 0 {
 		t.Fatalf("persisted focus batch remained armed: deadline=%v pending=%v", runtime.terminalFocusDeadline, runtime.pendingTerminalFocus)
 	}
 }
 
-func TestSessionRuntimeFocusPrunesCapacityFullOrphanActivity(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "state", "sway-session")
-	if err := sessionstate.RegistryFile(root).Save(sessionRegistry(testManagedContextID)); err != nil {
-		t.Fatal(err)
+func TestSessionRuntimeFocusQueueUsesIndependentTransientBound(t *testing.T) {
+	runtime := &sessionRuntime{}
+	observedAt := time.Date(2026, 9, 3, 18, 30, 0, 0, time.UTC)
+	for index := range maxPendingTerminalFocus + 1 {
+		id := sessionstate.ContextID(fmt.Sprintf("00000000-0000-4000-8000-%012x", index))
+		mark, err := id.Mark()
+		if err != nil {
+			t.Fatal(err)
+		}
+		runtime.queueTerminalFocus(&Node{ID: int64(index + 1), Marks: []string{mark}}, observedAt)
 	}
-	focusedAt := time.Date(2026, 9, 3, 18, 30, 0, 0, time.UTC)
-	orphans := sessionstate.TerminalActivityState{
-		Version:   sessionstate.TerminalActivitySchemaVersion,
-		Terminals: make([]sessionstate.TerminalActivity, 0, sessionstate.MaxContexts),
-	}
-	for index := 0; index < sessionstate.MaxContexts; index++ {
-		id := sessionstate.ContextID(fmt.Sprintf("%08x-1111-4111-8111-%012x", index+2000, index+2000))
-		orphans.Terminals = append(orphans.Terminals, sessionstate.TerminalActivity{ContextID: id, LastFocusedAt: &focusedAt})
-	}
-	if err := sessionstate.TerminalActivityFile(root).Save(orphans); err != nil {
-		t.Fatal(err)
-	}
-	runtime, err := newSessionRuntimeWithOptions(&recordingRequester{}, sessionRuntimeOptions{Root: root})
-	if err != nil {
-		t.Fatal(err)
-	}
-	observedAt := focusedAt.Add(time.Minute)
-	runtime.HandleEvent(swayipc.Event{
-		Type: swayipc.EventWindow, Change: "focus", Container: managedDaemonLeaf(t, 42, testManagedContextID),
-	}, observedAt)
-	if err := runtime.Flush(observedAt.Add(terminalFocusBatchDelay)); err != nil {
-		t.Fatalf("capacity-full orphan focus did not converge: %v", err)
-	}
-	activity, err := sessionstate.ReadTerminalActivitySnapshot(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	recorded, exists := sessionstate.FindTerminalActivity(activity, testManagedContextID)
-	if len(activity.Terminals) != 1 || !exists || recorded.LastFocusedAt == nil || !recorded.LastFocusedAt.Equal(observedAt) {
-		t.Fatalf("orphan activity was not pruned to the focused terminal: %+v", activity)
-	}
-	if len(runtime.pendingTerminalFocus) != 0 || runtime.terminalFocusRetry != 0 || !runtime.terminalFocusDeadline.IsZero() {
-		t.Fatalf("successful pruned focus retained retry state: pending=%v retry=%v deadline=%v", runtime.pendingTerminalFocus, runtime.terminalFocusRetry, runtime.terminalFocusDeadline)
+	if got := len(runtime.pendingTerminalFocus); got != maxPendingTerminalFocus {
+		t.Fatalf("pending focus count = %d, want transient bound %d", got, maxPendingTerminalFocus)
 	}
 }
 
@@ -262,7 +237,7 @@ func TestSessionRuntimeIgnoresUntrustedOrNonTerminalFocusActivity(t *testing.T) 
 		Launcher: sessionstate.Launcher{Kind: sessionstate.LauncherDesktop, DesktopID: "example.desktop", DesktopOrigin: sessionstate.DesktopEntrySystem, DesktopPath: "/usr/share/applications/example.desktop"},
 		App:      &sessionstate.Application{Identity: sessionstate.ApplicationIdentity{Protocol: sessionstate.WindowWayland, WaylandAppID: "example"}, DesiredOpen: true, RestorePolicy: sessionstate.ApplicationRestoreFollow},
 	}
-	if err := sessionstate.RegistryFile(root).Save(sessionstate.Registry{Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{desktop}}); err != nil {
+	if err := sessionstate.RegistryStoreFor(root).Save(sessionstate.Registry{Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{desktop}}); err != nil {
 		t.Fatal(err)
 	}
 	runtime, err := newSessionRuntimeWithOptions(&recordingRequester{}, sessionRuntimeOptions{Root: root})
@@ -299,7 +274,7 @@ func TestSessionRuntimeIgnoresUntrustedOrNonTerminalFocusActivity(t *testing.T) 
 
 func TestSessionRuntimeFocusActivityUsesSilentBackoffDuringLifecycleContention(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "state", "sway-session")
-	if err := sessionstate.RegistryFile(root).Save(sessionRegistry(testManagedContextID)); err != nil {
+	if err := sessionstate.RegistryStoreFor(root).Save(sessionRegistry(testManagedContextID)); err != nil {
 		t.Fatal(err)
 	}
 	if err := sessionstate.RecordTerminalCreationContext(t.Context(), root, testManagedContextID, time.Now()); err != nil {
@@ -312,17 +287,11 @@ func TestSessionRuntimeFocusActivityUsesSilentBackoffDuringLifecycleContention(t
 	observedAt := time.Now().UTC()
 	runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "focus", Container: managedDaemonLeaf(t, 42, testManagedContextID)}, observedAt)
 
-	locked := make(chan struct{})
-	release := make(chan struct{})
-	done := make(chan error, 1)
-	go func() {
-		done <- statefile.WithPrivateDirectoryLockContext(context.Background(), filepath.Join(root, sessionstate.TerminalActivityDirectory), func(*statefile.LockedPrivateDirectory) error {
-			close(locked)
-			<-release
-			return nil
-		})
-	}()
-	<-locked
+	database := openRawStateDatabaseForTest(t, root)
+	transaction, err := database.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	err = runtime.Flush(observedAt.Add(terminalFocusBatchDelay))
 	if err != nil || len(runtime.pendingTerminalFocus) != 1 || runtime.terminalFocusRetry != terminalFocusBatchDelay {
 		t.Fatalf("locked activity flush err=%v pending=%v", err, runtime.pendingTerminalFocus)
@@ -332,9 +301,8 @@ func TestSessionRuntimeFocusActivityUsesSilentBackoffDuringLifecycleContention(t
 		!runtime.terminalFocusDeadline.Equal(firstRetry.Add(2*terminalFocusBatchDelay)) {
 		t.Fatalf("sustained contention did not back off silently: err=%v delay=%v deadline=%v", err, runtime.terminalFocusRetry, runtime.terminalFocusDeadline)
 	}
-	close(release)
-	if lockErr := <-done; lockErr != nil {
-		t.Fatal(lockErr)
+	if err := transaction.Rollback(); err != nil {
+		t.Fatal(err)
 	}
 	if err := runtime.Flush(runtime.terminalFocusDeadline); err != nil {
 		t.Fatal(err)
@@ -436,10 +404,10 @@ func TestSessionRuntimeStopsMutatingWhenStreamDisconnectsDuringReconcile(t *test
 	stateHome := filepath.Join(t.TempDir(), "state")
 	setSessionTestStateHome(t, stateHome)
 	root := filepath.Join(stateHome, "sway-session")
-	if err := sessionstate.RegistryFile(root).Save(sessionRegistry(testManagedContextID)); err != nil {
+	if err := sessionstate.RegistryStoreFor(root).Save(sessionRegistry(testManagedContextID)); err != nil {
 		t.Fatal(err)
 	}
-	if err := sessionstate.LayoutFile(root).Save(placementOnlySnapshot("98: saved", testManagedContextID)); err != nil {
+	if err := sessionstate.LayoutStoreFor(root).Save(placementOnlySnapshot("98: saved", testManagedContextID)); err != nil {
 		t.Fatal(err)
 	}
 	guard := &mutableEventStreamGuard{epoch: 1, connected: true}
@@ -555,7 +523,7 @@ func (requester *recordingRequester) RequestContext(ctx context.Context, message
 		return swayipc.Message{}, errors.New("unexpected request type")
 	}
 	requester.commands = append(requester.commands, string(payload))
-	if requester.failAt > 0 && len(requester.commands) == requester.failAt {
+	if requester.failAll || requester.failAt > 0 && len(requester.commands) == requester.failAt {
 		return swayipc.Message{}, requester.failure
 	}
 	return swayipc.Message{Type: swayipc.RunCommand, Payload: []byte(`[{"success":true}]`)}, nil
@@ -566,11 +534,11 @@ func TestSessionRuntimeMovesThenMarksNewWindowAndCapturesStableTree(t *testing.T
 	setSessionTestStateHome(t, stateHome)
 	root := filepath.Join(stateHome, "sway-session")
 	registry := sessionRegistry(testManagedContextID)
-	if err := sessionstate.RegistryFile(root).Save(registry); err != nil {
+	if err := sessionstate.RegistryStoreFor(root).Save(registry); err != nil {
 		t.Fatalf("save registry: %v", err)
 	}
 	desired := placementOnlySnapshot("9: saved", testManagedContextID)
-	if err := sessionstate.LayoutFile(root).Save(desired); err != nil {
+	if err := sessionstate.LayoutStoreFor(root).Save(desired); err != nil {
 		t.Fatalf("save desired layout: %v", err)
 	}
 
@@ -604,7 +572,7 @@ func TestSessionRuntimeMovesThenMarksNewWindowAndCapturesStableTree(t *testing.T
 func TestSessionRuntimeConfirmedPlacementFailureDoesNotStarveLaterContext(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "state")
 	secondID := sessionstate.ContextID("22222222-2222-4222-8222-222222222222")
-	if err := sessionstate.RegistryFile(root).Save(sessionRegistryIDs(testManagedContextID, secondID)); err != nil {
+	if err := sessionstate.RegistryStoreFor(root).Save(sessionRegistryIDs(testManagedContextID, secondID)); err != nil {
 		t.Fatal(err)
 	}
 	requester := &recordingRequester{failAt: 1, failure: errors.New("explicit rejection")}
@@ -631,11 +599,11 @@ func TestSessionRuntimeConfirmedPlacementFailureDoesNotStarveLaterContext(t *tes
 func TestSessionRuntimeRejectedMoveCannotReplaceLastGoodWorkspace(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "state")
 	registry := sessionRegistry(testManagedContextID)
-	if err := sessionstate.RegistryFile(root).Save(registry); err != nil {
+	if err := sessionstate.RegistryStoreFor(root).Save(registry); err != nil {
 		t.Fatal(err)
 	}
 	previous := placementOnlySnapshot("98: saved", testManagedContextID)
-	if err := sessionstate.LayoutFile(root).Save(previous); err != nil {
+	if err := sessionstate.LayoutStoreFor(root).Save(previous); err != nil {
 		t.Fatal(err)
 	}
 	requester := &recordingRequester{failAt: 1, failure: errors.New("explicit rejection")}
@@ -659,7 +627,7 @@ func TestSessionRuntimeRejectedMoveCannotReplaceLastGoodWorkspace(t *testing.T) 
 		t.Fatal(err)
 	}
 	var persisted sessionstate.LayoutSnapshot
-	if err := sessionstate.LayoutFile(root).LoadInto(&persisted); err != nil {
+	if err := sessionstate.LayoutStoreFor(root).LoadInto(&persisted); err != nil {
 		t.Fatal(err)
 	}
 	if targets := snapshotWorkspaceTargets(persisted); targets[testManagedContextID] != "98: saved" {
@@ -670,7 +638,7 @@ func TestSessionRuntimeRejectedMoveCannotReplaceLastGoodWorkspace(t *testing.T) 
 func TestSessionRuntimeRejectedMoveDoesNotBlockIndependentCapture(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "state")
 	secondID := sessionstate.ContextID("22222222-2222-4222-8222-222222222222")
-	if err := sessionstate.RegistryFile(root).Save(sessionRegistryIDs(testManagedContextID, secondID)); err != nil {
+	if err := sessionstate.RegistryStoreFor(root).Save(sessionRegistryIDs(testManagedContextID, secondID)); err != nil {
 		t.Fatal(err)
 	}
 	previous := sessionstate.LayoutSnapshot{
@@ -680,7 +648,7 @@ func TestSessionRuntimeRejectedMoveDoesNotBlockIndependentCapture(t *testing.T) 
 			placementOnlySnapshot("97: previous", secondID).Workspaces[0],
 		},
 	}
-	if err := sessionstate.LayoutFile(root).Save(previous); err != nil {
+	if err := sessionstate.LayoutStoreFor(root).Save(previous); err != nil {
 		t.Fatal(err)
 	}
 	requester := &recordingRequester{failAt: 1, failure: errors.New("explicit rejection")}
@@ -702,7 +670,7 @@ func TestSessionRuntimeRejectedMoveDoesNotBlockIndependentCapture(t *testing.T) 
 		t.Fatal(err)
 	}
 	var persisted sessionstate.LayoutSnapshot
-	if err := sessionstate.LayoutFile(root).LoadInto(&persisted); err != nil {
+	if err := sessionstate.LayoutStoreFor(root).LoadInto(&persisted); err != nil {
 		t.Fatal(err)
 	}
 	targets := snapshotWorkspaceTargets(persisted)
@@ -730,7 +698,7 @@ func TestSessionRuntimeConfirmedDesktopPlacementFailureDoesNotStarveLaterApplica
 		})
 	}
 	registry := sessionstate.Registry{Version: sessionstate.ContextsSchemaVersion, Contexts: contexts}
-	if err := sessionstate.RegistryFile(root).Save(registry); err != nil {
+	if err := sessionstate.RegistryStoreFor(root).Save(registry); err != nil {
 		t.Fatal(err)
 	}
 	desired := sessionstate.LayoutSnapshot{
@@ -739,7 +707,7 @@ func TestSessionRuntimeConfirmedDesktopPlacementFailureDoesNotStarveLaterApplica
 			Name: "98: apps", RestoreMode: sessionstate.WorkspaceRestorePlacementOnly, PlacementContexts: ids,
 		}},
 	}
-	if err := sessionstate.LayoutFile(root).Save(desired); err != nil {
+	if err := sessionstate.LayoutStoreFor(root).Save(desired); err != nil {
 		t.Fatal(err)
 	}
 	requester := &recordingRequester{failAt: 1, failure: errors.New("explicit rejection")}
@@ -777,7 +745,7 @@ func TestSessionRuntimePublishesIdempotentApplicationIndicatorMarks(t *testing.T
 		Preferences: sessionstate.RegistryPreferences{DesktopIndicators: true},
 		Contexts:    []sessionstate.Context{},
 	}
-	if err := sessionstate.RegistryFile(root).Save(registry); err != nil {
+	if err := sessionstate.RegistryStoreFor(root).Save(registry); err != nil {
 		t.Fatal(err)
 	}
 	catalog := testDesktopCatalog(t, map[string]string{
@@ -824,7 +792,7 @@ func TestSessionRuntimeConfirmedIndicatorFailureDoesNotStarveLaterWindow(t *test
 		Preferences: sessionstate.RegistryPreferences{DesktopIndicators: true},
 		Contexts:    []sessionstate.Context{},
 	}
-	if err := sessionstate.RegistryFile(root).Save(registry); err != nil {
+	if err := sessionstate.RegistryStoreFor(root).Save(registry); err != nil {
 		t.Fatal(err)
 	}
 	catalog := testDesktopCatalog(t, map[string]string{
@@ -856,6 +824,50 @@ func TestSessionRuntimeConfirmedIndicatorFailureDoesNotStarveLaterWindow(t *test
 	}
 }
 
+func TestSessionRuntimeRejectedIndicatorBatchAdvancesOnNextPass(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state")
+	registry := sessionstate.Registry{
+		Version:     sessionstate.ContextsSchemaVersion,
+		Preferences: sessionstate.RegistryPreferences{DesktopIndicators: true},
+		Contexts:    []sessionstate.Context{},
+	}
+	if err := sessionstate.RegistryStoreFor(root).Save(registry); err != nil {
+		t.Fatal(err)
+	}
+	catalog := testDesktopCatalog(t, map[string]string{
+		"org.example.App.desktop": "[Desktop Entry]\nType=Application\nName=Example\nExec=/usr/bin/true\n",
+	}, false)
+	requester := &recordingRequester{failAll: true, failure: errors.New("explicit rejection")}
+	runtime, err := newSessionRuntimeWithOptions(requester, sessionRuntimeOptions{
+		Root: root,
+		IndicatorCatalog: func() (sessionstate.DesktopCatalog, error) {
+			return catalog, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	appID := "org.example.App"
+	leaves := make([]*Node, 0, 1025)
+	for index := range 1025 {
+		leaves = append(leaves, &Node{ID: int64(index + 40), Name: "Example", Type: "con", AppID: &appID})
+	}
+	tree := daemonTree("98: apps", leaves...)
+
+	if refresh, err := runtime.ReconcileIndicators(tree); refresh || err == nil {
+		t.Fatalf("first rejected batch = refresh:%v err:%v", refresh, err)
+	}
+	if len(requester.commands) != 1024 {
+		t.Fatalf("first pass command count = %d, want 1024", len(requester.commands))
+	}
+	if refresh, err := runtime.ReconcileIndicators(tree); refresh || err == nil {
+		t.Fatalf("second rejected batch = refresh:%v err:%v", refresh, err)
+	}
+	if !strings.Contains(requester.commands[1024], "con_id=1064") {
+		t.Fatalf("second pass did not advance to later window: %q", requester.commands[1024])
+	}
+}
+
 func TestSessionRuntimeRemovesExpiredPendingIndicator(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "state")
 	registry := sessionstate.Registry{
@@ -863,7 +875,7 @@ func TestSessionRuntimeRemovesExpiredPendingIndicator(t *testing.T) {
 		Preferences: sessionstate.RegistryPreferences{DesktopIndicators: true},
 		Contexts:    []sessionstate.Context{},
 	}
-	if err := sessionstate.RegistryFile(root).Save(registry); err != nil {
+	if err := sessionstate.RegistryStoreFor(root).Save(registry); err != nil {
 		t.Fatal(err)
 	}
 	catalog := testDesktopCatalog(t, map[string]string{
@@ -903,10 +915,10 @@ func TestPersistentReconciliationConsolidatesDegradedDiagnosticsPerPass(t *testi
 	root := filepath.Join(t.TempDir(), "state")
 	registry := sessionRegistry(testManagedContextID)
 	registry.Preferences.DesktopIndicators = true
-	if err := sessionstate.RegistryFile(root).Save(registry); err != nil {
+	if err := sessionstate.RegistryStoreFor(root).Save(registry); err != nil {
 		t.Fatal(err)
 	}
-	if err := sessionstate.LayoutFile(root).Save(placementOnlySnapshot("98: saved", testManagedContextID)); err != nil {
+	if err := sessionstate.LayoutStoreFor(root).Save(placementOnlySnapshot("98: saved", testManagedContextID)); err != nil {
 		t.Fatal(err)
 	}
 	appID, _ := testManagedContextID.AppID()
@@ -947,10 +959,10 @@ func TestSessionRuntimeLaunchesDesktopAppsOnlyAfterAdoptionAndPersistsIntentFirs
 			DesiredOpen: true, RestorePolicy: sessionstate.ApplicationRestoreFollow,
 		},
 	}
-	if err := sessionstate.RegistryFile(root).Save(sessionstate.Registry{Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{context}}); err != nil {
+	if err := sessionstate.RegistryStoreFor(root).Save(sessionstate.Registry{Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{context}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := sessionstate.LayoutFile(root).Save(placementOnlySnapshot("98: apps", context.ID)); err != nil {
+	if err := sessionstate.LayoutStoreFor(root).Save(placementOnlySnapshot("98: apps", context.ID)); err != nil {
 		t.Fatal(err)
 	}
 	launcher := &recordingApplicationLauncher{}
@@ -978,7 +990,7 @@ func TestSessionRuntimeLaunchesDesktopAppsOnlyAfterAdoptionAndPersistsIntentFirs
 		t.Fatalf("missing desired application was not launched once: %+v", launcher.contexts)
 	}
 	var persisted sessionstate.ApplicationSessionState
-	if err := sessionstate.ApplicationSessionFile(root).LoadInto(&persisted); err != nil {
+	if err := sessionstate.ApplicationSessionStoreFor(root).LoadInto(&persisted); err != nil {
 		t.Fatal(err)
 	}
 	if len(persisted.Attempts) != 1 || persisted.Attempts[0].ContextID != context.ID {
@@ -1005,7 +1017,7 @@ func TestSessionRuntimePreflightFailureDoesNotStarveLaterLaunchCandidates(t *tes
 			},
 		})
 	}
-	if err := sessionstate.RegistryFile(root).Save(sessionstate.Registry{Version: sessionstate.ContextsSchemaVersion, Contexts: contexts}); err != nil {
+	if err := sessionstate.RegistryStoreFor(root).Save(sessionstate.Registry{Version: sessionstate.ContextsSchemaVersion, Contexts: contexts}); err != nil {
 		t.Fatal(err)
 	}
 	launcher := &recordingApplicationLauncher{prepareErrBy: map[sessionstate.ContextID]error{ids[0]: errors.New("approval changed")}}
@@ -1096,7 +1108,7 @@ func TestSessionRuntimePersistsFollowAppClosedOnlyAfterLastWindowGrace(t *testin
 		t.Fatal(err)
 	}
 	var before sessionstate.Registry
-	if err := sessionstate.RegistryFile(runtime.root).LoadInto(&before); err != nil {
+	if err := sessionstate.RegistryStoreFor(runtime.root).LoadInto(&before); err != nil {
 		t.Fatal(err)
 	}
 	if !before.Contexts[0].App.DesiredOpen {
@@ -1106,7 +1118,7 @@ func TestSessionRuntimePersistsFollowAppClosedOnlyAfterLastWindowGrace(t *testin
 		t.Fatal(err)
 	}
 	var after sessionstate.Registry
-	if err := sessionstate.RegistryFile(runtime.root).LoadInto(&after); err != nil {
+	if err := sessionstate.RegistryStoreFor(runtime.root).LoadInto(&after); err != nil {
 		t.Fatal(err)
 	}
 	if after.Contexts[0].App.DesiredOpen || len(launcher.contexts) != 0 {
@@ -1121,7 +1133,7 @@ func TestSessionRuntimePreflightFailureRemainsRetryableAfterReapproval(t *testin
 		t.Fatal("launcher preflight failure was not reported")
 	}
 	var state sessionstate.ApplicationSessionState
-	if err := sessionstate.ApplicationSessionFile(runtime.root).LoadInto(&state); err != nil {
+	if err := sessionstate.ApplicationSessionStoreFor(runtime.root).LoadInto(&state); err != nil {
 		t.Fatal(err)
 	}
 	if len(state.Attempts) != 0 {
@@ -1143,7 +1155,7 @@ func TestSessionRuntimeStartFailureRemainsAConservativeSingleAttempt(t *testing.
 		t.Fatal("process start failure was not reported")
 	}
 	var state sessionstate.ApplicationSessionState
-	if err := sessionstate.ApplicationSessionFile(runtime.root).LoadInto(&state); err != nil {
+	if err := sessionstate.ApplicationSessionStoreFor(runtime.root).LoadInto(&state); err != nil {
 		t.Fatal(err)
 	}
 	if launcher.starts != 1 || len(state.Attempts) != 1 || state.Attempts[0].ContextID != context.ID {
@@ -1198,13 +1210,10 @@ func TestSessionRuntimeCancellationReleasesRegistryLockHeldAcrossSwayRequest(t *
 
 func TestNewSessionRuntimeRejectsMalformedApplicationSessionState(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "state")
-	directory := filepath.Join(root, sessionstate.ApplicationSessionDirectory)
-	if err := os.MkdirAll(directory, 0o700); err != nil {
+	if err := sessionstate.RegistryStoreFor(root).Save(sessionstate.Registry{Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(directory, sessionstate.ApplicationSessionFilename), []byte(`{"version":1,"compositor_id":"bad","attempts":[]}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	execStateDatabaseForTest(t, root, "INSERT INTO application_session (id, compositor_id) VALUES (1, 'bad')")
 	_, err := newSessionRuntimeWithOptions(&recordingRequester{}, sessionRuntimeOptions{
 		Root: root, CompositorID: strings.Repeat("a", 64), StartedAt: time.Unix(1000, 0),
 		ApplicationLauncher: &recordingApplicationLauncher{},
@@ -1217,35 +1226,70 @@ func TestNewSessionRuntimeRejectsMalformedApplicationSessionState(t *testing.T) 
 	}
 }
 
-func TestNewSessionRuntimeStopsWaitingForStateLockWhenCanceled(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "state")
-	if err := sessionstate.RegistryFile(root).Save(sessionRegistry(testManagedContextID)); err != nil {
-		t.Fatal(err)
-	}
-	locked := make(chan struct{})
-	release := make(chan struct{})
-	mutationDone := make(chan error, 1)
-	go func() {
-		_, err := sessionstate.UpdateRegistry(root, func(*sessionstate.Registry) error {
-			close(locked)
-			<-release
+func TestRetryApplicationSessionResetRetriesOnlyOptimisticConflicts(t *testing.T) {
+	calls := 0
+	err := retryApplicationSessionReset(t.Context(), func() error {
+		calls++
+		switch calls {
+		case 1:
+			return sessionstate.ErrRegistryConflict
+		case 2:
+			return sessionstate.ErrApplicationSessionConflict
+		default:
 			return nil
-		})
-		mutationDone <- err
-	}()
-	<-locked
-	t.Cleanup(func() {
-		close(release)
-		if err := <-mutationDone; err != nil {
-			t.Errorf("release registry mutation: %v", err)
 		}
 	})
+	if err != nil || calls != 3 {
+		t.Fatalf("application reset retry = calls %d err %v, want 3 successful calls", calls, err)
+	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	sentinel := errors.New("permanent state failure")
+	calls = 0
+	err = retryApplicationSessionReset(t.Context(), func() error {
+		calls++
+		return sentinel
+	})
+	if !errors.Is(err, sentinel) || calls != 1 {
+		t.Fatalf("permanent reset failure = calls %d err %v, want one call", calls, err)
+	}
+}
+
+func TestRetryApplicationSessionResetStopsOnCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	calls := 0
+	err := retryApplicationSessionReset(ctx, func() error {
+		calls++
+		return sessionstate.ErrApplicationSessionConflict
+	})
+	if !errors.Is(err, context.Canceled) || calls != 0 {
+		t.Fatalf("canceled application reset = calls %d err %v, want no write and cancellation", calls, err)
+	}
+}
+
+func TestNewSessionRuntimeReadsSnapshotDuringConcurrentWriter(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state")
+	if err := sessionstate.RegistryStoreFor(root).Save(sessionRegistry(testManagedContextID)); err != nil {
+		t.Fatal(err)
+	}
+	database := openRawStateDatabaseForTest(t, root)
+	transaction, err := database.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := transaction.Exec("UPDATE state_meta SET registry_revision = registry_revision + 1 WHERE id = 1"); err != nil {
+		t.Fatal(err)
+	}
+	// The writer remains open until the read returns, so a real rollback-journal
+	// block still reaches this deadline. Leave enough scheduling headroom for
+	// the race detector and a concurrently loaded package test suite.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	_, err := newSessionRuntimeWithOptions(&recordingRequester{}, sessionRuntimeOptions{Context: ctx, Root: root})
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("runtime initialization returned %v, want context deadline", err)
+	if _, err := newSessionRuntimeWithOptions(&recordingRequester{}, sessionRuntimeOptions{Context: ctx, Root: root}); err != nil {
+		t.Fatalf("WAL snapshot reader was blocked by writer: %v", err)
+	}
+	if err := transaction.Rollback(); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -1260,10 +1304,10 @@ func testApplicationRuntime(t *testing.T) (*sessionRuntime, *recordingRequester,
 			DesiredOpen: true, RestorePolicy: sessionstate.ApplicationRestoreFollow,
 		},
 	}
-	if err := sessionstate.RegistryFile(root).Save(sessionstate.Registry{Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{context}}); err != nil {
+	if err := sessionstate.RegistryStoreFor(root).Save(sessionstate.Registry{Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{context}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := sessionstate.LayoutFile(root).Save(placementOnlySnapshot("98: apps", context.ID)); err != nil {
+	if err := sessionstate.LayoutStoreFor(root).Save(placementOnlySnapshot("98: apps", context.ID)); err != nil {
 		t.Fatal(err)
 	}
 	requester := &recordingRequester{}
@@ -1285,10 +1329,10 @@ func TestSessionRuntimeCapturesManualMoveOfMarkedWindowAfterDebounce(t *testing.
 	stateHome := filepath.Join(t.TempDir(), "state")
 	setSessionTestStateHome(t, stateHome)
 	root := filepath.Join(stateHome, "sway-session")
-	if err := sessionstate.RegistryFile(root).Save(sessionRegistry(testManagedContextID)); err != nil {
+	if err := sessionstate.RegistryStoreFor(root).Save(sessionRegistry(testManagedContextID)); err != nil {
 		t.Fatalf("save registry: %v", err)
 	}
-	if err := sessionstate.LayoutFile(root).Save(placementOnlySnapshot("2", testManagedContextID)); err != nil {
+	if err := sessionstate.LayoutStoreFor(root).Save(placementOnlySnapshot("2", testManagedContextID)); err != nil {
 		t.Fatalf("save layout: %v", err)
 	}
 
@@ -1313,7 +1357,7 @@ func TestSessionRuntimeCapturesManualMoveOfMarkedWindowAfterDebounce(t *testing.
 		t.Fatalf("flush captured layout: %v", err)
 	}
 	var persisted sessionstate.LayoutSnapshot
-	if err := sessionstate.LayoutFile(root).LoadInto(&persisted); err != nil {
+	if err := sessionstate.LayoutStoreFor(root).LoadInto(&persisted); err != nil {
 		t.Fatalf("load captured layout: %v", err)
 	}
 	if len(persisted.Workspaces) != 1 || persisted.Workspaces[0].Name != "7: manual" {
@@ -1340,7 +1384,7 @@ func TestSessionRuntimeSchedulesPeriodicObservationToDiscoverFirstRegistry(t *te
 	}
 
 	root := filepath.Join(stateHome, "sway-session")
-	if err := sessionstate.RegistryFile(root).Save(sessionRegistry(testManagedContextID)); err != nil {
+	if err := sessionstate.RegistryStoreFor(root).Save(sessionRegistry(testManagedContextID)); err != nil {
 		t.Fatalf("save registry: %v", err)
 	}
 	if _, err := runtime.Reconcile(daemonTree("1"), start); err != nil {
@@ -1362,7 +1406,7 @@ func TestSessionRuntimeObservesWithoutStartingRestoreWhenRegistryIsMissing(t *te
 	stateHome := filepath.Join(t.TempDir(), "state")
 	setSessionTestStateHome(t, stateHome)
 	root := filepath.Join(stateHome, "sway-session")
-	if err := sessionstate.LayoutFile(root).Save(placementOnlySnapshot("2", testManagedContextID)); err != nil {
+	if err := sessionstate.LayoutStoreFor(root).Save(placementOnlySnapshot("2", testManagedContextID)); err != nil {
 		t.Fatalf("save layout without registry: %v", err)
 	}
 	runtime, err := newSessionRuntime(&recordingRequester{})
@@ -1385,7 +1429,7 @@ func TestSessionRuntimeArmsRetryBeforeInitialTreeObservation(t *testing.T) {
 	stateHome := filepath.Join(t.TempDir(), "state")
 	setSessionTestStateHome(t, stateHome)
 	root := filepath.Join(stateHome, "sway-session")
-	if err := sessionstate.RegistryFile(root).Save(sessionRegistry(testManagedContextID)); err != nil {
+	if err := sessionstate.RegistryStoreFor(root).Save(sessionRegistry(testManagedContextID)); err != nil {
 		t.Fatalf("save registry: %v", err)
 	}
 	runtime, err := newSessionRuntime(&recordingRequester{})
@@ -1407,19 +1451,14 @@ func TestNewSessionRuntimeRejectsMalformedRegistryOnceAtStartup(t *testing.T) {
 	setSessionTestStateHome(t, stateHome)
 	root := filepath.Join(stateHome, "sway-session")
 	malformed := sessionstate.Registry{Version: sessionstate.ContextsSchemaVersion, Contexts: nil}
-	if err := sessionstate.RegistryFile(root).Save(malformed); err == nil {
+	if err := sessionstate.RegistryStoreFor(root).Save(malformed); err == nil {
 		t.Fatal("invalid registry unexpectedly passed storage validation")
 	}
 
-	// Save validates candidates, so place malformed JSON through a secure file
-	// created by the same owner to exercise startup loading.
-	if err := os.MkdirAll(root, 0o700); err != nil {
-		t.Fatalf("create state root: %v", err)
+	if err := sessionstate.RegistryStoreFor(root).Save(sessionstate.Registry{Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{}}); err != nil {
+		t.Fatal(err)
 	}
-	registryPath := filepath.Join(root, "contexts.json")
-	if err := os.WriteFile(registryPath, []byte(`{"version":1,"contexts":null}\n`), 0o600); err != nil {
-		t.Fatalf("write malformed registry: %v", err)
-	}
+	execStateDatabaseForTest(t, root, `INSERT INTO contexts (id, ordinal, encoding_version, payload) VALUES (?, 0, ?, ?)`, testManagedContextID, sessionstate.ContextsSchemaVersion, []byte(`{}`))
 	if _, err := newSessionRuntime(&recordingRequester{}); err == nil ||
 		!strings.Contains(err.Error(), "load persistent context registry") {
 		t.Fatalf("malformed registry was not rejected at startup: %v", err)
@@ -1430,11 +1469,11 @@ func TestSessionRuntimeStartupAndShutdownGuardsKeepPreviousLayout(t *testing.T) 
 	stateHome := filepath.Join(t.TempDir(), "state")
 	setSessionTestStateHome(t, stateHome)
 	root := filepath.Join(stateHome, "sway-session")
-	if err := sessionstate.RegistryFile(root).Save(sessionRegistry(testManagedContextID)); err != nil {
+	if err := sessionstate.RegistryStoreFor(root).Save(sessionRegistry(testManagedContextID)); err != nil {
 		t.Fatalf("save registry: %v", err)
 	}
 	previous := placementOnlySnapshot("2", testManagedContextID)
-	if err := sessionstate.LayoutFile(root).Save(previous); err != nil {
+	if err := sessionstate.LayoutStoreFor(root).Save(previous); err != nil {
 		t.Fatalf("save layout: %v", err)
 	}
 
@@ -1457,7 +1496,7 @@ func TestSessionRuntimeStartupAndShutdownGuardsKeepPreviousLayout(t *testing.T) 
 		t.Fatalf("flush after shutdown: %v", err)
 	}
 	var persisted sessionstate.LayoutSnapshot
-	if err := sessionstate.LayoutFile(root).LoadInto(&persisted); err != nil {
+	if err := sessionstate.LayoutStoreFor(root).LoadInto(&persisted); err != nil {
 		t.Fatalf("load preserved layout: %v", err)
 	}
 	if persisted.Workspaces[0].Name != "2" {
@@ -1470,7 +1509,7 @@ func TestSessionRuntimeSettlingTimeoutUnblocksCompleteWorkspaces(t *testing.T) {
 	stateHome := filepath.Join(t.TempDir(), "state")
 	setSessionTestStateHome(t, stateHome)
 	root := filepath.Join(stateHome, "sway-session")
-	if err := sessionstate.RegistryFile(root).Save(sessionRegistryIDs(testManagedContextID, secondID)); err != nil {
+	if err := sessionstate.RegistryStoreFor(root).Save(sessionRegistryIDs(testManagedContextID, secondID)); err != nil {
 		t.Fatalf("save registry: %v", err)
 	}
 	previous := sessionstate.LayoutSnapshot{
@@ -1480,7 +1519,7 @@ func TestSessionRuntimeSettlingTimeoutUnblocksCompleteWorkspaces(t *testing.T) {
 			placementOnlySnapshot("3", secondID).Workspaces[0],
 		},
 	}
-	if err := sessionstate.LayoutFile(root).Save(previous); err != nil {
+	if err := sessionstate.LayoutStoreFor(root).Save(previous); err != nil {
 		t.Fatalf("save layout: %v", err)
 	}
 	runtime, err := newSessionRuntime(&recordingRequester{})
@@ -1511,12 +1550,12 @@ func TestSessionRuntimeRestoresContextWhichMapsAfterStartupTimeout(t *testing.T)
 	stateHome := filepath.Join(t.TempDir(), "state")
 	setSessionTestStateHome(t, stateHome)
 	root := filepath.Join(stateHome, "sway-session")
-	if err := sessionstate.RegistryFile(root).Save(sessionRegistryIDs(testManagedContextID, secondID)); err != nil {
+	if err := sessionstate.RegistryStoreFor(root).Save(sessionRegistryIDs(testManagedContextID, secondID)); err != nil {
 		t.Fatalf("save registry: %v", err)
 	}
 	previous := exactDaemonSnapshot("2", testManagedContextID, secondID)
 	previous.Workspaces[0].Tiling.Layout = sessionstate.LayoutStacked
-	if err := sessionstate.LayoutFile(root).Save(previous); err != nil {
+	if err := sessionstate.LayoutStoreFor(root).Save(previous); err != nil {
 		t.Fatalf("save layout: %v", err)
 	}
 	requester := &recordingRequester{}
@@ -1565,10 +1604,10 @@ func TestSessionRuntimeRequestsFreshTreeAfterUnknownMoveOutcome(t *testing.T) {
 	stateHome := filepath.Join(t.TempDir(), "state")
 	setSessionTestStateHome(t, stateHome)
 	root := filepath.Join(stateHome, "sway-session")
-	if err := sessionstate.RegistryFile(root).Save(sessionRegistry(testManagedContextID)); err != nil {
+	if err := sessionstate.RegistryStoreFor(root).Save(sessionRegistry(testManagedContextID)); err != nil {
 		t.Fatalf("save registry: %v", err)
 	}
-	if err := sessionstate.LayoutFile(root).Save(placementOnlySnapshot("9", testManagedContextID)); err != nil {
+	if err := sessionstate.LayoutStoreFor(root).Save(placementOnlySnapshot("9", testManagedContextID)); err != nil {
 		t.Fatalf("save layout: %v", err)
 	}
 	want := &swayipc.CommandOutcomeUnknownError{Cause: errors.New("connection lost")}
@@ -1588,10 +1627,10 @@ func TestSessionRuntimeKeepsRestoreEligibilityAfterUnknownMarkOutcome(t *testing
 	stateHome := filepath.Join(t.TempDir(), "state")
 	setSessionTestStateHome(t, stateHome)
 	root := filepath.Join(stateHome, "sway-session")
-	if err := sessionstate.RegistryFile(root).Save(sessionRegistry(testManagedContextID)); err != nil {
+	if err := sessionstate.RegistryStoreFor(root).Save(sessionRegistry(testManagedContextID)); err != nil {
 		t.Fatalf("save registry: %v", err)
 	}
-	if err := sessionstate.LayoutFile(root).Save(placementOnlySnapshot("9", testManagedContextID)); err != nil {
+	if err := sessionstate.LayoutStoreFor(root).Save(placementOnlySnapshot("9", testManagedContextID)); err != nil {
 		t.Fatalf("save layout: %v", err)
 	}
 	want := &swayipc.CommandOutcomeUnknownError{Cause: errors.New("connection lost")}
@@ -1616,11 +1655,11 @@ func TestSessionRuntimeDoesNotUseUnpersistedDegradationAsMergeBase(t *testing.T)
 	setSessionTestStateHome(t, stateHome)
 	root := filepath.Join(stateHome, "sway-session")
 	registry := sessionRegistryIDs(testManagedContextID, secondID)
-	if err := sessionstate.RegistryFile(root).Save(registry); err != nil {
+	if err := sessionstate.RegistryStoreFor(root).Save(registry); err != nil {
 		t.Fatalf("save registry: %v", err)
 	}
 	previous := exactDaemonSnapshot("2", testManagedContextID, secondID)
-	if err := sessionstate.LayoutFile(root).Save(previous); err != nil {
+	if err := sessionstate.LayoutStoreFor(root).Save(previous); err != nil {
 		t.Fatalf("save exact layout: %v", err)
 	}
 	runtime, err := newSessionRuntime(&recordingRequester{})
@@ -1655,11 +1694,11 @@ func TestSessionRuntimeDoesNotPersistImmediateFailedRestoreDegradation(t *testin
 	stateHome := filepath.Join(t.TempDir(), "state")
 	setSessionTestStateHome(t, stateHome)
 	root := filepath.Join(stateHome, "sway-session")
-	if err := sessionstate.RegistryFile(root).Save(sessionRegistryIDs(testManagedContextID, secondID)); err != nil {
+	if err := sessionstate.RegistryStoreFor(root).Save(sessionRegistryIDs(testManagedContextID, secondID)); err != nil {
 		t.Fatalf("save registry: %v", err)
 	}
 	previous := exactDaemonSnapshot("2", testManagedContextID, secondID)
-	if err := sessionstate.LayoutFile(root).Save(previous); err != nil {
+	if err := sessionstate.LayoutStoreFor(root).Save(previous); err != nil {
 		t.Fatalf("save exact layout: %v", err)
 	}
 	runtime, err := newSessionRuntime(&recordingRequester{})
@@ -1724,7 +1763,7 @@ func TestSessionRuntimeReobservesAmbiguousRestoreCommand(t *testing.T) {
 	setSessionTestStateHome(t, stateHome)
 	root := filepath.Join(stateHome, "sway-session")
 	secondID := sessionstate.ContextID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
-	if err := sessionstate.RegistryFile(root).Save(sessionRegistryIDs(testManagedContextID, secondID)); err != nil {
+	if err := sessionstate.RegistryStoreFor(root).Save(sessionRegistryIDs(testManagedContextID, secondID)); err != nil {
 		t.Fatalf("save registry: %v", err)
 	}
 	desired := exactDaemonSnapshot("2", testManagedContextID, secondID)
@@ -1762,7 +1801,7 @@ func TestSessionRuntimeIsolatesDetailAndStructuralRestoreFailures(t *testing.T) 
 		t.Helper()
 		stateHome := filepath.Join(t.TempDir(), "state")
 		root := filepath.Join(stateHome, "sway-session")
-		if err := sessionstate.RegistryFile(root).Save(sessionRegistryIDs(testManagedContextID, secondID)); err != nil {
+		if err := sessionstate.RegistryStoreFor(root).Save(sessionRegistryIDs(testManagedContextID, secondID)); err != nil {
 			t.Fatalf("save registry: %v", err)
 		}
 		return &sessionRuntime{
@@ -1806,17 +1845,19 @@ func TestSessionRuntimeIsolatesDetailAndStructuralRestoreFailures(t *testing.T) 
 		t.Fatalf("structural failure did not start rollback: refresh=%v done=%v err=%v", refresh, done, err)
 	}
 	if structuralRuntime.restoreProgress == nil || structuralRuntime.restoreProgress.Phase != sessionstate.RestoreRollbackOut ||
-		structuralRuntime.restoreProgress.Steps != 0 {
+		structuralRuntime.restoreProgress.Actions != 0 || structuralRuntime.restoreProgress.LastActionKey != "" || structuralRuntime.restoreProgress.RepeatedActions != 0 {
 		t.Fatalf("structural failure was not isolated by rollback: %+v", structuralRuntime.restoreProgress)
 	}
 }
 
-func TestSessionRuntimeRollbackGetsIndependentStepBudget(t *testing.T) {
+func TestSessionRuntimeRollbackResetsNoProgressDetection(t *testing.T) {
 	runtime := &sessionRuntime{
 		restoreProgress: &sessionstate.RestoreProgress{
-			Workspace: "2",
-			Phase:     sessionstate.RestoreBuild,
-			Steps:     1024,
+			Workspace:       "2",
+			Phase:           sessionstate.RestoreBuild,
+			Actions:         1024,
+			LastActionKey:   "failed-build-action",
+			RepeatedActions: 1024,
 		},
 		restoreFailures: make(map[string]error),
 	}
@@ -1824,8 +1865,8 @@ func TestSessionRuntimeRollbackGetsIndependentStepBudget(t *testing.T) {
 	if !refresh || done || err == nil {
 		t.Fatalf("rollback was not started: refresh=%v done=%v err=%v", refresh, done, err)
 	}
-	if runtime.restoreProgress.Phase != sessionstate.RestoreRollbackOut || runtime.restoreProgress.Steps != 0 {
-		t.Fatalf("rollback inherited exhausted build budget: %+v", runtime.restoreProgress)
+	if runtime.restoreProgress.Phase != sessionstate.RestoreRollbackOut || runtime.restoreProgress.Actions != 0 || runtime.restoreProgress.LastActionKey != "" || runtime.restoreProgress.RepeatedActions != 0 {
+		t.Fatalf("rollback inherited failed-action progress: %+v", runtime.restoreProgress)
 	}
 }
 

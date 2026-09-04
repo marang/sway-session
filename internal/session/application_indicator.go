@@ -36,6 +36,19 @@ func PlanApplicationIndicatorActions(
 	catalog DesktopCatalog,
 	pending []ApplicationOperation,
 ) ([]ApplicationIndicatorAction, error) {
+	return PlanApplicationIndicatorActionsAfter(root, registry, catalog, pending, nil)
+}
+
+// PlanApplicationIndicatorActionsAfter rotates the bounded batch beyond the
+// last planned mutation, so repeated confirmed failures cannot pin all later
+// windows behind one deterministic prefix.
+func PlanApplicationIndicatorActionsAfter(
+	root *swayipc.TreeNode,
+	registry Registry,
+	catalog DesktopCatalog,
+	pending []ApplicationOperation,
+	after *ApplicationIndicatorAction,
+) ([]ApplicationIndicatorAction, error) {
 	if root == nil {
 		return nil, errors.New("sway tree is nil")
 	}
@@ -44,12 +57,13 @@ func PlanApplicationIndicatorActions(
 	}
 	desired := make(map[int64]titleindicator.State)
 	if registry.Preferences.DesktopIndicators {
+		index := buildApplicationContextIndex(&registry, false)
 		windows, err := ApplicationWindows(root)
 		if err != nil {
 			return nil, err
 		}
 		for _, window := range windows {
-			state, visible, err := applicationIndicatorState(window, registry, catalog, pending)
+			state, visible, err := applicationIndicatorState(window, index, catalog, pending)
 			if err != nil {
 				return nil, err
 			}
@@ -74,9 +88,6 @@ func PlanApplicationIndicatorActions(
 			actions = append(actions, ApplicationIndicatorAction{
 				Kind: ApplicationIndicatorRemove, ContainerID: node.ID, State: observed.State, Mark: observed.Raw,
 			})
-			if len(actions) > maxApplicationIndicatorActions {
-				return nil, fmt.Errorf("application indicator plan exceeds %d actions", maxApplicationIndicatorActions)
-			}
 		}
 		if wanted && !hasWanted {
 			mark, err := titleindicator.Mark(want, node.ID)
@@ -86,25 +97,22 @@ func PlanApplicationIndicatorActions(
 			actions = append(actions, ApplicationIndicatorAction{
 				Kind: ApplicationIndicatorAdd, ContainerID: node.ID, State: want, Mark: mark,
 			})
-			if len(actions) > maxApplicationIndicatorActions {
-				return nil, fmt.Errorf("application indicator plan exceeds %d actions", maxApplicationIndicatorActions)
-			}
 		}
 	}
-	return actions, nil
+	return boundedApplicationIndicatorActionsAfter(actions, after), nil
 }
 
 func applicationIndicatorState(
 	window WindowApplication,
-	registry Registry,
+	index applicationContextIndex,
 	catalog DesktopCatalog,
 	pending []ApplicationOperation,
 ) (titleindicator.State, bool, error) {
-	registered, suppressed, err := indicatorRegisteredContext(window, registry)
+	registered, suppressed, err := indicatorRegisteredContext(window, index)
 	if err != nil || suppressed {
 		return "", false, err
 	}
-	if operationPendingForWindow(window, registered, pending, registry, catalog) {
+	if operationPendingForWindow(window, registered, pending, index, catalog) {
 		return titleindicator.Pending, true, nil
 	}
 	if registered != nil {
@@ -119,14 +127,10 @@ func applicationIndicatorState(
 	return titleindicator.Unregistered, true, nil
 }
 
-func indicatorRegisteredContext(window WindowApplication, registry Registry) (*Context, bool, error) {
+func indicatorRegisteredContext(window WindowApplication, index applicationContextIndex) (*Context, bool, error) {
 	if len(window.ContextMarks) == 1 {
 		id := window.ContextMarks[0]
-		for index := range registry.Contexts {
-			context := &registry.Contexts[index]
-			if context.ID != id {
-				continue
-			}
+		if context, exists := index.contextByID(id); exists {
 			if context.App == nil {
 				return nil, true, nil
 			}
@@ -137,37 +141,31 @@ func indicatorRegisteredContext(window WindowApplication, registry Registry) (*C
 		}
 		return nil, false, fmt.Errorf("application window %d has unknown persistent context mark %q", window.ContainerID, id)
 	}
-	var match *Context
-	for index := range registry.Contexts {
-		context := &registry.Contexts[index]
-		if context.App == nil || !applicationIdentitiesOverlap(context.App.Identity, window.Identity) {
-			continue
-		}
-		if match != nil {
-			return nil, false, fmt.Errorf("application window %d overlaps multiple registered contexts", window.ContainerID)
-		}
-		match = context
+	match, _, err := index.match(window.Identity)
+	if err != nil {
+		return nil, false, fmt.Errorf("application window %d: %w", window.ContainerID, err)
 	}
 	return match, false, nil
 }
 
-func operationPendingForWindow(window WindowApplication, registered *Context, operations []ApplicationOperation, registry Registry, catalog DesktopCatalog) bool {
+func operationPendingForWindow(window WindowApplication, registered *Context, operations []ApplicationOperation, index applicationContextIndex, catalog DesktopCatalog) bool {
 	for _, operation := range operations {
 		for _, item := range operation.Items {
 			switch operation.Kind {
 			case OperationRegister:
-				if registered == nil && registryContext(registry, item.ContextID) == nil && item.Window != nil &&
+				_, contextExists := index.contextByID(item.ContextID)
+				if registered == nil && !contextExists && item.Window != nil &&
 					reflect.DeepEqual(window, *item.Window) && operationDesktopCandidateCurrent(window, catalog, item.DesktopID) {
 					return true
 				}
 			case OperationRebind:
-				if item.Window != nil && reflect.DeepEqual(window, *item.Window) && operationContextCurrent(registry, item) &&
+				if item.Window != nil && reflect.DeepEqual(window, *item.Window) && operationContextCurrent(index, item) &&
 					operationDesktopCandidateCurrent(window, catalog, item.DesktopID) {
 					return true
 				}
 			case OperationReapprove:
 				_, candidateExists := catalog.ByID(item.DesktopID)
-				if candidateExists && registered != nil && registered.ID == item.ContextID && operationContextCurrent(registry, item) {
+				if candidateExists && registered != nil && registered.ID == item.ContextID && operationContextCurrent(index, item) {
 					return true
 				}
 			}
@@ -185,18 +183,9 @@ func operationDesktopCandidateCurrent(window WindowApplication, catalog DesktopC
 	return false
 }
 
-func registryContext(registry Registry, id ContextID) *Context {
-	for index := range registry.Contexts {
-		if registry.Contexts[index].ID == id {
-			return &registry.Contexts[index]
-		}
-	}
-	return nil
-}
-
-func operationContextCurrent(registry Registry, item ApplicationOperationItem) bool {
-	context := registryContext(registry, item.ContextID)
-	if context == nil || context.App == nil {
+func operationContextCurrent(index applicationContextIndex, item ApplicationOperationItem) bool {
+	context, exists := index.contextByID(item.ContextID)
+	if !exists || context.App == nil {
 		return false
 	}
 	revision, err := ApplicationOperationContextRevision(*context)

@@ -192,32 +192,67 @@ named [Herdr](https://herdr.dev/) session. Alacritty is the default adapter.
 Sway restores the outer workspace and layout; Herdr restores the terminal tabs,
 panes, supported agent sessions, and pane screen history.
 
-The release registry schema is version 5 only. A version-1 through version-4,
-unknown, malformed, or otherwise invalid `contexts.json` fails closed: the
-command does not interpret or replace it, and its bytes remain unchanged.
-Schema 5 records typed terminal adapters, stable terminal identities, archive
-timestamps, desktop-application registrations, and the explicit fresh-terminal
-instance discriminator. Terminal creation and last-focused observations live
-in the independently versioned, owner-only
-`terminal-runtime/terminal-activity.json` presentation state, so current
-writers do not change the strict schema-5 registry format. A missing activity
-file simply displays unknown timestamps; malformed activity fails closed
-without changing `contexts.json`. Fresh instance session names retain the
+Persistent runtime state lives in the owner-only SQLite database
+`${XDG_STATE_HOME:-$HOME/.local/state}/sway-session/state.sqlite3`. Database
+schema 1 stores the schema-5 context payloads, captured layout, terminal
+creation/focus activity, the compositor identity, and application launch
+attempts together. Configuration remains in strict TOML text files under the
+XDG configuration root; approved user-local desktop-entry snapshots also
+remain separate immutable files. Fresh instance session names retain the
 complete UUID without separators so Herdr's derived Unix socket paths remain
 bounded.
 
-Pre-release state is not upgraded. Before first use of this release, stop every
-`sway-session daemon` process and reset the private session-state directory:
+This pre-1.0 change provides one explicit transition path instead of silently
+changing state. When the database is absent but any legacy `contexts.json`, `layout.json`,
+`application-runtime/application-session.json`, or
+`terminal-runtime/terminal-activity.json` exists, every state-opening command
+fails closed and leaves the legacy files unchanged. Open `sway-session terminal
+manage` and press `m` to copy every valid legacy runtime document into one
+SQLite transaction. The migration is idempotent, never deletes the JSON source,
+and can be retried after an interrupted attempt. It holds the legacy document
+locks through the database commit so an older process cannot change the source
+generation mid-copy. Stale activity or launch-attempt rows whose context no
+longer exists are skipped explicitly and reported in the result. If the final
+commit succeeds but its acknowledgement is lost, migration reloads and
+compares every imported document before reporting verified success.
 
-```sh
-rm -rf -- "${XDG_STATE_HOME:-$HOME/.local/state}/sway-session"
-```
+The legacy JSON files remain a readable backup after success and are ignored
+whenever `state.sqlite3` exists. Remove them only after verifying the imported
+contexts and a restore. This temporary `m` upgrade action is intentionally not
+a permanent schema-migration framework and can be removed after the pre-1.0
+transition window. The owner-only runtime
+`daemon.lock` continues to prevent two session daemons from running
+concurrently.
 
-This deliberately forgets registered contexts, captured layouts,
-desktop-application approvals, and runtime launch-attempt state. It does not
-delete Herdr sessions or pane history; remove those separately only when that
-is also intended. The owner-only runtime `daemon.lock` continues to prevent two
-session daemons from running concurrently.
+SQLite uses WAL mode with full synchronous commits. `state.sqlite3` and any
+`state.sqlite3-wal`, `state.sqlite3-shm`, or rollback-journal sidecar are
+required to be regular, single-link, owner-owned files with mode `0600`.
+New connections reject an implausibly oversized main database before SQLite
+opens it. Sidecars receive the same type, ownership, mode, and link checks, but
+no pre-open size ceiling: a valid WAL or rollback journal may temporarily be
+larger than the database while a reader pins old frames or crash recovery is
+pending, and SQLite must be allowed to recover it. Automatic checkpoints and a
+journal-size target keep normal short-transaction WAL use compact.
+Database-wide integrity and
+foreign-key checks run once when the session daemon starts, while every shorter
+CLI/store open checks connection, file, schema, and consumed-row invariants.
+Transactions are short: context and application-attempt payloads are validated,
+encoded, and diffed before writer acquisition; revision checks and only changed
+rows execute inside the write transaction. Related row updates are atomic, while
+Sway IPC, Herdr, process inspection, and desktop launches run outside database
+transactions as retryable observe/record/act/reconcile sagas. A 250 ms busy
+timeout converts prolonged contention into a retryable diagnostic, and caller
+cancellation interrupts database work rather than waiting indefinitely.
+SQLite's Unix VFS canonicalizes the descriptor-relative database spelling to a
+normal path. Do not rename or replace the state root while `sway-session`
+operations are running. State-root traversal rejects non-sticky group/world
+writable ancestors; sticky shared ancestors are accepted only when both the
+ancestor and protected entry are owned by the current user or root. Unconfined processes under
+the same UID are trusted
+state owners and can already alter this owner-only database directly. For the
+confined Codex boundary, the supplied AppArmor profile additionally denies
+renaming the default `.local` and `.local/state` ancestor directories so the
+state-tree deny cannot be bypassed by substituting a prepared parent tree.
 
 Persistent terminal success is based on the outer Sway window, not merely on a
 successful process spawn. `terminal` and one-shot `restore` require the same
@@ -234,9 +269,11 @@ an agent in an occupied pane. An explicit retry with roles runs the idempotent
 initializer, which leaves a nonempty session unchanged instead of replaying an
 agent start. A later user focus change does not invalidate an otherwise stable
 mapping. Terminal creation, one-shot restore, broker registration preparation,
-and manager initialization share an owner-only lifecycle lock, always acquired
-before the registry lock. This prevents a concurrent entry point from exposing
-manager state and then losing its only recovery identity to creation rollback.
+and manager initialization share an owner-only lifecycle lock. Short SQLite
+transactions serialize each durable transition under that lock, but never span
+the dependent Sway or Herdr operation. This prevents a concurrent entry point
+from exposing manager state and then losing its only recovery identity to
+creation rollback.
 Alacritty intentionally runs the Herdr client as its `-e`
 child, so an exiting client closes only the outer Alacritty window; the named
 Herdr server, panes, and agents can remain available for this recovery path.
@@ -281,14 +318,27 @@ with an actionable path-length diagnostic. The
 default Sway binding uses this explicit mode so repeated `$mod+Return` presses
 always create separate persistent windows. Closing a window keeps that context
 active so the next restore opens it again; archive or purge contexts that
-should no longer return. Each active or archived instance occupies one of the
-registry's bounded 128 context slots until it is purged.
+should no longer return. The registry has no arbitrary numeric cap on the total
+number of active or archived contexts. Operational work is still bounded:
+placement and indicator planners emit rotating bounded-size action batches,
+application preflight rotates across at most two candidates per daemon pass,
+automatic terminal restore starts at most two missing adapters in one
+lifecycle-locked wave and reloads registry plus Sway state before the next wave,
+and layout restore re-observes after each mutation while using a
+layout-complexity-scaled convergence budget plus an unchanged-action guard.
+Cursors advance after
+planning even when a complete batch is rejected, and later passes resume
+remaining work from fresh state. These limits control latency and request size;
+they are not storage-capacity limits.
 
 Use `sway-session terminal manage` to see these contexts as a friendly,
 keyboard-first Bubble Tea list rather than raw UUIDs. It shows creation time,
 last-active time, project, directory, session, and the full UUID in its detail
 panel and supports open/focus, filtering, archive/activate, refresh, and
-deliberate permanent deletion. Press `e` to edit the selected terminal's
+deliberate permanent deletion. Its grouped footer keeps navigation,
+selected-item actions, and global actions visually separate. Press `m` to run
+the explicit legacy-JSON import, including when the initial list is blocked by
+the migration boundary. Press `e` to edit the selected terminal's
 display title. The title is presentation metadata only; renaming never changes
 its UUID, Herdr session, working directory, or restore identity. Purge names
 the target and consequence and requires a separate `y` confirmation before the
@@ -371,9 +421,10 @@ compiled-in Herdr agent kind. If agent startup fails after the terminal was
 created, the partial JSON result retains the exact context UUID; retry with
 `terminal --context UUID` and the same roles. That retry reuses the window and
 the rollback-safe empty session instead of allocating a duplicate.
-These commands use a current-schema snapshot. An unsupported or invalid
-registry returns the stable `unsupported_version` or state diagnostic without
-changing bytes; reset pre-release session state before retrying.
+These commands use a validated SQLite read snapshot. An unsupported database
+schema or invalid context payload returns the stable `unsupported_version` or
+state diagnostic without changing the database; migrate recognized pre-release
+JSON state from `terminal manage` before retrying.
 
 ```sh
 sway-session --json terminal list
@@ -532,8 +583,10 @@ without accepting pane roles or commands:
 The existing broker protocol still accepts no roles or commands. Its trusted
 daemon side now runs the same typed terminal-session manager after placement,
 with the fixed `codex` + `shell` layout expected by this Codex workflow. The
-manager holds the registry lock through the dependent Herdr operation, so
-`archive` and `purge` cannot race initialization. It only splits a session
+manager holds the filesystem lifecycle lock through the dependent Herdr
+operation, so `archive` and `purge` cannot race initialization. Database
+transactions before and after that operation remain short; no Herdr command is
+run inside a transaction. It only splits a session
 proven to contain exactly one empty pane with the supported snapshot protocol.
 The current integration targets Herdr 0.8.2 protocol 20 and rejects other
 protocol versions before mutation. A partial failure is rolled back to one idle
@@ -575,7 +628,7 @@ presentation metadata.
 
 The release packages also install metadata-rich completion for Bash, Zsh, and
 Fish. Commands, subcommands, and options remain available even when session
-state cannot be read. Context positions query a bounded read-only CLI endpoint
+state cannot be read. Context positions query a read-only CLI endpoint
 and display the label, state, launcher, and other safe metadata while inserting
 only the canonical UUID. The adapters do not parse the private registry and do
 not require `jq` or another helper.
@@ -673,9 +726,14 @@ For a distribution-package install, use
 source path in the first command.
 
 The template assumes the default XDG paths under `~/.config` and
-`~/.local/state`. The policy denies
-direct Herdr history and `sway-session` state access and protects the relevant
-socket pathnames from ordinary file operations. On kernels where AppArmor does
+`~/.local/state`. The policy denies direct Herdr history and the complete
+`sway-session` state root, including `state.sqlite3` and its WAL/SHM sidecars,
+and prevents the confined process from swapping the `.local` or `.local/state`
+ancestor directory around that protected tree. It also protects the relevant
+socket pathnames from ordinary file operations. The
+static policy check asserts the ancestor and complete state-root rules rather
+than enumerating only the main database file; the live check probes access
+beside the state database without renaming real user directories. On kernels where AppArmor does
 not mediate pathname socket connections through those file rules, it does not
 enforce the intended direct Sway, Herdr, or container API connection deny; the
 typed `codex-report.sock` and `session-start.sock` workflow remains the only

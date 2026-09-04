@@ -26,6 +26,29 @@ type blockingDaemonRequester struct {
 	entered chan struct{}
 }
 
+func TestDaemonRegistryInitializationRetriesBoundedContention(t *testing.T) {
+	calls := 0
+	err := retryStateContention(t.Context(), func() error {
+		calls++
+		if calls == 1 {
+			return sessionstate.ErrStateDatabaseBusy
+		}
+		return nil
+	})
+	if err != nil || calls != 2 {
+		t.Fatalf("retry state contention: calls=%d err=%v", calls, err)
+	}
+}
+
+func TestDaemonRegistryInitializationContentionHonorsCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	err := retryStateContention(ctx, func() error { return sessionstate.ErrStateDatabaseBusy })
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled state contention retry = %v", err)
+	}
+}
+
 func (requester *blockingDaemonRequester) RequestContext(ctx context.Context, _ swayipc.MessageType, _ []byte) (swayipc.Message, error) {
 	select {
 	case <-requester.entered:
@@ -116,11 +139,11 @@ func TestSessionDaemonLoopOwnsPlacementAndCaptureWithoutAnimator(t *testing.T) {
 	setSessionTestStateHome(t, stateHome)
 	root := filepath.Join(stateHome, "sway-session")
 	registry := sessionRegistry(testManagedContextID)
-	if err := sessionstate.RegistryFile(root).Save(registry); err != nil {
+	if err := sessionstate.RegistryStoreFor(root).Save(registry); err != nil {
 		t.Fatalf("save registry: %v", err)
 	}
 	desired := placementOnlySnapshot("9: saved", testManagedContextID)
-	if err := sessionstate.LayoutFile(root).Save(desired); err != nil {
+	if err := sessionstate.LayoutStoreFor(root).Save(desired); err != nil {
 		t.Fatalf("save desired layout: %v", err)
 	}
 
@@ -156,7 +179,7 @@ func TestSessionDaemonLoopPublishesIndicatorsWithoutAnimator(t *testing.T) {
 		Preferences: sessionstate.RegistryPreferences{DesktopIndicators: true},
 		Contexts:    []sessionstate.Context{},
 	}
-	if err := sessionstate.RegistryFile(root).Save(registry); err != nil {
+	if err := sessionstate.RegistryStoreFor(root).Save(registry); err != nil {
 		t.Fatal(err)
 	}
 	catalog := testDesktopCatalog(t, map[string]string{

@@ -260,11 +260,7 @@ func (manager TerminalManager) openSerialized(ctx context.Context, request Termi
 	var target Context
 	var createdAt time.Time
 	created := false
-	updateRegistry := manager.RegistryUpdate
-	if updateRegistry == nil {
-		updateRegistry = UpdateRegistryContext
-	}
-	_, err := updateRegistry(ctx, manager.StateRoot, func(registry *Registry) error {
+	mutateRegistry := func(registry *Registry) error {
 		if request.ContextID != "" {
 			index, resolveErr := ResolveContext(*registry, string(request.ContextID))
 			if resolveErr != nil {
@@ -319,7 +315,16 @@ func (manager TerminalManager) openSerialized(ctx context.Context, request Termi
 			return manager.SessionManager.ValidateContext(target)
 		}
 		return nil
-	})
+	}
+	activityAtomic := manager.RegistryUpdate == nil
+	var err error
+	if activityAtomic {
+		_, err = UpdateRegistryWithTerminalCreationContext(ctx, manager.StateRoot, mutateRegistry, func() (ContextID, time.Time, bool) {
+			return target.ID, createdAt, created
+		})
+	} else {
+		_, err = manager.RegistryUpdate(ctx, manager.StateRoot, mutateRegistry)
+	}
 	if err != nil {
 		var unknown *statefile.CommitOutcomeUnknownError
 		if !errors.As(err, &unknown) {
@@ -345,7 +350,7 @@ func (manager TerminalManager) openSerialized(ctx context.Context, request Termi
 		target = resolved
 		created = newID != "" && target.ID == newID
 	}
-	if created {
+	if created && !activityAtomic {
 		if err := RecordTerminalCreationContext(ctx, manager.StateRoot, target.ID, createdAt); err != nil {
 			rollbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), terminalRollbackTimeout)
 			defer cancel()
@@ -609,9 +614,6 @@ func (manager TerminalManager) rollbackCreatedContext(ctx context.Context, targe
 	if err != nil {
 		return err
 	}
-	if activityErr := RemoveTerminalActivityContext(ctx, manager.StateRoot, target.ID); activityErr != nil {
-		return fmt.Errorf("remove terminal creation activity: %w", activityErr)
-	}
 	return nil
 }
 
@@ -641,9 +643,6 @@ func (manager TerminalManager) rollbackUnlaunchedContext(ctx context.Context, ta
 	}
 	if err != nil {
 		return false, err
-	}
-	if activityErr := RemoveTerminalActivityContext(ctx, manager.StateRoot, target.ID); activityErr != nil {
-		return true, fmt.Errorf("remove terminal creation activity after pre-launch rollback: %w", activityErr)
 	}
 	return true, nil
 }
@@ -729,7 +728,7 @@ func findTerminalTreeNode(node *swayipc.TreeNode, id int64) *swayipc.TreeNode {
 
 func terminalContextByIdentity(ctx context.Context, root string, identity TerminalIdentity) (Context, error) {
 	registry := Registry{}
-	if err := RegistryFile(root).LoadIntoContext(ctx, &registry); err != nil {
+	if err := RegistryStoreFor(root).LoadIntoContext(ctx, &registry); err != nil {
 		return Context{}, err
 	}
 	for _, context := range registry.Contexts {
@@ -743,7 +742,7 @@ func terminalContextByIdentity(ctx context.Context, root string, identity Termin
 
 func terminalContextByID(ctx context.Context, root string, id ContextID) (Context, error) {
 	registry := Registry{}
-	if err := RegistryFile(root).LoadIntoContext(ctx, &registry); err != nil {
+	if err := RegistryStoreFor(root).LoadIntoContext(ctx, &registry); err != nil {
 		return Context{}, err
 	}
 	index, err := ResolveContext(registry, string(id))

@@ -23,7 +23,7 @@ func TestRegisterApplicationContextMarksAndEnablesIndicatorsInOneTransaction(t *
 		t.Fatal(err)
 	}
 	var registry Registry
-	if err := RegistryFile(root).LoadInto(&registry); err != nil {
+	if err := RegistryStoreFor(root).LoadInto(&registry); err != nil {
 		t.Fatal(err)
 	}
 	mark, _ := context.ID.Mark()
@@ -42,7 +42,7 @@ func TestRegisterApplicationContextRollsBackWhenSwayRejectsMark(t *testing.T) {
 		t.Fatal("Sway mark rejection was accepted")
 	}
 	var registry Registry
-	if err := RegistryFile(root).LoadInto(&registry); err == nil && len(registry.Contexts) != 0 {
+	if err := RegistryStoreFor(root).LoadInto(&registry); err == nil && len(registry.Contexts) != 0 {
 		t.Fatalf("rejected mark left registry mutation: %+v", registry)
 	}
 }
@@ -83,10 +83,6 @@ func TestRegisterDoesNotRollBackMarkWhenCommittedRegistryCannotBeReconciled(t *t
 		Preferences: RegistryPreferences{DesktopIndicators: true},
 		Contexts:    []Context{applicationContext},
 	}
-	data, err := json.Marshal(committed)
-	if err != nil {
-		t.Fatal(err)
-	}
 	window := appWindow(42, true, "org.example.App", "", "", "org.example.App")
 	wroteCommittedRegistry := false
 	client := &mutationSwayClient{
@@ -98,17 +94,14 @@ func TestRegisterDoesNotRollBackMarkWhenCommittedRegistryCannotBeReconciled(t *t
 				return
 			}
 			wroteCommittedRegistry = true
-			path := filepath.Join(root, ContextsFilename)
-			if err := os.WriteFile(path, data, 0o600); err != nil {
-				t.Fatalf("write committed registry: %v", err)
-			}
-			if err := os.Chmod(path, 0); err != nil {
+			writeRegistryBypassingLifecycleLock(t, root, committed)
+			if err := os.Chmod(filepath.Join(root, StateDatabaseFilename), 0); err != nil {
 				t.Fatalf("make reconciliation load fail: %v", err)
 			}
 		},
 	}
 
-	err = RegisterApplicationContext(t.Context(), root, client, applicationContext, 42)
+	err := RegisterApplicationContext(t.Context(), root, client, applicationContext, 42)
 	if err == nil {
 		t.Fatal("unknown registry reconciliation was accepted")
 	}
@@ -120,12 +113,12 @@ func TestRegisterDoesNotRollBackMarkWhenCommittedRegistryCannotBeReconciled(t *t
 		t.Fatalf("reconciliation failure was not actionable: %v", err)
 	}
 
-	path := filepath.Join(root, ContextsFilename)
+	path := filepath.Join(root, StateDatabaseFilename)
 	if err := os.Chmod(path, 0o600); err != nil {
 		t.Fatalf("restore committed registry permissions: %v", err)
 	}
 	var visible Registry
-	if err := RegistryFile(root).LoadInto(&visible); err != nil {
+	if err := RegistryStoreFor(root).LoadInto(&visible); err != nil {
 		t.Fatalf("load committed registry: %v", err)
 	}
 	if len(visible.Contexts) != 1 || !reflect.DeepEqual(visible.Contexts[0], applicationContext) {
@@ -148,10 +141,6 @@ func TestRegisterDoesNotRollBackCommittedMarkAfterConcurrentLifecycleChange(t *t
 		Preferences: RegistryPreferences{DesktopIndicators: true},
 		Contexts:    []Context{committedContext},
 	}
-	data, err := json.Marshal(committed)
-	if err != nil {
-		t.Fatal(err)
-	}
 	window := appWindow(42, true, "org.example.App", "", "", "org.example.App")
 	wroteCommittedRegistry := false
 	client := &mutationSwayClient{
@@ -163,9 +152,7 @@ func TestRegisterDoesNotRollBackCommittedMarkAfterConcurrentLifecycleChange(t *t
 				return
 			}
 			wroteCommittedRegistry = true
-			if err := os.WriteFile(filepath.Join(root, ContextsFilename), data, 0o600); err != nil {
-				t.Fatalf("write concurrently updated registry: %v", err)
-			}
+			writeRegistryBypassingLifecycleLock(t, root, committed)
 		},
 	}
 
@@ -177,7 +164,7 @@ func TestRegisterDoesNotRollBackCommittedMarkAfterConcurrentLifecycleChange(t *t
 		t.Fatalf("concurrent lifecycle change caused committed mark rollback: %q", window.Marks)
 	}
 	var visible Registry
-	if err := RegistryFile(root).LoadInto(&visible); err != nil {
+	if err := RegistryStoreFor(root).LoadInto(&visible); err != nil {
 		t.Fatal(err)
 	}
 	if len(visible.Contexts) != 1 || visible.Contexts[0].App.RestorePolicy != ApplicationRestorePinned {
@@ -239,7 +226,7 @@ func TestRepairApplicationMarkHoldsRegistryLockAcrossSwayMutation(t *testing.T) 
 	root := filepath.Join(t.TempDir(), "state")
 	registered := flatpakApplicationContext("org.example.App", "org.example.App")
 	registered.ID = testContextID
-	if err := RegistryFile(root).Save(Registry{Version: ContextsSchemaVersion, Contexts: []Context{registered}}); err != nil {
+	if err := RegistryStoreFor(root).Save(Registry{Version: ContextsSchemaVersion, Contexts: []Context{registered}}); err != nil {
 		t.Fatal(err)
 	}
 	commandStarted := make(chan struct{})
@@ -297,7 +284,7 @@ func TestRebindPreservesLifecycleChangedAfterApprovalWasReviewed(t *testing.T) {
 	expected := flatpakApplicationContext("org.example.Old", "org.example.Old")
 	expected.ID = testContextID
 	expected.App.DesiredOpen = true
-	if err := RegistryFile(root).Save(Registry{Version: ContextsSchemaVersion, Contexts: []Context{expected}}); err != nil {
+	if err := RegistryStoreFor(root).Save(Registry{Version: ContextsSchemaVersion, Contexts: []Context{expected}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := UpdateRegistry(root, func(registry *Registry) error {
@@ -314,7 +301,7 @@ func TestRebindPreservesLifecycleChangedAfterApprovalWasReviewed(t *testing.T) {
 		t.Fatalf("lifecycle-only change invalidated rebind approval: %v", err)
 	}
 	var registry Registry
-	if err := RegistryFile(root).LoadInto(&registry); err != nil {
+	if err := RegistryStoreFor(root).LoadInto(&registry); err != nil {
 		t.Fatal(err)
 	}
 	if registry.Contexts[0].Launcher.FlatpakID != "org.example.New" || registry.Contexts[0].App.RestorePolicy != ApplicationRestorePinned {
@@ -326,7 +313,7 @@ func TestRebindRejectsLauncherChangedAfterApprovalWasReviewed(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "state")
 	expected := flatpakApplicationContext("org.example.Old", "org.example.Old")
 	expected.ID = testContextID
-	if err := RegistryFile(root).Save(Registry{Version: ContextsSchemaVersion, Contexts: []Context{expected}}); err != nil {
+	if err := RegistryStoreFor(root).Save(Registry{Version: ContextsSchemaVersion, Contexts: []Context{expected}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := UpdateRegistry(root, func(registry *Registry) error {
@@ -353,16 +340,12 @@ func TestRebindDoesNotRollBackMarkWhenCommittedRegistryCannotBeReconciled(t *tes
 	root := filepath.Join(t.TempDir(), "state")
 	expected := flatpakApplicationContext("org.example.Old", "org.example.Old")
 	expected.ID = testContextID
-	if err := RegistryFile(root).Save(Registry{Version: ContextsSchemaVersion, Contexts: []Context{expected}}); err != nil {
+	if err := RegistryStoreFor(root).Save(Registry{Version: ContextsSchemaVersion, Contexts: []Context{expected}}); err != nil {
 		t.Fatal(err)
 	}
 	replacement := flatpakApplicationContext("org.example.New", "org.example.New")
 	replacement.ID = expected.ID
 	committed := Registry{Version: ContextsSchemaVersion, Contexts: []Context{replacement}}
-	data, err := json.Marshal(committed)
-	if err != nil {
-		t.Fatal(err)
-	}
 	window := appWindow(42, true, "org.example.New", "", "", "org.example.New")
 	wroteCommittedRegistry := false
 	client := &mutationSwayClient{
@@ -374,17 +357,14 @@ func TestRebindDoesNotRollBackMarkWhenCommittedRegistryCannotBeReconciled(t *tes
 				return
 			}
 			wroteCommittedRegistry = true
-			path := filepath.Join(root, ContextsFilename)
-			if err := os.WriteFile(path, data, 0o600); err != nil {
-				t.Fatalf("write committed registry: %v", err)
-			}
-			if err := os.Chmod(path, 0); err != nil {
+			writeRegistryBypassingLifecycleLock(t, root, committed)
+			if err := os.Chmod(filepath.Join(root, StateDatabaseFilename), 0); err != nil {
 				t.Fatalf("make reconciliation load fail: %v", err)
 			}
 		},
 	}
 
-	_, _, err = RebindApplicationContext(t.Context(), root, client, expected, replacement, 42)
+	_, _, err := RebindApplicationContext(t.Context(), root, client, expected, replacement, 42)
 	if err == nil {
 		t.Fatal("unknown registry reconciliation was accepted")
 	}
@@ -396,12 +376,12 @@ func TestRebindDoesNotRollBackMarkWhenCommittedRegistryCannotBeReconciled(t *tes
 		t.Fatalf("reconciliation failure was not actionable: %v", err)
 	}
 
-	path := filepath.Join(root, ContextsFilename)
+	path := filepath.Join(root, StateDatabaseFilename)
 	if err := os.Chmod(path, 0o600); err != nil {
 		t.Fatalf("restore committed registry permissions: %v", err)
 	}
 	var visible Registry
-	if err := RegistryFile(root).LoadInto(&visible); err != nil {
+	if err := RegistryStoreFor(root).LoadInto(&visible); err != nil {
 		t.Fatalf("load committed registry: %v", err)
 	}
 	if len(visible.Contexts) != 1 || !reflect.DeepEqual(visible.Contexts[0], replacement) {
@@ -421,7 +401,7 @@ func TestReapprovePreservesLifecycleChangedAfterApprovalWasReviewed(t *testing.T
 	expected.Launcher.ApprovedExecutablePath = "/home/example/.local/bin/example"
 	expected.Launcher.ApprovedExecutableSHA256 = digest
 	expected.App.DesiredOpen = true
-	if err := RegistryFile(root).Save(Registry{Version: ContextsSchemaVersion, Contexts: []Context{expected}}); err != nil {
+	if err := RegistryStoreFor(root).Save(Registry{Version: ContextsSchemaVersion, Contexts: []Context{expected}}); err != nil {
 		t.Fatal(err)
 	}
 	revision, err := ApplicationOperationContextRevision(expected)
@@ -451,14 +431,14 @@ func TestReapproveReportsUnknownRegistryReconciliation(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "state")
 	expected := flatpakApplicationContext("org.example.App", "org.example.App")
 	expected.ID = testContextID
-	if err := RegistryFile(root).Save(Registry{Version: ContextsSchemaVersion, Contexts: []Context{expected}}); err != nil {
+	if err := RegistryStoreFor(root).Save(Registry{Version: ContextsSchemaVersion, Contexts: []Context{expected}}); err != nil {
 		t.Fatal(err)
 	}
 	revision, err := ApplicationOperationContextRevision(expected)
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(root, ContextsFilename)
+	path := filepath.Join(root, StateDatabaseFilename)
 	if err := os.Chmod(path, 0); err != nil {
 		t.Fatal(err)
 	}
@@ -466,6 +446,24 @@ func TestReapproveReportsUnknownRegistryReconciliation(t *testing.T) {
 	_, _, err = ReapproveApplicationContext(t.Context(), root, expected.ID, revision, expected.Launcher)
 	if err == nil || !strings.Contains(err.Error(), "cannot reconcile registry state") {
 		t.Fatalf("reapproval did not report unknown reconciliation: %v", err)
+	}
+}
+
+func writeRegistryBypassingLifecycleLock(t *testing.T, root string, registry Registry) {
+	t.Helper()
+	database, err := openStateDatabase(t.Context(), root, false)
+	if err != nil {
+		t.Fatalf("open state database for concurrent write: %v", err)
+	}
+	defer database.Close()
+	_, revision, err := loadRegistrySnapshotDatabase(t.Context(), database)
+	if errors.Is(err, os.ErrNotExist) {
+		revision = 0
+	} else if err != nil {
+		t.Fatalf("load registry revision for concurrent write: %v", err)
+	}
+	if err := saveRegistryDatabase(t.Context(), database, registry, revision); err != nil {
+		t.Fatalf("write concurrent registry: %v", err)
 	}
 }
 

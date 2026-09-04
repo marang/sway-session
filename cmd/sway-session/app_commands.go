@@ -502,7 +502,7 @@ func applicationSocket(flagValue string) (string, *commandFailure) {
 
 func loadRegistry(ctx context.Context, root string) (sessionstate.Registry, error) {
 	registry := sessionstate.Registry{Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{}}
-	err := sessionstate.RegistryFile(root).LoadIntoContext(ctx, &registry)
+	err := sessionstate.RegistryStoreFor(root).LoadIntoContext(ctx, &registry)
 	if errors.Is(err, os.ErrNotExist) {
 		return registry, nil
 	}

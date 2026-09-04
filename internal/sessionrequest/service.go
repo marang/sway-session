@@ -178,15 +178,6 @@ func (service *Service) Handle(ctx context.Context, request Request) (Response, 
 			_, rollbackErr := rollbackCreatedRegistration(service.StateRoot, request, contextValue, created, cause)
 			return rollbackErr
 		}
-		if created {
-			now := time.Now
-			if service.Now != nil {
-				now = service.Now
-			}
-			if activityErr := sessionstate.RecordTerminalCreationContext(ctx, service.StateRoot, contextValue.ID, now()); activityErr != nil {
-				return rollback(fmt.Errorf("record terminal creation activity: %w", activityErr))
-			}
-		}
 		tree, prepareErr = requestTree(ctx, client)
 		if prepareErr != nil {
 			return rollback(prepareErr)
@@ -303,7 +294,7 @@ func (service *Service) finalizeRestoredContext(ctx context.Context, request Req
 
 func requireCompatibleSavedWorkspace(ctx context.Context, root string, id sessionstate.ContextID, requested int) error {
 	snapshot := sessionstate.LayoutSnapshot{Version: sessionstate.LayoutSchemaVersion, Workspaces: []sessionstate.WorkspaceLayout{}}
-	if err := sessionstate.LayoutFile(root).LoadIntoContext(ctx, &snapshot); err != nil {
+	if err := sessionstate.LayoutStoreFor(root).LoadIntoContext(ctx, &snapshot); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
 		}
@@ -356,7 +347,11 @@ func loadRegistry(root string) (sessionstate.Registry, error) {
 
 func loadRegistryContext(ctx context.Context, root string) (sessionstate.Registry, error) {
 	registry := sessionstate.Registry{Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{}}
-	if err := sessionstate.RegistryFile(root).LoadIntoContext(ctx, &registry); err != nil && !errors.Is(err, os.ErrNotExist) {
+	err := sessionstate.InspectRegistryLockedContext(ctx, root, func(current sessionstate.Registry) error {
+		registry = current
+		return nil
+	})
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return sessionstate.Registry{}, fmt.Errorf("load context registry: %w", err)
 	}
 	return registry, nil
@@ -383,7 +378,11 @@ func matchingContext(registry sessionstate.Registry, request Request) (sessionst
 func (service *Service) ensureContext(ctx context.Context, request Request) (sessionstate.Context, sessionstate.Registry, bool, error) {
 	var selected sessionstate.Context
 	created := false
-	registry, err := sessionstate.UpdateRegistryContext(ctx, service.StateRoot, func(registry *sessionstate.Registry) error {
+	createdAt := time.Now()
+	if service.Now != nil {
+		createdAt = service.Now()
+	}
+	registry, err := sessionstate.UpdateRegistryWithTerminalCreationContext(ctx, service.StateRoot, func(registry *sessionstate.Registry) error {
 		current, found, err := matchingContext(*registry, request)
 		if err != nil {
 			return err
@@ -408,6 +407,8 @@ func (service *Service) ensureContext(ctx context.Context, request Request) (ses
 		}
 		created = true
 		return nil
+	}, func() (sessionstate.ContextID, time.Time, bool) {
+		return selected.ID, createdAt, created
 	})
 	if err == nil {
 		return selected, registry, created, nil
@@ -464,9 +465,6 @@ func rollbackCreatedRegistration(root string, request Request, contextValue sess
 		}
 	}
 	if removed {
-		if activityErr := sessionstate.RemoveTerminalActivityContext(cleanupContext, root, contextValue.ID); activityErr != nil {
-			return Response{}, errors.Join(cause, fmt.Errorf("remove rolled-back terminal activity: %w", activityErr))
-		}
 		return Response{}, cause
 	}
 	return Response{}, errors.Join(cause, fmt.Errorf("roll back created context registration: %w", err))

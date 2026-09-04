@@ -32,6 +32,8 @@ reject_rule() {
 }
 
 require_rule 'audit deny @{HOME}/.config/herdr/{,**} mrwkl,'
+require_rule 'audit deny @{HOME}/.local/ w,'
+require_rule 'audit deny @{HOME}/.local/state/ w,'
 require_rule 'audit deny @{HOME}/.local/state/sway-session/{,**} mrwkl,'
 require_rule 'audit deny @{run}user/[0-9]*/sway-ipc.*.sock mrwkl,'
 require_rule 'audit deny @{run}user/[0-9]*/sway-session/ wkl,'

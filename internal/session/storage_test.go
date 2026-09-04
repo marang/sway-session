@@ -815,18 +815,115 @@ func TestStateDatabaseFailsClosedWhenOFDLockingIsUnavailable(t *testing.T) {
 func TestStateDatabaseParallelInitializationConverges(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "sway-session")
 	start := make(chan struct{})
-	results := make(chan error, 8)
-	for range 8 {
+	results := make(chan error, 64)
+	for range 64 {
 		go func() {
 			<-start
 			results <- initializeStateDatabase(t.Context(), root)
 		}()
 	}
 	close(start)
-	for range 8 {
+	for range 64 {
 		if err := <-results; err != nil {
 			t.Fatalf("parallel state database initialization failed: %v", err)
 		}
+	}
+}
+
+func TestStateDatabaseParallelInitializationConvergesAcrossProcesses(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sway-session")
+	coordination := t.TempDir()
+	gate := filepath.Join(coordination, "go")
+	type child struct {
+		command *exec.Cmd
+		output  *bytes.Buffer
+	}
+	children := make([]child, 0, 4)
+	for index := range 4 {
+		ready := filepath.Join(coordination, fmt.Sprintf("ready-%d", index))
+		output := &bytes.Buffer{}
+		command := exec.Command(os.Args[0], "-test.run=^TestSQLiteInitializationProcessHelper$")
+		command.Env = append(os.Environ(),
+			"SWAY_SESSION_SQLITE_INITIALIZATION_HELPER=1",
+			"SWAY_SESSION_SQLITE_INITIALIZATION_ROOT="+root,
+			"SWAY_SESSION_SQLITE_INITIALIZATION_READY="+ready,
+			"SWAY_SESSION_SQLITE_INITIALIZATION_GATE="+gate,
+		)
+		command.Stdout = output
+		command.Stderr = output
+		if err := command.Start(); err != nil {
+			t.Fatal(err)
+		}
+		children = append(children, child{command: command, output: output})
+		waitForSQLiteTestFile(t, ready)
+	}
+	if err := os.WriteFile(gate, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, child := range children {
+		if err := child.command.Wait(); err != nil {
+			t.Fatalf("SQLite initialization helper failed: %v\n%s", err, child.output.String())
+		}
+	}
+	if err := VerifyStateDatabaseContext(t.Context(), root); err != nil {
+		t.Fatalf("verify parallel-initialized database: %v", err)
+	}
+}
+
+func TestSQLiteInitializationProcessHelper(t *testing.T) {
+	if os.Getenv("SWAY_SESSION_SQLITE_INITIALIZATION_HELPER") != "1" {
+		return
+	}
+	root := os.Getenv("SWAY_SESSION_SQLITE_INITIALIZATION_ROOT")
+	ready := os.Getenv("SWAY_SESSION_SQLITE_INITIALIZATION_READY")
+	gate := os.Getenv("SWAY_SESSION_SQLITE_INITIALIZATION_GATE")
+	if err := os.WriteFile(ready, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	waitForSQLiteTestFile(t, gate)
+	if err := initializeStateDatabase(t.Context(), root); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStateDatabaseInitializationLockHonorsContextAndCanRetry(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sway-session")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, StateDatabaseFilename), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	directory, err := statefile.OpenPrivateDirectory(root, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initializationLock, err := lockStateDatabaseInitialization(t.Context(), directory)
+	if err != nil {
+		directory.Close()
+		t.Fatal(err)
+	}
+	defer func() {
+		unlockStateDatabaseInitialization(initializationLock)
+		if directory != nil {
+			_ = directory.Close()
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 25*time.Millisecond)
+	err = initializeStateDatabase(ctx, root)
+	cancel()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("blocked state database initialization returned %v", err)
+	}
+	unlockStateDatabaseInitialization(initializationLock)
+	initializationLock = nil
+	if err := directory.Close(); err != nil {
+		t.Fatal(err)
+	}
+	directory = nil
+	if err := initializeStateDatabase(t.Context(), root); err != nil {
+		t.Fatalf("retry state database initialization: %v", err)
 	}
 }
 

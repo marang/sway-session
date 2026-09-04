@@ -247,6 +247,19 @@ func TestRepairApplicationMarkHoldsRegistryLockAcrossSwayMutation(t *testing.T) 
 	updateAttempted := make(chan struct{})
 	updateEntered := make(chan struct{})
 	updateDone := make(chan error, 1)
+	releaseCheck := make(chan bool, 1)
+	go func() {
+		<-updateAttempted
+		timer := time.NewTimer(25 * time.Millisecond)
+		defer timer.Stop()
+		select {
+		case <-updateEntered:
+			releaseCheck <- true
+		case <-timer.C:
+			releaseCheck <- false
+		}
+		close(releaseCommand)
+	}()
 	go func() {
 		close(updateAttempted)
 		_, err := UpdateRegistry(root, func(registry *Registry) error {
@@ -256,26 +269,23 @@ func TestRepairApplicationMarkHoldsRegistryLockAcrossSwayMutation(t *testing.T) 
 		})
 		updateDone <- err
 	}()
-	<-updateAttempted
-	select {
-	case <-updateEntered:
-		close(releaseCommand)
+	if <-releaseCheck {
 		<-repairDone
 		t.Fatal("concurrent registry mutation crossed the in-flight Sway repair boundary")
-	case <-time.After(100 * time.Millisecond):
 	}
 
-	close(releaseCommand)
 	if err := <-repairDone; err != nil {
 		t.Fatalf("repair failed: %v", err)
 	}
-	select {
-	case <-updateEntered:
-	case <-time.After(time.Second):
-		t.Fatal("concurrent registry mutation did not resume after repair")
-	}
 	if err := <-updateDone; err != nil {
 		t.Fatalf("concurrent registry mutation failed: %v", err)
+	}
+	var updated Registry
+	if err := RegistryStoreFor(root).LoadInto(&updated); err != nil {
+		t.Fatal(err)
+	}
+	if len(updated.Contexts) != 1 || updated.Contexts[0].Label != "Concurrent update" {
+		t.Fatalf("registry mutation after repair was not persisted: %+v", updated.Contexts)
 	}
 }
 

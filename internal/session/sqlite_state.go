@@ -21,14 +21,15 @@ import (
 )
 
 const (
-	StateDatabaseFilename      = "state.sqlite3"
-	StateDatabaseSchemaVersion = 1
-	databaseBusyTimeout        = 250 * time.Millisecond
-	maxDatabasePayloadBytes    = 16 * 1024 * 1024
-	maxStateDatabaseBytes      = 1 << 30
-	stateDatabasePageSize      = 4096
-	stateDatabaseMaxPageCount  = maxStateDatabaseBytes / stateDatabasePageSize
-	stateDatabaseApplicationID = 0x53574159
+	StateDatabaseFilename         = "state.sqlite3"
+	StateDatabaseSchemaVersion    = 1
+	databaseBusyTimeout           = 250 * time.Millisecond
+	databaseInitializationTimeout = 2 * time.Second
+	maxDatabasePayloadBytes       = 16 * 1024 * 1024
+	maxStateDatabaseBytes         = 1 << 30
+	stateDatabasePageSize         = 4096
+	stateDatabaseMaxPageCount     = maxStateDatabaseBytes / stateDatabasePageSize
+	stateDatabaseApplicationID    = 0x53574159
 )
 
 var sqliteOFDLockingError error
@@ -61,6 +62,7 @@ func (err *LegacyStateError) Error() string {
 type stateDatabase struct {
 	db          *sql.DB
 	directory   *os.File
+	dsn         string
 	initialized bool
 }
 
@@ -68,7 +70,11 @@ func (database *stateDatabase) Close() error {
 	if database == nil {
 		return nil
 	}
-	return errors.Join(database.db.Close(), database.directory.Close())
+	var databaseErr error
+	if database.db != nil {
+		databaseErr = database.db.Close()
+	}
+	return errors.Join(databaseErr, database.directory.Close())
 }
 
 func openStateDatabase(ctx context.Context, root string, create bool) (*stateDatabase, error) {
@@ -166,16 +172,9 @@ func openStateDatabaseWithInitializer(
 	// path. The default state-root confinement rules therefore also prevent
 	// ancestor-directory replacement. Unconfined processes of the same UID are
 	// trusted state owners and must not relocate the root while operations run.
-	db, err := sql.Open("sqlite", dsn)
+	db, err := openSQLiteStateDatabase(ctx, dsn)
 	if err != nil {
-		return nil, fmt.Errorf("open state database: %w", err)
-	}
-	db.SetMaxOpenConns(1)
-	db.SetMaxIdleConns(1)
-	db.SetConnMaxLifetime(0)
-	if err := db.PingContext(ctx); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("open state database: %w", err)
+		return nil, err
 	}
 	var schemaVersion int
 	if err := db.QueryRowContext(ctx, "PRAGMA schema_version").Scan(&schemaVersion); err != nil {
@@ -194,7 +193,7 @@ func openStateDatabaseWithInitializer(
 		}
 		return nil, errors.New("state database changed while it was being opened")
 	}
-	database := &stateDatabase{db: db, directory: directory}
+	database := &stateDatabase{db: db, directory: directory, dsn: dsn}
 	initialized, err := database.ensureSchemaBounded(ctx, create, allowLegacy, initializer)
 	if err != nil {
 		_ = database.Close()
@@ -209,13 +208,28 @@ func openStateDatabaseWithInitializer(
 	return database, nil
 }
 
+func openSQLiteStateDatabase(ctx context.Context, dsn string) (*sql.DB, error) {
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("open state database: %w", err)
+	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	db.SetConnMaxLifetime(0)
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("open state database: %w", err)
+	}
+	return db, nil
+}
+
 func (database *stateDatabase) ensureSchemaBounded(
 	ctx context.Context,
 	create bool,
 	allowLegacy bool,
 	initializer func(context.Context, stateTransaction) error,
 ) (bool, error) {
-	deadline := time.Now().Add(databaseBusyTimeout)
+	deadline := time.Now().Add(databaseInitializationTimeout)
 	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
 		deadline = contextDeadline
 	}
@@ -440,6 +454,35 @@ func (database *stateDatabase) ensureSchema(
 	if !create {
 		return false, ErrUninitializedStateDatabase
 	}
+	// Persistent bootstrap PRAGMAs must run before the schema transaction, so
+	// SQLite cannot serialize them with BEGIN IMMEDIATE. Drop this opener's
+	// provisional connection before waiting on the cross-process file lock;
+	// otherwise a waiter could retain a SQLite lock needed by the initializer.
+	if err := database.db.Close(); err != nil {
+		return false, fmt.Errorf("close state database before initialization lock: %w", err)
+	}
+	database.db = nil
+	initializationLock, err := lockStateDatabaseInitialization(ctx, database.directory)
+	if err != nil {
+		return false, err
+	}
+	defer unlockStateDatabaseInitialization(initializationLock)
+	database.db, err = openSQLiteStateDatabase(ctx, database.dsn)
+	if err != nil {
+		return false, err
+	}
+	if err := verifyStateDatabaseInitializationLock(database.directory, initializationLock, "while reopening after initialization lock"); err != nil {
+		return false, err
+	}
+	if err := database.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
+		return false, fmt.Errorf("recheck state database schema version: %w", err)
+	}
+	if version == StateDatabaseSchemaVersion {
+		return false, nil
+	}
+	if version != 0 {
+		return false, &UnsupportedVersionError{Document: "state database", Got: version, Want: StateDatabaseSchemaVersion}
+	}
 	if _, err := database.db.ExecContext(ctx, fmt.Sprintf("PRAGMA page_size = %d", stateDatabasePageSize)); err != nil {
 		return false, fmt.Errorf("configure state database page size: %w", err)
 	}
@@ -539,6 +582,93 @@ func (database *stateDatabase) ensureSchema(
 		return false, fmt.Errorf("commit state database initialization: %w", err)
 	}
 	return true, nil
+}
+
+func lockStateDatabaseInitialization(ctx context.Context, directory *os.File) (*os.File, error) {
+	fd, err := unix.Openat(
+		int(directory.Fd()),
+		StateDatabaseFilename,
+		unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK,
+		0,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("open state database initialization lock: %w", err)
+	}
+	file := os.NewFile(uintptr(fd), StateDatabaseFilename)
+	keepFile := false
+	defer func() {
+		if !keepFile {
+			_ = file.Close()
+		}
+	}()
+
+	if err := verifyStateDatabaseInitializationLock(directory, file, "before initialization lock acquisition"); err != nil {
+		return nil, err
+	}
+
+	deadline := time.Now().Add(databaseInitializationTimeout)
+	contextBounded := false
+	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
+		deadline = contextDeadline
+		contextBounded = true
+	}
+	for {
+		err := unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, unix.EWOULDBLOCK) && !errors.Is(err, unix.EAGAIN) {
+			return nil, fmt.Errorf("lock state database initialization: %w", err)
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, ctxErr
+			}
+			if contextBounded {
+				return nil, context.DeadlineExceeded
+			}
+			return nil, fmt.Errorf("%w: wait for state database initialization lock", ErrStateDatabaseBusy)
+		}
+		pause := min(5*time.Millisecond, remaining)
+		timer := time.NewTimer(pause)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
+
+	if err := verifyStateDatabaseInitializationLock(directory, file, "while acquiring initialization lock"); err != nil {
+		_ = unix.Flock(fd, unix.LOCK_UN)
+		return nil, err
+	}
+	keepFile = true
+	return file, nil
+}
+
+func verifyStateDatabaseInitializationLock(directory, file *os.File, stage string) error {
+	var opened unix.Stat_t
+	if err := unix.Fstat(int(file.Fd()), &opened); err != nil {
+		return fmt.Errorf("inspect state database initialization lock: %w", err)
+	}
+	current, exists, err := inspectDatabaseAt(directory)
+	if err != nil {
+		return err
+	}
+	if !exists || opened.Dev != current.Dev || opened.Ino != current.Ino {
+		return fmt.Errorf("state database changed %s", stage)
+	}
+	return nil
+}
+
+func unlockStateDatabaseInitialization(file *os.File) {
+	if file == nil {
+		return
+	}
+	_ = unix.Flock(int(file.Fd()), unix.LOCK_UN)
+	_ = file.Close()
 }
 
 type stateTransaction interface {

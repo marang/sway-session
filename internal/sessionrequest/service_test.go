@@ -134,6 +134,30 @@ func testService(t *testing.T) (*Service, Request, *fakeSwayRequester, *fakeRest
 	return service, request, client, runner
 }
 
+func saveServiceTestRegistry(t *testing.T, root string, registry sessionstate.Registry) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	store := sessionstate.RegistryStoreFor(root)
+	for {
+		err := store.SaveContext(ctx, registry)
+		if err == nil {
+			return
+		}
+		if ctx.Err() != nil {
+			t.Fatalf("seed service registry before setup deadline: %v", err)
+		}
+		if !sessionstate.IsStateDatabaseBusy(err) {
+			t.Fatalf("seed service registry: %v", err)
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("seed service registry after retry: %v", err)
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
 func TestServiceCreatesFocusesAndRestoresOneContext(t *testing.T) {
 	service, request, client, runner := testService(t)
 	response, err := service.Handle(context.Background(), request)
@@ -187,11 +211,9 @@ func TestServicePropagatesCancellationToSwayRequest(t *testing.T) {
 
 func TestServiceStopsWaitingForRegistryLockAfterCancellation(t *testing.T) {
 	service, request, client, _ := testService(t)
-	if err := sessionstate.RegistryStoreFor(service.StateRoot).Save(sessionstate.Registry{
+	saveServiceTestRegistry(t, service.StateRoot, sessionstate.Registry{
 		Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{},
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
 	directory, err := os.Open(service.StateRoot)
 	if err != nil {
 		t.Fatal(err)
@@ -295,11 +317,9 @@ func TestServiceInitializationFailureKeepsExactContextAndRetryConverges(t *testi
 func TestServiceRejectsArchiveRacingMappedContextFocus(t *testing.T) {
 	service, request, client, runner := testService(t)
 	contextValue := registeredContext(request)
-	if err := sessionstate.RegistryStoreFor(service.StateRoot).Save(sessionstate.Registry{
+	saveServiceTestRegistry(t, service.StateRoot, sessionstate.Registry{
 		Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{contextValue},
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
 	client.workspace = request.Workspace
 	client.mapped = contextValue.ID
 	client.onTree = func(requestNumber int) error {
@@ -336,11 +356,9 @@ func TestServiceV1ReusesManualContextThatLooksLikeFreshTerminal(t *testing.T) {
 	if sessionstate.IsTerminalInstanceContext(contextValue) {
 		t.Fatal("manual context was classified as a fresh terminal instance")
 	}
-	if err := sessionstate.RegistryStoreFor(service.StateRoot).Save(sessionstate.Registry{
+	saveServiceTestRegistry(t, service.StateRoot, sessionstate.Registry{
 		Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{contextValue},
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
 	response, err := service.Handle(context.Background(), request)
 	if err != nil || response.Created || response.Context == nil || response.Context.ID != contextValue.ID {
 		t.Fatalf("manual lookalike context was not reused: response=%+v err=%v", response, err)
@@ -353,11 +371,9 @@ func TestServiceV1ReusesManualContextThatLooksLikeFreshTerminal(t *testing.T) {
 func TestServiceRejectsSavedWorkspaceConflictBeforeRestore(t *testing.T) {
 	service, request, client, runner := testService(t)
 	contextValue := registeredContext(request)
-	if err := sessionstate.RegistryStoreFor(service.StateRoot).Save(sessionstate.Registry{
+	saveServiceTestRegistry(t, service.StateRoot, sessionstate.Registry{
 		Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{contextValue},
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
 	if err := sessionstate.LayoutStoreFor(service.StateRoot).Save(sessionstate.LayoutSnapshot{
 		Version: sessionstate.LayoutSchemaVersion,
 		Workspaces: []sessionstate.WorkspaceLayout{{
@@ -379,11 +395,9 @@ func TestServiceRejectsSavedWorkspaceConflictBeforeRestore(t *testing.T) {
 func TestServiceReusesContextWithCompatibleNamedWorkspace(t *testing.T) {
 	service, request, client, runner := testService(t)
 	contextValue := registeredContext(request)
-	if err := sessionstate.RegistryStoreFor(service.StateRoot).Save(sessionstate.Registry{
+	saveServiceTestRegistry(t, service.StateRoot, sessionstate.Registry{
 		Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{contextValue},
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
 	if err := sessionstate.LayoutStoreFor(service.StateRoot).Save(sessionstate.LayoutSnapshot{
 		Version: sessionstate.LayoutSchemaVersion,
 		Workspaces: []sessionstate.WorkspaceLayout{{
@@ -414,11 +428,9 @@ func TestServiceRejectsContextMetadataConflictsWithoutEffects(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			service, request, client, runner := testService(t)
 			contextValue := registeredContext(request)
-			if err := sessionstate.RegistryStoreFor(service.StateRoot).Save(sessionstate.Registry{
+			saveServiceTestRegistry(t, service.StateRoot, sessionstate.Registry{
 				Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{contextValue},
-			}); err != nil {
-				t.Fatal(err)
-			}
+			})
 			mutate(&request)
 			if _, err := service.Handle(context.Background(), request); err == nil || !strings.Contains(err.Error(), "conflict") && !strings.Contains(err.Error(), "already used") {
 				t.Fatalf("metadata conflict was accepted: %v", err)
@@ -442,11 +454,9 @@ func TestServiceV1RejectsStableOrNonAlacrittyTerminalContexts(t *testing.T) {
 			service, request, client, runner := testService(t)
 			contextValue := registeredContext(request)
 			contextValue.Launcher.Terminal = terminal
-			if err := sessionstate.RegistryStoreFor(service.StateRoot).Save(sessionstate.Registry{
+			saveServiceTestRegistry(t, service.StateRoot, sessionstate.Registry{
 				Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{contextValue},
-			}); err != nil {
-				t.Fatal(err)
-			}
+			})
 			if _, err := service.Handle(context.Background(), request); err == nil || !strings.Contains(err.Error(), "conflicting context metadata") {
 				t.Fatalf("protocol-v1-incompatible context was reused: %v", err)
 			}
@@ -467,11 +477,9 @@ func TestServiceV1RejectsFreshTerminalInstanceContext(t *testing.T) {
 	}
 	contextValue := registeredContext(request)
 	contextValue.Launcher.Terminal.Instance = true
-	if err := sessionstate.RegistryStoreFor(service.StateRoot).Save(sessionstate.Registry{
+	saveServiceTestRegistry(t, service.StateRoot, sessionstate.Registry{
 		Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{contextValue},
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
 	if _, err := service.Handle(context.Background(), request); err == nil || !strings.Contains(err.Error(), "conflicting context metadata") {
 		t.Fatalf("fresh terminal instance was exposed through protocol v1: %v", err)
 	}
@@ -526,11 +534,9 @@ func TestServiceRollsBackNewRegistrationWhenWorkspaceBecomesOccupiedBeforeRestor
 func TestServiceKeepsReusedRegistrationWhenWorkspaceBecomesOccupiedBeforeRestore(t *testing.T) {
 	service, request, client, runner := testService(t)
 	contextValue := registeredContext(request)
-	if err := sessionstate.RegistryStoreFor(service.StateRoot).Save(sessionstate.Registry{
+	saveServiceTestRegistry(t, service.StateRoot, sessionstate.Registry{
 		Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{contextValue},
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
 	client.occupyOnTree = 2
 	client.occupyWorkspace = request.Workspace
 	if _, err := service.Handle(context.Background(), request); err == nil || !strings.Contains(err.Error(), "not empty") {
@@ -606,11 +612,9 @@ func TestServiceRejectsWorkspaceOccupantAppearingDuringRestore(t *testing.T) {
 func TestServiceRejectsMappedContextOnMixedWorkspace(t *testing.T) {
 	service, request, client, runner := testService(t)
 	contextValue := registeredContext(request)
-	if err := sessionstate.RegistryStoreFor(service.StateRoot).Save(sessionstate.Registry{
+	saveServiceTestRegistry(t, service.StateRoot, sessionstate.Registry{
 		Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{contextValue},
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
 	client.workspace = request.Workspace
 	client.mapped = contextValue.ID
 	client.occupied = true

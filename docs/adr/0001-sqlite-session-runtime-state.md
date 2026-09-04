@@ -32,6 +32,12 @@ builds continue to support `CGO_ENABLED=0`.
 Run SQLite in WAL mode with full synchronous commits, foreign keys, a
 database-wide integrity check at daemon startup, cheap per-connection and
 per-row validation, a 250 ms busy timeout, and context cancellation.
+Serialize the one-time persistent PRAGMAs and schema creation with a separate
+cross-process lock on the validated database inode. Bootstrap contenders close
+their provisional SQLite connection before waiting, recheck the schema after
+acquiring the lock, and wait for at most two seconds or their earlier caller
+deadline. This longer bound applies only while creating an uninitialized
+database; normal runtime contention retains the 250 ms limit.
 `state.sqlite3` and any WAL, SHM, or rollback-journal sidecar must
 be regular, single-link, current-user-owned files with mode `0600`. The Codex
 AppArmor profile denies the complete default `sway-session` state root, which

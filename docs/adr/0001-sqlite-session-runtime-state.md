@@ -38,6 +38,9 @@ their provisional SQLite connection before waiting, recheck the schema after
 acquiring the lock, and wait for at most two seconds or their earlier caller
 deadline. This longer bound applies only while creating an uninitialized
 database; normal runtime contention retains the 250 ms limit.
+Registry operations therefore open and, when necessary, initialize the
+database before acquiring the registry lifecycle lock. Their registry read,
+revision check, mutation or inspection, and commit remain inside that lock.
 `state.sqlite3` and any WAL, SHM, or rollback-journal sidecar must
 be regular, single-link, current-user-owned files with mode `0600`. The Codex
 AppArmor profile denies the complete default `sway-session` state root, which

@@ -44,6 +44,15 @@ type terminalManageActionMsg struct {
 	err    error
 }
 
+type terminalManageMigrationMsg struct {
+	action string
+	err    error
+}
+
+type terminalManagePulseMsg struct{}
+
+const terminalManagePulseInterval = 180 * time.Millisecond
+
 type terminalManageModel struct {
 	ctx        context.Context
 	operations terminalManageOperations
@@ -62,12 +71,14 @@ type terminalManageModel struct {
 	status     string
 	err        error
 	noColor    bool
+	animate    bool
+	pulsePhase int
 }
 
 func newTerminalManageModel(operations terminalManageOperations) terminalManageModel {
 	noColor := os.Getenv("NO_COLOR") != ""
 	input := textinput.New()
-	input.CharLimit = 128
+	input.CharLimit = 256
 	input.Prompt = "> "
 	input.Placeholder = "type to filter"
 	if noColor {
@@ -79,6 +90,9 @@ func newTerminalManageModel(operations terminalManageOperations) terminalManageM
 }
 
 func (model terminalManageModel) Init() tea.Cmd {
+	if model.animate {
+		return tea.Batch(model.loadCommand(model.loadID), terminalManagePulseCommand())
+	}
 	return model.loadCommand(model.loadID)
 }
 
@@ -110,6 +124,20 @@ func (model terminalManageModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		model.selectedID = message.id
 		model.status = message.action
 		return model, model.beginLoad()
+	case terminalManageMigrationMsg:
+		model.pending = false
+		model.err = message.err
+		if message.err != nil {
+			return model, nil
+		}
+		model.status = message.action
+		return model, model.beginLoad()
+	case terminalManagePulseMsg:
+		if !model.animate || model.noColor {
+			return model, nil
+		}
+		model.pulsePhase = (model.pulsePhase + 1) % 120
+		return model, terminalManagePulseCommand()
 	case tea.KeyPressMsg:
 		return model.handleKey(message)
 	}
@@ -263,6 +291,10 @@ func (model terminalManageModel) handleKey(message tea.KeyPressMsg) (tea.Model, 
 	case "r":
 		model.err = nil
 		return model, model.beginLoad()
+	case "m":
+		model.pending = true
+		model.err = nil
+		return model, model.migrateCommand()
 	case "enter", "o":
 		item, ok := model.selected()
 		if !ok {
@@ -313,12 +345,22 @@ func (model terminalManageModel) render() string {
 		}
 		return ansi.Truncate("Press q to quit or resize: persistent terminals need at least 48×16.", max(model.width, 1), "…")
 	}
-	styles := newTerminalManageStyles(model.noColor)
+	styles := newTerminalManageStyles(model.noColor, model.pulsePhase)
 	width := model.width
 	if width <= 0 {
 		width = 80
 	}
+	height := model.height
+	wideLayout := model.wideLayout()
+	framed := width >= 48 && (height == 0 || height >= 16)
+	if framed {
+		width -= 2
+		if height > 0 {
+			height -= 2
+		}
+	}
 	var output strings.Builder
+	hasFeedback := model.err != nil || model.status != ""
 	output.WriteString(styles.title.Render("Persistent terminals"))
 	output.WriteString(styles.muted.Render(fmt.Sprintf("  %d saved", len(model.items))))
 	output.WriteByte('\n')
@@ -332,14 +374,14 @@ func (model terminalManageModel) render() string {
 		output.WriteString("\nNo terminals match this filter.\n")
 	} else {
 		listWidth := width
-		if width >= 100 {
+		if wideLayout {
 			listWidth = width/2 - 2
 		}
 		list := model.renderList(styles, listWidth)
-		if width >= 100 {
+		if wideLayout {
 			detail := model.renderDetails(styles, width-listWidth-3)
 			output.WriteString("\n" + lipgloss.JoinHorizontal(lipgloss.Top, list, "   ", detail))
-		} else if model.mode == terminalManagePurgeMode {
+		} else if model.mode == terminalManagePurgeMode || hasFeedback || (model.height > 0 && model.height < 22) {
 			output.WriteString("\n" + list)
 		} else {
 			output.WriteString("\n" + list + "\n\n" + model.renderDetails(styles, width))
@@ -350,32 +392,60 @@ func (model terminalManageModel) render() string {
 	switch model.mode {
 	case terminalManageFilterMode:
 		output.WriteString("\nFilter  " + model.inputView())
+		output.WriteString("\n[Enter] Apply filter   [Esc] Clear filter")
 	case terminalManageRenameMode:
 		output.WriteString("\nRename  " + model.inputView())
+		output.WriteString("\n[Enter] Save title   [Esc] Cancel   [Ctrl+A] Clear")
 	case terminalManagePurgeMode:
 		if item, ok := model.selected(); ok {
 			output.WriteString("\n" + styles.danger.Render("Delete "+terminalManageName(item)+" permanently?"))
 			output.WriteString("\nThis removes the sway-session entry and its Herdr state.")
 			output.WriteString("\n" + styles.muted.Render(item.Cwd))
-			output.WriteString("\n[y/n] delete or cancel  [Esc] cancel")
+			output.WriteString("\n[y] Delete permanently   [n/Esc] Cancel")
 		}
 	case terminalManageHelpMode:
 		output.WriteString("\n" + styles.accent.Render("Keyboard help"))
-		output.WriteString("\nEsc/? close help   q quit   ↑/↓ or j/k select")
-		output.WriteString("\nEnter/o open   e rename   a archive/activate   / filter   d delete   r refresh")
+		output.WriteString("\n[Esc/?] Close help   [q] Quit   [↑/↓ or j/k] Select")
+		output.WriteString("\n[Enter/o] Open   [e] Rename   [a] Archive/activate   [/] Filter")
+		output.WriteString("\n[d] Delete permanently   [m] Migrate old state   [r] Refresh")
 	default:
 		if model.pending {
 			output.WriteString("\nWorking…")
 		} else {
-			output.WriteString("\nq quit  ↑/↓ or j/k select  Enter open  e rename  a archive/activate  d delete  / filter  ? help")
+			output.WriteString("\n" + model.renderFooter(styles, width))
 		}
 	}
 	if model.err != nil {
-		output.WriteString("\n" + styles.danger.Render("Error: "+terminalManageSentence(model.err.Error())))
+		feedback := terminalManageWrap("Error: "+terminalManageSentence(model.err.Error()), width)
+		output.WriteString("\n" + styles.danger.Render(feedback))
 	} else if model.status != "" {
-		output.WriteString("\n" + styles.success.Render(model.status))
+		output.WriteString("\n" + styles.success.Render(terminalManageWrap(model.status, width)))
 	}
-	return terminalManageFit(output.String(), width, model.height)
+	content := terminalManageFit(output.String(), width, height)
+	if framed {
+		return terminalManageFrame(content, width+2, model.pulsePhase, model.noColor)
+	}
+	return content
+}
+
+func (model terminalManageModel) renderFooter(styles terminalManageStyles, width int) string {
+	global := styles.muted.Render("System") + "   [m] Migrate  [r] Refresh  [?] Help  [q] Quit"
+	if len(model.visible) == 0 {
+		if width < 64 {
+			return styles.muted.Render("System") + "   [m] Migrate  [r] Refresh\n" +
+				"         [?] Help  [q] Quit"
+		}
+		return global
+	}
+	if width >= 96 {
+		return styles.muted.Render("Navigate") + " [↑/↓ or j/k] Select  [/] Filter\n" +
+			styles.muted.Render("Selected") + " [Enter/o] Open  [e] Rename  [a] Archive/activate  [d] Delete\n" + global
+	}
+	return styles.muted.Render("Navigate") + " [↑/↓ or j/k] Select  [/] Filter\n" +
+		styles.muted.Render("Selected") + " [Enter] Open  [e] Rename\n" +
+		"         [a] Archive/activate  [d] Delete\n" +
+		styles.muted.Render("System") + "   [m] Migrate  [r] Refresh\n" +
+		"         [?] Help  [q] Quit"
 }
 
 func (model terminalManageModel) inputView() string {
@@ -403,7 +473,7 @@ type terminalManageStyles struct {
 	title, accent, selected, muted, danger, success lipgloss.Style
 }
 
-func newTerminalManageStyles(noColor bool) terminalManageStyles {
+func newTerminalManageStyles(noColor bool, pulsePhase int) terminalManageStyles {
 	if noColor {
 		return terminalManageStyles{}
 	}
@@ -416,7 +486,10 @@ func newTerminalManageStyles(noColor bool) terminalManageStyles {
 	}
 	styles.title = styles.title.Foreground(lipgloss.Color("#7DD3FC"))
 	styles.accent = styles.accent.Foreground(lipgloss.Color("#C4B5FD"))
-	styles.selected = styles.selected.Foreground(lipgloss.Color("#FDE68A"))
+	selected := terminalManageGradientRGB(pulsePhase, 120, 0)
+	styles.selected = styles.selected.
+		Foreground(lipgloss.Color(selected.lighten(72).hex())).
+		Background(lipgloss.Color(selected.scale(28).hex()))
 	styles.muted = styles.muted.Foreground(lipgloss.Color("#94A3B8"))
 	styles.danger = styles.danger.Foreground(lipgloss.Color("#FB7185"))
 	styles.success = styles.success.Foreground(lipgloss.Color("#86EFAC"))
@@ -443,6 +516,9 @@ func (model terminalManageModel) renderList(styles terminalManageStyles, width i
 		line := fmt.Sprintf("%s%s  %s", cursor, state, terminalManageName(item))
 		line = ansi.Truncate(line, max(width, 1), "…")
 		if row == model.cursor {
+			if !model.noColor {
+				line = terminalManagePad(line, width)
+			}
 			line = styles.selected.Render(line)
 		}
 		lines = append(lines, line)
@@ -455,9 +531,13 @@ func (model terminalManageModel) renderList(styles terminalManageStyles, width i
 
 func (model terminalManageModel) listWindow() (int, int) {
 	rows := 8
-	if model.height > 0 {
-		if model.width >= 100 {
-			reserved := 7
+	height := model.height
+	if height > 0 && model.width >= 48 && height >= 16 {
+		height -= 2
+	}
+	if height > 0 {
+		if model.wideLayout() {
+			reserved := 10
 			switch model.mode {
 			case terminalManagePurgeMode:
 				reserved += 3
@@ -466,9 +546,9 @@ func (model terminalManageModel) listWindow() (int, int) {
 			case terminalManageFilterMode, terminalManageRenameMode:
 				reserved++
 			}
-			rows = max(model.height-reserved, 1)
+			rows = max(height-reserved, 1)
 		} else {
-			reserved := 15
+			reserved := 19
 			switch model.mode {
 			case terminalManagePurgeMode:
 				reserved += 3
@@ -477,7 +557,7 @@ func (model terminalManageModel) listWindow() (int, int) {
 			case terminalManageFilterMode, terminalManageRenameMode:
 				reserved++
 			}
-			rows = max(model.height-reserved, 1)
+			rows = max(height-reserved, 1)
 		}
 	}
 	rows = min(rows, len(model.visible))
@@ -486,6 +566,10 @@ func (model terminalManageModel) listWindow() (int, int) {
 		start = max(len(model.visible)-rows, 0)
 	}
 	return start, start + rows
+}
+
+func (model terminalManageModel) wideLayout() bool {
+	return model.width >= 100 && (model.height == 0 || model.height >= 22)
 }
 
 func terminalManageFit(content string, width int, height int) string {
@@ -497,6 +581,11 @@ func terminalManageFit(content string, width int, height int) string {
 		lines[index] = ansi.Truncate(lines[index], max(width, 1), "…")
 	}
 	return strings.Join(lines, "\n")
+}
+
+func terminalManageWrap(value string, width int) string {
+	width = max(width, 1)
+	return ansi.Hardwrap(ansi.Wordwrap(value, width, " "), width, false)
 }
 
 func (model terminalManageModel) renderDetails(styles terminalManageStyles, width int) string {
@@ -677,6 +766,16 @@ func (model terminalManageModel) purgeCommand(id sessionstate.ContextID) tea.Cmd
 	}
 }
 
+func (model terminalManageModel) migrateCommand() tea.Cmd {
+	return func() tea.Msg {
+		message, err := model.operations.Migrate(model.ctx)
+		if message == "" {
+			message = "Migrated legacy state to SQLite"
+		}
+		return terminalManageMigrationMsg{action: message, err: err}
+	}
+}
+
 func executeTerminalManage(
 	ctx context.Context,
 	arguments []string,
@@ -728,9 +827,117 @@ func runTerminalManager(ctx context.Context, stdin io.Reader, stdout io.Writer, 
 	model.ctx = ctx
 	model.socket = socket
 	model.noColor = noColor
+	model.animate = !noColor
 	program := tea.NewProgram(model, options...)
 	if _, err := program.Run(); err != nil {
 		return fmt.Errorf("run terminal manager: %w", err)
 	}
 	return nil
+}
+
+func terminalManagePulseCommand() tea.Cmd {
+	return tea.Tick(terminalManagePulseInterval, func(time.Time) tea.Msg {
+		return terminalManagePulseMsg{}
+	})
+}
+
+type terminalManageRGB struct {
+	r, g, b int
+}
+
+var terminalManagePalette = [...]terminalManageRGB{
+	{r: 34, g: 211, b: 238},
+	{r: 96, g: 165, b: 250},
+	{r: 167, g: 139, b: 250},
+	{r: 244, g: 114, b: 182},
+	{r: 251, g: 113, b: 133},
+}
+
+func terminalManageGradientRGB(index int, total int, offset int) terminalManageRGB {
+	if total < 1 {
+		total = 1
+	}
+	position := (index + offset) % total
+	if position < 0 {
+		position += total
+	}
+	scaled := position * len(terminalManagePalette) * 256 / total
+	segment := (scaled / 256) % len(terminalManagePalette)
+	fraction := scaled % 256
+	left := terminalManagePalette[segment]
+	right := terminalManagePalette[(segment+1)%len(terminalManagePalette)]
+	return terminalManageRGB{
+		r: left.r + (right.r-left.r)*fraction/256,
+		g: left.g + (right.g-left.g)*fraction/256,
+		b: left.b + (right.b-left.b)*fraction/256,
+	}
+}
+
+func (color terminalManageRGB) scale(percent int) terminalManageRGB {
+	return terminalManageRGB{r: color.r * percent / 100, g: color.g * percent / 100, b: color.b * percent / 100}
+}
+
+func (color terminalManageRGB) lighten(percent int) terminalManageRGB {
+	return terminalManageRGB{
+		r: color.r + (255-color.r)*percent/100,
+		g: color.g + (255-color.g)*percent/100,
+		b: color.b + (255-color.b)*percent/100,
+	}
+}
+
+func (color terminalManageRGB) hex() string {
+	return fmt.Sprintf("#%02X%02X%02X", color.r, color.g, color.b)
+}
+
+func terminalManageFrame(content string, width int, phase int, noColor bool) string {
+	if width < 2 {
+		return content
+	}
+	innerWidth := width - 2
+	lines := strings.Split(content, "\n")
+	var output strings.Builder
+	output.WriteString(terminalManageFrameEdge('╭', '─', '╮', width, phase, false, noColor))
+	for index, line := range lines {
+		output.WriteByte('\n')
+		output.WriteString(terminalManageFrameGlyph("│", index, len(lines), phase, noColor))
+		output.WriteString(terminalManagePad(ansi.Truncate(line, innerWidth, "…"), innerWidth))
+		output.WriteString(terminalManageFrameGlyph("│", index, len(lines), phase+40, noColor))
+	}
+	output.WriteByte('\n')
+	output.WriteString(terminalManageFrameEdge('╰', '─', '╯', width, phase+60, true, noColor))
+	return output.String()
+}
+
+func terminalManageFrameEdge(left rune, fill rune, right rune, width int, phase int, reverse bool, noColor bool) string {
+	var output strings.Builder
+	for index := range width {
+		glyph := fill
+		if index == 0 {
+			glyph = left
+		} else if index == width-1 {
+			glyph = right
+		}
+		colorIndex := index
+		if reverse {
+			colorIndex = width - index - 1
+		}
+		output.WriteString(terminalManageFrameGlyph(string(glyph), colorIndex, width, phase, noColor))
+	}
+	return output.String()
+}
+
+func terminalManageFrameGlyph(glyph string, index int, total int, phase int, noColor bool) string {
+	if noColor {
+		return glyph
+	}
+	color := terminalManageGradientRGB(index, max(total, 1), phase)
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(color.hex())).Render(glyph)
+}
+
+func terminalManagePad(value string, width int) string {
+	missing := width - ansi.StringWidth(value)
+	if missing <= 0 {
+		return value
+	}
+	return value + strings.Repeat(" ", missing)
 }

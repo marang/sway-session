@@ -16,9 +16,12 @@ const (
 	// reconstruction. Capture never persists it.
 	RestoreStagingWorkspace = "__sway_session_restore_4f6e2a91"
 	restoreMarkPrefix       = "_sway_session_restore_"
-	maxRestoreSteps         = 1024
-	proportionTolerance     = 0.02
-	geometryTolerance       = 2
+	// maxRepeatedRestoreActions detects a compositor which acknowledges one
+	// action without changing observable state. Distinct actions are legitimate
+	// progress and are deliberately not counted toward a total-work ceiling.
+	maxRepeatedRestoreActions = 1024
+	proportionTolerance       = 0.02
+	geometryTolerance         = 2
 )
 
 type RestorePhase string
@@ -31,9 +34,11 @@ const (
 )
 
 type RestoreProgress struct {
-	Workspace string
-	Phase     RestorePhase
-	Steps     int
+	Workspace       string
+	Phase           RestorePhase
+	Actions         int
+	LastActionKey   string
+	RepeatedActions int
 }
 
 type RestoreActionKind string
@@ -235,9 +240,7 @@ func PlanWorkspaceRestoreStep(
 	if desired.RestoreMode != WorkspaceRestoreLayout {
 		return RestoreStep{}, errors.New("only exact-layout workspaces can be reconstructed")
 	}
-	if progress.Steps >= maxRestoreSteps {
-		return RestoreStep{}, fmt.Errorf("workspace restore exceeds %d attempted steps", maxRestoreSteps)
-	}
+	actionLimit := restoreActionLimit(desired)
 	observation, err := observeRestoreTree(root, registry)
 	if err != nil {
 		return RestoreStep{}, err
@@ -255,7 +258,7 @@ func PlanWorkspaceRestoreStep(
 		if action := observation.disableManagedFullscreen(desired.Name, ids); action != nil {
 			action.Workspace = desired.Name
 			action.Structural = true
-			return restoreActionStep(*action, next), nil
+			return restoreActionStep(*action, next, actionLimit)
 		}
 		for _, id := range ids {
 			node := observation.contexts[id]
@@ -270,13 +273,14 @@ func PlanWorkspaceRestoreStep(
 				Target:      RestoreStagingWorkspace,
 				Structural:  true,
 			}
-			return restoreActionStep(action, next), nil
+			return restoreActionStep(action, next, actionLimit)
 		}
 		if progress.Phase == RestoreStageOut {
 			next.Phase = RestoreBuild
 		} else {
 			next.Phase = RestoreRollbackIn
 		}
+		resetRestoreActionProgress(&next)
 		return RestoreStep{Progress: next}, nil
 
 	case RestoreRollbackIn:
@@ -293,10 +297,10 @@ func PlanWorkspaceRestoreStep(
 				Target:      desired.Name,
 				Structural:  true,
 			}
-			return restoreActionStep(action, next), nil
+			return restoreActionStep(action, next, actionLimit)
 		}
 		if action := observation.cleanupTemporaryMark(desired.Name, skipped); action != nil {
-			return restoreActionStep(*action, next), nil
+			return restoreActionStep(*action, next, actionLimit)
 		}
 		return RestoreStep{Progress: next, Done: true}, nil
 
@@ -314,7 +318,7 @@ func PlanWorkspaceRestoreStep(
 				Target:      desired.Name,
 				Structural:  true,
 			}
-			return restoreActionStep(action, next), nil
+			return restoreActionStep(action, next, actionLimit)
 		}
 		workspaceNode := observation.workspaces[desired.Name]
 		if workspaceNode == nil {
@@ -331,11 +335,11 @@ func PlanWorkspaceRestoreStep(
 			if fullscreen := observation.disableManagedFullscreen(desired.Name, ids); fullscreen != nil {
 				fullscreen.Workspace = desired.Name
 				fullscreen.Structural = true
-				return restoreActionStep(*fullscreen, next), nil
+				return restoreActionStep(*fullscreen, next, actionLimit)
 			}
 			action.Workspace = desired.Name
 			action.Structural = true
-			return restoreActionStep(*action, next), nil
+			return restoreActionStep(*action, next, actionLimit)
 		}
 		if desired.Tiling != nil {
 			action, err := planDesiredStructure(observation, desired.Name, *desired.Tiling, "t")
@@ -346,9 +350,9 @@ func PlanWorkspaceRestoreStep(
 				if fullscreen := observation.disableManagedFullscreen(desired.Name, ids); fullscreen != nil {
 					fullscreen.Workspace = desired.Name
 					fullscreen.Structural = true
-					return restoreActionStep(*fullscreen, next), nil
+					return restoreActionStep(*fullscreen, next, actionLimit)
 				}
-				return restoreActionStep(*action, next), nil
+				return restoreActionStep(*action, next, actionLimit)
 			}
 		}
 		for index, floating := range desired.Floating {
@@ -361,9 +365,9 @@ func PlanWorkspaceRestoreStep(
 				if fullscreen := observation.disableManagedFullscreen(desired.Name, ids); fullscreen != nil {
 					fullscreen.Workspace = desired.Name
 					fullscreen.Structural = true
-					return restoreActionStep(*fullscreen, next), nil
+					return restoreActionStep(*fullscreen, next, actionLimit)
 				}
-				return restoreActionStep(*action, next), nil
+				return restoreActionStep(*action, next, actionLimit)
 			}
 		}
 
@@ -376,9 +380,9 @@ func PlanWorkspaceRestoreStep(
 				if fullscreen := observation.disableManagedFullscreen(desired.Name, ids); fullscreen != nil {
 					fullscreen.Workspace = desired.Name
 					fullscreen.Structural = true
-					return restoreActionStep(*fullscreen, next), nil
+					return restoreActionStep(*fullscreen, next, actionLimit)
 				}
-				return restoreActionStep(*action, next), nil
+				return restoreActionStep(*action, next, actionLimit)
 			}
 		}
 		for index, floating := range desired.Floating {
@@ -391,9 +395,9 @@ func PlanWorkspaceRestoreStep(
 				if fullscreen := observation.disableManagedFullscreen(desired.Name, ids); fullscreen != nil {
 					fullscreen.Workspace = desired.Name
 					fullscreen.Structural = true
-					return restoreActionStep(*fullscreen, next), nil
+					return restoreActionStep(*fullscreen, next, actionLimit)
 				}
-				return restoreActionStep(*action, next), nil
+				return restoreActionStep(*action, next, actionLimit)
 			}
 		}
 
@@ -407,7 +411,7 @@ func PlanWorkspaceRestoreStep(
 				if fullscreen := observation.disableManagedFullscreen(desired.Name, ids); fullscreen != nil {
 					fullscreen.Workspace = desired.Name
 					fullscreen.Structural = true
-					return restoreActionStep(*fullscreen, next), nil
+					return restoreActionStep(*fullscreen, next, actionLimit)
 				}
 				action := RestoreAction{
 					Kind:        RestoreSetFloating,
@@ -416,7 +420,7 @@ func PlanWorkspaceRestoreStep(
 					Enable:      true,
 					Structural:  true,
 				}
-				return restoreActionStep(action, next), nil
+				return restoreActionStep(action, next, actionLimit)
 			}
 			geometry := clampGeometry(*floating.Geometry, workspaceNode.Rect)
 			actualGeometry := outerContainerRect(node)
@@ -431,9 +435,9 @@ func PlanWorkspaceRestoreStep(
 					if fullscreen := observation.disableManagedFullscreen(desired.Name, ids); fullscreen != nil {
 						fullscreen.Workspace = desired.Name
 						fullscreen.Structural = true
-						return restoreActionStep(*fullscreen, next), nil
+						return restoreActionStep(*fullscreen, next, actionLimit)
 					}
-					return restoreActionStep(action, next), nil
+					return restoreActionStep(action, next, actionLimit)
 				}
 			}
 			if !rectPositionClose(actualGeometry, geometry) {
@@ -447,9 +451,9 @@ func PlanWorkspaceRestoreStep(
 					if fullscreen := observation.disableManagedFullscreen(desired.Name, ids); fullscreen != nil {
 						fullscreen.Workspace = desired.Name
 						fullscreen.Structural = true
-						return restoreActionStep(*fullscreen, next), nil
+						return restoreActionStep(*fullscreen, next, actionLimit)
 					}
-					return restoreActionStep(action, next), nil
+					return restoreActionStep(action, next, actionLimit)
 				}
 			}
 		}
@@ -458,19 +462,19 @@ func PlanWorkspaceRestoreStep(
 			if action, err := planFullscreen(observation, desired.Name, *desired.Tiling, "t", skipped); err != nil {
 				return RestoreStep{}, err
 			} else if action != nil {
-				return restoreActionStep(*action, next), nil
+				return restoreActionStep(*action, next, actionLimit)
 			}
 		}
 		for index, floating := range desired.Floating {
 			if action, err := planFullscreen(observation, desired.Name, floating, fmt.Sprintf("f%d", index), skipped); err != nil {
 				return RestoreStep{}, err
 			} else if action != nil {
-				return restoreActionStep(*action, next), nil
+				return restoreActionStep(*action, next, actionLimit)
 			}
 		}
 
 		if action := observation.cleanupTemporaryMark(desired.Name, skipped); action != nil {
-			return restoreActionStep(*action, next), nil
+			return restoreActionStep(*action, next, actionLimit)
 		}
 		if desired.FocusedContext != nil {
 			node := observation.contexts[*desired.FocusedContext]
@@ -482,7 +486,7 @@ func PlanWorkspaceRestoreStep(
 					ContainerID: node.ID,
 				}
 				if _, skip := skipped[action.Key()]; !skip {
-					return restoreActionStep(action, next), nil
+					return restoreActionStep(action, next, actionLimit)
 				}
 			}
 		}
@@ -492,9 +496,54 @@ func PlanWorkspaceRestoreStep(
 	}
 }
 
-func restoreActionStep(action RestoreAction, progress RestoreProgress) RestoreStep {
-	progress.Steps++
-	return RestoreStep{Action: &action, Progress: progress}
+func restoreActionStep(action RestoreAction, progress RestoreProgress, limit int) (RestoreStep, error) {
+	if limit <= 0 {
+		return RestoreStep{}, errors.New("workspace restore action limit must be positive")
+	}
+	if progress.Actions >= limit {
+		return RestoreStep{}, fmt.Errorf("workspace restore exceeds %d actions without convergence", limit)
+	}
+	key := action.Key()
+	if progress.LastActionKey == key {
+		if progress.RepeatedActions >= maxRepeatedRestoreActions {
+			return RestoreStep{}, fmt.Errorf("workspace restore repeated one unchanged action %d times", maxRepeatedRestoreActions)
+		}
+		progress.RepeatedActions++
+	} else {
+		progress.LastActionKey = key
+		progress.RepeatedActions = 1
+	}
+	progress.Actions++
+	return RestoreStep{Action: &action, Progress: progress}, nil
+}
+
+func resetRestoreActionProgress(progress *RestoreProgress) {
+	progress.Actions = 0
+	progress.LastActionKey = ""
+	progress.RepeatedActions = 0
+}
+
+func restoreActionLimit(desired WorkspaceLayout) int {
+	const (
+		baseActions    = 64
+		actionsPerNode = 32
+	)
+	nodes := 0
+	var count func(*LayoutNode)
+	count = func(node *LayoutNode) {
+		if node == nil {
+			return
+		}
+		nodes++
+		for index := range node.Children {
+			count(&node.Children[index])
+		}
+	}
+	count(desired.Tiling)
+	for index := range desired.Floating {
+		count(&desired.Floating[index])
+	}
+	return baseActions + actionsPerNode*nodes
 }
 
 type restoreObservation struct {

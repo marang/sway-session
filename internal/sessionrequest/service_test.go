@@ -187,7 +187,7 @@ func TestServicePropagatesCancellationToSwayRequest(t *testing.T) {
 
 func TestServiceStopsWaitingForRegistryLockAfterCancellation(t *testing.T) {
 	service, request, client, _ := testService(t)
-	if err := sessionstate.RegistryFile(service.StateRoot).Save(sessionstate.Registry{
+	if err := sessionstate.RegistryStoreFor(service.StateRoot).Save(sessionstate.Registry{
 		Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{},
 	}); err != nil {
 		t.Fatal(err)
@@ -244,7 +244,7 @@ func TestServiceWaitsForTerminalLifecycleLockBeforeRegistration(t *testing.T) {
 		t.Fatalf("session request crossed lifecycle lock: trees=%d restores=%v", client.treeRequests, runner.calls)
 	}
 	var registry sessionstate.Registry
-	if loadErr := sessionstate.RegistryFile(service.StateRoot).LoadInto(&registry); !errors.Is(loadErr, os.ErrNotExist) {
+	if loadErr := sessionstate.RegistryStoreFor(service.StateRoot).LoadInto(&registry); !errors.Is(loadErr, os.ErrNotExist) {
 		t.Fatalf("locked session request created registry=%+v err=%v", registry, loadErr)
 	}
 }
@@ -295,7 +295,7 @@ func TestServiceInitializationFailureKeepsExactContextAndRetryConverges(t *testi
 func TestServiceRejectsArchiveRacingMappedContextFocus(t *testing.T) {
 	service, request, client, runner := testService(t)
 	contextValue := registeredContext(request)
-	if err := sessionstate.RegistryFile(service.StateRoot).Save(sessionstate.Registry{
+	if err := sessionstate.RegistryStoreFor(service.StateRoot).Save(sessionstate.Registry{
 		Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{contextValue},
 	}); err != nil {
 		t.Fatal(err)
@@ -336,7 +336,7 @@ func TestServiceV1ReusesManualContextThatLooksLikeFreshTerminal(t *testing.T) {
 	if sessionstate.IsTerminalInstanceContext(contextValue) {
 		t.Fatal("manual context was classified as a fresh terminal instance")
 	}
-	if err := sessionstate.RegistryFile(service.StateRoot).Save(sessionstate.Registry{
+	if err := sessionstate.RegistryStoreFor(service.StateRoot).Save(sessionstate.Registry{
 		Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{contextValue},
 	}); err != nil {
 		t.Fatal(err)
@@ -353,12 +353,12 @@ func TestServiceV1ReusesManualContextThatLooksLikeFreshTerminal(t *testing.T) {
 func TestServiceRejectsSavedWorkspaceConflictBeforeRestore(t *testing.T) {
 	service, request, client, runner := testService(t)
 	contextValue := registeredContext(request)
-	if err := sessionstate.RegistryFile(service.StateRoot).Save(sessionstate.Registry{
+	if err := sessionstate.RegistryStoreFor(service.StateRoot).Save(sessionstate.Registry{
 		Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{contextValue},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := sessionstate.LayoutFile(service.StateRoot).Save(sessionstate.LayoutSnapshot{
+	if err := sessionstate.LayoutStoreFor(service.StateRoot).Save(sessionstate.LayoutSnapshot{
 		Version: sessionstate.LayoutSchemaVersion,
 		Workspaces: []sessionstate.WorkspaceLayout{{
 			Name: "4: saved", RestoreMode: sessionstate.WorkspaceRestorePlacementOnly,
@@ -379,12 +379,12 @@ func TestServiceRejectsSavedWorkspaceConflictBeforeRestore(t *testing.T) {
 func TestServiceReusesContextWithCompatibleNamedWorkspace(t *testing.T) {
 	service, request, client, runner := testService(t)
 	contextValue := registeredContext(request)
-	if err := sessionstate.RegistryFile(service.StateRoot).Save(sessionstate.Registry{
+	if err := sessionstate.RegistryStoreFor(service.StateRoot).Save(sessionstate.Registry{
 		Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{contextValue},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := sessionstate.LayoutFile(service.StateRoot).Save(sessionstate.LayoutSnapshot{
+	if err := sessionstate.LayoutStoreFor(service.StateRoot).Save(sessionstate.LayoutSnapshot{
 		Version: sessionstate.LayoutSchemaVersion,
 		Workspaces: []sessionstate.WorkspaceLayout{{
 			Name: "7: requested", RestoreMode: sessionstate.WorkspaceRestorePlacementOnly,
@@ -414,7 +414,7 @@ func TestServiceRejectsContextMetadataConflictsWithoutEffects(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			service, request, client, runner := testService(t)
 			contextValue := registeredContext(request)
-			if err := sessionstate.RegistryFile(service.StateRoot).Save(sessionstate.Registry{
+			if err := sessionstate.RegistryStoreFor(service.StateRoot).Save(sessionstate.Registry{
 				Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{contextValue},
 			}); err != nil {
 				t.Fatal(err)
@@ -442,7 +442,7 @@ func TestServiceV1RejectsStableOrNonAlacrittyTerminalContexts(t *testing.T) {
 			service, request, client, runner := testService(t)
 			contextValue := registeredContext(request)
 			contextValue.Launcher.Terminal = terminal
-			if err := sessionstate.RegistryFile(service.StateRoot).Save(sessionstate.Registry{
+			if err := sessionstate.RegistryStoreFor(service.StateRoot).Save(sessionstate.Registry{
 				Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{contextValue},
 			}); err != nil {
 				t.Fatal(err)
@@ -467,7 +467,7 @@ func TestServiceV1RejectsFreshTerminalInstanceContext(t *testing.T) {
 	}
 	contextValue := registeredContext(request)
 	contextValue.Launcher.Terminal.Instance = true
-	if err := sessionstate.RegistryFile(service.StateRoot).Save(sessionstate.Registry{
+	if err := sessionstate.RegistryStoreFor(service.StateRoot).Save(sessionstate.Registry{
 		Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{contextValue},
 	}); err != nil {
 		t.Fatal(err)
@@ -526,7 +526,7 @@ func TestServiceRollsBackNewRegistrationWhenWorkspaceBecomesOccupiedBeforeRestor
 func TestServiceKeepsReusedRegistrationWhenWorkspaceBecomesOccupiedBeforeRestore(t *testing.T) {
 	service, request, client, runner := testService(t)
 	contextValue := registeredContext(request)
-	if err := sessionstate.RegistryFile(service.StateRoot).Save(sessionstate.Registry{
+	if err := sessionstate.RegistryStoreFor(service.StateRoot).Save(sessionstate.Registry{
 		Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{contextValue},
 	}); err != nil {
 		t.Fatal(err)
@@ -606,7 +606,7 @@ func TestServiceRejectsWorkspaceOccupantAppearingDuringRestore(t *testing.T) {
 func TestServiceRejectsMappedContextOnMixedWorkspace(t *testing.T) {
 	service, request, client, runner := testService(t)
 	contextValue := registeredContext(request)
-	if err := sessionstate.RegistryFile(service.StateRoot).Save(sessionstate.Registry{
+	if err := sessionstate.RegistryStoreFor(service.StateRoot).Save(sessionstate.Registry{
 		Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{contextValue},
 	}); err != nil {
 		t.Fatal(err)

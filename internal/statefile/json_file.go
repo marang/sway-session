@@ -82,6 +82,35 @@ func OpenPrivateDirectory(path string, create bool) (*os.File, error) {
 	return openStateDirectory(path, create)
 }
 
+// CreatePrivateFileAt creates one owner-only regular file relative to an
+// already opened private directory descriptor. It is intended for callers
+// that must keep a pathname pinned across validation and creation.
+func CreatePrivateFileAt(directory *os.File, name string, data []byte) error {
+	if directory == nil {
+		return errors.New("private directory descriptor is nil")
+	}
+	if err := validatePrivateFileName(name); err != nil {
+		return err
+	}
+	if len(data) > MaxFileSize {
+		return fmt.Errorf("private file is too large: %d bytes exceeds %d", len(data), MaxFileSize)
+	}
+	info, err := directory.Stat()
+	if err != nil {
+		return fmt.Errorf("inspect private directory descriptor: %w", err)
+	}
+	if !info.IsDir() {
+		return errors.New("private directory descriptor is not a directory")
+	}
+	if err := checkOwner(info); err != nil {
+		return fmt.Errorf("private directory descriptor: %w", err)
+	}
+	if err := checkMode(info, DirectoryMode); err != nil {
+		return fmt.Errorf("private directory descriptor: %w", err)
+	}
+	return createPrivateFileAt(directory, name, data)
+}
+
 // WithPrivateDirectoryLock runs action while holding an exclusive lock on a
 // symlink-free owner-only directory. All compound file operations must use the
 // supplied descriptor-relative directory so pathname replacement cannot move
@@ -184,21 +213,30 @@ func CreatePrivateFileContext(ctx context.Context, directoryPath string, name st
 }
 
 func createPrivateFileAt(directory *os.File, name string, data []byte) error {
+	return createPrivateFileAtWithDirectorySync(directory, name, data, func() error { return directory.Sync() })
+}
+
+func createPrivateFileAtWithDirectorySync(directory *os.File, name string, data []byte, syncDirectory func() error) error {
 	fd, err := openAt2(int(directory.Fd()), name, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC|unix.O_NOFOLLOW, uint64(RegularFileMode))
 	if err != nil {
 		return fmt.Errorf("create private file: %w", err)
 	}
+	var created unix.Stat_t
+	if err := unix.Fstat(fd, &created); err != nil {
+		_ = unix.Close(fd)
+		return &CommitOutcomeUnknownError{Cause: fmt.Errorf("inspect created private file: %w", err)}
+	}
 	file := os.NewFile(uintptr(fd), name)
 	if file == nil {
 		_ = unix.Close(fd)
-		_ = unix.Unlinkat(int(directory.Fd()), name, 0)
+		_ = removeMatchingPrivateFileAt(directory, name, created)
 		return errors.New("create private file: invalid file descriptor")
 	}
 	keep := false
 	defer func() {
 		_ = file.Close()
 		if !keep {
-			_ = unix.Unlinkat(int(directory.Fd()), name, 0)
+			_ = removeMatchingPrivateFileAt(directory, name, created)
 		}
 	}()
 	if err := file.Chmod(RegularFileMode); err != nil {
@@ -213,11 +251,29 @@ func createPrivateFileAt(directory *os.File, name string, data []byte) error {
 	if err := file.Close(); err != nil {
 		return fmt.Errorf("close private file: %w", err)
 	}
-	if err := directory.Sync(); err != nil {
-		return fmt.Errorf("sync private directory: %w", err)
+	if syncDirectory == nil {
+		syncDirectory = func() error { return directory.Sync() }
+	}
+	if err := syncDirectory(); err != nil {
+		keep = true
+		return &CommitOutcomeUnknownError{Cause: fmt.Errorf("sync private directory: %w", err)}
 	}
 	keep = true
 	return nil
+}
+
+func removeMatchingPrivateFileAt(directory *os.File, name string, created unix.Stat_t) error {
+	var current unix.Stat_t
+	if err := unix.Fstatat(int(directory.Fd()), name, &current, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		if errors.Is(err, unix.ENOENT) {
+			return nil
+		}
+		return err
+	}
+	if current.Dev != created.Dev || current.Ino != created.Ino {
+		return nil
+	}
+	return unix.Unlinkat(int(directory.Fd()), name, 0)
 }
 
 // ReadPrivateFile reads one bounded owner-only regular file without following
@@ -707,6 +763,15 @@ func openStateDirectoryWith(path string, create bool, operations directoryOperat
 		if component == "" {
 			continue
 		}
+		info, statErr := current.Stat()
+		if statErr != nil {
+			_ = current.Close()
+			return nil, fmt.Errorf("inspect ancestor of state directory component %s: %w", component, statErr)
+		}
+		if err := checkStateDirectoryAncestorMode(info.Mode()); err != nil {
+			_ = current.Close()
+			return nil, fmt.Errorf("ancestor of state directory component %s: %w", component, err)
+		}
 		syncParent := false
 		nextFD, openErr := openAt2(int(current.Fd()), component, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 		if errors.Is(openErr, unix.ENOENT) && create {
@@ -737,6 +802,17 @@ func openStateDirectoryWith(path string, create bool, operations directoryOperat
 			_ = unix.Close(nextFD)
 			_ = current.Close()
 			return nil, fmt.Errorf("open state directory component %s: invalid file descriptor", component)
+		}
+		nextInfo, statErr := next.Stat()
+		if statErr != nil {
+			_ = next.Close()
+			_ = current.Close()
+			return nil, fmt.Errorf("inspect state directory component %s: %w", component, statErr)
+		}
+		if err := checkStateDirectoryAncestorEntry(info, nextInfo); err != nil {
+			_ = next.Close()
+			_ = current.Close()
+			return nil, fmt.Errorf("state directory component %s: %w", component, err)
 		}
 		_ = current.Close()
 		current = next
@@ -955,6 +1031,33 @@ func checkMode(info os.FileInfo, expected os.FileMode) error {
 		return fmt.Errorf("must have mode %04o, got %04o", expected, actual)
 	}
 	return nil
+}
+
+func checkStateDirectoryAncestorMode(mode os.FileMode) error {
+	if mode.Perm()&0o022 != 0 && mode&os.ModeSticky == 0 {
+		return fmt.Errorf("must not be group- or world-writable without the sticky bit, got mode %04o", mode.Perm())
+	}
+	return nil
+}
+
+func checkStateDirectoryAncestorEntry(parent os.FileInfo, child os.FileInfo) error {
+	if parent.Mode().Perm()&0o022 == 0 || parent.Mode()&os.ModeSticky == 0 {
+		return nil
+	}
+	parentStat, parentOK := parent.Sys().(*syscall.Stat_t)
+	childStat, childOK := child.Sys().(*syscall.Stat_t)
+	if !parentOK || !childOK {
+		return errors.New("sticky ancestor ownership metadata is unavailable")
+	}
+	userID := uint32(os.Geteuid())
+	if !trustedStateDirectoryOwner(parentStat.Uid, userID) || !trustedStateDirectoryOwner(childStat.Uid, userID) {
+		return fmt.Errorf("sticky writable ancestor and its entry must be owned by uid %d or root", userID)
+	}
+	return nil
+}
+
+func trustedStateDirectoryOwner(owner uint32, userID uint32) bool {
+	return owner == 0 || owner == userID
 }
 
 func decodeStrict(data []byte, target any) error {

@@ -70,11 +70,16 @@ profile codex-home-guard /usr/bin/codex flags=(attach_disconnected,mediate_delet
   audit deny /run/docker.sock mrwkl,
   audit deny /var/run/docker.sock mrwkl,
 
-  # Persistent terminal history, outer-session registry/layout, approved
-  # desktop launchers, and the per-compositor application attempt journal stay
-  # outside Codex. The same file rules protect Herdr socket pathnames, but do
+  # Persistent terminal history, the sway-session SQLite database and WAL/SHM
+  # sidecars, approved desktop launchers, and per-compositor launch attempts
+  # stay outside Codex. The same file rules protect Herdr socket pathnames, but do
   # not claim to mediate pathname socket connect(2) on every supported kernel.
   audit deny @{HOME}/.config/herdr/{,**} mrwkl,
+  # SQLite canonicalizes database paths before opening its WAL/SHM sidecars.
+  # Prevent a confined process from bypassing the state-tree deny by renaming
+  # one of its writable ancestor directories and substituting a prepared tree.
+  audit deny @{HOME}/.local/ w,
+  audit deny @{HOME}/.local/state/ w,
   audit deny @{HOME}/.local/state/sway-session/{,**} mrwkl,
 
   # Protect the Sway socket pathname. Direct Sway IPC can execute commands

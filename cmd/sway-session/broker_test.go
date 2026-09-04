@@ -57,7 +57,7 @@ func TestSessionRequestInitializationSerializesArchiveAndUsesFixedCodexLayout(t 
 		State:    sessionstate.ContextActive,
 		Launcher: sessionstate.Launcher{Kind: sessionstate.LauncherHerdr, Session: "lab-110", Cwd: t.TempDir(), Terminal: &sessionstate.TerminalLauncher{Adapter: sessionstate.TerminalAdapterAlacritty}},
 	}
-	if err := sessionstate.RegistryFile(root).Save(sessionstate.Registry{Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{contextValue}}); err != nil {
+	if err := sessionstate.RegistryStoreFor(root).Save(sessionstate.Registry{Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{contextValue}}); err != nil {
 		t.Fatal(err)
 	}
 	manager := &blockingBrokerSessionManager{started: make(chan struct{}), release: make(chan struct{})}

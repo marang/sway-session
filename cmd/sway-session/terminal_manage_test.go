@@ -6,13 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 	sessionstate "github.com/marang/sway-title-animator/internal/session"
 )
 
@@ -29,7 +28,7 @@ func TestTerminalManageLoadsInventoryAndExplainsAnEmptyList(t *testing.T) {
 	model = terminalManageRunInit(t, model)
 
 	view := model.View().Content
-	for _, want := range []string{"Daily work", "Archived work", "active", "archived", "j/k", "open"} {
+	for _, want := range []string{"Daily work", "Archived work", "active", "archived", "j/k", "Open"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("loaded inventory is missing %q:\n%s", want, view)
 		}
@@ -37,21 +36,59 @@ func TestTerminalManageLoadsInventoryAndExplainsAnEmptyList(t *testing.T) {
 
 	empty := newTerminalManageModel(&terminalManageTestOperations{snapshots: [][]terminalInventoryResult{{}}})
 	empty = terminalManageRunInit(t, empty)
-	if view := empty.View().Content; !strings.Contains(view, "No managed terminals") || !strings.Contains(view, "q quit") {
+	if view := empty.View().Content; !strings.Contains(view, "No managed terminals") || !strings.Contains(view, "[q] Quit") {
 		t.Fatalf("empty inventory does not give a recovery path:\n%s", view)
 	}
 }
 
 func TestTerminalManageInitialLoadFailureDoesNotClaimTheRegistryIsEmpty(t *testing.T) {
-	model := terminalManageRunInit(t, newTerminalManageModel(&terminalManageTestOperations{
-		listErr: errors.New("activity state is unreadable"),
-	}))
+	ops := &terminalManageTestOperations{
+		listErr:   errors.New("activity state is unreadable"),
+		snapshots: [][]terminalInventoryResult{{terminalManageTestItem("11111111-1111-4111-8111-111111111111", "Migrated", sessionstate.ContextActive)}},
+	}
+	model := terminalManageRunInit(t, newTerminalManageModel(ops))
 	view := model.View().Content
 	if !strings.Contains(view, "Unable to load managed terminals") || !strings.Contains(view, "Activity state is unreadable") {
 		t.Fatalf("initial load failure is not actionable:\n%s", view)
 	}
 	if strings.Contains(view, "No managed terminals") || strings.Contains(view, "sway-session terminal --new") {
 		t.Fatalf("initial load failure was misrepresented as an empty registry:\n%s", view)
+	}
+	if !strings.Contains(view, "[m] Migrate") {
+		t.Fatalf("load failure hid the migration recovery action:\n%s", view)
+	}
+
+	ops.listErr = nil
+	model = terminalManageSend(t, model, terminalManageKey("m"))
+	if ops.migrateCalls != 1 || !strings.Contains(model.View().Content, "Migrated") {
+		t.Fatalf("migration did not reload the imported inventory: calls=%d\n%s", ops.migrateCalls, model.View().Content)
+	}
+}
+
+func TestTerminalManageFooterGroupsDiscoverableActions(t *testing.T) {
+	item := terminalManageTestItem("11111111-1111-4111-8111-111111111111", "Help", sessionstate.ContextActive)
+	model := terminalManageRunInit(t, newTerminalManageModel(&terminalManageTestOperations{snapshots: [][]terminalInventoryResult{{item}}}))
+	model = terminalManageUpdate(t, model, tea.WindowSizeMsg{Width: 100, Height: 24})
+	view := model.View().Content
+	for _, want := range []string{"Navigate", "Selected", "System", "[Enter/o] Open", "[m] Migrate", "[?] Help"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("grouped footer is missing %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestTerminalManageWrapsCompleteMigrationResultAtEightyColumns(t *testing.T) {
+	item := terminalManageTestItem("11111111-1111-4111-8111-111111111111", "Migrated", sessionstate.ContextActive)
+	model := terminalManageRunInit(t, newTerminalManageModel(&terminalManageTestOperations{snapshots: [][]terminalInventoryResult{{item}}}))
+	model = terminalManageUpdate(t, model, tea.WindowSizeMsg{Width: 80, Height: 24})
+	model.status = "Migrated 300 contexts, 275 terminal activity records, layout=true, application session=true; legacy JSON kept; skipped 25 stale runtime records; commit acknowledgement was lost, migrated state verified"
+
+	plain := strings.ReplaceAll(ansi.Strip(model.View().Content), "│", " ")
+	normalized := strings.Join(strings.Fields(plain), " ")
+	for _, want := range []string{"legacy JSON kept", "skipped 25 stale runtime records", "commit acknowledgement was lost", "migrated state verified"} {
+		if !strings.Contains(normalized, want) {
+			t.Fatalf("80x24 migration result hid %q:\n%s", want, plain)
+		}
 	}
 }
 
@@ -121,6 +158,19 @@ func TestTerminalManageRenamesWithEditableFriendlyTitle(t *testing.T) {
 	}
 }
 
+func TestTerminalManageRenamePreservesExistingLongValidTitle(t *testing.T) {
+	title := strings.Repeat("a", 200)
+	item := terminalManageTestItem("11111111-1111-4111-8111-111111111111", title, sessionstate.ContextActive)
+	ops := &terminalManageTestOperations{snapshots: [][]terminalInventoryResult{{item}}}
+	model := terminalManageRunInit(t, newTerminalManageModel(ops))
+
+	model = terminalManageUpdate(t, model, terminalManageKey("e"))
+	_ = terminalManageSend(t, model, terminalManageKey("enter"))
+	if len(ops.renames) != 1 || ops.renames[0].title != title {
+		t.Fatalf("unchanged long title was truncated: got %d bytes, want %d", len(ops.renames[0].title), len(title))
+	}
+}
+
 func TestTerminalManageArchivesAndActivatesWithExactContextID(t *testing.T) {
 	active := terminalManageTestItem("11111111-1111-4111-8111-111111111111", "Active", sessionstate.ContextActive)
 	archived := terminalManageTestItem("22222222-2222-4222-8222-222222222222", "Archived", sessionstate.ContextArchived)
@@ -151,7 +201,7 @@ func TestTerminalManagePurgeDialogIsolatesKeysAndRequiresExplicitYes(t *testing.
 
 	model = terminalManageUpdate(t, model, terminalManageKey("d"))
 	view := model.View().Content
-	for _, want := range []string{"Delete Disposable terminal", "/work/disposable", "permanently", "y/n"} {
+	for _, want := range []string{"Delete Disposable terminal", "/work/disposable", "permanently", "[y] Delete"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("purge confirmation is missing %q:\n%s", want, view)
 		}
@@ -204,27 +254,29 @@ func TestTerminalManageShowsSuccessfulPurgeCleanupWarning(t *testing.T) {
 	}
 }
 
-func TestTerminalManageCommandAdapterPreservesPurgeCleanupWarning(t *testing.T) {
+func TestTerminalManageCommandAdapterPurgesActivityAtomically(t *testing.T) {
 	deps := testDependencies(t)
 	registered := registerTestContext(t, deps)
 	root, err := deps.stateRoot()
 	if err != nil {
 		t.Fatal(err)
 	}
-	activityPath := filepath.Join(root, sessionstate.TerminalActivityDirectory, sessionstate.TerminalActivityFilename)
-	if err := os.WriteFile(activityPath, []byte(`{"version":1,"terminals":[],"unexpected":true}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
 	message, err := (commandTerminalManageOperations{deps: deps}).Purge(t.Context(), registered.ID)
 	if err != nil {
-		t.Fatalf("purge with non-authoritative cleanup failure returned an error: %v", err)
+		t.Fatalf("purge terminal: %v", err)
 	}
-	if !strings.Contains(message, "stale presentation activity could not be removed") {
-		t.Fatalf("purge cleanup warning = %q", message)
+	if strings.Contains(message, "stale presentation activity") {
+		t.Fatalf("atomic purge reported obsolete cleanup warning: %q", message)
 	}
 	if registry := loadTestRegistry(t, deps); len(registry.Contexts) != 0 {
 		t.Fatalf("successful purge retained registry context: %+v", registry.Contexts)
+	}
+	activity, err := sessionstate.ReadTerminalActivitySnapshot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := sessionstate.FindTerminalActivity(activity, registered.ID); exists {
+		t.Fatalf("successful purge retained activity: %+v", activity)
 	}
 }
 
@@ -303,6 +355,26 @@ func TestTerminalManageResponsiveRenderingAndNoColorNeverPanics(t *testing.T) {
 	}
 }
 
+func TestTerminalManageRendersGradientFrameAndPulsingSelection(t *testing.T) {
+	t.Setenv("NO_COLOR", "")
+	item := terminalManageTestItem("11111111-1111-4111-8111-111111111111", "Color pulse", sessionstate.ContextActive)
+	model := terminalManageRunInit(t, newTerminalManageModel(&terminalManageTestOperations{snapshots: [][]terminalInventoryResult{{item}}}))
+	model = terminalManageUpdate(t, model, tea.WindowSizeMsg{Width: 100, Height: 24})
+	first := model.View().Content
+	if !strings.Contains(first, "╭") || !strings.Contains(first, "╯") || !strings.Contains(first, "\x1b[") {
+		t.Fatalf("color TUI is missing its styled frame:\n%s", first)
+	}
+
+	model.animate = true
+	updated, next := terminalManageUpdateWithCommand(t, model, terminalManagePulseMsg{})
+	if next == nil || updated.pulsePhase == model.pulsePhase {
+		t.Fatalf("pulse did not advance or schedule its next frame: before=%d after=%d command=%v", model.pulsePhase, updated.pulsePhase, next)
+	}
+	if second := updated.View().Content; second == first || !strings.Contains(second, "Color pulse") {
+		t.Fatalf("pulse did not recolor while preserving selection content:\n%s", second)
+	}
+}
+
 func TestTerminalManageLongInventoryKeepsTheSelectionVisible(t *testing.T) {
 	items := make([]terminalInventoryResult, 20)
 	for index := range items {
@@ -320,13 +392,13 @@ func TestTerminalManageLongInventoryKeepsTheSelectionVisible(t *testing.T) {
 		t.Fatalf("long inventory did not keep selected row and scroll affordances visible:\n%s", view)
 	}
 	model = terminalManageUpdate(t, model, terminalManageKey("d"))
-	if view := model.View().Content; !strings.Contains(view, "y/n") {
+	if view := model.View().Content; !strings.Contains(view, "[y] Delete") {
 		t.Fatalf("long inventory hid the destructive confirmation at 80x24:\n%s", view)
 	}
 	model = terminalManageUpdate(t, model, terminalManageKey("n"))
 	model = terminalManageUpdate(t, model, tea.WindowSizeMsg{Width: 100, Height: 24})
 	model = terminalManageUpdate(t, model, terminalManageKey("d"))
-	if view := model.View().Content; !strings.Contains(view, "y/n") {
+	if view := model.View().Content; !strings.Contains(view, "[y] Delete") {
 		t.Fatalf("wide long inventory hid the destructive confirmation at 100x24:\n%s", view)
 	}
 	model = terminalManageUpdate(t, model, tea.WindowSizeMsg{Width: 45, Height: 8})
@@ -342,10 +414,31 @@ func TestTerminalManagePurgePromptRemainsActionableAtMinimumSupportedSize(t *tes
 	model = terminalManageUpdate(t, model, tea.WindowSizeMsg{Width: 48, Height: 16})
 	model = terminalManageUpdate(t, model, terminalManageKey("d"))
 	view := model.View().Content
-	for _, want := range []string{"Delete Minimum size", "permanently", "[y/n]"} {
+	for _, want := range []string{"Delete Minimum size", "permanently", "[y] Delete"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("minimum-size purge confirmation is missing %q:\n%s", want, view)
 		}
+	}
+}
+
+func TestTerminalManageMinimumHeightWideTerminalKeepsHelpAndFeedbackVisible(t *testing.T) {
+	item := terminalManageTestItem("11111111-1111-4111-8111-111111111111", "Wide minimum", sessionstate.ContextActive)
+	model := terminalManageRunInit(t, newTerminalManageModel(&terminalManageTestOperations{snapshots: [][]terminalInventoryResult{{item}}}))
+	model = terminalManageUpdate(t, model, tea.WindowSizeMsg{Width: 100, Height: 16})
+
+	help := terminalManageUpdate(t, model, terminalManageKey("?"))
+	if view := help.View().Content; !strings.Contains(view, "[d] Delete permanently") || !strings.Contains(view, "[m] Migrate old state") {
+		t.Fatalf("100x16 help lost its final shortcut row:\n%s", view)
+	}
+
+	model.err = errors.New("state unavailable")
+	if view := model.View().Content; !strings.Contains(view, "Error: State unavailable") {
+		t.Fatalf("100x16 render hid operation error:\n%s", view)
+	}
+	model.err = nil
+	model.status = "Terminal opened"
+	if view := model.View().Content; !strings.Contains(view, "Terminal opened") {
+		t.Fatalf("100x16 render hid operation status:\n%s", view)
 	}
 }
 
@@ -353,7 +446,7 @@ func TestTerminalManageHelpKeysMatchVisibleBehavior(t *testing.T) {
 	item := terminalManageTestItem("11111111-1111-4111-8111-111111111111", "Help", sessionstate.ContextActive)
 	model := terminalManageRunInit(t, newTerminalManageModel(&terminalManageTestOperations{snapshots: [][]terminalInventoryResult{{item}}}))
 	model = terminalManageUpdate(t, model, terminalManageKey("?"))
-	if view := model.View().Content; !strings.Contains(view, "Esc/? close help") || !strings.Contains(view, "q quit") {
+	if view := model.View().Content; !strings.Contains(view, "[Esc/?] Close help") || !strings.Contains(view, "[q] Quit") {
 		t.Fatalf("help does not describe its modal keys:\n%s", view)
 	}
 	updated, command := terminalManageUpdateWithCommand(t, model, terminalManageKey("q"))
@@ -494,6 +587,8 @@ type terminalManageTestOperations struct {
 	renameErr    error
 	purgeErr     error
 	purgeMessage string
+	migrateErr   error
+	migrateCalls int
 	opens        []sessionstate.ContextID
 	stateChanges []terminalManageTestStateChange
 	renames      []terminalManageTestRename
@@ -540,4 +635,9 @@ func (operations *terminalManageTestOperations) Rename(_ context.Context, id ses
 func (operations *terminalManageTestOperations) Purge(_ context.Context, id sessionstate.ContextID) (string, error) {
 	operations.purges = append(operations.purges, id)
 	return operations.purgeMessage, operations.purgeErr
+}
+
+func (operations *terminalManageTestOperations) Migrate(context.Context) (string, error) {
+	operations.migrateCalls++
+	return "Migrated legacy state to SQLite", operations.migrateErr
 }

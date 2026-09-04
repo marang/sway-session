@@ -13,7 +13,10 @@ import (
 	"github.com/marang/sway-title-animator/internal/swayipc"
 )
 
-const desktopCatalogRefreshInterval = time.Minute
+const (
+	desktopCatalogRefreshInterval = time.Minute
+	stateContentionRetryInterval  = 50 * time.Millisecond
+)
 
 func executeDaemon(ctx context.Context, arguments []string, stderr io.Writer, structured bool, deps dependencies) (commandResult, *commandFailure) {
 	set := newFlagSet("daemon")
@@ -54,7 +57,7 @@ func runSessionDaemon(ctx context.Context, swaySocket string, reportError func(e
 	if err != nil {
 		return err
 	}
-	if _, err := sessionstate.UpdateRegistryContext(ctx, stateRoot, func(*sessionstate.Registry) error { return nil }); err != nil {
+	if err := initializeContextRegistry(ctx, stateRoot); err != nil {
 		return fmt.Errorf("initialize context registry: %w", err)
 	}
 	compositorID, err := compositorIdentity(swaySocket)
@@ -127,6 +130,31 @@ func runSessionDaemon(ctx context.Context, swaySocket string, reportError func(e
 	defer close(done)
 	go swayipc.StreamSessionEventsWithState(swaySocket, events, done, eventStreamState)
 	return runSessionDaemonLoop(ctx, control, runtime, events, reportError)
+}
+
+func initializeContextRegistry(ctx context.Context, root string) error {
+	return retryStateContention(ctx, func() error {
+		_, err := sessionstate.UpdateRegistryContext(ctx, root, func(*sessionstate.Registry) error { return nil })
+		return err
+	})
+}
+
+func retryStateContention(ctx context.Context, action func() error) error {
+	for {
+		err := action()
+		if err == nil || !sessionstate.IsStateDatabaseBusy(err) {
+			return err
+		}
+		timer := time.NewTimer(stateContentionRetryInterval)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
 }
 
 func newRefreshingDesktopCatalogLoader(

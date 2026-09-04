@@ -3,6 +3,7 @@ package session
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -109,6 +110,28 @@ func TestAddContextRejectsDuplicateTerminalIdentityWithoutMutation(t *testing.T)
 	}
 	if len(registry.Contexts) != 1 || registry.Contexts[0].ID != first.ID {
 		t.Fatalf("failed add mutated registry: %+v", registry.Contexts)
+	}
+}
+
+func TestAddContextAllowsInventoryToGrowBeyondLegacyLimit(t *testing.T) {
+	registry := Registry{Version: ContextsSchemaVersion, Contexts: []Context{}}
+	for index := range 300 {
+		context := Context{
+			ID:    ContextID(fmt.Sprintf("00000000-0000-4000-8000-%012x", index)),
+			State: ContextArchived,
+			Launcher: Launcher{
+				Kind:     LauncherHerdr,
+				Session:  fmt.Sprintf("stored-session-%d", index),
+				Cwd:      "/tmp",
+				Terminal: &TerminalLauncher{Adapter: TerminalAdapterAlacritty},
+			},
+		}
+		if err := AddContext(&registry, context); err != nil {
+			t.Fatalf("add stored context %d: %v", index, err)
+		}
+	}
+	if got := len(registry.Contexts); got != 300 {
+		t.Fatalf("stored context count = %d, want 300", got)
 	}
 }
 

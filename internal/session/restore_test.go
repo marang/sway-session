@@ -1,6 +1,7 @@
 package session
 
 import (
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -236,8 +237,10 @@ func TestPlanWorkspaceRestoreStagesAndTransitionsToBuild(t *testing.T) {
 		managedTreeLeaf(t, 11, testContextID, nil, false),
 		managedTreeLeaf(t, 12, secondContextID, nil, false),
 	))
-	step = requireRestoreStep(t, staged, desired, RestoreProgress{Workspace: "2", Phase: RestoreStageOut, Steps: 2})
-	if step.Action != nil || step.Progress.Phase != RestoreBuild || step.Done {
+	step = requireRestoreStep(t, staged, desired, RestoreProgress{
+		Workspace: "2", Phase: RestoreStageOut, LastActionKey: "previous-stage-action", RepeatedActions: 2,
+	})
+	if step.Action != nil || step.Progress.Phase != RestoreBuild || step.Progress.LastActionKey != "" || step.Progress.RepeatedActions != 0 || step.Done {
 		t.Fatalf("staging did not transition without a mutation: %+v", step)
 	}
 }
@@ -494,7 +497,7 @@ func TestPlanWorkspaceRestoreCleanupFailureCanBeSkippedWithoutRollback(t *testin
 		root,
 		registryWithContexts(testContextID, secondContextID),
 		desired,
-		RestoreProgress{Workspace: "2", Phase: RestoreBuild, Steps: 1},
+		RestoreProgress{Workspace: "2", Phase: RestoreBuild},
 		skipped,
 	)
 	if err != nil {
@@ -699,7 +702,7 @@ func TestPlanWorkspaceRestoreUsesUnderlyingFullscreenProportion(t *testing.T) {
 	}
 }
 
-func TestPlanWorkspaceRestoreRollbackAndStepBound(t *testing.T) {
+func TestPlanWorkspaceRestoreRollbackAndRepeatedActionBound(t *testing.T) {
 	desired := exactWorkspace("2", LayoutSplitHorizontal, testContextID, secondContextID)
 	root := restoreTree(
 		restoreWorkspace("2", "splith", managedTreeLeaf(t, 11, testContextID, nil, false)),
@@ -715,19 +718,84 @@ func TestPlanWorkspaceRestoreRollbackAndStepBound(t *testing.T) {
 		managedTreeLeaf(t, 12, secondContextID, nil, false),
 	))
 	step = requireRestoreStep(t, staged, desired, RestoreProgress{Workspace: "2", Phase: RestoreRollbackOut})
-	if step.Action != nil || step.Progress.Phase != RestoreRollbackIn {
+	if step.Action != nil || step.Progress.Phase != RestoreRollbackIn || step.Progress.Actions != 0 || step.Progress.LastActionKey != "" || step.Progress.RepeatedActions != 0 {
 		t.Fatalf("rollback-out did not transition: %+v", step)
 	}
 
-	_, err := PlanWorkspaceRestoreStep(
-		root,
-		registryWithContexts(testContextID, secondContextID),
-		desired,
-		RestoreProgress{Workspace: "2", Phase: RestoreBuild, Steps: maxRestoreSteps},
-		nil,
-	)
-	if err == nil || !strings.Contains(err.Error(), "exceeds") {
-		t.Fatalf("restore step bound was not enforced: %v", err)
+	action := RestoreAction{Kind: RestoreMoveWorkspace, Workspace: "2", ContainerID: 11, Target: RestoreStagingWorkspace}
+	progress := RestoreProgress{Workspace: "2", Phase: RestoreBuild}
+	for range maxRepeatedRestoreActions {
+		step, err := restoreActionStep(action, progress, maxRepeatedRestoreActions+1)
+		if err != nil {
+			t.Fatalf("repeated action failed before its bound: %v", err)
+		}
+		progress = step.Progress
+	}
+	if _, err := restoreActionStep(action, progress, maxRepeatedRestoreActions+1); err == nil || !strings.Contains(err.Error(), "repeated") {
+		t.Fatalf("unchanged restore action was not bounded: %v", err)
+	}
+	different := action
+	different.ContainerID++
+	step, err := restoreActionStep(different, progress, maxRepeatedRestoreActions+1)
+	if err != nil || step.Progress.RepeatedActions != 1 {
+		t.Fatalf("a different action did not reset no-progress detection: step=%+v err=%v", step, err)
+	}
+
+	progress = RestoreProgress{Workspace: "2", Phase: RestoreBuild}
+	const cycleLimit = 64
+	for index := range cycleLimit {
+		alternating := action
+		alternating.ContainerID += int64(index % 2)
+		step, err = restoreActionStep(alternating, progress, cycleLimit)
+		if err != nil {
+			t.Fatalf("alternating actions failed before the topology-scaled limit: %v", err)
+		}
+		progress = step.Progress
+	}
+	if _, err := restoreActionStep(action, progress, cycleLimit); err == nil || !strings.Contains(err.Error(), "without convergence") {
+		t.Fatalf("alternating action cycle escaped the total progress bound: %v", err)
+	}
+}
+
+func TestPlanWorkspaceRestoreAllowsLargeValidLayoutPastFormerCumulativeCap(t *testing.T) {
+	const contexts = 513
+	ids := make([]ContextID, 0, contexts)
+	registry := Registry{Version: ContextsSchemaVersion, Contexts: make([]Context, 0, contexts)}
+	nodes := make([]*swayipc.TreeNode, 0, contexts)
+	for index := range contexts {
+		id := ContextID(fmt.Sprintf("%08x-0000-4000-8000-%012x", index+1, index+1))
+		ids = append(ids, id)
+		registry.Contexts = append(registry.Contexts, Context{
+			ID: id, State: ContextActive,
+			Launcher: Launcher{
+				Kind: LauncherHerdr, Session: fmt.Sprintf("restore-%d", index+1), Cwd: "/work",
+				Terminal: &TerminalLauncher{Adapter: TerminalAdapterAlacritty},
+			},
+		})
+		nodes = append(nodes, managedTreeLeaf(t, int64(index+10), id, nil, false))
+	}
+	desired := exactWorkspace("98", LayoutSplitHorizontal, ids...)
+	root := restoreTree(restoreWorkspace("98", "splith", nodes...))
+
+	step, err := PlanWorkspaceRestoreStep(root, registry, desired, RestoreProgress{
+		Workspace: "98", Phase: RestoreStageOut, Actions: 1024, LastActionKey: "previous-distinct-action", RepeatedActions: 1024,
+	}, nil)
+	if err != nil || step.Action == nil {
+		t.Fatalf("valid 513-window layout exhausted the former fixed step cap: step=%+v err=%v", step, err)
+	}
+	if step.Progress.RepeatedActions != 1 {
+		t.Fatalf("new structural progress did not reset the repeated-action counter: %+v", step.Progress)
+	}
+
+	progress := RestoreProgress{Workspace: "98", Phase: RestoreBuild}
+	limit := restoreActionLimit(desired)
+	for index := range maxRepeatedRestoreActions + 1 {
+		action := RestoreAction{Kind: RestoreMoveWorkspace, Workspace: "98", ContainerID: int64(index + 1), Target: "98"}
+		next, err := restoreActionStep(action, progress, limit)
+		if err != nil {
+			t.Fatalf("distinct action %d was mistaken for non-convergence: %v", index, err)
+		}
+		progress = next.Progress
 	}
 }
 

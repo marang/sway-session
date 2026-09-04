@@ -62,25 +62,17 @@ func TestCompletionContextReadRejectsUnsupportedSchemaWithoutMutation(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(root, 0o700); err != nil {
+	if err := sessionstate.RegistryStoreFor(root).Save(sessionstate.Registry{Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{}}); err != nil {
 		t.Fatal(err)
 	}
-	legacy := []byte(`{"version":1,"contexts":[{"id":"11111111-1111-4111-8111-111111111111","label":"Legacy","state":"active","launcher":{"kind":"herdr","session":"legacy","cwd":"/work"}}]}`)
-	registryPath := filepath.Join(root, sessionstate.ContextsFilename)
-	if err := os.WriteFile(registryPath, legacy, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	execStateDatabaseForTest(t, root, "PRAGMA user_version = 2")
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	code := runWith([]string{"completion", "contexts", "restore"}, strings.NewReader(""), &stdout, &stderr, deps)
 
-	if code != exitOperation || stdout.Len() != 0 || !strings.Contains(stderr.String(), "unsupported context registry schema version 1") {
-		t.Fatalf("legacy completion did not fail read-only: code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
-	}
-	after, err := os.ReadFile(registryPath)
-	if err != nil || !bytes.Equal(after, legacy) {
-		t.Fatalf("legacy registry changed: data=%q err=%v", after, err)
+	if code != exitOperation || stdout.Len() != 0 || !strings.Contains(stderr.String(), "unsupported state database schema version 2") {
+		t.Fatalf("unsupported database completion did not fail read-only: code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
 }
 
@@ -197,7 +189,7 @@ func TestCompletionContextDescriptionShowsUsefulMetadataWithoutPrivateLauncherPa
 			App:      &sessionstate.Application{Identity: sessionstate.ApplicationIdentity{Protocol: sessionstate.WindowWayland, WaylandAppID: "org.example.Calculator"}, DesiredOpen: true, RestorePolicy: sessionstate.ApplicationRestoreFollow},
 		},
 	}
-	if err := sessionstate.RegistryFile(root).Save(sessionstate.Registry{Version: sessionstate.ContextsSchemaVersion, Contexts: contexts}); err != nil {
+	if err := sessionstate.RegistryStoreFor(root).Save(sessionstate.Registry{Version: sessionstate.ContextsSchemaVersion, Contexts: contexts}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -246,7 +238,7 @@ func TestCompletionContextsFollowCommandEligibility(t *testing.T) {
 			App:      &sessionstate.Application{Identity: sessionstate.ApplicationIdentity{Protocol: sessionstate.WindowWayland, WaylandAppID: "org.example.Archived", SandboxAppID: "org.example.Archived"}, DesiredOpen: true, RestorePolicy: sessionstate.ApplicationRestorePinned},
 		},
 	}
-	if err := sessionstate.RegistryFile(root).Save(sessionstate.Registry{Version: sessionstate.ContextsSchemaVersion, Contexts: contexts}); err != nil {
+	if err := sessionstate.RegistryStoreFor(root).Save(sessionstate.Registry{Version: sessionstate.ContextsSchemaVersion, Contexts: contexts}); err != nil {
 		t.Fatal(err)
 	}
 

@@ -53,7 +53,7 @@ func TestAppRegisterFocusedFlatpakIsExplicitMarkedAndIdempotent(t *testing.T) {
 
 func TestDiscardDesktopApprovalsSharesOneTotalCleanupBudget(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "state")
-	if err := sessionstate.RegistryFile(root).Save(sessionstate.Registry{
+	if err := sessionstate.RegistryStoreFor(root).Save(sessionstate.Registry{
 		Version:  sessionstate.ContextsSchemaVersion,
 		Contexts: []sessionstate.Context{},
 	}); err != nil {
@@ -424,7 +424,7 @@ func TestAppListJSONReturnsOnlyApplicationsSortedByContextID(t *testing.T) {
 		{ID: "33333333-3333-4333-8333-333333333333", State: sessionstate.ContextActive, Launcher: sessionstate.Launcher{Kind: sessionstate.LauncherHerdr, Session: "work", Cwd: "/work", Terminal: &sessionstate.TerminalLauncher{Adapter: sessionstate.TerminalAdapterAlacritty}}},
 		application(firstID, "org.example.First"),
 	}}
-	if err := sessionstate.RegistryFile(root).Save(registry); err != nil {
+	if err := sessionstate.RegistryStoreFor(root).Save(registry); err != nil {
 		t.Fatal(err)
 	}
 	var stdout bytes.Buffer

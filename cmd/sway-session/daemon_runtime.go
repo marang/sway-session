@@ -16,19 +16,21 @@ import (
 )
 
 const (
-	sessionSnapshotDebounce   = time.Second
-	sessionObservationDelay   = 2 * time.Second
-	sessionStartupSettleDelay = 10 * time.Second
-	sessionStartupRetryDelay  = 5 * time.Second
-	applicationAdoptionGrace  = 5 * time.Second
-	applicationCloseGrace     = 2 * time.Second
-	applicationLaunchTimeout  = 10 * time.Second
-	maxApplicationPreflights  = 2
-	terminalFocusBatchDelay   = time.Second
-	terminalFocusWriteTimeout = 250 * time.Millisecond
-	terminalFocusRetryMaximum = 30 * time.Second
-	terminalFocusReportEvery  = time.Minute
-	moveBarrierPrefix         = "_sway_session_move_v1:"
+	sessionSnapshotDebounce    = time.Second
+	sessionObservationDelay    = 2 * time.Second
+	sessionStartupSettleDelay  = 10 * time.Second
+	sessionStartupRetryDelay   = 5 * time.Second
+	applicationAdoptionGrace   = 5 * time.Second
+	applicationCloseGrace      = 2 * time.Second
+	applicationLaunchTimeout   = 10 * time.Second
+	applicationResetRetryDelay = 10 * time.Millisecond
+	maxApplicationPreflights   = 2
+	terminalFocusBatchDelay    = time.Second
+	terminalFocusWriteTimeout  = 250 * time.Millisecond
+	terminalFocusRetryMaximum  = 30 * time.Second
+	terminalFocusReportEvery   = time.Minute
+	maxPendingTerminalFocus    = 256
+	moveBarrierPrefix          = "_sway_session_move_v1:"
 )
 
 type Node = swayipc.TreeNode
@@ -58,40 +60,46 @@ type sessionRuntimeOptions struct {
 }
 
 type sessionRuntime struct {
-	ctx                   context.Context
-	client                swayRequester
-	root                  string
-	persisted             sessionstate.LayoutSnapshot
-	desired               sessionstate.LayoutSnapshot
-	debouncer             *sessionstate.SnapshotDebouncer
-	registryPresent       bool
-	restoreProgress       *sessionstate.RestoreProgress
-	restoreEligible       map[sessionstate.ContextID]struct{}
-	restoreExcluded       map[string]struct{}
-	restoreSkipped        map[string]struct{}
-	restoreFailures       map[string]error
-	lateRestorePending    bool
-	originalFocusID       int64
-	originalFocusSet      bool
-	originalFocusDone     bool
-	startupComplete       bool
-	startupDeadline       time.Time
-	observeDeadline       time.Time
-	shutdown              bool
-	applications          *sessionstate.ApplicationRestoreCoordinator
-	applicationLauncher   applicationContextLauncher
-	applicationCursor     sessionstate.ContextID
-	expectedMoves         map[int64][]uint64
-	nextMoveSequence      uint64
-	eventStreamReady      bool
-	eventStreamEpoch      uint64
-	eventStreamState      eventStreamGuard
-	indicatorCatalog      func() (sessionstate.DesktopCatalog, error)
-	indicatorOperations   func() ([]sessionstate.ApplicationOperation, error)
-	pendingTerminalFocus  map[sessionstate.ContextID]time.Time
-	terminalFocusDeadline time.Time
-	terminalFocusRetry    time.Duration
-	terminalFocusReported time.Time
+	ctx                        context.Context
+	client                     swayRequester
+	root                       string
+	persisted                  sessionstate.LayoutSnapshot
+	desired                    sessionstate.LayoutSnapshot
+	debouncer                  *sessionstate.SnapshotDebouncer
+	registry                   sessionstate.Registry
+	registryRevision           int64
+	registryCacheKnown         bool
+	registryPresent            bool
+	restoreProgress            *sessionstate.RestoreProgress
+	restoreEligible            map[sessionstate.ContextID]struct{}
+	restoreExcluded            map[string]struct{}
+	restoreSkipped             map[string]struct{}
+	restoreFailures            map[string]error
+	lateRestorePending         bool
+	originalFocusID            int64
+	originalFocusSet           bool
+	originalFocusDone          bool
+	startupComplete            bool
+	startupDeadline            time.Time
+	observeDeadline            time.Time
+	shutdown                   bool
+	applications               *sessionstate.ApplicationRestoreCoordinator
+	applicationLauncher        applicationContextLauncher
+	applicationCursor          sessionstate.ContextID
+	applicationPlacementCursor *sessionstate.PlacementAction
+	placementCursor            *sessionstate.PlacementAction
+	expectedMoves              map[int64][]uint64
+	nextMoveSequence           uint64
+	eventStreamReady           bool
+	eventStreamEpoch           uint64
+	eventStreamState           eventStreamGuard
+	indicatorCatalog           func() (sessionstate.DesktopCatalog, error)
+	indicatorOperations        func() ([]sessionstate.ApplicationOperation, error)
+	indicatorCursor            *sessionstate.ApplicationIndicatorAction
+	pendingTerminalFocus       map[sessionstate.ContextID]time.Time
+	terminalFocusDeadline      time.Time
+	terminalFocusRetry         time.Duration
+	terminalFocusReported      time.Time
 }
 
 func (runtime *sessionRuntime) context() context.Context {
@@ -122,17 +130,24 @@ func newSessionRuntimeWithOptions(client swayRequester, options sessionRuntimeOp
 			return nil, err
 		}
 	}
+	if err := sessionstate.VerifyStateDatabaseContext(ctx, root); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("verify persistent session database: %w", err)
+	}
 	previous := sessionstate.LayoutSnapshot{
 		Version:    sessionstate.LayoutSchemaVersion,
 		Workspaces: []sessionstate.WorkspaceLayout{},
 	}
-	if err := sessionstate.LayoutFile(root).LoadIntoContext(ctx, &previous); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := sessionstate.LayoutStoreFor(root).LoadIntoContext(ctx, &previous); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("load persistent Sway layout: %w", err)
 	}
-	registry := sessionstate.Registry{}
-	registryErr := sessionstate.RegistryFile(root).LoadIntoContext(ctx, &registry)
-	registryPresent := registryErr == nil
-	if registryErr != nil && !errors.Is(registryErr, os.ErrNotExist) {
+	registry, registryRevision, registryPresent, _, registryErr := sessionstate.RegistryStoreFor(root).LoadIfChangedContext(ctx, -1, false)
+	if errors.Is(registryErr, os.ErrNotExist) {
+		registry = sessionstate.Registry{Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{}}
+		registryRevision = 0
+		registryPresent = false
+		registryErr = nil
+	}
+	if registryErr != nil {
 		return nil, fmt.Errorf("load persistent context registry: %w", registryErr)
 	}
 	debouncer, err := sessionstate.NewSnapshotDebouncer(previous, sessionSnapshotDebounce)
@@ -146,6 +161,9 @@ func newSessionRuntimeWithOptions(client swayRequester, options sessionRuntimeOp
 		persisted:           previous,
 		desired:             previous,
 		debouncer:           debouncer,
+		registry:            registry,
+		registryRevision:    registryRevision,
+		registryCacheKnown:  true,
 		registryPresent:     registryPresent,
 		restoreEligible:     make(map[sessionstate.ContextID]struct{}),
 		restoreExcluded:     make(map[string]struct{}),
@@ -160,7 +178,7 @@ func newSessionRuntimeWithOptions(client swayRequester, options sessionRuntimeOp
 	}
 	if options.CompositorID != "" {
 		applicationState := sessionstate.ApplicationSessionState{}
-		if err := sessionstate.ApplicationSessionFile(root).LoadIntoContext(ctx, &applicationState); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := sessionstate.ApplicationSessionStoreFor(root).LoadIntoContext(ctx, &applicationState); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return nil, fmt.Errorf("load desktop application restore state: %w", err)
 		}
 		startedAt := options.StartedAt
@@ -174,13 +192,40 @@ func newSessionRuntimeWithOptions(client swayRequester, options sessionRuntimeOp
 			return nil, fmt.Errorf("initialize desktop application restore: %w", err)
 		}
 		if applicationState.CompositorID != options.CompositorID {
-			if err := sessionstate.ApplicationSessionFile(root).SaveContext(ctx, coordinator.State()); err != nil {
+			if err := retryApplicationSessionReset(ctx, func() error {
+				return sessionstate.ApplicationSessionStoreFor(root).SaveContext(ctx, coordinator.State())
+			}); err != nil {
 				return nil, fmt.Errorf("persist new Sway compositor application session: %w", err)
 			}
 		}
 		runtime.applications = coordinator
 	}
 	return runtime, nil
+}
+
+func retryApplicationSessionReset(ctx context.Context, save func() error) error {
+	if ctx == nil {
+		return errors.New("application session reset context is nil")
+	}
+	if save == nil {
+		return errors.New("application session reset save operation is nil")
+	}
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		err := save()
+		if !errors.Is(err, sessionstate.ErrApplicationSessionConflict) && !errors.Is(err, sessionstate.ErrRegistryConflict) {
+			return err
+		}
+		timer := time.NewTimer(applicationResetRetryDelay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
 }
 
 // ReconcileIndicators is deliberately independent from core capture and
@@ -214,9 +259,13 @@ func (runtime *sessionRuntime) ReconcileIndicators(root *Node) (bool, error) {
 			}
 		}
 	}
-	actions, err := sessionstate.PlanApplicationIndicatorActions(root, registry, catalog, operations)
+	actions, err := sessionstate.PlanApplicationIndicatorActionsAfter(root, registry, catalog, operations, runtime.indicatorCursor)
 	if err != nil {
 		return false, fmt.Errorf("plan desktop application indicators: %w", err)
+	}
+	if len(actions) != 0 {
+		last := actions[len(actions)-1]
+		runtime.indicatorCursor = &last
 	}
 	refresh := false
 	var actionErrors []error
@@ -307,7 +356,7 @@ func (runtime *sessionRuntime) queueTerminalFocus(node *Node, observedAt time.Ti
 	if runtime.pendingTerminalFocus == nil {
 		runtime.pendingTerminalFocus = make(map[sessionstate.ContextID]time.Time)
 	}
-	if _, exists := runtime.pendingTerminalFocus[id]; !exists && len(runtime.pendingTerminalFocus) >= sessionstate.MaxContexts {
+	if _, exists := runtime.pendingTerminalFocus[id]; !exists && len(runtime.pendingTerminalFocus) >= maxPendingTerminalFocus {
 		return
 	}
 	canonical := observedAt.UTC()
@@ -505,7 +554,7 @@ func (runtime *sessionRuntime) Reconcile(root *Node, now time.Time) (needsRefres
 	if !available {
 		runtime.registryPresent = false
 		// Registration is performed by a separate CLI process. Keep one slow
-		// observation armed even before contexts.json exists so the first
+		// observation armed even before a registry exists so the first
 		// successful registration cannot be missed if its Sway mark event races
 		// the registry commit.
 		runtime.observeDeadline = now.Add(sessionObservationDelay)
@@ -532,9 +581,13 @@ func (runtime *sessionRuntime) Reconcile(root *Node, now time.Time) (needsRefres
 	if applicationRefresh || applicationErr != nil {
 		return applicationRefresh, applicationErr
 	}
-	actions, err := sessionstate.PlanPlacementActions(root, registry, runtime.desired)
+	actions, err := sessionstate.PlanPlacementActionsAfter(root, registry, runtime.desired, runtime.placementCursor)
 	if err != nil {
 		return false, err
+	}
+	if len(actions) != 0 {
+		last := actions[len(actions)-1]
+		runtime.placementCursor = &last
 	}
 	failedMoveContexts := make(map[sessionstate.ContextID]struct{})
 	if len(actions) != 0 {
@@ -696,7 +749,14 @@ func (runtime *sessionRuntime) reconcileApplications(root *Node, registry sessio
 	}
 	refresh := false
 	var degradedErrors []error
-	err = sessionstate.InspectRegistryLockedContext(runtime.context(), runtime.root, func(current sessionstate.Registry) error {
+	err = sessionstate.WithRegistryLockContext(runtime.context(), runtime.root, func(*statefile.LockedPrivateDirectory) error {
+		current, available, err := runtime.loadRegistry()
+		if err != nil {
+			return err
+		}
+		if !available {
+			return errors.New("persistent context registry disappeared during application reconciliation")
+		}
 		registry = current
 		currentGroups, err := sessionstate.ObserveApplicationGroups(root, current)
 		if err != nil {
@@ -712,9 +772,13 @@ func (runtime *sessionRuntime) reconcileApplications(root *Node, registry sessio
 		if len(currentPlan.DesiredOpen) != 0 {
 			return nil
 		}
-		placement, err := sessionstate.PlanApplicationPlacementActions(currentGroups, runtime.desired)
+		placement, err := sessionstate.PlanApplicationPlacementActionsAfter(currentGroups, runtime.desired, runtime.applicationPlacementCursor)
 		if err != nil {
 			return err
+		}
+		if len(placement) != 0 {
+			last := placement[len(placement)-1]
+			runtime.applicationPlacementCursor = &last
 		}
 		failedContexts := make(map[sessionstate.ContextID]struct{})
 		for _, action := range placement {
@@ -768,11 +832,11 @@ func (runtime *sessionRuntime) reconcileApplications(root *Node, registry sessio
 				launchErrors = append(launchErrors, fmt.Errorf("begin desktop application launch %q: %w", context.ID, err))
 				continue
 			}
-			if saveErr := sessionstate.ApplicationSessionFile(runtime.root).SaveContext(runtime.context(), candidate); saveErr != nil {
+			if saveErr := sessionstate.ApplicationSessionStoreFor(runtime.root).SaveContext(runtime.context(), candidate); saveErr != nil {
 				var unknown *statefile.CommitOutcomeUnknownError
 				var visible sessionstate.ApplicationSessionState
 				confirmed := errors.As(saveErr, &unknown) &&
-					sessionstate.ApplicationSessionFile(runtime.root).LoadIntoContext(runtime.context(), &visible) == nil &&
+					sessionstate.ApplicationSessionStoreFor(runtime.root).LoadIntoContext(runtime.context(), &visible) == nil &&
 					reflect.DeepEqual(visible, candidate)
 				if !confirmed {
 					_ = runtime.applications.RestoreState(previousState)
@@ -942,9 +1006,11 @@ func (runtime *sessionRuntime) beginRestoreRollback(cause error) (bool, bool, er
 	workspace := runtime.restoreProgress.Workspace
 	runtime.restoreFailures[workspace] = cause
 	runtime.restoreProgress.Phase = sessionstate.RestoreRollbackOut
-	// Rollback has its own bounded budget. Reusing a build budget which was
-	// already exhausted could strand managed windows on the staging workspace.
-	runtime.restoreProgress.Steps = 0
+	// Rollback starts its own no-progress detection. Reusing the last failed
+	// build action could misclassify the first compensating action as a repeat.
+	runtime.restoreProgress.Actions = 0
+	runtime.restoreProgress.LastActionKey = ""
+	runtime.restoreProgress.RepeatedActions = 0
 	return true, false, fmt.Errorf("restore workspace %q: %w", workspace, cause)
 }
 
@@ -999,15 +1065,33 @@ func workspaceByName(snapshot sessionstate.LayoutSnapshot, name string) (session
 }
 
 func (runtime *sessionRuntime) loadRegistry() (sessionstate.Registry, bool, error) {
-	registry := sessionstate.Registry{}
-	err := sessionstate.RegistryFile(runtime.root).LoadIntoContext(runtime.context(), &registry)
+	knownRevision := int64(-1)
+	knownPresent := false
+	if runtime.registryCacheKnown {
+		knownRevision = runtime.registryRevision
+		knownPresent = runtime.registryPresent
+	}
+	registry, revision, present, changed, err := sessionstate.RegistryStoreFor(runtime.root).LoadIfChangedContext(runtime.context(), knownRevision, knownPresent)
 	if errors.Is(err, os.ErrNotExist) {
+		runtime.registry = sessionstate.Registry{Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{}}
+		runtime.registryRevision = 0
+		runtime.registryCacheKnown = true
+		runtime.registryPresent = false
 		return sessionstate.Registry{}, false, nil
 	}
 	if err != nil {
 		return sessionstate.Registry{}, false, fmt.Errorf("load persistent context registry: %w", err)
 	}
-	return registry, true, nil
+	if changed || !runtime.registryCacheKnown {
+		runtime.registry = registry
+	}
+	runtime.registryRevision = revision
+	runtime.registryCacheKnown = true
+	runtime.registryPresent = present
+	if !present {
+		return sessionstate.Registry{}, false, nil
+	}
+	return runtime.registry, true, nil
 }
 
 func (runtime *sessionRuntime) applyPlacementAction(action sessionstate.PlacementAction) error {
@@ -1244,7 +1328,7 @@ func (runtime *sessionRuntime) Flush(now time.Time) error {
 	if !due {
 		return focusErr
 	}
-	err := sessionstate.LayoutFile(runtime.root).SaveContext(runtime.context(), candidate)
+	err := sessionstate.LayoutStoreFor(runtime.root).SaveContext(runtime.context(), candidate)
 	if err == nil {
 		runtime.persisted = candidate
 		return errors.Join(focusErr, runtime.debouncer.MarkPersisted(candidate))
@@ -1253,7 +1337,7 @@ func (runtime *sessionRuntime) Flush(now time.Time) error {
 	var unknown *statefile.CommitOutcomeUnknownError
 	if errors.As(err, &unknown) {
 		var visible sessionstate.LayoutSnapshot
-		if loadErr := sessionstate.LayoutFile(runtime.root).LoadIntoContext(runtime.context(), &visible); loadErr != nil {
+		if loadErr := sessionstate.LayoutStoreFor(runtime.root).LoadIntoContext(runtime.context(), &visible); loadErr != nil {
 			runtime.debouncer.Postpone(now)
 			return errors.Join(focusErr, err, fmt.Errorf("reload layout after unknown commit outcome: %w", loadErr))
 		}
@@ -1325,7 +1409,7 @@ func (runtime *sessionRuntime) flushTerminalFocus(now time.Time) error {
 		return nil
 	}
 	runtime.scheduleTerminalFocusRetry(now)
-	if errors.Is(err, context.DeadlineExceeded) && runtime.context().Err() == nil {
+	if (errors.Is(err, context.DeadlineExceeded) || sessionstate.IsStateDatabaseBusy(err)) && runtime.context().Err() == nil {
 		return nil
 	}
 	if runtime.terminalFocusReported.IsZero() || now.Sub(runtime.terminalFocusReported) >= terminalFocusReportEvery {

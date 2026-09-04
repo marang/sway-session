@@ -29,11 +29,11 @@ func executeTerminal(ctx context.Context, arguments []string, stdin io.Reader, s
 		case "manage":
 			return executeTerminalManage(ctx, arguments[1:], stdin, stdout, structured, configPath, deps)
 		case "list":
-			return executeTerminalList(arguments[1:], deps)
+			return executeTerminalList(ctx, arguments[1:], deps)
 		case "status":
-			return executeTerminalStatus(arguments[1:], deps)
+			return executeTerminalStatus(ctx, arguments[1:], deps)
 		case "cleanup":
-			return executeTerminalCleanup(arguments[1:], deps)
+			return executeTerminalCleanup(ctx, arguments[1:], deps)
 		case "reconfigure":
 			return executeTerminalReconfigure(ctx, arguments[1:], configPath, deps)
 		case "rename":
@@ -394,32 +394,29 @@ func terminalWorkingDirectory(value string, project string, deps dependencies) (
 	return deps.homeDir()
 }
 
-func executeTerminalList(arguments []string, deps dependencies) (commandResult, *commandFailure) {
+func executeTerminalList(ctx context.Context, arguments []string, deps dependencies) (commandResult, *commandFailure) {
 	if len(arguments) != 0 {
 		return commandResult{}, usageFailure("terminal", "terminal list accepts no arguments")
 	}
-	registry, commandFailure := loadTerminalRegistry(deps)
+	snapshot, commandFailure := loadTerminalInventory(ctx, deps)
 	if commandFailure != nil {
 		return commandResult{}, commandFailure
 	}
-	activity, commandFailure := loadTerminalActivity(deps)
-	if commandFailure != nil {
-		return commandResult{}, commandFailure
-	}
-	items := terminalInventory(registry.Contexts, activity)
+	items := terminalInventory(snapshot.Registry.Contexts, snapshot.Activity)
 	return commandResult{Command: "terminal list", Terminals: &items}, nil
 }
 
-func executeTerminalStatus(arguments []string, deps dependencies) (commandResult, *commandFailure) {
+func executeTerminalStatus(ctx context.Context, arguments []string, deps dependencies) (commandResult, *commandFailure) {
 	set := newFlagSet("terminal status")
 	project := set.String("project", "", "stable project identity")
 	if err := set.Parse(arguments); err != nil || set.NArg() > 1 || (*project != "" && set.NArg() != 0) {
 		return commandResult{}, usageFailure("terminal", "terminal status accepts one context UUID or exact label, or --project NAME")
 	}
-	registry, commandFailure := loadTerminalRegistry(deps)
+	snapshot, commandFailure := loadTerminalInventory(ctx, deps)
 	if commandFailure != nil {
 		return commandResult{}, commandFailure
 	}
+	registry := snapshot.Registry
 	var selected sessionstate.Context
 	if *project != "" {
 		identity, err := sessionstate.ParseTerminalIdentity(*project)
@@ -459,18 +456,14 @@ func executeTerminalStatus(arguments []string, deps dependencies) (commandResult
 			return commandResult{}, failure("context_not_found", "select default terminal context", "Run sway-session terminal to create it.")
 		}
 	}
-	activity, commandFailure := loadTerminalActivity(deps)
-	if commandFailure != nil {
-		return commandResult{}, commandFailure
-	}
-	items := terminalInventory([]sessionstate.Context{selected}, activity)
+	items := terminalInventory([]sessionstate.Context{selected}, snapshot.Activity)
 	if len(items) != 1 {
 		return commandResult{}, failure("terminal_context", "selected context is not a Herdr terminal", string(selected.ID))
 	}
 	return commandResult{Command: "terminal status", Terminals: &items}, nil
 }
 
-func executeTerminalCleanup(arguments []string, deps dependencies) (commandResult, *commandFailure) {
+func executeTerminalCleanup(ctx context.Context, arguments []string, deps dependencies) (commandResult, *commandFailure) {
 	set := newFlagSet("terminal cleanup")
 	beforeValue := set.String("archived-before", "", "UTC date YYYY-MM-DD")
 	if err := set.Parse(arguments); err != nil || set.NArg() != 0 {
@@ -484,10 +477,11 @@ func executeTerminalCleanup(arguments []string, deps dependencies) (commandResul
 			return commandResult{}, usageFailure("terminal", "--archived-before must be an exact UTC date in YYYY-MM-DD form")
 		}
 	}
-	registry, commandFailure := loadTerminalRegistry(deps)
+	snapshot, commandFailure := loadTerminalInventory(ctx, deps)
 	if commandFailure != nil {
 		return commandResult{}, commandFailure
 	}
+	registry := snapshot.Registry
 	candidates := make([]sessionstate.Context, 0)
 	for _, context := range registry.Contexts {
 		if context.State != sessionstate.ContextArchived || context.Launcher.Kind != sessionstate.LauncherHerdr || context.Launcher.Terminal == nil {
@@ -498,43 +492,34 @@ func executeTerminalCleanup(arguments []string, deps dependencies) (commandResul
 		}
 		candidates = append(candidates, context)
 	}
-	activity, commandFailure := loadTerminalActivity(deps)
-	if commandFailure != nil {
-		return commandResult{}, commandFailure
-	}
-	items := terminalInventory(candidates, activity)
+	items := terminalInventory(candidates, snapshot.Activity)
 	return commandResult{
 		Command: "terminal cleanup", Terminals: &items, Preview: true, Actions: []string{"preview"},
 		Message: "Preview only; use sway-session purge --yes <context-uuid> after reviewing each candidate.",
 	}, nil
 }
 
-func loadTerminalRegistry(deps dependencies) (sessionstate.Registry, *commandFailure) {
+func loadTerminalInventory(ctx context.Context, deps dependencies) (sessionstate.TerminalInventorySnapshot, *commandFailure) {
 	root, commandFailure := stateRoot(deps)
 	if commandFailure != nil {
-		return sessionstate.Registry{}, commandFailure
+		return sessionstate.TerminalInventorySnapshot{}, commandFailure
 	}
-	registry, err := sessionstate.ReadRegistrySnapshot(root)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return sessionstate.Registry{}, classifyStateError("load terminal contexts", err)
-	}
-	return registry, nil
-}
-
-func loadTerminalActivity(deps dependencies) (sessionstate.TerminalActivityState, *commandFailure) {
-	root, commandFailure := stateRoot(deps)
-	if commandFailure != nil {
-		return sessionstate.TerminalActivityState{}, commandFailure
-	}
-	activity, err := sessionstate.ReadTerminalActivitySnapshot(root)
+	snapshot, err := sessionstate.ReadTerminalInventorySnapshotContext(ctx, root)
 	if err != nil {
-		return sessionstate.TerminalActivityState{}, classifyStateError("load terminal activity", err)
+		return sessionstate.TerminalInventorySnapshot{}, classifyStateError("load terminal inventory", err)
 	}
-	return activity, nil
+	return snapshot, nil
 }
 
 func terminalInventory(contexts []sessionstate.Context, activityState ...sessionstate.TerminalActivityState) []terminalInventoryResult {
 	items := make([]terminalInventoryResult, 0, len(contexts))
+	activityByContext := make(map[sessionstate.ContextID]sessionstate.TerminalActivity)
+	if len(activityState) != 0 {
+		activityByContext = make(map[sessionstate.ContextID]sessionstate.TerminalActivity, len(activityState[0].Terminals))
+		for _, activity := range activityState[0].Terminals {
+			activityByContext[activity.ContextID] = activity
+		}
+	}
 	for _, context := range contexts {
 		if context.Launcher.Kind != sessionstate.LauncherHerdr || context.Launcher.Terminal == nil {
 			continue
@@ -547,10 +532,7 @@ func terminalInventory(contexts []sessionstate.Context, activityState ...session
 		} else if sessionstate.IsTerminalInstanceContext(context) {
 			identity = terminalIdentityResult{Kind: sessionstate.TerminalIdentityKind("instance"), ContextID: context.ID}
 		}
-		var activity sessionstate.TerminalActivity
-		if len(activityState) != 0 {
-			activity, _ = sessionstate.FindTerminalActivity(activityState[0], context.ID)
-		}
+		activity := activityByContext[context.ID]
 		items = append(items, terminalInventoryResult{
 			ContextID:     context.ID,
 			Label:         context.Label,

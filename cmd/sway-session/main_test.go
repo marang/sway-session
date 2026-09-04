@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -443,7 +444,7 @@ func TestUnknownArchiveCommitRejectsAConcurrentArchiveGeneration(t *testing.T) {
 	visible := expected
 	second := first.Add(time.Minute)
 	visible.ArchivedAt = &second
-	if err := sessionstate.RegistryFile(root).Save(sessionstate.Registry{
+	if err := sessionstate.RegistryStoreFor(root).Save(sessionstate.Registry{
 		Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{visible},
 	}); err != nil {
 		t.Fatal(err)
@@ -624,7 +625,7 @@ func TestPurgeRejectsApplicationContextsBeforeConfirmationOrHerdrAccess(t *testi
 				if err != nil {
 					t.Fatal(err)
 				}
-				if err := sessionstate.RegistryFile(root).Save(sessionstate.Registry{Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{contextValue}}); err != nil {
+				if err := sessionstate.RegistryStoreFor(root).Save(sessionstate.Registry{Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{contextValue}}); err != nil {
 					t.Fatal(err)
 				}
 				if !herdrRootExists {
@@ -670,7 +671,7 @@ func TestPurgeRejectsApplicationContextBeforeConfirmationPreview(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := sessionstate.RegistryFile(root).Save(sessionstate.Registry{Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{contextValue}}); err != nil {
+	if err := sessionstate.RegistryStoreFor(root).Save(sessionstate.Registry{Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{contextValue}}); err != nil {
 		t.Fatal(err)
 	}
 	deps.herdrPaths = func() (sessionstate.HerdrPaths, error) {
@@ -750,6 +751,136 @@ func TestRestoreLaunchesMissingContextWithTypedArgumentsAndWaitsForMapping(t *te
 	}
 }
 
+func TestAutomaticRestoreBatchesMissingContextsInsteadOfLaunchingAnUnboundedBurst(t *testing.T) {
+	deps := testDependencies(t)
+	registry := storeRestoreTestContexts(t, deps, 7)
+	harness := &restoreBatchHarness{}
+	clientCalls := 0
+	deps.newSwayClient = func(string) swayRequester {
+		clientCalls++
+		return harness
+	}
+	deps.processStarter = harness
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	code := runWith([]string{"--json", "restore", "--socket", "/run/user/1000/sway.sock"}, strings.NewReader(""), &stdout, &stderr, deps)
+
+	if code != exitSuccess || stderr.Len() != 0 {
+		t.Fatalf("batched restore failed code=%d stderr=%q", code, stderr.String())
+	}
+	if harness.startCount() != len(registry.Contexts) {
+		t.Fatalf("restored %d of %d missing contexts", harness.startCount(), len(registry.Contexts))
+	}
+	if harness.maximumPending() > maxConcurrentTerminalRestores {
+		t.Fatalf("restore launched %d terminals without re-observation; bound=%d", harness.maximumPending(), maxConcurrentTerminalRestores)
+	}
+	if want := (len(registry.Contexts) + maxConcurrentTerminalRestores - 1) / maxConcurrentTerminalRestores; clientCalls != want {
+		t.Fatalf("automatic restore used %d lifecycle waves, want %d", clientCalls, want)
+	}
+	var result commandResult
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Contexts) != len(registry.Contexts) {
+		t.Fatalf("batched restore reported %d of %d contexts", len(result.Contexts), len(registry.Contexts))
+	}
+}
+
+func TestAutomaticRestoreDoesNotExceedPendingBoundAfterMappingTimeout(t *testing.T) {
+	deps := testDependencies(t)
+	registry := storeRestoreTestContexts(t, deps, 5)
+	deps.newSwayClient = func(string) swayRequester {
+		return &fakeSwayClient{trees: []*swayipc.TreeNode{treeWithContexts()}}
+	}
+	starter := &recordingStarter{}
+	deps.processStarter = starter
+	now := time.Unix(0, 0)
+	deps.now = func() time.Time {
+		now = now.Add(time.Second)
+		return now
+	}
+	deps.settleTimeout = time.Second
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	code := runWith([]string{"--json", "restore", "--socket", "/run/user/1000/sway.sock"}, strings.NewReader(""), &stdout, &stderr, deps)
+
+	if code != exitOperation || len(starter.calls) != maxConcurrentTerminalRestores {
+		t.Fatalf("timed-out restore code=%d starts=%d, want bound %d; stderr=%q", code, len(starter.calls), maxConcurrentTerminalRestores, stderr.String())
+	}
+	if strings.Count(stderr.String(), `"code":"mapping_timeout"`) != maxConcurrentTerminalRestores ||
+		!strings.Contains(stderr.String(), `"code":"restore_deferred"`) || !strings.Contains(stderr.String(), fmt.Sprintf("%d additional", len(registry.Contexts)-maxConcurrentTerminalRestores)) {
+		t.Fatalf("timed-out restore did not explain deferred contexts: %s", stderr.String())
+	}
+}
+
+func TestExplicitRestoreSelectsOneContextFromLargeRegistryImmediately(t *testing.T) {
+	deps := testDependencies(t)
+	registry := storeRestoreTestContexts(t, deps, 300)
+	target := registry.Contexts[len(registry.Contexts)-1]
+	harness := &restoreBatchHarness{}
+	clientCalls := 0
+	deps.newSwayClient = func(string) swayRequester {
+		clientCalls++
+		return harness
+	}
+	deps.processStarter = harness
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	code := runWith([]string{"--json", "restore", "--socket", "/run/user/1000/sway.sock", string(target.ID)}, strings.NewReader(""), &stdout, &stderr, deps)
+
+	if code != exitSuccess || stderr.Len() != 0 || harness.startCount() != 1 || clientCalls != 1 {
+		t.Fatalf("explicit restore was not immediate: code=%d starts=%d clients=%d stderr=%q", code, harness.startCount(), clientCalls, stderr.String())
+	}
+	var result commandResult
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Contexts) != 1 || result.Contexts[0].ID != target.ID {
+		t.Fatalf("explicit restore returned wrong context: %+v", result.Contexts)
+	}
+}
+
+func TestAutomaticRestorePreservesEarlierSuccessWhenLaterWaveFails(t *testing.T) {
+	deps := testDependencies(t)
+	registry := storeRestoreTestContexts(t, deps, 3)
+	harness := &restoreBatchHarness{}
+	clientCalls := 0
+	deps.newSwayClient = func(string) swayRequester {
+		clientCalls++
+		if clientCalls == 1 {
+			return harness
+		}
+		return &fakeSwayClient{err: errors.New("second restore wave unavailable")}
+	}
+	deps.processStarter = harness
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	code := runWith([]string{"--json", "restore", "--socket", "/run/user/1000/sway.sock"}, strings.NewReader(""), &stdout, &stderr, deps)
+
+	if code != exitOperation || clientCalls != 2 || harness.startCount() != maxConcurrentTerminalRestores {
+		t.Fatalf("later-wave failure code=%d clients=%d starts=%d stderr=%q", code, clientCalls, harness.startCount(), stderr.String())
+	}
+	var result commandResult
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("decode partial restore result: %v; output=%q", err, stdout.String())
+	}
+	if len(result.Contexts) != maxConcurrentTerminalRestores {
+		t.Fatalf("later failure discarded earlier successful contexts: %+v", result.Contexts)
+	}
+	for index := range maxConcurrentTerminalRestores {
+		if result.Contexts[index].ID != registry.Contexts[index].ID {
+			t.Fatalf("partial restore context %d = %s, want %s", index, result.Contexts[index].ID, registry.Contexts[index].ID)
+		}
+	}
+	if !strings.Contains(stderr.String(), "second restore wave unavailable") {
+		t.Fatalf("later-wave error was not reported: %s", stderr.String())
+	}
+}
+
 func TestRestoreRejectsTerminalThatDisappearsAfterInitialMapping(t *testing.T) {
 	deps := testDependencies(t)
 	registered := registerTestContext(t, deps)
@@ -825,7 +956,7 @@ func TestRestoreRejectsCurrentInstanceWithOverlongHerdrSocketBeforeStart(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := sessionstate.RegistryFile(root).Save(sessionstate.Registry{
+	if err := sessionstate.RegistryStoreFor(root).Save(sessionstate.Registry{
 		Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{registered},
 	}); err != nil {
 		t.Fatal(err)
@@ -952,7 +1083,7 @@ func TestExplicitDesktopRestoreQueuesDesiredOpenForDaemon(t *testing.T) {
 		t.Fatalf("desktop restore was not queued: code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
 	var registry sessionstate.Registry
-	if err := sessionstate.RegistryFile(root).LoadInto(&registry); err != nil {
+	if err := sessionstate.RegistryStoreFor(root).LoadInto(&registry); err != nil {
 		t.Fatal(err)
 	}
 	if !registry.Contexts[0].App.DesiredOpen {
@@ -1208,6 +1339,33 @@ func registerTestContext(t *testing.T, deps dependencies) sessionstate.Context {
 	return result.Contexts[0]
 }
 
+func storeRestoreTestContexts(t *testing.T, deps dependencies, count int) sessionstate.Registry {
+	t.Helper()
+	root, err := deps.stateRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cwd, err := deps.workingDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry := sessionstate.Registry{Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{}}
+	for index := range count {
+		id := sessionstate.ContextID(fmt.Sprintf("%08x-0000-4000-8000-%012x", index+1, index+1))
+		registry.Contexts = append(registry.Contexts, sessionstate.Context{
+			ID: id, Label: fmt.Sprintf("Restore %d", index+1), State: sessionstate.ContextActive,
+			Launcher: sessionstate.Launcher{
+				Kind: sessionstate.LauncherHerdr, Session: fmt.Sprintf("restore-%d", index+1), Cwd: cwd,
+				Terminal: &sessionstate.TerminalLauncher{Adapter: sessionstate.TerminalAdapterAlacritty},
+			},
+		})
+	}
+	if err := sessionstate.RegistryStoreFor(root).Save(registry); err != nil {
+		t.Fatal(err)
+	}
+	return registry
+}
+
 func loadTestRegistry(t *testing.T, deps dependencies) sessionstate.Registry {
 	t.Helper()
 	root, err := deps.stateRoot()
@@ -1215,7 +1373,7 @@ func loadTestRegistry(t *testing.T, deps dependencies) sessionstate.Registry {
 		t.Fatal(err)
 	}
 	var registry sessionstate.Registry
-	if err := sessionstate.RegistryFile(root).LoadInto(&registry); err != nil {
+	if err := sessionstate.RegistryStoreFor(root).LoadInto(&registry); err != nil {
 		t.Fatal(err)
 	}
 	return registry
@@ -1303,6 +1461,68 @@ func (*sharedTreeClient) Close() {}
 type mappingStarter struct {
 	mapped *atomic.Bool
 	starts atomic.Int32
+}
+
+type restoreBatchHarness struct {
+	mu         sync.Mutex
+	mapped     []sessionstate.ContextID
+	pending    []sessionstate.ContextID
+	starts     int
+	maxPending int
+}
+
+func (harness *restoreBatchHarness) Start(spec sessionstate.ProcessSpec) error {
+	var id sessionstate.ContextID
+	for _, argument := range spec.Arguments {
+		const prefix = "--class=sway-session."
+		if strings.HasPrefix(argument, prefix) {
+			id = sessionstate.ContextID(strings.TrimPrefix(argument, prefix))
+			break
+		}
+	}
+	if id == "" {
+		return errors.New("terminal process spec has no managed application ID")
+	}
+	harness.mu.Lock()
+	defer harness.mu.Unlock()
+	harness.starts++
+	harness.pending = append(harness.pending, id)
+	harness.maxPending = max(harness.maxPending, len(harness.pending))
+	return nil
+}
+
+func (harness *restoreBatchHarness) Request(messageType swayipc.MessageType, _ []byte) (swayipc.Message, error) {
+	if messageType != swayipc.GetTree {
+		return swayipc.Message{}, errors.New("unexpected Sway request")
+	}
+	harness.mu.Lock()
+	harness.mapped = append(harness.mapped, harness.pending...)
+	harness.pending = nil
+	tree := treeWithContexts(harness.mapped...)
+	harness.mu.Unlock()
+	payload, err := json.Marshal(tree)
+	return swayipc.Message{Type: swayipc.GetTree, Payload: payload}, err
+}
+
+func (harness *restoreBatchHarness) RequestContext(ctx context.Context, messageType swayipc.MessageType, payload []byte) (swayipc.Message, error) {
+	if err := ctx.Err(); err != nil {
+		return swayipc.Message{}, err
+	}
+	return harness.Request(messageType, payload)
+}
+
+func (*restoreBatchHarness) Close() {}
+
+func (harness *restoreBatchHarness) startCount() int {
+	harness.mu.Lock()
+	defer harness.mu.Unlock()
+	return harness.starts
+}
+
+func (harness *restoreBatchHarness) maximumPending() int {
+	harness.mu.Lock()
+	defer harness.mu.Unlock()
+	return harness.maxPending
 }
 
 func (starter *mappingStarter) Start(sessionstate.ProcessSpec) error {

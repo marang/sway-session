@@ -16,6 +16,7 @@ type terminalManageOperations interface {
 	SetState(context.Context, sessionstate.ContextID, sessionstate.ContextState) error
 	Rename(context.Context, sessionstate.ContextID, string) error
 	Purge(context.Context, sessionstate.ContextID) (string, error)
+	Migrate(context.Context) (string, error)
 }
 
 type commandTerminalManageOperations struct {
@@ -23,8 +24,8 @@ type commandTerminalManageOperations struct {
 	deps       dependencies
 }
 
-func (operations commandTerminalManageOperations) List(_ context.Context) ([]terminalInventoryResult, error) {
-	result, commandFailure := executeTerminalList(nil, operations.deps)
+func (operations commandTerminalManageOperations) List(ctx context.Context) ([]terminalInventoryResult, error) {
+	result, commandFailure := executeTerminalList(ctx, nil, operations.deps)
 	if commandFailure != nil {
 		return nil, terminalManageFailure(commandFailure)
 	}
@@ -62,6 +63,32 @@ func (operations commandTerminalManageOperations) Rename(ctx context.Context, id
 func (operations commandTerminalManageOperations) Purge(ctx context.Context, id sessionstate.ContextID) (string, error) {
 	result, commandFailure := executePurge(ctx, []string{"--yes", string(id)}, strings.NewReader(""), io.Discard, false, operations.deps)
 	return result.Message, terminalManageFailure(commandFailure)
+}
+
+func (operations commandTerminalManageOperations) Migrate(ctx context.Context) (string, error) {
+	root, err := operations.deps.stateRoot()
+	if err != nil {
+		return "", err
+	}
+	result, err := sessionstate.MigrateLegacyState(ctx, root)
+	if err != nil {
+		return "", err
+	}
+	if !result.Migrated {
+		return "SQLite state is already current", nil
+	}
+	message := fmt.Sprintf(
+		"Migrated %d contexts, %d terminal activity records, layout=%t, application session=%t; legacy JSON kept",
+		result.Contexts, result.TerminalActivity, result.Layout, result.ApplicationSession,
+	)
+	skipped := result.SkippedApplicationAttempts + result.SkippedTerminalActivity
+	if skipped != 0 {
+		message += fmt.Sprintf("; skipped %d stale runtime records", skipped)
+	}
+	if result.CommitReconciled {
+		message += "; commit acknowledgement was lost, migrated state verified"
+	}
+	return message, nil
 }
 
 func terminalManageFailure(commandFailure *commandFailure) error {

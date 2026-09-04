@@ -10,7 +10,10 @@ import (
 	"github.com/marang/sway-title-animator/internal/swayipc"
 )
 
-const ApplicationSessionSchemaVersion = 1
+const (
+	ApplicationSessionSchemaVersion  = 1
+	MaxApplicationRestoreConcurrency = 128
+)
 
 // ApplicationSessionState records conservative launch evidence for one real
 // compositor lifetime. It prevents a daemon restart or an ambiguous launcher
@@ -39,9 +42,6 @@ func (state *ApplicationSessionState) Validate() error {
 	}
 	if state.Attempts == nil {
 		return errors.New("application session state must contain an attempts array")
-	}
-	if len(state.Attempts) > MaxContexts {
-		return fmt.Errorf("application session state contains %d attempts; maximum is %d", len(state.Attempts), MaxContexts)
 	}
 	seen := make(map[ContextID]struct{}, len(state.Attempts))
 	for index, attempt := range state.Attempts {
@@ -98,8 +98,8 @@ func NewApplicationRestoreCoordinator(
 	if options.AdoptionGrace <= 0 || options.CloseGrace <= 0 || options.LaunchTimeout <= 0 {
 		return nil, errors.New("application restore durations must be positive")
 	}
-	if options.MaxConcurrent < 1 || options.MaxConcurrent > MaxContexts {
-		return nil, fmt.Errorf("application restore concurrency must be between 1 and %d", MaxContexts)
+	if options.MaxConcurrent < 1 || options.MaxConcurrent > MaxApplicationRestoreConcurrency {
+		return nil, fmt.Errorf("application restore concurrency must be between 1 and %d", MaxApplicationRestoreConcurrency)
 	}
 	state := probe
 	if previous.CompositorID == compositorID {
@@ -321,18 +321,21 @@ func ObserveApplicationGroups(root *swayipc.TreeNode, registry Registry) (map[Co
 	}
 	groups := make(map[ContextID]ApplicationGroup)
 	applications := make([]Context, 0)
-	applicationsByID := make(map[ContextID]Context)
 	for _, context := range registry.Contexts {
 		if context.App == nil || context.State != ContextActive {
 			continue
 		}
 		groups[context.ID] = ApplicationGroup{Windows: []WindowApplication{}}
 		applications = append(applications, context)
-		applicationsByID[context.ID] = context
 	}
+	index := buildApplicationContextIndex(&registry, true)
+	var matchErr error
 	if err := walkApplicationWindowsWithScratchpad(root, "", true, func(window WindowApplication, _ bool) {
+		if matchErr != nil {
+			return
+		}
 		if len(window.ContextMarks) == 1 {
-			if marked, exists := applicationsByID[window.ContextMarks[0]]; exists &&
+			if marked, exists := index.contextByID(window.ContextMarks[0]); exists &&
 				!applicationIdentitiesOverlap(marked.App.Identity, window.Identity) {
 				group := groups[marked.ID]
 				group.Windows = append(group.Windows, window)
@@ -341,17 +344,21 @@ func ObserveApplicationGroups(root *swayipc.TreeNode, registry Registry) (map[Co
 				return
 			}
 		}
-		for _, context := range applications {
-			if !applicationIdentitiesOverlap(context.App.Identity, window.Identity) {
-				continue
-			}
-			group := groups[context.ID]
+		matched, exists, err := index.match(window.Identity)
+		if err != nil {
+			matchErr = fmt.Errorf("match application window %d: %w", window.ContainerID, err)
+			return
+		}
+		if exists {
+			group := groups[matched.ID]
 			group.Windows = append(group.Windows, window)
-			groups[context.ID] = group
-			break
+			groups[matched.ID] = group
 		}
 	}); err != nil {
 		return nil, err
+	}
+	if matchErr != nil {
+		return nil, matchErr
 	}
 	for _, context := range applications {
 		group := groups[context.ID]
@@ -391,6 +398,16 @@ func ObserveApplicationGroups(root *swayipc.TreeNode, registry Registry) (map[Co
 // as an application-level layout anchor. Already marked anchors and ambiguous
 // multi-window groups remain untouched, preserving live user/app ownership.
 func PlanApplicationPlacementActions(groups map[ContextID]ApplicationGroup, desired LayoutSnapshot) ([]PlacementAction, error) {
+	return PlanApplicationPlacementActionsAfter(groups, desired, nil)
+}
+
+// PlanApplicationPlacementActionsAfter rotates bounded placement work past the
+// previous batch even when Sway explicitly rejected every attempted action.
+func PlanApplicationPlacementActionsAfter(
+	groups map[ContextID]ApplicationGroup,
+	desired LayoutSnapshot,
+	after *PlacementAction,
+) ([]PlacementAction, error) {
 	if err := desired.Validate(); err != nil {
 		return nil, fmt.Errorf("validate desired layout: %w", err)
 	}
@@ -420,9 +437,6 @@ func PlanApplicationPlacementActions(groups map[ContextID]ApplicationGroup, desi
 		actions = append(actions, PlacementAction{
 			Kind: PlacementAddMark, ContextID: id, ContainerID: group.Anchor.ContainerID,
 		})
-		if len(actions) > maxPlacementActions {
-			return nil, fmt.Errorf("application placement plan exceeds %d actions", maxPlacementActions)
-		}
 	}
-	return actions, nil
+	return boundedPlacementActionsAfter(actions, after), nil
 }

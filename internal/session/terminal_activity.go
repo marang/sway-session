@@ -2,28 +2,23 @@ package session
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/marang/sway-title-animator/internal/statefile"
 )
 
 const (
-	// TerminalActivitySchemaVersion is the independently versioned schema for
-	// terminal-activity.json. It is deliberately separate from contexts.json so
-	// activity observations do not change a context's durable restore identity.
+	// TerminalActivitySchemaVersion independently versions terminal activity
+	// rows so observations do not change a context's durable restore identity.
 	TerminalActivitySchemaVersion = 1
-	// TerminalActivityDirectory isolates activity mutations from the registry
-	// directory lock, so recording focus cannot block terminal lifecycle work.
-	TerminalActivityDirectory = "terminal-runtime"
-	TerminalActivityFilename  = "terminal-activity.json"
 )
 
-// TerminalActivityState is the owner-only, bounded observation state for
-// typed terminals. An absent activity file represents this valid empty state.
+// TerminalActivityState is the owner-only observation state for typed
+// terminals. An absent database row set represents this valid empty state.
 type TerminalActivityState struct {
 	Version   int                `json:"version"`
 	Terminals []TerminalActivity `json:"terminals"`
@@ -49,9 +44,6 @@ func (state *TerminalActivityState) Validate() error {
 	}
 	if state.Terminals == nil {
 		return errors.New("terminal activity state must contain a terminals array")
-	}
-	if len(state.Terminals) > MaxContexts {
-		return fmt.Errorf("terminal activity state contains %d terminals; maximum is %d", len(state.Terminals), MaxContexts)
 	}
 	seen := make(map[ContextID]struct{}, len(state.Terminals))
 	for index := range state.Terminals {
@@ -95,14 +87,14 @@ func validateTerminalActivityTimestamp(name string, value *time.Time) error {
 	return nil
 }
 
-// TerminalActivityFile returns the private transactional state file. statefile
-// verifies owner-only paths, files, permissions, and bounded strict JSON.
-func TerminalActivityFile(root string) statefile.JSONFile[TerminalActivityState] {
-	return statefile.NewJSONFile(filepath.Join(root, TerminalActivityDirectory), TerminalActivityFilename, (*TerminalActivityState).Validate)
+// TerminalActivityStoreFor returns the transactional terminal-activity view of
+// the private sway-session state database.
+func TerminalActivityStoreFor(root string) TerminalActivityStore {
+	return TerminalActivityStore{root: root}
 }
 
-// ReadTerminalActivitySnapshot returns a bounded, validated snapshot without
-// creating state. A missing activity file is the valid empty state.
+// ReadTerminalActivitySnapshot returns a validated snapshot without creating
+// state. A missing database is the valid empty state.
 func ReadTerminalActivitySnapshot(root string) (TerminalActivityState, error) {
 	return ReadTerminalActivitySnapshotContext(context.Background(), root)
 }
@@ -117,7 +109,7 @@ func ReadTerminalActivitySnapshotContext(ctx context.Context, root string) (Term
 	if err := ctx.Err(); err != nil {
 		return state, err
 	}
-	if err := TerminalActivityFile(root).LoadSnapshotInto(&state); err != nil {
+	if err := TerminalActivityStoreFor(root).LoadIntoContext(ctx, &state); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return state, nil
 		}
@@ -135,7 +127,7 @@ func UpdateTerminalActivity(root string, mutate func(*TerminalActivityState) err
 // UpdateTerminalActivityContext is UpdateTerminalActivity with cancelable
 // private-directory lock acquisition.
 func UpdateTerminalActivityContext(ctx context.Context, root string, mutate func(*TerminalActivityState) error) (TerminalActivityState, error) {
-	return TerminalActivityFile(root).UpdateContext(ctx, emptyTerminalActivityState(), mutate)
+	return TerminalActivityStoreFor(root).UpdateContext(ctx, emptyTerminalActivityState(), mutate)
 }
 
 // FindTerminalActivity finds one exact context observation without treating a
@@ -171,9 +163,6 @@ func RecordTerminalCreatedAt(state *TerminalActivityState, id ContextID, observe
 		state.Terminals[index] = TerminalActivity{ContextID: id, CreatedAt: &canonical}
 		return state.Terminals[index], true, nil
 	}
-	if len(state.Terminals) >= MaxContexts {
-		return TerminalActivity{}, false, fmt.Errorf("terminal activity state already contains the maximum of %d terminals", MaxContexts)
-	}
 	activity := TerminalActivity{ContextID: id, CreatedAt: &canonical}
 	state.Terminals = append(state.Terminals, activity)
 	return activity, true, nil
@@ -208,9 +197,6 @@ func RecordTerminalFocusedAt(state *TerminalActivityState, id ContextID, observe
 		}
 		return state.Terminals[index], true, nil
 	}
-	if len(state.Terminals) >= MaxContexts {
-		return TerminalActivity{}, false, fmt.Errorf("terminal activity state already contains the maximum of %d terminals", MaxContexts)
-	}
 	activity := TerminalActivity{ContextID: id, LastFocusedAt: &canonical}
 	state.Terminals = append(state.Terminals, activity)
 	return activity, true, nil
@@ -219,20 +205,34 @@ func RecordTerminalFocusedAt(state *TerminalActivityState, id ContextID, observe
 // RecordTerminalCreationContext transactionally records one new terminal
 // generation and reconciles an unknown commit outcome by observation.
 func RecordTerminalCreationContext(ctx context.Context, root string, id ContextID, observedAt time.Time) error {
-	terminalIDs, err := authoritativeTerminalIDsContext(ctx, root)
+	if err := id.Validate(); err != nil {
+		return fmt.Errorf("invalid context ID: %w", err)
+	}
+	if observedAt.IsZero() {
+		return errors.New("terminal creation time must be non-zero")
+	}
+	canonical := observedAt.UTC()
+	database, err := openStateDatabase(ctx, root, false)
 	if err != nil {
 		return err
 	}
-	if _, exists := terminalIDs[id]; !exists {
-		return fmt.Errorf("terminal context %s is absent from the authoritative registry", id)
+	defer database.Close()
+	tx, err := beginStateWrite(ctx, database)
+	if err != nil {
+		return err
 	}
-
-	canonical := observedAt.UTC()
-	_, err = UpdateTerminalActivityContext(ctx, root, func(state *TerminalActivityState) error {
-		pruneTerminalActivity(state, terminalIDs)
-		_, _, mutationErr := RecordTerminalCreatedAt(state, id, canonical)
-		return mutationErr
-	})
+	defer tx.Rollback()
+	if err := requireStoredTerminalContext(ctx, tx, id); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO terminal_activity (context_id, created_at, last_focused_at) VALUES (?, ?, NULL)
+		ON CONFLICT(context_id) DO UPDATE SET created_at = excluded.created_at, last_focused_at = NULL`,
+		id, canonical.Format(time.RFC3339Nano),
+	); err != nil {
+		return fmt.Errorf("store terminal creation activity for %s: %w", id, err)
+	}
+	err = commitStateWrite(ctx, tx)
 	if err == nil {
 		return nil
 	}
@@ -250,55 +250,65 @@ func RecordTerminalCreationContext(ctx context.Context, root string, id ContextI
 	return errors.Join(err, loadErr)
 }
 
-func authoritativeTerminalIDsContext(ctx context.Context, root string) (map[ContextID]struct{}, error) {
-	registry, err := ReadRegistrySnapshotContext(ctx, root)
-	if err != nil {
-		return nil, fmt.Errorf("load authoritative terminal registry: %w", err)
-	}
-	terminalIDs := make(map[ContextID]struct{})
-	for _, contextValue := range registry.Contexts {
-		if contextValue.Launcher.Kind == LauncherHerdr && contextValue.Launcher.Terminal != nil {
-			terminalIDs[contextValue.ID] = struct{}{}
-		}
-	}
-	return terminalIDs, nil
-}
-
-func pruneTerminalActivity(state *TerminalActivityState, terminalIDs map[ContextID]struct{}) {
-	retained := state.Terminals[:0]
-	for _, activity := range state.Terminals {
-		if _, exists := terminalIDs[activity.ContextID]; exists {
-			retained = append(retained, activity)
-		}
-	}
-	state.Terminals = retained
-}
-
 // RecordTerminalFocusBatchContext persists the newest confirmed Sway focus
 // event for every exact terminal context in one bounded transaction.
 func RecordTerminalFocusBatchContext(ctx context.Context, root string, observations map[ContextID]time.Time) error {
 	if len(observations) == 0 {
 		return nil
 	}
-	terminalIDs, err := authoritativeTerminalIDsContext(ctx, root)
+	database, err := openStateDatabase(ctx, root, false)
 	if err != nil {
 		return err
 	}
-	eligible := make(map[ContextID]time.Time, len(observations))
+	defer database.Close()
+	tx, err := beginStateWrite(ctx, database)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
 	for id, observedAt := range observations {
-		if _, exists := terminalIDs[id]; exists {
-			eligible[id] = observedAt
+		if err := id.Validate(); err != nil {
+			return fmt.Errorf("invalid focused terminal context ID: %w", err)
+		}
+		if observedAt.IsZero() {
+			return fmt.Errorf("terminal focus time for %s must be non-zero", id)
+		}
+		if err := requireStoredTerminalContext(ctx, tx, id); err != nil {
+			return err
+		}
+		state := emptyTerminalActivityState()
+		var createdValue, focusedValue sql.NullString
+		err := tx.QueryRowContext(ctx, "SELECT created_at, last_focused_at FROM terminal_activity WHERE context_id = ?", id).Scan(&createdValue, &focusedValue)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("load terminal focus activity for %s: %w", id, err)
+		}
+		if err == nil {
+			createdAt, parseErr := parseDatabaseTime("terminal creation time", createdValue)
+			if parseErr != nil {
+				return parseErr
+			}
+			focusedAt, parseErr := parseDatabaseTime("terminal focus time", focusedValue)
+			if parseErr != nil {
+				return parseErr
+			}
+			state.Terminals = append(state.Terminals, TerminalActivity{ContextID: id, CreatedAt: createdAt, LastFocusedAt: focusedAt})
+		}
+		activity, changed, mutationErr := RecordTerminalFocusedAt(&state, id, observedAt.UTC())
+		if mutationErr != nil {
+			return mutationErr
+		}
+		if !changed {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO terminal_activity (context_id, created_at, last_focused_at) VALUES (?, ?, ?)
+			ON CONFLICT(context_id) DO UPDATE SET created_at = excluded.created_at, last_focused_at = excluded.last_focused_at`,
+			id, canonicalDatabaseTime(activity.CreatedAt), canonicalDatabaseTime(activity.LastFocusedAt),
+		); err != nil {
+			return fmt.Errorf("store terminal focus activity for %s: %w", id, err)
 		}
 	}
-	_, err = UpdateTerminalActivityContext(ctx, root, func(state *TerminalActivityState) error {
-		pruneTerminalActivity(state, terminalIDs)
-		for id, observedAt := range eligible {
-			if _, _, mutationErr := RecordTerminalFocusedAt(state, id, observedAt); mutationErr != nil {
-				return mutationErr
-			}
-		}
-		return nil
-	})
+	err = commitStateWrite(ctx, tx)
 	if err == nil {
 		return nil
 	}
@@ -307,7 +317,7 @@ func RecordTerminalFocusBatchContext(ctx context.Context, root string, observati
 		return err
 	}
 	visible, loadErr := ReadTerminalActivitySnapshotContext(ctx, root)
-	if loadErr == nil && terminalFocusBatchVisible(visible, eligible) {
+	if loadErr == nil && terminalFocusBatchVisible(visible, observations) {
 		return nil
 	}
 	return errors.Join(err, loadErr)
@@ -326,17 +336,26 @@ func terminalFocusBatchVisible(state TerminalActivityState, observations map[Con
 // RemoveTerminalActivityContext transactionally removes presentation activity.
 // Missing files and rows are already absent and are not created as a side effect.
 func RemoveTerminalActivityContext(ctx context.Context, root string, id ContextID) error {
-	visible, err := ReadTerminalActivitySnapshotContext(ctx, root)
+	if err := id.Validate(); err != nil {
+		return fmt.Errorf("invalid context ID: %w", err)
+	}
+	database, err := openStateDatabase(ctx, root, false)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}
-	if _, exists := FindTerminalActivity(visible, id); !exists {
-		return nil
+	defer database.Close()
+	tx, err := beginStateWrite(ctx, database)
+	if err != nil {
+		return err
 	}
-	_, err = UpdateTerminalActivityContext(ctx, root, func(state *TerminalActivityState) error {
-		_, _, mutationErr := RemoveTerminalActivity(state, id)
-		return mutationErr
-	})
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, "DELETE FROM terminal_activity WHERE context_id = ?", id); err != nil {
+		return fmt.Errorf("remove terminal activity for %s: %w", id, err)
+	}
+	err = commitStateWrite(ctx, tx)
 	if err == nil {
 		return nil
 	}
@@ -351,6 +370,17 @@ func RemoveTerminalActivityContext(ctx context.Context, root string, id ContextI
 		}
 	}
 	return errors.Join(err, loadErr)
+}
+
+func requireStoredTerminalContext(ctx context.Context, tx stateTransaction, id ContextID) error {
+	contextValue, err := loadStoredContextReference(ctx, tx, id)
+	if err != nil {
+		return err
+	}
+	if contextValue.Launcher.Kind != LauncherHerdr || contextValue.Launcher.Terminal == nil {
+		return fmt.Errorf("context %s is not a typed terminal context", id)
+	}
+	return nil
 }
 
 // RemoveTerminalActivity removes the exact context observation. Missing

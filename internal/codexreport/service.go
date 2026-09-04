@@ -29,7 +29,7 @@ func (service RegistryService) Handle(ctx context.Context, report Report) error 
 		reportHerdr = service.Report
 	}
 	registry := sessionstate.Registry{}
-	if err := sessionstate.RegistryFile(service.StateRoot).LoadSnapshotInto(&registry); err != nil {
+	if err := sessionstate.RegistryStoreFor(service.StateRoot).LoadSnapshotInto(&registry); err != nil {
 		return fmt.Errorf("load context registry snapshot: %w", err)
 	}
 	for _, candidate := range registry.Contexts {

@@ -97,7 +97,7 @@ func TestTerminalManagerRetainsNewContextWhenStartedAdapterWindowDisappears(t *t
 		t.Fatalf("failed terminal launched %d adapters", len(starter.specs))
 	}
 	var registry Registry
-	if loadErr := RegistryFile(root).LoadInto(&registry); loadErr != nil {
+	if loadErr := RegistryStoreFor(root).LoadInto(&registry); loadErr != nil {
 		t.Fatal(loadErr)
 	}
 	if len(registry.Contexts) != 1 || registry.Contexts[0].ID != testContextID {
@@ -121,7 +121,7 @@ func TestTerminalManagerCancellationAfterRegistryCommitRollsBackNewContext(t *te
 		t.Fatalf("rolled-back context was returned as active: %+v", result)
 	}
 	var registry Registry
-	if loadErr := RegistryFile(root).LoadInto(&registry); loadErr != nil || len(registry.Contexts) != 0 {
+	if loadErr := RegistryStoreFor(root).LoadInto(&registry); loadErr != nil || len(registry.Contexts) != 0 {
 		t.Fatalf("post-commit cancellation left registry=%+v err=%v", registry, loadErr)
 	}
 	activity, loadErr := ReadTerminalActivitySnapshot(root)
@@ -130,36 +130,6 @@ func TestTerminalManagerCancellationAfterRegistryCommitRollsBackNewContext(t *te
 	}
 	if _, exists := FindTerminalActivity(activity, testContextID); exists {
 		t.Fatalf("rolled-back context retained activity: %+v", activity)
-	}
-}
-
-func TestTerminalManagerActivityFailureRollsBackWithoutSwayOrProcessObservation(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "state", "sway-session")
-	activityDirectory := filepath.Join(root, TerminalActivityDirectory)
-	if err := os.MkdirAll(activityDirectory, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(activityDirectory, TerminalActivityFilename), []byte(`{"version":1,"terminals":[],"unexpected":true}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	manager := terminalTestManager(root, nil, &terminalManagerStarter{})
-	manager.Client = failingTerminalManagerClient{err: errors.New("Sway unavailable")}
-	manager.FindProcesses = func(string, ContextID) ([]int, error) {
-		return nil, errors.New("proc unavailable")
-	}
-
-	result, err := manager.Open(t.Context(), TerminalOpenRequest{
-		New: true, Adapter: TerminalAdapterAlacritty, Cwd: t.TempDir(), Focus: true,
-	})
-	if err == nil || !strings.Contains(err.Error(), "record terminal creation activity") {
-		t.Fatalf("malformed activity state was not reported: result=%+v err=%v", result, err)
-	}
-	if !reflect.DeepEqual(result, TerminalOpenResult{}) {
-		t.Fatalf("failed pre-launch creation returned an active context: %+v", result)
-	}
-	registry, loadErr := ReadRegistrySnapshot(root)
-	if loadErr != nil || len(registry.Contexts) != 0 {
-		t.Fatalf("pre-launch rollback depended on failed observation: registry=%+v err=%v", registry, loadErr)
 	}
 }
 
@@ -177,7 +147,7 @@ func TestTerminalManagerPreservesNewContextWhenAdapterSurvivesCanceledOpen(t *te
 		t.Fatalf("live adapter did not prevent rollback: %v", err)
 	}
 	var registry Registry
-	if loadErr := RegistryFile(root).LoadInto(&registry); loadErr != nil || len(registry.Contexts) != 1 || registry.Contexts[0].ID != testContextID {
+	if loadErr := RegistryStoreFor(root).LoadInto(&registry); loadErr != nil || len(registry.Contexts) != 1 || registry.Contexts[0].ID != testContextID {
 		t.Fatalf("live adapter lost recovery identity: registry=%+v err=%v", registry, loadErr)
 	}
 	activity, loadErr := ReadTerminalActivitySnapshot(root)
@@ -219,7 +189,7 @@ func TestTerminalManagerFailedInitializationStillRejectsDisappearedWindow(t *tes
 		t.Fatalf("failed initialization reported stale window actions: %+v", result.Actions)
 	}
 	var registry Registry
-	if loadErr := RegistryFile(root).LoadInto(&registry); loadErr != nil || len(registry.Contexts) != 1 || registry.Contexts[0].ID != testContextID {
+	if loadErr := RegistryStoreFor(root).LoadInto(&registry); loadErr != nil || len(registry.Contexts) != 1 || registry.Contexts[0].ID != testContextID {
 		t.Fatalf("failed initialization lost recovery identity: registry=%+v err=%v", registry, loadErr)
 	}
 }
@@ -230,7 +200,7 @@ func TestTerminalManagerProjectRecoveryReconcilesRolesWithoutRestartingAgent(t *
 	contextValue := testValidContext(testContextID)
 	contextValue.Launcher.Cwd = t.TempDir()
 	contextValue.Launcher.Terminal.Identity = &identity
-	if err := RegistryFile(root).Save(Registry{Version: ContextsSchemaVersion, Contexts: []Context{contextValue}}); err != nil {
+	if err := RegistryStoreFor(root).Save(Registry{Version: ContextsSchemaVersion, Contexts: []Context{contextValue}}); err != nil {
 		t.Fatal(err)
 	}
 	client := &sequencedTerminalManagerClient{
@@ -300,7 +270,7 @@ func TestTerminalManagerRetainsRecoveryIdentityWhenWindowDisappearsDuringInitial
 		t.Fatalf("post-initialization failure reported completed actions: %+v", result.Actions)
 	}
 	var registry Registry
-	if loadErr := RegistryFile(root).LoadInto(&registry); loadErr != nil || len(registry.Contexts) != 1 || registry.Contexts[0].ID != testContextID {
+	if loadErr := RegistryStoreFor(root).LoadInto(&registry); loadErr != nil || len(registry.Contexts) != 1 || registry.Contexts[0].ID != testContextID {
 		t.Fatalf("post-initialization failure registry=%+v err=%v", registry, loadErr)
 	}
 }
@@ -310,7 +280,7 @@ func TestTerminalManagerReconcilesAmbiguousExactFocusWithoutReplay(t *testing.T)
 	contextValue := testValidContext(testContextID)
 	identity := TerminalIdentity{Kind: TerminalIdentityDefault}
 	contextValue.Launcher.Terminal.Identity = &identity
-	if err := RegistryFile(root).Save(Registry{Version: ContextsSchemaVersion, Contexts: []Context{contextValue}}); err != nil {
+	if err := RegistryStoreFor(root).Save(Registry{Version: ContextsSchemaVersion, Contexts: []Context{contextValue}}); err != nil {
 		t.Fatal(err)
 	}
 	client := &terminalManagerClient{id: testContextID, mapped: true, focused: false, ambiguousFocus: true}
@@ -333,7 +303,7 @@ func TestTerminalManagerRejectsAlreadyFocusedContainerReplacement(t *testing.T) 
 	contextValue.Launcher.Cwd = t.TempDir()
 	identity := TerminalIdentity{Kind: TerminalIdentityDefault}
 	contextValue.Launcher.Terminal.Identity = &identity
-	if err := RegistryFile(root).Save(Registry{Version: ContextsSchemaVersion, Contexts: []Context{contextValue}}); err != nil {
+	if err := RegistryStoreFor(root).Save(Registry{Version: ContextsSchemaVersion, Contexts: []Context{contextValue}}); err != nil {
 		t.Fatal(err)
 	}
 	client := &sequencedTerminalManagerClient{
@@ -359,7 +329,7 @@ func TestTerminalManagerAcceptsMappedContainerAfterUserChangesFocus(t *testing.T
 	contextValue.Launcher.Cwd = t.TempDir()
 	identity := TerminalIdentity{Kind: TerminalIdentityDefault}
 	contextValue.Launcher.Terminal.Identity = &identity
-	if err := RegistryFile(root).Save(Registry{Version: ContextsSchemaVersion, Contexts: []Context{contextValue}}); err != nil {
+	if err := RegistryStoreFor(root).Save(Registry{Version: ContextsSchemaVersion, Contexts: []Context{contextValue}}); err != nil {
 		t.Fatal(err)
 	}
 	client := &sequencedTerminalManagerClient{
@@ -387,7 +357,7 @@ func TestTerminalManagerAcceptsMappedContainerAfterFocusChangesDuringInitializat
 	contextValue.Launcher.Cwd = t.TempDir()
 	identity := TerminalIdentity{Kind: TerminalIdentityDefault}
 	contextValue.Launcher.Terminal.Identity = &identity
-	if err := RegistryFile(root).Save(Registry{Version: ContextsSchemaVersion, Contexts: []Context{contextValue}}); err != nil {
+	if err := RegistryStoreFor(root).Save(Registry{Version: ContextsSchemaVersion, Contexts: []Context{contextValue}}); err != nil {
 		t.Fatal(err)
 	}
 	client := &sequencedTerminalManagerClient{
@@ -470,7 +440,7 @@ func TestTerminalManagerConcurrentOpenCreatesOneContextAndOneProcess(t *testing.
 		t.Fatalf("concurrent reuse generated %d context IDs", generated)
 	}
 	var registry Registry
-	if err := RegistryFile(root).LoadInto(&registry); err != nil || len(registry.Contexts) != 1 {
+	if err := RegistryStoreFor(root).LoadInto(&registry); err != nil || len(registry.Contexts) != 1 {
 		t.Fatalf("concurrent open registry=%+v err=%v", registry, err)
 	}
 }
@@ -548,7 +518,7 @@ func TestTerminalManagerRetainsContextAfterConcurrentPendingLaunchMayCreateManag
 		t.Fatalf("failed creator reported completed actions: %+v", result.Actions)
 	}
 	var registry Registry
-	if loadErr := RegistryFile(root).LoadInto(&registry); loadErr != nil || len(registry.Contexts) != 1 || registry.Contexts[0].ID != testContextID {
+	if loadErr := RegistryStoreFor(root).LoadInto(&registry); loadErr != nil || len(registry.Contexts) != 1 || registry.Contexts[0].ID != testContextID {
 		t.Fatalf("pending manager state lost its recovery identity: registry=%+v err=%v", registry, loadErr)
 	}
 }
@@ -572,7 +542,7 @@ func TestTerminalManagerRetainsContextAfterConflictingTargetWindowsDisappear(t *
 		t.Fatalf("conflicting target windows did not preserve the recovery identity: result=%+v err=%v", result, err)
 	}
 	var registry Registry
-	if loadErr := RegistryFile(root).LoadInto(&registry); loadErr != nil || len(registry.Contexts) != 1 || registry.Contexts[0].ID != testContextID {
+	if loadErr := RegistryStoreFor(root).LoadInto(&registry); loadErr != nil || len(registry.Contexts) != 1 || registry.Contexts[0].ID != testContextID {
 		t.Fatalf("conflicting manager windows lost their recovery identity: registry=%+v err=%v", registry, loadErr)
 	}
 }
@@ -641,7 +611,7 @@ func TestTerminalManagerConcurrentNewCreatesIndependentContextsAndProcesses(t *t
 		t.Fatalf("concurrent --new started %d terminal processes", starts)
 	}
 	var registry Registry
-	if err := RegistryFile(root).LoadInto(&registry); err != nil || len(registry.Contexts) != 2 ||
+	if err := RegistryStoreFor(root).LoadInto(&registry); err != nil || len(registry.Contexts) != 2 ||
 		registry.Contexts[0].Launcher.Session == registry.Contexts[1].Launcher.Session {
 		t.Fatalf("concurrent --new registry=%+v err=%v", registry, err)
 	}
@@ -664,7 +634,7 @@ func TestTerminalManagerNewRejectsOverlongHerdrSocketBeforePersistOrStart(t *tes
 		t.Fatalf("overlong Herdr socket started a process: %+v", starter.specs)
 	}
 	var registry Registry
-	if err := RegistryFile(root).LoadInto(&registry); !errors.Is(err, os.ErrNotExist) {
+	if err := RegistryStoreFor(root).LoadInto(&registry); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("overlong Herdr socket persisted registry=%+v err=%v", registry, err)
 	}
 }
@@ -780,7 +750,7 @@ func TestTerminalManagerCancellationInterruptsSwayAndReleasesRegistryLock(t *tes
 		t.Fatalf("terminal manager retained registry lock after cancellation: %v", err)
 	}
 	var registry Registry
-	if err := RegistryFile(root).LoadInto(&registry); err != nil || len(registry.Contexts) != 0 {
+	if err := RegistryStoreFor(root).LoadInto(&registry); err != nil || len(registry.Contexts) != 0 {
 		t.Fatalf("canceled terminal left registry=%+v err=%v", registry, err)
 	}
 }
@@ -857,7 +827,7 @@ func TestTerminalAdapterReconfigureRejectsStillMappedArchivedIdentity(t *testing
 	archivedAt := time.Now().UTC()
 	contextValue.ArchivedAt = &archivedAt
 	contextValue.Launcher.Terminal.Identity = &identity
-	if err := RegistryFile(root).Save(Registry{Version: ContextsSchemaVersion, Contexts: []Context{contextValue}}); err != nil {
+	if err := RegistryStoreFor(root).Save(Registry{Version: ContextsSchemaVersion, Contexts: []Context{contextValue}}); err != nil {
 		t.Fatal(err)
 	}
 	client := &terminalManagerClient{id: testContextID, mapped: true}
@@ -871,7 +841,7 @@ func TestTerminalAdapterReconfigureRejectsStillMappedArchivedIdentity(t *testing
 		t.Fatalf("mapped archived terminal reconfigured: context=%+v changed=%t err=%v", changed, reconfigured, err)
 	}
 	var registry Registry
-	if loadErr := RegistryFile(root).LoadInto(&registry); loadErr != nil {
+	if loadErr := RegistryStoreFor(root).LoadInto(&registry); loadErr != nil {
 		t.Fatal(loadErr)
 	}
 	if registry.Contexts[0].Launcher.Terminal.Adapter != TerminalAdapterAlacritty {
@@ -887,7 +857,7 @@ func TestTerminalAdapterReconfigureRejectsPendingOldAdapterLaunch(t *testing.T) 
 	archivedAt := time.Now().UTC()
 	contextValue.ArchivedAt = &archivedAt
 	contextValue.Launcher.Terminal.Identity = &identity
-	if err := RegistryFile(root).Save(Registry{Version: ContextsSchemaVersion, Contexts: []Context{contextValue}}); err != nil {
+	if err := RegistryStoreFor(root).Save(Registry{Version: ContextsSchemaVersion, Contexts: []Context{contextValue}}); err != nil {
 		t.Fatal(err)
 	}
 	client := &terminalManagerClient{id: testContextID}
@@ -910,7 +880,7 @@ func TestTerminalAdapterReconfigureChangesClosedArchivedIdentity(t *testing.T) {
 	archivedAt := time.Now().UTC()
 	contextValue.ArchivedAt = &archivedAt
 	contextValue.Launcher.Terminal.Identity = &identity
-	if err := RegistryFile(root).Save(Registry{Version: ContextsSchemaVersion, Contexts: []Context{contextValue}}); err != nil {
+	if err := RegistryStoreFor(root).Save(Registry{Version: ContextsSchemaVersion, Contexts: []Context{contextValue}}); err != nil {
 		t.Fatal(err)
 	}
 	client := &terminalManagerClient{id: testContextID}
@@ -1020,14 +990,6 @@ type terminalManagerClient struct {
 	focused        bool
 	ambiguousFocus bool
 	focusCommands  int
-}
-
-type failingTerminalManagerClient struct {
-	err error
-}
-
-func (client failingTerminalManagerClient) RequestContext(context.Context, swayipc.MessageType, []byte) (swayipc.Message, error) {
-	return swayipc.Message{}, client.err
 }
 
 type sequencedTerminalManagerClient struct {

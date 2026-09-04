@@ -384,7 +384,7 @@ func TestPlanPlacementActionsDoesNotMoveAlreadyMarkedWindow(t *testing.T) {
 	}
 }
 
-func TestPlanPlacementActionsRejectsUnboundedCommandBatch(t *testing.T) {
+func TestPlanPlacementActionsReturnsResumableBoundedBatch(t *testing.T) {
 	registry := Registry{Version: ContextsSchemaVersion, Contexts: []Context{}}
 	nodes := make([]*swayipc.TreeNode, 0, maxPlacementActions+1)
 	for index := range maxPlacementActions + 1 {
@@ -407,8 +407,113 @@ func TestPlanPlacementActionsRejectsUnboundedCommandBatch(t *testing.T) {
 	}
 	root := treeWithWorkspaces(&swayipc.TreeNode{Name: "1", Type: "workspace", Nodes: nodes})
 	empty := LayoutSnapshot{Version: LayoutSchemaVersion, Workspaces: []WorkspaceLayout{}}
-	if _, err := PlanPlacementActions(root, registry, empty); err == nil {
-		t.Fatal("expected oversized placement command batch to be rejected")
+	actions, err := PlanPlacementActions(root, registry, empty)
+	if err != nil {
+		t.Fatalf("plan bounded placement batch: %v", err)
+	}
+	if got := len(actions); got != maxPlacementActions {
+		t.Fatalf("placement action count = %d, want bounded batch of %d", got, maxPlacementActions)
+	}
+	for index, action := range actions {
+		if action.Kind != PlacementAddMark || action.ContainerID != int64(index+1) {
+			t.Fatalf("action %d = %+v, want deterministic add-mark batch", index, action)
+		}
+	}
+	next, err := PlanPlacementActionsAfter(root, registry, empty, &actions[len(actions)-1])
+	if err != nil {
+		t.Fatalf("plan rotated placement batch: %v", err)
+	}
+	if len(next) == 0 || next[0].ContainerID != int64(maxPlacementActions+1) {
+		t.Fatalf("rotated batch did not advance beyond rejected prefix: %+v", next)
+	}
+}
+
+func TestPlanPlacementActionsConvergesAcrossAllBoundedBatches(t *testing.T) {
+	const contextCount = 513
+	registry := Registry{Version: ContextsSchemaVersion, Contexts: make([]Context, 0, contextCount)}
+	nodes := make([]*swayipc.TreeNode, 0, contextCount)
+	byContainer := make(map[int64]*swayipc.TreeNode, contextCount)
+	for index := range contextCount {
+		id := ContextID(fmt.Sprintf("123e4567-e89b-42d3-a456-%012x", index+1))
+		registry.Contexts = append(registry.Contexts, Context{
+			ID: id, State: ContextActive,
+			Launcher: Launcher{Kind: LauncherHerdr, Session: fmt.Sprintf("history-%d", index), Cwd: "/work", Terminal: &TerminalLauncher{Adapter: TerminalAdapterAlacritty}},
+		})
+		appID, err := id.AppID()
+		if err != nil {
+			t.Fatal(err)
+		}
+		node := &swayipc.TreeNode{ID: int64(index + 1), Type: "con", AppID: &appID}
+		nodes = append(nodes, node)
+		byContainer[node.ID] = node
+	}
+	root := treeWithWorkspaces(&swayipc.TreeNode{Name: "98: convergence", Type: "workspace", Nodes: nodes})
+	desired := LayoutSnapshot{Version: LayoutSchemaVersion, Workspaces: []WorkspaceLayout{}}
+	var cursor *PlacementAction
+	applied := 0
+	for pass := 0; pass < 10; pass++ {
+		actions, err := PlanPlacementActionsAfter(root, registry, desired, cursor)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(actions) == 0 {
+			break
+		}
+		for _, action := range actions {
+			if action.Kind != PlacementAddMark {
+				t.Fatalf("unexpected convergence action: %+v", action)
+			}
+			mark, err := action.ContextID.Mark()
+			if err != nil {
+				t.Fatal(err)
+			}
+			byContainer[action.ContainerID].Marks = append(byContainer[action.ContainerID].Marks, mark)
+			applied++
+		}
+		last := actions[len(actions)-1]
+		cursor = &last
+	}
+	remaining, err := PlanPlacementActionsAfter(root, registry, desired, cursor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if applied != contextCount || len(remaining) != 0 {
+		t.Fatalf("bounded placement did not converge: applied=%d remaining=%d", applied, len(remaining))
+	}
+}
+
+func TestPlanPlacementActionsNeverSplitsMoveAndMarkAcrossBatches(t *testing.T) {
+	registry := Registry{Version: ContextsSchemaVersion, Contexts: []Context{}}
+	nodes := make([]*swayipc.TreeNode, 0, maxPlacementActions)
+	for index := range maxPlacementActions {
+		id := ContextID(fmt.Sprintf("123e4567-e89b-12d3-a456-%012x", index+1))
+		registry.Contexts = append(registry.Contexts, Context{
+			ID: id, State: ContextActive,
+			Launcher: Launcher{Kind: LauncherHerdr, Session: fmt.Sprintf("session-%d", index), Cwd: "/work", Terminal: &TerminalLauncher{Adapter: TerminalAdapterAlacritty}},
+		})
+		appID, err := id.AppID()
+		if err != nil {
+			t.Fatal(err)
+		}
+		nodes = append(nodes, &swayipc.TreeNode{ID: int64(index + 1), Type: "con", AppID: &appID})
+	}
+	root := treeWithWorkspaces(&swayipc.TreeNode{Name: "99: landing", Type: "workspace", Nodes: nodes})
+	lastID := registry.Contexts[len(registry.Contexts)-1].ID
+	desired := placementSnapshot("98: saved", lastID)
+
+	first, err := PlanPlacementActions(root, registry, desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first) != maxPlacementActions-1 || first[len(first)-1].ContextID == lastID {
+		t.Fatalf("first batch split final context's move/mark pair: len=%d last=%+v", len(first), first[len(first)-1])
+	}
+	second, err := PlanPlacementActionsAfter(root, registry, desired, &first[len(first)-1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second) < 2 || second[0].ContextID != lastID || second[0].Kind != PlacementMoveWorkspace || second[1].ContextID != lastID || second[1].Kind != PlacementAddMark {
+		t.Fatalf("next batch did not keep final move/mark pair together: %+v", second)
 	}
 }
 

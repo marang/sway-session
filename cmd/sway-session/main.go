@@ -591,15 +591,25 @@ func stateRoot(deps dependencies) (string, *commandFailure) {
 
 func classifyStateError(action string, err error) *commandFailure {
 	code := "state"
+	hint := ""
 	var unsupported *sessionstate.UnsupportedVersionError
+	var legacy *sessionstate.LegacyStateError
 	if errors.As(err, &unsupported) {
 		code = "unsupported_version"
+	} else if errors.As(err, &legacy) {
+		code = "legacy_state"
+		hint = "Run sway-session terminal manage and press m to migrate the preserved legacy state."
 	} else if errors.Is(err, sessionstate.ErrContextNotFound) {
 		code = "context_not_found"
 	} else if errors.Is(err, sessionstate.ErrContextAmbiguous) {
 		code = "context_ambiguous"
 	}
-	return failure(code, action, err.Error())
+	if hint != "" {
+		hint = err.Error() + " " + hint
+	} else {
+		hint = err.Error()
+	}
+	return failure(code, action, hint)
 }
 
 func diagnosticForContext(code string, context sessionstate.Context, err error, hint string) diagnostic.Diagnostic {

@@ -248,7 +248,7 @@ func TestPlanApplicationIndicatorsConvergesTwoWindowsInTheSameState(t *testing.T
 	}
 }
 
-func TestPlanApplicationIndicatorsRejectsUnboundedCommandBatch(t *testing.T) {
+func TestPlanApplicationIndicatorsReturnsResumableBoundedBatch(t *testing.T) {
 	leaves := make([]*swayipc.TreeNode, 0, maxApplicationIndicatorActions+1)
 	for index := range maxApplicationIndicatorActions + 1 {
 		leaves = append(leaves, applicationIndicatorLeaf(int64(index+40), "org.example.App"))
@@ -262,8 +262,21 @@ func TestPlanApplicationIndicatorsRejectsUnboundedCommandBatch(t *testing.T) {
 		"org.example.App.desktop": {ID: "org.example.App.desktop"},
 	}, nil)
 
-	if _, err := PlanApplicationIndicatorActions(applicationIndicatorTree(leaves...), registry, catalog, nil); err == nil {
-		t.Fatalf("indicator plan exceeding %d actions was accepted", maxApplicationIndicatorActions)
+	actions, err := PlanApplicationIndicatorActions(applicationIndicatorTree(leaves...), registry, catalog, nil)
+	if err != nil {
+		t.Fatalf("plan bounded indicator batch: %v", err)
+	}
+	if got := len(actions); got != maxApplicationIndicatorActions {
+		t.Fatalf("indicator action count = %d, want %d", got, maxApplicationIndicatorActions)
+	}
+	next, err := PlanApplicationIndicatorActionsAfter(
+		applicationIndicatorTree(leaves...), registry, catalog, nil, &actions[len(actions)-1],
+	)
+	if err != nil {
+		t.Fatalf("plan rotated indicator batch: %v", err)
+	}
+	if len(next) == 0 || next[0].ContainerID != int64(maxApplicationIndicatorActions+40) {
+		t.Fatalf("rotated batch did not advance beyond rejected prefix: %+v", next)
 	}
 }
 

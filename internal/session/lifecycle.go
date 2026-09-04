@@ -65,9 +65,6 @@ func AddContext(registry *Registry, context Context) error {
 	if err := context.Validate(); err != nil {
 		return err
 	}
-	if len(registry.Contexts) >= MaxContexts {
-		return fmt.Errorf("context registry already contains the maximum of %d contexts", MaxContexts)
-	}
 	for index := range registry.Contexts {
 		current := registry.Contexts[index]
 		if current.ID == context.ID {

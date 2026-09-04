@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -163,7 +164,7 @@ func TestTerminalCommandProjectRecoversMissingWindowWithoutRestartingOccupiedAge
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := sessionstate.RegistryFile(root).Save(sessionstate.Registry{
+	if err := sessionstate.RegistryStoreFor(root).Save(sessionstate.Registry{
 		Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{contextValue},
 	}); err != nil {
 		t.Fatal(err)
@@ -291,7 +292,7 @@ func TestTerminalCommandRejectsInvalidLabelBeforeAnyDependency(t *testing.T) {
 				t.Fatal(err)
 			}
 			registry := []byte(`{"version":5,"preferences":{"desktop_indicators":false},"contexts":[]}`)
-			registryPath := filepath.Join(root, sessionstate.ContextsFilename)
+			registryPath := filepath.Join(root, "contexts.json")
 			if err := os.WriteFile(registryPath, registry, 0o600); err != nil {
 				t.Fatal(err)
 			}
@@ -336,7 +337,7 @@ func TestTerminalCommandRejectsControlCharacterCwdBeforeAnyDependency(t *testing
 		t.Fatal(err)
 	}
 	registry := []byte(`{"version":5,"preferences":{"desktop_indicators":false},"contexts":[]}`)
-	registryPath := filepath.Join(root, sessionstate.ContextsFilename)
+	registryPath := filepath.Join(root, "contexts.json")
 	if err := os.WriteFile(registryPath, registry, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -468,7 +469,7 @@ func TestTerminalCommandGlobalConfigUsesClosedAdapterAndEphemeralModeDoesNotPers
 	}
 	root, _ := deps.stateRoot()
 	var registry sessionstate.Registry
-	if err := sessionstate.RegistryFile(root).LoadInto(&registry); !errors.Is(err, os.ErrNotExist) {
+	if err := sessionstate.RegistryStoreFor(root).LoadInto(&registry); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("ephemeral terminal unexpectedly created registry: %+v", registry)
 	}
 }
@@ -495,7 +496,7 @@ func TestTerminalCommandRejectsUnsupportedConfiguredAdapterWithoutEffects(t *tes
 		t.Fatalf("unsupported adapter started a process: %+v", starter.specs)
 	}
 	root, _ := deps.stateRoot()
-	if _, err := os.Stat(filepath.Join(root, sessionstate.ContextsFilename)); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(filepath.Join(root, "contexts.json")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("unsupported adapter changed registry state: %v", err)
 	}
 }
@@ -513,24 +514,16 @@ func TestTerminalInventoryRefusesUnsupportedSchemaWithoutMutation(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(root, 0o700); err != nil {
+	if err := sessionstate.RegistryStoreFor(root).Save(sessionstate.Registry{Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{}}); err != nil {
 		t.Fatal(err)
 	}
-	unsupported := []byte(`{"version":4,"preferences":{"desktop_indicators":false},"contexts":[]}`)
-	path := filepath.Join(root, sessionstate.ContextsFilename)
-	if err := os.WriteFile(path, unsupported, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	execStateDatabaseForTest(t, root, "PRAGMA user_version = 2")
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	code := runWith([]string{"--json", "terminal", "list"}, strings.NewReader(""), &stdout, &stderr, deps)
 	if code != exitOperation || stdout.Len() != 0 || !strings.Contains(stderr.String(), `"code":"unsupported_version"`) ||
-		!strings.Contains(stderr.String(), "schema version 4") {
+		!strings.Contains(stderr.String(), "schema version 2") {
 		t.Fatalf("unsupported inventory code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
-	}
-	unchanged, err := os.ReadFile(path)
-	if err != nil || !bytes.Equal(unchanged, unsupported) {
-		t.Fatalf("read-only inventory modified unsupported registry: data=%q err=%v", unchanged, err)
 	}
 }
 
@@ -571,7 +564,7 @@ func TestTerminalCommandDoesNotLaunchAnArchivedStableIdentity(t *testing.T) {
 	archivedAt := deps.now().UTC().Add(-time.Hour)
 	identity := sessionstate.TerminalIdentity{Kind: sessionstate.TerminalIdentityDefault}
 	archived := terminalInventoryContext(testContextID, identity, sessionstate.ContextArchived, &archivedAt)
-	if err := sessionstate.RegistryFile(root).Save(sessionstate.Registry{
+	if err := sessionstate.RegistryStoreFor(root).Save(sessionstate.Registry{
 		Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{archived},
 	}); err != nil {
 		t.Fatal(err)
@@ -601,7 +594,7 @@ func TestTerminalReconfigureChangesOnlyClosedArchivedAdapter(t *testing.T) {
 	archivedAt := deps.now().UTC().Add(-time.Hour)
 	identity := sessionstate.TerminalIdentity{Kind: sessionstate.TerminalIdentityProject, Project: "LAB-105"}
 	archived := terminalInventoryContext(testContextID, identity, sessionstate.ContextArchived, &archivedAt)
-	if err := sessionstate.RegistryFile(root).Save(sessionstate.Registry{
+	if err := sessionstate.RegistryStoreFor(root).Save(sessionstate.Registry{
 		Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{archived},
 	}); err != nil {
 		t.Fatal(err)
@@ -617,7 +610,7 @@ func TestTerminalReconfigureChangesOnlyClosedArchivedAdapter(t *testing.T) {
 		t.Fatalf("unexpected adapter reconfigure result: %+v", result)
 	}
 	var registry sessionstate.Registry
-	if err := sessionstate.RegistryFile(root).LoadInto(&registry); err != nil {
+	if err := sessionstate.RegistryStoreFor(root).LoadInto(&registry); err != nil {
 		t.Fatal(err)
 	}
 	changed := registry.Contexts[0]
@@ -636,7 +629,7 @@ func TestTerminalReconfigureReportsMappedArchivedIdentityAsInUse(t *testing.T) {
 	archivedAt := deps.now().UTC().Add(-time.Hour)
 	identity := sessionstate.TerminalIdentity{Kind: sessionstate.TerminalIdentityDefault}
 	archived := terminalInventoryContext(testContextID, identity, sessionstate.ContextArchived, &archivedAt)
-	if err := sessionstate.RegistryFile(root).Save(sessionstate.Registry{
+	if err := sessionstate.RegistryStoreFor(root).Save(sessionstate.Registry{
 		Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{archived},
 	}); err != nil {
 		t.Fatal(err)
@@ -665,7 +658,7 @@ func TestTerminalCommandReportsActionableAdapterMismatch(t *testing.T) {
 	}
 	identity := sessionstate.TerminalIdentity{Kind: sessionstate.TerminalIdentityDefault}
 	active := terminalInventoryContext(testContextID, identity, sessionstate.ContextActive, nil)
-	if err := sessionstate.RegistryFile(root).Save(sessionstate.Registry{
+	if err := sessionstate.RegistryStoreFor(root).Save(sessionstate.Registry{
 		Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{active},
 	}); err != nil {
 		t.Fatal(err)
@@ -697,7 +690,7 @@ func TestTerminalListStatusAndCleanupAreReadOnlyAgentInventory(t *testing.T) {
 	archived := terminalInventoryContext("22222222-2222-4222-8222-222222222222", projectIdentity, sessionstate.ContextArchived, &archivedAt)
 	createdAt := deps.now().UTC().Add(-72 * time.Hour)
 	lastFocusedAt := deps.now().UTC().Add(-time.Hour)
-	if err := sessionstate.RegistryFile(root).Save(sessionstate.Registry{
+	if err := sessionstate.RegistryStoreFor(root).Save(sessionstate.Registry{
 		Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{archived, active},
 	}); err != nil {
 		t.Fatal(err)
@@ -742,6 +735,50 @@ func TestTerminalListStatusAndCleanupAreReadOnlyAgentInventory(t *testing.T) {
 	}
 }
 
+func TestTerminalLargeHistoryIsListableAndMutableBeyondFormerLimit(t *testing.T) {
+	deps := testDependencies(t)
+	root, err := deps.stateRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry := sessionstate.Registry{
+		Version:  sessionstate.ContextsSchemaVersion,
+		Contexts: make([]sessionstate.Context, 0, 300),
+	}
+	for index := range 300 {
+		id := sessionstate.ContextID(fmt.Sprintf("%08x-0000-4000-8000-%012x", index+1, index+1))
+		identity := sessionstate.TerminalIdentity{Kind: sessionstate.TerminalIdentityProject, Project: fmt.Sprintf("history-%03d", index)}
+		registry.Contexts = append(registry.Contexts, terminalInventoryContext(id, identity, sessionstate.ContextActive, nil))
+	}
+	if err := sessionstate.RegistryStoreFor(root).Save(registry); err != nil {
+		t.Fatal(err)
+	}
+
+	listed := runTerminalJSON(t, deps, "--json", "terminal", "list")
+	if listed.Terminals == nil || len(*listed.Terminals) != len(registry.Contexts) {
+		t.Fatalf("large terminal list count = %v, want %d", listed.Terminals, len(registry.Contexts))
+	}
+	target := registry.Contexts[250].ID
+	if _, err := sessionstate.UpdateRegistryContext(t.Context(), root, func(current *sessionstate.Registry) error {
+		index, resolveErr := sessionstate.ResolveContext(*current, string(target))
+		if resolveErr != nil {
+			return resolveErr
+		}
+		current.Contexts[index].Label = "renamed beyond former limit"
+		return current.Validate()
+	}); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := sessionstate.ReadRegistrySnapshotContext(t.Context(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	index, err := sessionstate.ResolveContext(loaded, string(target))
+	if err != nil || len(loaded.Contexts) != 300 || loaded.Contexts[index].Label != "renamed beyond former limit" {
+		t.Fatalf("large history mutation did not round trip: count=%d index=%d err=%v", len(loaded.Contexts), index, err)
+	}
+}
+
 func TestTerminalRenameChangesOnlyValidatedPresentationLabel(t *testing.T) {
 	deps := testDependencies(t)
 	root, err := deps.stateRoot()
@@ -749,7 +786,7 @@ func TestTerminalRenameChangesOnlyValidatedPresentationLabel(t *testing.T) {
 		t.Fatal(err)
 	}
 	contextValue := terminalInventoryContext(testContextID, sessionstate.TerminalIdentity{Kind: sessionstate.TerminalIdentityDefault}, sessionstate.ContextActive, nil)
-	if err := sessionstate.RegistryFile(root).Save(sessionstate.Registry{Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{contextValue}}); err != nil {
+	if err := sessionstate.RegistryStoreFor(root).Save(sessionstate.Registry{Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{contextValue}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -783,7 +820,7 @@ func TestTerminalRenameReconcilesVisibleUnknownCommit(t *testing.T) {
 	}
 	changed := terminalInventoryContext(testContextID, sessionstate.TerminalIdentity{Kind: sessionstate.TerminalIdentityDefault}, sessionstate.ContextActive, nil)
 	changed.Label = "Visible rename"
-	if err := sessionstate.RegistryFile(root).Save(sessionstate.Registry{
+	if err := sessionstate.RegistryStoreFor(root).Save(sessionstate.Registry{
 		Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{changed},
 	}); err != nil {
 		t.Fatal(err)

@@ -14,7 +14,6 @@ import (
 const (
 	ContextsSchemaVersion = 5
 	LayoutSchemaVersion   = 1
-	MaxContexts           = 128
 )
 
 type ContextState string
@@ -92,7 +91,7 @@ const (
 	ApplicationRestorePinned ApplicationRestorePolicy = "pinned"
 )
 
-// Registry is the versioned contexts.json document written by sway-session.
+// Registry is the versioned durable context collection written by sway-session.
 type Registry struct {
 	Version     int                 `json:"version"`
 	Preferences RegistryPreferences `json:"preferences"`
@@ -153,7 +152,7 @@ type ApplicationIdentity struct {
 	SandboxAppID   string         `json:"sandbox_app_id,omitempty"`
 }
 
-// LayoutSnapshot is the versioned layout.json document written by the daemon.
+// LayoutSnapshot is the versioned layout state written by the daemon.
 type LayoutSnapshot struct {
 	Version    int               `json:"version"`
 	Workspaces []WorkspaceLayout `json:"workspaces"`
@@ -235,13 +234,10 @@ func (registry *Registry) Validate() error {
 	if registry.Contexts == nil {
 		return errors.New("context registry must contain a contexts array")
 	}
-	if len(registry.Contexts) > MaxContexts {
-		return fmt.Errorf("context registry contains %d contexts; maximum is %d", len(registry.Contexts), MaxContexts)
-	}
 	seen := make(map[ContextID]struct{}, len(registry.Contexts))
 	seenLaunchers := make(map[launcherIdentity]int, len(registry.Contexts))
 	seenTerminals := make(map[terminalIdentity]int, len(registry.Contexts))
-	seenApplications := make([]applicationIdentityRecord, 0, len(registry.Contexts))
+	seenApplications := make(map[applicationPrimaryIdentity]*applicationIdentityGroup, len(registry.Contexts))
 	for index := range registry.Contexts {
 		context := &registry.Contexts[index]
 		if err := context.validate(); err != nil {
@@ -274,12 +270,27 @@ func (registry *Registry) Validate() error {
 			seenTerminals[identity] = index
 		}
 		if context.App != nil {
-			for _, previous := range seenApplications {
-				if applicationIdentitiesOverlap(context.App.Identity, previous.identity) {
-					return fmt.Errorf("contexts[%d]: application identity overlaps contexts[%d]", index, previous.index)
-				}
+			identity := context.App.Identity
+			primary := identity.primary()
+			group, exists := seenApplications[primary]
+			if !exists {
+				group = &applicationIdentityGroup{first: index, wildcard: -1, sandboxes: make(map[string]int)}
+				seenApplications[primary] = group
 			}
-			seenApplications = append(seenApplications, applicationIdentityRecord{identity: context.App.Identity, index: index})
+			if identity.SandboxAppID == "" {
+				if exists {
+					return fmt.Errorf("contexts[%d]: application identity overlaps contexts[%d]", index, group.first)
+				}
+				group.wildcard = index
+			} else {
+				if group.wildcard >= 0 {
+					return fmt.Errorf("contexts[%d]: application identity overlaps contexts[%d]", index, group.wildcard)
+				}
+				if previous, duplicate := group.sandboxes[identity.SandboxAppID]; duplicate {
+					return fmt.Errorf("contexts[%d]: application identity overlaps contexts[%d]", index, previous)
+				}
+				group.sandboxes[identity.SandboxAppID] = index
+			}
 		}
 	}
 	return nil
@@ -302,9 +313,23 @@ func (identity terminalIdentity) String() string {
 	return string(identity.kind)
 }
 
-type applicationIdentityRecord struct {
-	identity ApplicationIdentity
-	index    int
+type applicationPrimaryIdentity struct {
+	protocol WindowProtocol
+	first    string
+	second   string
+}
+
+type applicationIdentityGroup struct {
+	first     int
+	wildcard  int
+	sandboxes map[string]int
+}
+
+func (identity ApplicationIdentity) primary() applicationPrimaryIdentity {
+	if identity.Protocol == WindowXWayland {
+		return applicationPrimaryIdentity{protocol: identity.Protocol, first: identity.X11Class, second: identity.X11Instance}
+	}
+	return applicationPrimaryIdentity{protocol: identity.Protocol, first: identity.WaylandAppID}
 }
 
 func applicationIdentitiesOverlap(left ApplicationIdentity, right ApplicationIdentity) bool {

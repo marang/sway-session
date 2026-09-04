@@ -21,6 +21,11 @@ import (
 	"github.com/marang/sway-title-animator/internal/swayipc"
 )
 
+// maxConcurrentTerminalRestores bounds only one automatic restore wave. The
+// durable registry remains unbounded, and later waves re-read registry and
+// compositor state after releasing the lifecycle lock.
+const maxConcurrentTerminalRestores = 2
+
 func executeRequestStart(ctx context.Context, arguments []string, deps dependencies) (commandResult, *commandFailure) {
 	set := newFlagSet("request-start")
 	sessionName := set.String("session", "", "Herdr session name")
@@ -106,21 +111,16 @@ func executeRegister(ctx context.Context, arguments []string, deps dependencies)
 		return commandResult{}, commandFailure
 	}
 	err = sessionstate.WithTerminalLifecycleLockContext(ctx, root, func() error {
-		_, registerErr := sessionstate.UpdateRegistryContext(ctx, root, func(registry *sessionstate.Registry) error {
+		createdAt := deps.now()
+		_, registerErr := sessionstate.UpdateRegistryWithTerminalCreationContext(ctx, root, func(registry *sessionstate.Registry) error {
 			return sessionstate.AddContext(registry, created)
+		}, func() (sessionstate.ContextID, time.Time, bool) {
+			return created.ID, createdAt, true
 		})
 		if registerErr != nil && !committedContextContext(ctx, root, created.ID, func(context sessionstate.Context) bool {
 			return contextsEqual(context, created)
 		}, registerErr) {
 			return registerErr
-		}
-		if activityErr := sessionstate.RecordTerminalCreationContext(ctx, root, created.ID, deps.now()); activityErr != nil {
-			cleanupContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
-			defer cancel()
-			if rollbackErr := rollbackRegisteredContext(cleanupContext, root, created); rollbackErr != nil {
-				return errors.Join(activityErr, rollbackErr)
-			}
-			return activityErr
 		}
 		return nil
 	})
@@ -128,27 +128,6 @@ func executeRegister(ctx context.Context, arguments []string, deps dependencies)
 		return commandResult{}, classifyStateError("register context", err)
 	}
 	return commandResult{Command: "register", Contexts: []sessionstate.Context{created}}, nil
-}
-
-func rollbackRegisteredContext(ctx context.Context, root string, created sessionstate.Context) error {
-	_, err := sessionstate.UpdateRegistryContext(ctx, root, func(registry *sessionstate.Registry) error {
-		index, resolveErr := sessionstate.ResolveContext(*registry, string(created.ID))
-		if resolveErr != nil {
-			return resolveErr
-		}
-		if !contextsEqual(registry.Contexts[index], created) {
-			return errors.New("registered context changed before activity rollback")
-		}
-		_, removeErr := sessionstate.RemoveContext(registry, string(created.ID))
-		return removeErr
-	})
-	if err != nil && !registryMissingContext(ctx, root, created.ID, err) {
-		return fmt.Errorf("roll back context registration: %w", err)
-	}
-	if err := sessionstate.RemoveTerminalActivityContext(ctx, root, created.ID); err != nil {
-		return fmt.Errorf("remove context activity after rollback: %w", err)
-	}
-	return nil
 }
 
 func registrationID(value string, deps dependencies) (sessionstate.ContextID, error) {
@@ -167,7 +146,7 @@ func executeList(ctx context.Context, arguments []string, deps dependencies) (co
 		return commandResult{}, commandFailure
 	}
 	registry := sessionstate.Registry{Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{}}
-	if err := sessionstate.RegistryFile(root).LoadIntoContext(ctx, &registry); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := sessionstate.RegistryStoreFor(root).LoadIntoContext(ctx, &registry); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return commandResult{}, classifyStateError("load context registry", err)
 	}
 	sort.Slice(registry.Contexts, func(left int, right int) bool {
@@ -222,7 +201,7 @@ func executePurge(ctx context.Context, arguments []string, stdin io.Reader, stde
 		return commandResult{}, commandFailure
 	}
 	registry := sessionstate.Registry{}
-	if err := sessionstate.RegistryFile(root).LoadIntoContext(ctx, &registry); err != nil {
+	if err := sessionstate.RegistryStoreFor(root).LoadIntoContext(ctx, &registry); err != nil {
 		return commandResult{}, classifyStateError("load context registry", err)
 	}
 	index, err := sessionstate.ResolveContext(registry, set.Arg(0))
@@ -316,7 +295,6 @@ func executePurge(ctx context.Context, arguments []string, stdin io.Reader, stde
 		}
 		return nil
 	}
-	activityWarning := ""
 	err = sessionstate.WithTerminalLifecycleLockContext(ctx, root, func() error {
 		var purgeErr error
 		for attempt := 0; attempt < 2; attempt++ {
@@ -336,9 +314,6 @@ func executePurge(ctx context.Context, arguments []string, stdin io.Reader, stde
 		if purgeErr != nil {
 			return purgeErr
 		}
-		if cleanupErr := sessionstate.RemoveTerminalActivityContext(ctx, root, target.ID); cleanupErr != nil {
-			activityWarning = "Context and Herdr state were purged, but stale presentation activity could not be removed: " + cleanupErr.Error()
-		}
 		return nil
 	})
 	if err != nil {
@@ -347,7 +322,7 @@ func executePurge(ctx context.Context, arguments []string, stdin io.Reader, stde
 		}
 		return commandResult{}, classifyStateError("purge context", err)
 	}
-	return commandResult{Command: "purge", Contexts: []sessionstate.Context{target}, Actions: []string{"purged"}, Message: activityWarning}, nil
+	return commandResult{Command: "purge", Contexts: []sessionstate.Context{target}, Actions: []string{"purged"}}, nil
 }
 
 func executeRestore(ctx context.Context, arguments []string, deps dependencies) (commandResult, *commandFailure) {
@@ -385,173 +360,241 @@ func executeRestore(ctx context.Context, arguments []string, deps dependencies) 
 		}
 	}
 	var operationDiagnostics []diagnostic.Diagnostic
-	err := sessionstate.WithTerminalLifecycleLockContext(ctx, root, func() error {
-		return sessionstate.InspectRegistryLockedContext(ctx, root, func(registry sessionstate.Registry) error {
-			targets, err := restoreTargets(registry, selector, *requireActive)
-			if err != nil {
-				return err
-			}
-			if len(targets) == 0 {
-				result.Message = "No active contexts to restore."
-				return nil
-			}
-			client := deps.newSwayClient(socket)
-			if client == nil {
-				return errors.New("sway client is nil")
-			}
-			defer client.Close()
-			tree, err := requestTree(ctx, client)
-			if err != nil {
-				return err
-			}
-			observed, observationIssues, err := sessionstate.ObserveManagedWindowsIsolated(tree, registry)
-			if err != nil {
-				return fmt.Errorf("observe managed windows: %w", err)
-			}
-			issueByID := make(map[sessionstate.ContextID]error, len(observationIssues))
-			for _, issue := range observationIssues {
-				issueByID[issue.ContextID] = issue.Cause
-			}
-			waiting := make(map[sessionstate.ContextID]sessionstate.Context)
-			accepted := make(map[sessionstate.ContextID]int64)
-			for _, target := range targets {
-				if issue := issueByID[target.ID]; issue != nil {
-					operationDiagnostics = append(operationDiagnostics, diagnosticForContext("duplicate_window", target, issue, "Resolve this context's duplicate or structurally invalid managed window before retrying."))
-					continue
-				}
-				if window, exists := observed[target.ID]; exists {
-					result.Contexts = append(result.Contexts, target)
-					accepted[target.ID] = window.ContainerID
-					continue
-				}
-				waiting[target.ID] = target
-			}
-			if len(waiting) == 0 {
-				confirmRestoreMappings(ctx, client, registry, deps, accepted, &result, &operationDiagnostics)
-				return nil
-			}
-			for _, id := range sortedWaitingIDs(waiting) {
-				target := waiting[id]
-				if target.Launcher.Terminal == nil {
-					operationDiagnostics = append(operationDiagnostics, diagnosticForContext("terminal_adapter", target, errors.New("herdr context has no terminal adapter"), "Reset the invalid session state and recreate the context."))
-					delete(waiting, id)
-					continue
-				}
-				programName, err := sessionstate.TerminalAdapterExecutableName(target.Launcher.Terminal.Adapter)
+	initialTargets := map[sessionstate.ContextID]struct{}(nil)
+	processed := make(map[sessionstate.ContextID]struct{})
+	for {
+		var wave commandResult
+		var waveDiagnostics []diagnostic.Diagnostic
+		more := false
+		err := sessionstate.WithTerminalLifecycleLockContext(ctx, root, func() error {
+			return sessionstate.InspectRegistryLockedContext(ctx, root, func(registry sessionstate.Registry) error {
+				targets, err := restoreTargets(registry, selector, *requireActive)
 				if err != nil {
-					operationDiagnostics = append(operationDiagnostics, diagnosticForContext("terminal_adapter", target, err, "Use a supported typed terminal adapter."))
-					delete(waiting, id)
-					continue
+					return err
 				}
-				terminalExecutable, err := deps.resolveProgram(programName)
-				if err != nil {
-					operationDiagnostics = append(operationDiagnostics, diagnosticForContext("missing_executable", target, err, fmt.Sprintf("Install the %s terminal adapter and ensure it is on PATH.", target.Launcher.Terminal.Adapter)))
-					delete(waiting, id)
-					continue
-				}
-				sessionManager, err := terminalSessionManagerForContext(target, deps)
-				if err != nil {
-					operationDiagnostics = append(operationDiagnostics, diagnosticForContext("session_manager", target, err, "Use a supported typed terminal session manager."))
-					delete(waiting, id)
-					continue
-				}
-				spec, err := sessionManager.BuildProcessSpec(target, terminalExecutable)
-				if err != nil {
-					code := "session_manager"
-					hint := "Verify the selected terminal session manager and its private state configuration."
-					switch {
-					case errors.Is(err, errHerdrSessionPath):
-						code = "herdr_path"
-						hint = "Shorten XDG_CONFIG_HOME, or purge this context and create a fresh terminal with sway-session terminal --new."
-					case errors.Is(err, errHerdrPaneHistory):
-						code = "pane_history"
-						hint = "Set [experimental] pane_history = true and keep Herdr state owner-only."
-					case errors.Is(err, errHerdrExecutable):
-						code = "missing_executable"
-						hint = "Install Herdr and ensure it is on PATH."
+				if initialTargets == nil {
+					initialTargets = make(map[sessionstate.ContextID]struct{}, len(targets))
+					for _, target := range targets {
+						initialTargets[target.ID] = struct{}{}
 					}
-					operationDiagnostics = append(operationDiagnostics, diagnosticForContext(code, target, err, hint))
-					delete(waiting, id)
-					continue
+					if len(initialTargets) == 0 {
+						result.Message = "No active contexts to restore."
+						return nil
+					}
 				}
-				pending, err := deps.findPendingProcess("/proc", spec)
-				if err != nil {
-					operationDiagnostics = append(operationDiagnostics, diagnosticForContext("process_observation", target, err, ""))
-					delete(waiting, id)
-					continue
-				}
-				if len(pending) > 1 {
-					operationDiagnostics = append(operationDiagnostics, diagnosticForContext("duplicate_launch", target, fmt.Errorf("multiple pending %s terminal processes %v", target.Launcher.Terminal.Adapter, pending), "Stop the duplicate processes before retrying."))
-					delete(waiting, id)
-					continue
-				}
-				if len(pending) == 1 {
-					continue
-				}
-				if err := sessionstate.ValidateTerminalCwd(target.Launcher.Cwd); err != nil {
-					operationDiagnostics = append(operationDiagnostics, diagnosticForContext("project_path", target, err, "Restore or update the persisted terminal working directory before retrying."))
-					delete(waiting, id)
-					continue
-				}
-				if err := deps.processStarter.Start(spec); err != nil {
-					operationDiagnostics = append(operationDiagnostics, diagnosticForContext("launch", target, err, ""))
-					delete(waiting, id)
-				}
-			}
-			if len(waiting) == 0 {
-				confirmRestoreMappings(ctx, client, registry, deps, accepted, &result, &operationDiagnostics)
-				return nil
-			}
-			deadline := deps.now().Add(deps.settleTimeout)
-			for {
-				tree, err = requestTree(ctx, client)
-				if err != nil {
-					appendAllRestoreFailures(&operationDiagnostics, waiting, "sway_tree", err, "The launched process remains detectable; retry after Sway IPC recovers.")
-					confirmRestoreMappings(ctx, client, registry, deps, accepted, &result, &operationDiagnostics)
-					return nil
-				}
-				observed, observationIssues, err = sessionstate.ObserveManagedWindowsIsolated(tree, registry)
-				if err != nil {
-					appendAllRestoreFailures(&operationDiagnostics, waiting, "sway_tree", err, "Resolve malformed managed identities before retrying.")
-					confirmRestoreMappings(ctx, client, registry, deps, accepted, &result, &operationDiagnostics)
-					return nil
-				}
-				for _, issue := range observationIssues {
-					target, exists := waiting[issue.ContextID]
-					if !exists {
+				current := make([]sessionstate.Context, 0, len(targets))
+				for _, target := range targets {
+					if _, selected := initialTargets[target.ID]; !selected {
 						continue
 					}
-					operationDiagnostics = append(operationDiagnostics, diagnosticForContext("duplicate_window", target, issue.Cause, "Resolve this context's duplicate or structurally invalid managed window before retrying."))
-					delete(waiting, issue.ContextID)
-				}
-				for id, target := range waiting {
-					if window, exists := observed[id]; exists {
-						result.Contexts = append(result.Contexts, target)
-						accepted[id] = window.ContainerID
-						delete(waiting, id)
+					if _, done := processed[target.ID]; done {
+						continue
 					}
+					current = append(current, target)
 				}
-				if len(waiting) == 0 {
-					confirmRestoreMappings(ctx, client, registry, deps, accepted, &result, &operationDiagnostics)
+				if len(current) == 0 {
 					return nil
 				}
-				if !deps.now().Before(deadline) {
-					appendAllRestoreFailures(&operationDiagnostics, waiting, "mapping_timeout", errors.New("window did not appear before the restore deadline"), "A matching pending process prevents duplicate launches; retry after it maps or exits.")
-					confirmRestoreMappings(ctx, client, registry, deps, accepted, &result, &operationDiagnostics)
-					return nil
+				var handled []sessionstate.ContextID
+				wave, waveDiagnostics, handled, more, err = restoreTerminalWave(ctx, socket, registry, current, deps)
+				for _, id := range handled {
+					processed[id] = struct{}{}
 				}
-				deps.sleep(100 * time.Millisecond)
-			}
+				return err
+			})
 		})
-	})
-	if err != nil {
-		return commandResult{}, classifyStateError("restore contexts", err)
+		result.Contexts = append(result.Contexts, wave.Contexts...)
+		operationDiagnostics = append(operationDiagnostics, waveDiagnostics...)
+		if err != nil {
+			classified := classifyStateError("restore contexts", err)
+			operationDiagnostics = append(operationDiagnostics, classified.diagnostics...)
+			sort.Slice(result.Contexts, func(left int, right int) bool { return result.Contexts[left].ID < result.Contexts[right].ID })
+			return result, failures(operationDiagnostics)
+		}
+		if !more || selector != "" {
+			break
+		}
 	}
 	sort.Slice(result.Contexts, func(left int, right int) bool { return result.Contexts[left].ID < result.Contexts[right].ID })
 	if len(operationDiagnostics) != 0 {
 		return result, failures(operationDiagnostics)
 	}
 	return result, nil
+}
+
+func restoreTerminalWave(
+	ctx context.Context,
+	socket string,
+	registry sessionstate.Registry,
+	targets []sessionstate.Context,
+	deps dependencies,
+) (commandResult, []diagnostic.Diagnostic, []sessionstate.ContextID, bool, error) {
+	result := commandResult{Command: "restore", Contexts: []sessionstate.Context{}}
+	var operationDiagnostics []diagnostic.Diagnostic
+	processed := make([]sessionstate.ContextID, 0, len(targets))
+	client := deps.newSwayClient(socket)
+	if client == nil {
+		return result, nil, nil, false, errors.New("sway client is nil")
+	}
+	defer client.Close()
+	tree, err := requestTree(ctx, client)
+	if err != nil {
+		return result, nil, nil, false, err
+	}
+	observed, observationIssues, err := sessionstate.ObserveManagedWindowsIsolated(tree, registry)
+	if err != nil {
+		return result, nil, nil, false, fmt.Errorf("observe managed windows: %w", err)
+	}
+	issueByID := make(map[sessionstate.ContextID]error, len(observationIssues))
+	for _, issue := range observationIssues {
+		issueByID[issue.ContextID] = issue.Cause
+	}
+	waiting := make(map[sessionstate.ContextID]sessionstate.Context)
+	accepted := make(map[sessionstate.ContextID]int64)
+	for _, target := range targets {
+		if issue := issueByID[target.ID]; issue != nil {
+			operationDiagnostics = append(operationDiagnostics, diagnosticForContext("duplicate_window", target, issue, "Resolve this context's duplicate or structurally invalid managed window before retrying."))
+			processed = append(processed, target.ID)
+			continue
+		}
+		if window, exists := observed[target.ID]; exists {
+			result.Contexts = append(result.Contexts, target)
+			accepted[target.ID] = window.ContainerID
+			processed = append(processed, target.ID)
+			continue
+		}
+		waiting[target.ID] = target
+	}
+
+	batch := make(map[sessionstate.ContextID]sessionstate.Context, maxConcurrentTerminalRestores)
+	for _, id := range sortedWaitingIDs(waiting) {
+		if len(batch) == maxConcurrentTerminalRestores {
+			break
+		}
+		target := waiting[id]
+		delete(waiting, id)
+		processed = append(processed, id)
+		if target.Launcher.Terminal == nil {
+			operationDiagnostics = append(operationDiagnostics, diagnosticForContext("terminal_adapter", target, errors.New("herdr context has no terminal adapter"), "Reset the invalid session state and recreate the context."))
+			continue
+		}
+		programName, err := sessionstate.TerminalAdapterExecutableName(target.Launcher.Terminal.Adapter)
+		if err != nil {
+			operationDiagnostics = append(operationDiagnostics, diagnosticForContext("terminal_adapter", target, err, "Use a supported typed terminal adapter."))
+			continue
+		}
+		terminalExecutable, err := deps.resolveProgram(programName)
+		if err != nil {
+			operationDiagnostics = append(operationDiagnostics, diagnosticForContext("missing_executable", target, err, fmt.Sprintf("Install the %s terminal adapter and ensure it is on PATH.", target.Launcher.Terminal.Adapter)))
+			continue
+		}
+		sessionManager, err := terminalSessionManagerForContext(target, deps)
+		if err != nil {
+			operationDiagnostics = append(operationDiagnostics, diagnosticForContext("session_manager", target, err, "Use a supported typed terminal session manager."))
+			continue
+		}
+		spec, err := sessionManager.BuildProcessSpec(target, terminalExecutable)
+		if err != nil {
+			code := "session_manager"
+			hint := "Verify the selected terminal session manager and its private state configuration."
+			switch {
+			case errors.Is(err, errHerdrSessionPath):
+				code = "herdr_path"
+				hint = "Shorten XDG_CONFIG_HOME, or purge this context and create a fresh terminal with sway-session terminal --new."
+			case errors.Is(err, errHerdrPaneHistory):
+				code = "pane_history"
+				hint = "Set [experimental] pane_history = true and keep Herdr state owner-only."
+			case errors.Is(err, errHerdrExecutable):
+				code = "missing_executable"
+				hint = "Install Herdr and ensure it is on PATH."
+			}
+			operationDiagnostics = append(operationDiagnostics, diagnosticForContext(code, target, err, hint))
+			continue
+		}
+		pending, err := deps.findPendingProcess("/proc", spec)
+		if err != nil {
+			operationDiagnostics = append(operationDiagnostics, diagnosticForContext("process_observation", target, err, ""))
+			continue
+		}
+		if len(pending) > 1 {
+			operationDiagnostics = append(operationDiagnostics, diagnosticForContext("duplicate_launch", target, fmt.Errorf("multiple pending %s terminal processes %v", target.Launcher.Terminal.Adapter, pending), "Stop the duplicate processes before retrying."))
+			continue
+		}
+		if len(pending) == 0 {
+			if err := sessionstate.ValidateTerminalCwd(target.Launcher.Cwd); err != nil {
+				operationDiagnostics = append(operationDiagnostics, diagnosticForContext("project_path", target, err, "Restore or update the persisted terminal working directory before retrying."))
+				continue
+			}
+			if err := deps.processStarter.Start(spec); err != nil {
+				operationDiagnostics = append(operationDiagnostics, diagnosticForContext("launch", target, err, ""))
+				continue
+			}
+		}
+		batch[id] = target
+	}
+	more := len(waiting) != 0
+	if len(batch) == 0 {
+		confirmRestoreMappings(ctx, client, registry, deps, accepted, &result, &operationDiagnostics)
+		return result, operationDiagnostics, processed, more, nil
+	}
+
+	deadline := deps.now().Add(deps.settleTimeout)
+	for len(batch) != 0 {
+		tree, err = requestTree(ctx, client)
+		if err != nil {
+			appendAllRestoreFailures(&operationDiagnostics, batch, "sway_tree", err, "The launched process remains detectable; retry after Sway IPC recovers.")
+			appendAllRestoreFailures(&operationDiagnostics, waiting, "sway_tree", err, "Retry after Sway IPC recovers.")
+			for id := range waiting {
+				processed = append(processed, id)
+			}
+			more = false
+			break
+		}
+		observed, observationIssues, err = sessionstate.ObserveManagedWindowsIsolated(tree, registry)
+		if err != nil {
+			appendAllRestoreFailures(&operationDiagnostics, batch, "sway_tree", err, "Resolve malformed managed identities before retrying.")
+			appendAllRestoreFailures(&operationDiagnostics, waiting, "sway_tree", err, "Resolve malformed managed identities before retrying.")
+			for id := range waiting {
+				processed = append(processed, id)
+			}
+			more = false
+			break
+		}
+		for _, issue := range observationIssues {
+			target, exists := batch[issue.ContextID]
+			if !exists {
+				continue
+			}
+			operationDiagnostics = append(operationDiagnostics, diagnosticForContext("duplicate_window", target, issue.Cause, "Resolve this context's duplicate or structurally invalid managed window before retrying."))
+			delete(batch, issue.ContextID)
+		}
+		for id, target := range batch {
+			if window, exists := observed[id]; exists {
+				result.Contexts = append(result.Contexts, target)
+				accepted[id] = window.ContainerID
+				delete(batch, id)
+			}
+		}
+		if len(batch) == 0 {
+			break
+		}
+		if !deps.now().Before(deadline) {
+			appendAllRestoreFailures(&operationDiagnostics, batch, "mapping_timeout", errors.New("window did not appear before the restore deadline"), "A matching pending process prevents duplicate launches; retry after it maps or exits.")
+			if len(waiting) != 0 {
+				operationDiagnostics = append(operationDiagnostics, diagnostic.Diagnostic{
+					Level:   diagnostic.LevelError,
+					Code:    "restore_deferred",
+					Message: "automatic terminal restore paused after a mapping timeout",
+					Hint:    fmt.Sprintf("%d additional active terminal contexts were not started; resolve the timed-out adapters and run sway-session restore again.", len(waiting)),
+				})
+			}
+			more = false
+			break
+		}
+		deps.sleep(100 * time.Millisecond)
+	}
+	confirmRestoreMappings(ctx, client, registry, deps, accepted, &result, &operationDiagnostics)
+	return result, operationDiagnostics, processed, more, nil
 }
 
 func confirmRestoreMappings(
@@ -718,7 +761,7 @@ func committedContextContext(ctx context.Context, root string, id sessionstate.C
 	reconcileCtx, cancel := commandReconciliationContext(ctx)
 	defer cancel()
 	registry := sessionstate.Registry{}
-	if err := sessionstate.RegistryFile(root).LoadIntoContext(reconcileCtx, &registry); err != nil {
+	if err := sessionstate.RegistryStoreFor(root).LoadIntoContext(reconcileCtx, &registry); err != nil {
 		return false
 	}
 	for _, context := range registry.Contexts {
@@ -737,7 +780,7 @@ func registryMissingContext(ctx context.Context, root string, id sessionstate.Co
 	reconcileCtx, cancel := commandReconciliationContext(ctx)
 	defer cancel()
 	registry := sessionstate.Registry{}
-	if err := sessionstate.RegistryFile(root).LoadIntoContext(reconcileCtx, &registry); err != nil {
+	if err := sessionstate.RegistryStoreFor(root).LoadIntoContext(reconcileCtx, &registry); err != nil {
 		return false
 	}
 	for _, context := range registry.Contexts {

@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -927,6 +928,67 @@ func TestStateDatabaseInitializationLockHonorsContextAndCanRetry(t *testing.T) {
 	}
 }
 
+func TestRegistryBootstrapWaitDoesNotHoldLifecycleLock(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sway-session")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, StateDatabaseFilename), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	directory, err := statefile.OpenPrivateDirectory(root, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	heldInitializationLock, err := lockStateDatabaseInitialization(t.Context(), directory)
+	if err != nil {
+		directory.Close()
+		t.Fatal(err)
+	}
+
+	originalAcquire := acquireStateDatabaseInitializationLock
+	reachedInitializationLock := make(chan struct{})
+	var reachedOnce sync.Once
+	acquireStateDatabaseInitializationLock = func(ctx context.Context, directory *os.File) (*os.File, error) {
+		reachedOnce.Do(func() { close(reachedInitializationLock) })
+		return originalAcquire(ctx, directory)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	updateDone := make(chan error, 1)
+	updateFinished := false
+	defer func() {
+		unlockStateDatabaseInitialization(heldInitializationLock)
+		cancel()
+		if !updateFinished {
+			<-updateDone
+		}
+		acquireStateDatabaseInitializationLock = originalAcquire
+		_ = directory.Close()
+	}()
+	go func() {
+		_, updateErr := UpdateRegistryContext(ctx, root, func(registry *Registry) error {
+			return AddContext(registry, validRegistry().Contexts[0])
+		})
+		updateDone <- updateErr
+	}()
+
+	select {
+	case <-reachedInitializationLock:
+	case <-ctx.Done():
+		t.Fatal("registry update did not reach the held initialization lock")
+	}
+	if err := WithRegistryLockContext(ctx, root, func(*statefile.LockedPrivateDirectory) error { return nil }); err != nil {
+		t.Fatalf("registry bootstrap wait held the lifecycle lock: %v", err)
+	}
+	unlockStateDatabaseInitialization(heldInitializationLock)
+	heldInitializationLock = nil
+	if err := <-updateDone; err != nil {
+		updateFinished = true
+		t.Fatalf("registry update after bootstrap release: %v", err)
+	}
+	updateFinished = true
+}
+
 func TestStateWriteCancellationBeforeCommitRollsBack(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "sway-session")
 	if err := RegistryStoreFor(root).Save(validRegistry()); err != nil {
@@ -1030,14 +1092,36 @@ func TestSQLiteRegistryUpdateProcessHelper(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	id := ContextID("00000000-0000-4000-8000-00000000000" + index)
-	_, err := UpdateRegistry(root, func(registry *Registry) error {
-		return AddContext(registry, Context{
-			ID: id, State: ContextArchived,
-			Launcher: Launcher{Kind: LauncherHerdr, Session: "process-" + index, Cwd: "/tmp", Terminal: &TerminalLauncher{Adapter: TerminalAdapterAlacritty}},
+	retryStateDatabaseBusyForTest(t, func(ctx context.Context) error {
+		_, err := UpdateRegistryContext(ctx, root, func(registry *Registry) error {
+			return AddContext(registry, Context{
+				ID: id, State: ContextArchived,
+				Launcher: Launcher{Kind: LauncherHerdr, Session: "process-" + index, Cwd: "/tmp", Terminal: &TerminalLauncher{Adapter: TerminalAdapterAlacritty}},
+			})
 		})
+		return err
 	})
-	if err != nil {
-		t.Fatal(err)
+}
+
+func retryStateDatabaseBusyForTest(t *testing.T, action func(context.Context) error) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	for {
+		err := action(ctx)
+		if err == nil {
+			return
+		}
+		if !IsStateDatabaseBusy(err) {
+			t.Fatal(err)
+		}
+		timer := time.NewTimer(10 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			t.Fatalf("retry state database operation after busy result: %v", err)
+		case <-timer.C:
+		}
 	}
 }
 

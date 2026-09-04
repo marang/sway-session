@@ -444,11 +444,9 @@ func TestUnknownArchiveCommitRejectsAConcurrentArchiveGeneration(t *testing.T) {
 	visible := expected
 	second := first.Add(time.Minute)
 	visible.ArchivedAt = &second
-	if err := sessionstate.RegistryStoreFor(root).Save(sessionstate.Registry{
+	saveTestRegistry(t, root, sessionstate.Registry{
 		Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{visible},
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
 	unknown := &statefile.CommitOutcomeUnknownError{Cause: errors.New("directory sync failed")}
 	if committedContext(root, expected.ID, func(context sessionstate.Context) bool {
 		return contextsEqual(context, expected)
@@ -625,9 +623,7 @@ func TestPurgeRejectsApplicationContextsBeforeConfirmationOrHerdrAccess(t *testi
 				if err != nil {
 					t.Fatal(err)
 				}
-				if err := sessionstate.RegistryStoreFor(root).Save(sessionstate.Registry{Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{contextValue}}); err != nil {
-					t.Fatal(err)
-				}
+				saveTestRegistry(t, root, sessionstate.Registry{Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{contextValue}})
 				if !herdrRootExists {
 					if err := os.Remove(paths.Root); err != nil {
 						t.Fatal(err)
@@ -671,9 +667,7 @@ func TestPurgeRejectsApplicationContextBeforeConfirmationPreview(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := sessionstate.RegistryStoreFor(root).Save(sessionstate.Registry{Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{contextValue}}); err != nil {
-		t.Fatal(err)
-	}
+	saveTestRegistry(t, root, sessionstate.Registry{Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{contextValue}})
 	deps.herdrPaths = func() (sessionstate.HerdrPaths, error) {
 		t.Fatal("application purge must not resolve Herdr paths")
 		return sessionstate.HerdrPaths{}, errors.New("unreachable")
@@ -956,11 +950,9 @@ func TestRestoreRejectsCurrentInstanceWithOverlongHerdrSocketBeforeStart(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := sessionstate.RegistryStoreFor(root).Save(sessionstate.Registry{
+	saveTestRegistry(t, root, sessionstate.Registry{
 		Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{registered},
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
 	deps.herdrPaths = func() (sessionstate.HerdrPaths, error) {
 		return sessionstate.HerdrPaths{
 			Root: "/home/example/configuration-root/herdr", ConfigFile: "/home/example/configuration-root/herdr/config.toml",
@@ -1360,10 +1352,30 @@ func storeRestoreTestContexts(t *testing.T, deps dependencies, count int) sessio
 			},
 		})
 	}
-	if err := sessionstate.RegistryStoreFor(root).Save(registry); err != nil {
-		t.Fatal(err)
-	}
+	saveTestRegistry(t, root, registry)
 	return registry
+}
+
+func saveTestRegistry(t *testing.T, root string, registry sessionstate.Registry) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	for {
+		err := sessionstate.RegistryStoreFor(root).SaveContext(ctx, registry)
+		if err == nil {
+			return
+		}
+		if !sessionstate.IsStateDatabaseBusy(err) {
+			t.Fatal(err)
+		}
+		timer := time.NewTimer(10 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			t.Fatalf("save registry fixture after busy result: %v", err)
+		case <-timer.C:
+		}
+	}
 }
 
 func loadTestRegistry(t *testing.T, deps dependencies) sessionstate.Registry {

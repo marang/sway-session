@@ -38,12 +38,12 @@ func (store RegistryStore) SaveContext(ctx context.Context, value Registry) erro
 	if err := value.Validate(); err != nil {
 		return fmt.Errorf("validate registry: %w", err)
 	}
+	database, err := openStateDatabase(ctx, store.root, true)
+	if err != nil {
+		return err
+	}
+	defer database.Close()
 	return WithRegistryLockContext(ctx, store.root, func(*statefile.LockedPrivateDirectory) error {
-		database, err := openStateDatabase(ctx, store.root, true)
-		if err != nil {
-			return err
-		}
-		defer database.Close()
 		_, revision, err := loadRegistrySnapshotDatabase(ctx, database)
 		if errors.Is(err, os.ErrNotExist) {
 			revision = 0
@@ -515,14 +515,14 @@ func UpdateRegistryContext(ctx context.Context, root string, mutate func(*Regist
 	if mutate == nil {
 		return initial, errors.New("registry mutation is nil")
 	}
+	database, err := openStateDatabase(ctx, root, true)
+	if err != nil {
+		return initial, err
+	}
+	defer database.Close()
 	var candidate Registry
 	var revision int64
-	err := WithRegistryLockContext(ctx, root, func(*statefile.LockedPrivateDirectory) error {
-		database, err := openStateDatabase(ctx, root, true)
-		if err != nil {
-			return err
-		}
-		defer database.Close()
+	err = WithRegistryLockContext(ctx, root, func(*statefile.LockedPrivateDirectory) error {
 		candidate, revision, err = loadRegistrySnapshotDatabase(ctx, database)
 		if errors.Is(err, os.ErrNotExist) {
 			candidate = initial
@@ -557,13 +557,13 @@ func UpdateRegistryWithTerminalCreationContext(
 	if mutate == nil || creation == nil {
 		return initial, errors.New("registry terminal creation mutation is incomplete")
 	}
+	database, err := openStateDatabase(ctx, root, true)
+	if err != nil {
+		return initial, err
+	}
+	defer database.Close()
 	var candidate Registry
-	err := WithRegistryLockContext(ctx, root, func(*statefile.LockedPrivateDirectory) error {
-		database, err := openStateDatabase(ctx, root, true)
-		if err != nil {
-			return err
-		}
-		defer database.Close()
+	err = WithRegistryLockContext(ctx, root, func(*statefile.LockedPrivateDirectory) error {
 		candidate, revision, err := loadRegistrySnapshotDatabase(ctx, database)
 		if errors.Is(err, os.ErrNotExist) {
 			candidate = initial
@@ -626,12 +626,12 @@ func InspectRegistryLockedContext(ctx context.Context, root string, inspect func
 	if inspect == nil {
 		return errors.New("registry inspection is nil")
 	}
+	database, err := openStateDatabase(ctx, root, true)
+	if err != nil {
+		return err
+	}
+	defer database.Close()
 	return WithRegistryLockContext(ctx, root, func(*statefile.LockedPrivateDirectory) error {
-		database, err := openStateDatabase(ctx, root, true)
-		if err != nil {
-			return err
-		}
-		defer database.Close()
 		candidate, err := loadRegistryDatabase(ctx, database)
 		if errors.Is(err, os.ErrNotExist) {
 			candidate = emptyRegistry()

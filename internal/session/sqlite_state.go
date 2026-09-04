@@ -35,6 +35,7 @@ const (
 var sqliteOFDLockingError error
 var sqliteOFDLockingEnabled = sqlite.OFDLockingEnabled
 var executeStateCommit = func(tx *stateWriteTransaction) error { return tx.Commit() }
+var acquireStateDatabaseInitializationLock = lockStateDatabaseInitialization
 var ErrUninitializedStateDatabase = errors.New("state database schema is uninitialized")
 var ErrStateDatabaseBusy = errors.New("state database is busy")
 
@@ -462,7 +463,7 @@ func (database *stateDatabase) ensureSchema(
 		return false, fmt.Errorf("close state database before initialization lock: %w", err)
 	}
 	database.db = nil
-	initializationLock, err := lockStateDatabaseInitialization(ctx, database.directory)
+	initializationLock, err := acquireStateDatabaseInitializationLock(ctx, database.directory)
 	if err != nil {
 		return false, err
 	}

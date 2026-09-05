@@ -110,7 +110,7 @@ func TestSessionEventStreamDisconnectsStateBeforeCleanShutdownDelivery(t *testin
 		serverDone <- writeMessage(connection, shutdownEventMessage, []byte(`{"change":"exit"}`))
 	}()
 
-	events := make(chan Event, 2)
+	events := make(chan Event)
 	done := make(chan struct{})
 	defer close(done)
 	state := &EventStreamState{}
@@ -122,6 +122,19 @@ func TestSessionEventStreamDisconnectsStateBeforeCleanShutdownDelivery(t *testin
 		}
 	case <-time.After(time.Second):
 		t.Fatal("session stream did not become ready")
+	}
+	// Deliberately leave shutdown delivery blocked. A busy daemon consumer
+	// must still see the disconnected guard before it can process the event.
+	deadline := time.Now().Add(time.Second)
+	for {
+		epoch, connected := state.Snapshot()
+		if epoch == 2 && !connected {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("blocked shutdown delivery kept stream connected: epoch=%d connected=%t", epoch, connected)
+		}
+		time.Sleep(time.Millisecond)
 	}
 	select {
 	case shutdown := <-events:

@@ -158,6 +158,27 @@ func TestPreparationInhibitorReleaseFailureIsTerminal(t *testing.T) {
 	}
 }
 
+func TestCanceledPreparationReleaseFailureDoesNotWaitForUnstartedWorker(t *testing.T) {
+	client := newFakeClient()
+	monitor := startFake(t, client)
+	client.inhibitor.closeErr = errors.New("close failed")
+	returned := make(chan struct{})
+	go func() {
+		// An isolated false also triggers revalidation and closes the held FD.
+		client.emit(event{kind: eventPrepareShutdown, source: ":1.44", active: false})
+		close(returned)
+	}()
+	select {
+	case <-returned:
+	case <-time.After(time.Second):
+		t.Fatal("release failure waited for a rearm worker that was never started")
+	}
+	waitDone(t, monitor.Done())
+	if monitor.Err() == nil {
+		t.Fatal("failed stale inhibitor release was not reported")
+	}
+}
+
 func TestCloseWaitsForInFlightInhibitorAcquisition(t *testing.T) {
 	client := newFakeClient()
 	monitor := startFake(t, client)

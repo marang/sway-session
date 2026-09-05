@@ -54,6 +54,8 @@ its LAB-* key, and reaches Done only after its PR is merged.
 - internal/statefile: private-directory, file, and lock primitives.
 - internal/swayipc: bounded i3/Sway IPC framing, tree types, events, and
   reconnect behavior.
+- internal/shutdownwatch: logind lifecycle observation and delay-inhibitor
+  guard for automatic terminal-close archival; no registry writes.
 - internal/titleindicator: versioned, presentation-only Sway mark protocol; it
   contains no registry or restore state.
 - internal/diagnostic: stable structured and human-readable CLI diagnostics.

@@ -435,6 +435,8 @@ func (monitor *Monitor) handlePreparation(shutdown, active bool) {
 	monitor.rearmWG.Add(1)
 	monitor.mu.Unlock()
 	if err := closeHeld(held); err != nil {
+		// No worker was launched; balance its reservation before finish waits.
+		monitor.rearmWG.Done()
 		monitor.finish(fmt.Errorf("release stale logind delay inhibitor: %w", err))
 		return
 	}

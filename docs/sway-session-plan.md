@@ -94,6 +94,8 @@ flowchart TB
   used by runtime artifacts.
 - internal/swayipc owns bounded framing, request/reply validation, tree types,
   event decoding, and reconnect behavior.
+- internal/shutdownwatch owns logind lifecycle observation and its delay
+  inhibitor. It publishes a generation guard, never writes session state.
 - internal/herdrinit owns fixed, idempotent role initialization behind the
   closed Herdr session-manager adapter. It is not an executable.
 - internal/sessionrequest accepts one protocol-v1 ensure-and-start operation.
@@ -152,6 +154,33 @@ for it. Failed or ambiguous observations are unknown. Refreshing inventory
 must preserve selection and must not retain an old presence claim as current
 after an observation failure. Background Herdr/agent liveness is a separate
 concern and is not inferred from the presence of a terminal window.
+
+A live, unambiguous close event for a previously observed active terminal stages
+an in-memory close candidate. After a short grace period, the daemon confirms
+absence from a fresh tree under the terminal lifecycle lock, then archives the
+unchanged context in a short database update. It retains history, identity,
+and placement; it never purges the session or kills background agents. Existing
+archived-context activation and explicit restore remain the reopening paths.
+An absent context at daemon startup is not evidence of a manual close.
+
+Close candidates are valid only within one healthy Sway subscription and one
+healthy shutdown-observer generation. The logind observer holds a delay
+inhibitor and suppresses close handling before releasing it on shutdown/sleep
+preparation. Sway shutdown invalidates the synchronous stream guard before
+queueing the event. Disconnect, cancellation, ambiguous identities, or loss of
+shutdown protection discard candidates conservatively. No monitor support means
+explicit archive remains available, not that every disappearance becomes a
+manual close. Root-forced shutdowns and third-party logout paths which kill
+clients before signaling Sway/logind are not an observable intent contract.
+Sway's close event does not carry a reason: normal closes, shell exit, and
+terminal-adapter failure are indistinguishable. This feature protects
+machine/compositor shutdown, not automatic crash recovery of the terminal
+adapter. A retained archived session can still be explicitly reopened.
+This adds no context schema, state path, or package dependency metadata change.
+
+The manager retains the visible selection row after archive/delete so repeated
+cleanup advances through remaining entries. Activation, rename, open and refresh
+preserve context identity; filters survive reloads.
 
 ~~~mermaid
 sequenceDiagram

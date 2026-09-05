@@ -161,9 +161,27 @@ previews archived candidates; deletion always uses an exact reviewed UUID.
 In `terminal manage`, saved contexts and open windows are separate counts.
 Each entry shows its observed window presence (`open`, `closed`, or `unknown`)
 separately from whether automatic restore is enabled or the context is
-archived. Closing a window keeps its saved context; archiving excludes it from
-automatic restore and does not mean its window is closed. Codex and shell
-panes inside one terminal belong to the same context.
+archived. A confirmed terminal close while the daemon is observing a healthy
+desktop automatically archives its context after a short grace period: it
+stops returning at login, but its saved identity and Herdr session are retained.
+Archiving never closes a window or terminates its background agents. Codex and
+shell panes inside one terminal belong to the same context.
+
+Automatic close detection requires a working logind shutdown observer and delay
+inhibitor. Shutdown, logout through Sway, compositor disconnect, and uncertain
+observations preserve restore eligibility instead of guessing that you closed
+the terminal. Without that protection, use `a` to archive explicitly. Contexts
+already missing when the daemon starts are not retroactively archived. Forced
+shutdowns or external tools that kill clients before notifying the compositor
+or logind cannot reliably convey close intent.
+Sway also does not distinguish an ordinary close or shell exit from an
+Alacritty/Foot process crash: all produce the same close event and can archive
+the context. The saved session remains available for manual reopening.
+
+To reopen an archived terminal, select it, press `a` to activate, then Enter.
+Archiving or deleting keeps the selection at the same list position for quick
+cleanup; activation and renaming follow the selected context. The filter stays
+in place through actions and refreshes.
 
 Window presence is a Sway observation refreshed when the TUI opens, after
 successful actions, or with `r`. It does not indicate whether a background

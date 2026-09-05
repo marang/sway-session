@@ -22,6 +22,6 @@ or recompression. They include opaque backgrounds and generous outer margins.
 For future small icons or banner layouts, a tightly framed SVG export would
 retain cleaner edges and use the available space better.
 
-The README uses the compact icon and links here for the theme-aware wordmark.
+The README uses the dark wordmark and links here for the theme-aware variants.
 Release archives and installed documentation include the same assets with the
 same relative paths. This adds no graphical dependency to the terminal UI.

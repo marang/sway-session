@@ -259,7 +259,8 @@ For agent-report changes, run the real Unix-socket regression tests in
 internal/agentreport and the supplied provider-hook translation tests.
 Verify multiple agent kinds, non-UUID session tokens, rejected commands and
 unknown fields, payload limits, peer credentials, unrelated pane ancestry,
-socket replacement, and unchanged legacy replies. These tests use disposable
+socket replacement, and rejection of the removed report-v1 payloads. Separately
+verify that the session-start protocol-v1 contract remains unchanged. These tests use disposable
 roots and a fake Herdr API; they do not prove provider-specific hook or resume
 behavior in a live Herdr session.
 

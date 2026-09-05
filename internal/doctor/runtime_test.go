@@ -442,7 +442,7 @@ func TestServiceCheckHasStableUnavailableSwayTreeAndDoesNotInitializeState(t *te
 	expectedIDs := []string{
 		"session.config", "terminal.adapter", "herdr.executable", "herdr.pane_history", "herdr.capabilities",
 		"sway.ipc", "sway.tree", "runtime.paths", "state.paths", "daemon.lock", "daemon.binary",
-		"broker.session_start", "broker.agent_report", "broker.codex_report", "apparmor", "sway.integration",
+		"broker.session_start", "broker.agent_report", "apparmor", "sway.integration",
 	}
 	seen := make(map[string]int, len(report.Checks))
 	for _, check := range report.Checks {

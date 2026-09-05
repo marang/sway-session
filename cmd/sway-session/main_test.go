@@ -17,7 +17,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marang/sway-session/internal/codexreport"
 	sessionstate "github.com/marang/sway-session/internal/session"
 	"github.com/marang/sway-session/internal/sessionrequest"
 	"github.com/marang/sway-session/internal/statefile"
@@ -1224,37 +1223,6 @@ func TestJSONRestoreFailuresUseOneDiagnosticEnvelope(t *testing.T) {
 	}
 }
 
-func TestReportCodexSessionUsesOnlyHookBoundary(t *testing.T) {
-	deps := testDependencies(t)
-	called := false
-	deps.reportCodexHook = func(_ context.Context, input io.Reader, getenv func(string) string) error {
-		called = true
-		data, err := io.ReadAll(input)
-		if err != nil || string(data) != `{"hook_event_name":"SessionStart"}` || getenv("PATH") != os.Getenv("PATH") {
-			t.Fatalf("unexpected hook boundary input=%q err=%v", data, err)
-		}
-		return nil
-	}
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	code := runWith([]string{"report-codex-session"}, strings.NewReader(`{"hook_event_name":"SessionStart"}`), &stdout, &stderr, deps)
-	if code != exitSuccess || !called || stdout.Len() != 0 || stderr.Len() != 0 {
-		t.Fatalf("Codex report command failed code=%d called=%v stdout=%q stderr=%q", code, called, stdout.String(), stderr.String())
-	}
-}
-
-func TestReportCodexSessionDoesNotFailOutsideManagedHerdr(t *testing.T) {
-	deps := testDependencies(t)
-	deps.reportCodexHook = func(context.Context, io.Reader, func(string) string) error {
-		return codexreport.ErrNotManagedSession
-	}
-	var stderr bytes.Buffer
-	code := runWith([]string{"report-codex-session"}, strings.NewReader(`{}`), io.Discard, &stderr, deps)
-	if code != exitSuccess || stderr.Len() != 0 {
-		t.Fatalf("unmanaged hook should be a silent no-op: code=%d stderr=%q", code, stderr.String())
-	}
-}
-
 func TestUnknownCommandUsesUsageExitCode(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -1263,6 +1231,23 @@ func TestUnknownCommandUsesUsageExitCode(t *testing.T) {
 
 	if exitCode != exitUsage || !strings.Contains(stderr.String(), "unknown command \"launch\"") {
 		t.Fatalf("unexpected result code=%d stderr=%q", exitCode, stderr.String())
+	}
+}
+
+func TestLegacyCodexReportCommandIsNotAvailable(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := runWith([]string{"report-codex-session"}, strings.NewReader(`{}`), &stdout, &stderr, testDependencies(t))
+
+	if exitCode != exitUsage || stdout.Len() != 0 || !strings.Contains(stderr.String(), `unknown command "report-codex-session"`) {
+		t.Fatalf("legacy command result code=%d stdout=%q stderr=%q", exitCode, stdout.String(), stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if exitCode := runWith([]string{"--help"}, strings.NewReader(""), &stdout, &stderr, testDependencies(t)); exitCode != exitSuccess || strings.Contains(stdout.String(), "report-codex-session") {
+		t.Fatalf("legacy command remained in help: code=%d help=%q stderr=%q", exitCode, stdout.String(), stderr.String())
 	}
 }
 

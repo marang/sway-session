@@ -38,16 +38,6 @@ type Report struct {
 	PeerPID        int                    `json:"-"`
 }
 
-// LegacyCodexReport is the stable version-1 Codex wire shape. It is decoded
-// and served by the generic transport only as a compatibility boundary.
-type LegacyCodexReport struct {
-	Version        int                    `json:"version"`
-	ContextID      sessionstate.ContextID `json:"context_id"`
-	PaneID         string                 `json:"pane_id"`
-	CodexSessionID string                 `json:"codex_session_id"`
-	PeerPID        int                    `json:"-"`
-}
-
 type response struct {
 	Version int    `json:"version"`
 	OK      bool   `json:"ok"`
@@ -71,29 +61,6 @@ func (report Report) Validate() error {
 		return err
 	}
 	return nil
-}
-
-func (report LegacyCodexReport) Validate() error {
-	if report.Version != 1 {
-		return fmt.Errorf("unsupported Codex report protocol version %d", report.Version)
-	}
-	if err := report.ContextID.Validate(); err != nil {
-		return fmt.Errorf("invalid context ID: %w", err)
-	}
-	if err := validateIdentity("Herdr pane ID", report.PaneID, 256); err != nil {
-		return err
-	}
-	if _, err := sessionstate.ParseContextID(report.CodexSessionID); err != nil {
-		return fmt.Errorf("invalid Codex session ID: %w", err)
-	}
-	return nil
-}
-
-func (report LegacyCodexReport) Generic() Report {
-	return Report{
-		Version: ProtocolVersion, ContextID: report.ContextID, PaneID: report.PaneID,
-		Agent: "codex", AgentSessionID: report.CodexSessionID, PeerPID: report.PeerPID,
-	}
 }
 
 func DefaultSocketPath() (string, error) {

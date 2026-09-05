@@ -26,7 +26,7 @@ if printf '%s\n' "$packages" | grep -F '/cmd/sway-title-animator' >/dev/null; th
 fi
 
 for package in \
-	internal/codexreport \
+	internal/agentreport \
 	internal/diagnostic \
 	internal/herdrinit \
 	internal/session \

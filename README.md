@@ -131,6 +131,8 @@ blocks, continued lines and supported includes do not make the whole check
 unavailable. When only some requirements can be established, the summary is
 `warning` / partially checked, with known declarations and the exact remaining
 limitations. An uncertain shortcut does not erase known startup evidence.
+Each requirement retains up to eight limitation locations; larger reports show
+the omitted count instead of silently hiding additional blockers.
 
 The initial `sway.integration` fix only adds missing one-time startup commands
 and default terminal shortcuts through a sibling `50-sway-session-doctor.conf`

@@ -132,7 +132,9 @@ func inspectSwayConfig(ctx context.Context, options Options) []Check {
 				check.Evidence = append(check.Evidence,
 					fmt.Sprintf("%s: %d additional declarations omitted", integrationLabel(kind), omitted))
 			}
-			continue
+			if analysis.uncertaintyCounts[kind] == 0 {
+				continue
+			}
 		}
 		if analysis.uncertaintyCounts[kind] != 0 {
 			unknown = append(unknown, integrationLabel(kind))
@@ -140,14 +142,19 @@ func inspectSwayConfig(ctx context.Context, options Options) []Check {
 			if occurrenceCount == 1 && len(occurrences) == 1 && occurrences[0].correct {
 				evidence += fmt.Sprintf("; matching declaration observed at %s:%d", occurrences[0].where.path, occurrences[0].where.line)
 			}
-			if limitations := analysis.uncertain[kind]; len(limitations) != 0 {
-				limitation := limitations[0]
-				evidence += "; " + limitation.reason
+			check.Evidence = append(check.Evidence, evidence)
+			limitations := analysis.uncertain[kind]
+			for _, limitation := range limitations {
+				evidence := fmt.Sprintf("%s: %s", integrationLabel(kind), limitation.reason)
 				if limitation.where.path != "" && !strings.Contains(limitation.reason, limitation.where.path) {
 					evidence += fmt.Sprintf(" at %s:%d", limitation.where.path, limitation.where.line)
 				}
+				check.Evidence = append(check.Evidence, evidence)
 			}
-			check.Evidence = append(check.Evidence, evidence)
+			if omitted := analysis.uncertaintyCounts[kind] - len(limitations); omitted > 0 {
+				check.Evidence = append(check.Evidence,
+					fmt.Sprintf("%s: %d additional limitations omitted", integrationLabel(kind), omitted))
+			}
 			continue
 		}
 		concluded++

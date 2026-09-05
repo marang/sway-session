@@ -118,6 +118,28 @@ func TestDoctorWorkstationMissingShortcutOffersRepair(t *testing.T) {
 	}
 }
 
+func TestDoctorWorkstationShowsAllRetainedLimitations(t *testing.T) {
+	root := copyWorkstationFixture(t)
+	path := filepath.Join(root, "config")
+	appendWorkstationConfig(t, path, "bindcode Mod4+36 exec foot\nunbindsym Mod4+Return\n")
+	check := workstationIntegrationCheck(t, New(Options{SwayConfigPath: path}))
+	for _, label := range []string{"persistent-terminal shortcut", "ephemeral-terminal shortcut"} {
+		for _, location := range []string{"config:37", "config:38"} {
+			if !evidenceLineContains(check.Evidence, label, location) {
+				t.Errorf("report hides an independent limitation for %s at %s: %+v", label, location, check)
+			}
+		}
+	}
+	// A definite conflicting declaration must not conceal other limitations.
+	appendWorkstationConfig(t, path, "bindsym Mod4+Return exec foot\n"+strings.Repeat("unbindsym Mod4+Return\n", maxSwayEvidenceItems))
+	check = workstationIntegrationCheck(t, New(Options{SwayConfigPath: path}))
+	for _, label := range []string{"persistent-terminal shortcut", "ephemeral-terminal shortcut"} {
+		if !evidenceLineContains(check.Evidence, label, "2 additional limitations omitted") {
+			t.Errorf("bounded report conceals omitted limitation count for %s: %+v", label, check)
+		}
+	}
+}
+
 func TestDoctorWorkstationOptionalUnmatchedInclude(t *testing.T) {
 	root := copyWorkstationFixture(t)
 	path := filepath.Join(root, "config")

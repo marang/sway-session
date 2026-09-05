@@ -130,6 +130,12 @@ func streamEvents(socket string, subscription []byte, preserveUserIntent bool, e
 				break
 			}
 			if event.Type == EventShutdown {
+				if preserveUserIntent {
+					// Change the synchronous state before queueing shutdown. A busy
+					// consumer may otherwise run an already-armed timer against a
+					// stream that has cleanly terminated.
+					state.transition()
+				}
 				select {
 				case events <- event:
 				case <-done:

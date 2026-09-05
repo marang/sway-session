@@ -24,7 +24,7 @@ func TestDoctorOrdinaryWorkstationConfiguration(t *testing.T) {
 			t.Fatalf("normal Sway blocks must not disable integration diagnosis: %+v", check)
 		}
 		for _, label := range []string{"daemon startup", "restore startup", "persistent-terminal shortcut", "ephemeral-terminal shortcut"} {
-			if !strings.Contains(strings.Join(check.Evidence, "\n"), label) {
+			if !evidenceLineContains(check.Evidence, label, "present") {
 				t.Errorf("missing independently useful %s evidence: %+v", label, check)
 			}
 		}
@@ -115,6 +115,54 @@ func TestDoctorWorkstationMissingShortcutOffersRepair(t *testing.T) {
 	}
 	if _, err := service.Plan(context.Background(), swayIntegrationFixID); err != nil {
 		t.Fatalf("safe preview rejected a supported config: %v", err)
+	}
+}
+
+func TestDoctorWorkstationOptionalUnmatchedInclude(t *testing.T) {
+	root := copyWorkstationFixture(t)
+	path := filepath.Join(root, "config")
+	appendWorkstationConfig(t, path, "include missing.d/*.conf\n")
+	check := workstationIntegrationCheck(t, New(Options{SwayConfigPath: path}))
+	if check.Status != OK || check.FixID != "" {
+		t.Fatalf("Sway's optional unmatched include must not disable a complete diagnosis: %+v", check)
+	}
+}
+
+func TestDoctorWorkstationUnsafeIncludeRetainsLocatedFacts(t *testing.T) {
+	root := copyWorkstationFixture(t)
+	path := filepath.Join(root, "config")
+	if err := os.Symlink(filepath.Join(root, "conf.d", "10-startup.conf"), filepath.Join(root, "uninspectable.conf")); err != nil {
+		t.Fatal(err)
+	}
+	appendWorkstationConfig(t, path, "include uninspectable.conf\n")
+	service := New(Options{SwayConfigPath: path})
+	check := workstationIntegrationCheck(t, service)
+	if check.Status != Warning || !strings.Contains(check.Detail, "partially checked") || check.FixID != "" {
+		t.Fatalf("known declarations must survive incomplete graph inspection without enabling repair: %+v", check)
+	}
+	for _, label := range []string{"daemon startup", "restore startup", "persistent-terminal shortcut", "ephemeral-terminal shortcut"} {
+		if !evidenceLineContains(check.Evidence, label, "could not be fully checked") {
+			t.Errorf("incomplete include graph hid uncertainty for %s: %+v", label, check)
+		}
+	}
+	for _, source := range []string{"10-startup.conf:", "20-terminals.conf:"} {
+		if !strings.Contains(strings.Join(check.Evidence, "\n"), source) {
+			t.Errorf("lost known source location %s: %+v", source, check)
+		}
+	}
+	if _, err := service.Plan(context.Background(), swayIntegrationFixID); err == nil {
+		t.Fatal("unsafe included path permitted automatic repair")
+	}
+}
+
+func appendWorkstationConfig(t *testing.T, path, extra string) {
+	t.Helper()
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(content, []byte(extra)...), 0o600); err != nil {
+		t.Fatal(err)
 	}
 }
 

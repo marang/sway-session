@@ -372,6 +372,17 @@ if [[ " ${COMPREPLY[*]} " != *' --yes '* ]]; then
 	printf 'bash doctor completion omitted --yes after --fix: %q\n' "${COMPREPLY[*]-}" >&2
 	exit 1
 fi
+if [[ " ${COMPREPLY[*]} " == *' --check '* ]]; then
+	echo 'bash doctor offered --check after --fix' >&2
+	exit 1
+fi
+COMP_WORDS=(sway-session doctor --check '')
+COMP_CWORD=3
+_sway_session
+if [[ " ${COMPREPLY[*]} " == *' --fix '* || " ${COMPREPLY[*]} " == *' --yes '* ]]; then
+	echo 'bash doctor offered repair after --check' >&2
+	exit 1
+fi
 
 COMP_WORDS=(sway-session doctor unexpected '')
 COMP_CWORD=3
@@ -674,6 +685,18 @@ CURRENT=5
 _sway-session
 if (( ${captured_values[(Ie)--yes]} == 0 )); then
 	print -u2 -r -- "zsh doctor completion omitted --yes after --fix: ${(j:,:)captured_values}"
+	exit 1
+fi
+if (( ${captured_values[(Ie)--check]} != 0 )); then
+	print -u2 -- 'zsh doctor offered --check after --fix'
+	exit 1
+fi
+captured_values=()
+words=(sway-session doctor --check '')
+CURRENT=4
+_sway-session
+if (( ${captured_values[(Ie)--fix]} != 0 || ${captured_values[(Ie)--yes]} != 0 )); then
+	print -u2 -- 'zsh doctor offered repair after --check'
 	exit 1
 fi
 EOF

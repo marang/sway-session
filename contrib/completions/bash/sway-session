@@ -132,14 +132,19 @@ _sway_session_marker_is_value() {
 
 _sway_session_doctor_arguments_valid() {
 	local pending=0 word
+	doctor_has_fix=0 doctor_has_check=0
 	for word in "${arguments[@]:1}"; do
 		if ((pending)); then
 			pending=0
 			continue
 		fi
 		case $word in
-			--fix|--socket|--sway-config) pending=1 ;;
-			--check|--yes|--json|-h|--help|--*=*) ;;
+			--fix) doctor_has_fix=1; pending=1 ;;
+			--fix=*) doctor_has_fix=1 ;;
+			--socket|--sway-config) pending=1 ;;
+			--check|--check=true|--check=1) doctor_has_check=1 ;;
+			--check=false|--check=0) doctor_has_check=0 ;;
+			--yes|--json|-h|--help|--*=*) ;;
 			--*) ;;
 			*) return 1 ;;
 		esac
@@ -279,13 +284,16 @@ _sway_session() {
 			fi
 			;;
 		doctor)
+			local doctor_has_fix=0 doctor_has_check=0
 			_sway_session_doctor_arguments_valid || return 0
 			case ${arguments[-1]-} in
 				--socket|--sway-config) _sway_session_files; return 0 ;;
 				--fix) _sway_session_static 'sway.integration'; return 0 ;;
 			esac
-			if [[ " ${arguments[*]} " == *' --fix '* || " ${arguments[*]} " == *' --fix='* ]]; then
-				_sway_session_static '--check --fix --yes --socket --sway-config --json -h --help'
+			if ((doctor_has_fix)); then
+				_sway_session_static '--fix --yes --socket --sway-config --json -h --help'
+			elif ((doctor_has_check)); then
+				_sway_session_static '--check --socket --sway-config --json -h --help'
 			else
 				_sway_session_static '--check --fix --socket --sway-config --json -h --help'
 			fi

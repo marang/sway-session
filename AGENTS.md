@@ -59,6 +59,8 @@ its LAB-* key, and reaches Done only after its PR is merged.
 - internal/titleindicator: versioned, presentation-only Sway mark protocol; it
   contains no registry or restore state.
 - internal/diagnostic: stable structured and human-readable CLI diagnostics.
+- internal/doctor: read-only setup checks and explicit, previewed configuration
+  repairs shared by the doctor CLI and TUI; never session-state mutation.
 
 Keep new responsibilities in the matching package. Prefer small pure helpers
 and injected process, time, terminal, and compositor boundaries.

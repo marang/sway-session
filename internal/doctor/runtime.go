@@ -20,6 +20,7 @@ import (
 	"github.com/marang/sway-session/internal/codexreport"
 	sessionstate "github.com/marang/sway-session/internal/session"
 	"github.com/marang/sway-session/internal/sessionrequest"
+	"github.com/marang/sway-session/internal/statefile"
 	"github.com/marang/sway-session/internal/swayipc"
 	"golang.org/x/sys/unix"
 )
@@ -101,12 +102,14 @@ func inspectRuntime(ctx context.Context, options Options) []Check {
 	}
 
 	runtimeRoot, runtimeErr := runtimeDirectory()
-	checks = append(checks, inspectRuntimePaths(runtimeRoot, runtimeErr))
+	runtime := observePrivateDirectory(runtimeRoot, runtimeErr)
+	defer runtime.Close()
+	checks = append(checks, inspectRuntimePaths(runtime))
 	checks = append(checks, inspectStatePaths())
-	observation := inspectDaemonLock(runtimeRoot, runtimeErr)
+	observation := inspectDaemonLock(runtime)
 	checks = append(checks, observation.check)
 	checks = append(checks, inspectDaemonBinary(ctx, options, observation))
-	checks = append(checks, inspectOptionalSockets(runtimeRoot, runtimeErr)...)
+	checks = append(checks, inspectOptionalSockets(runtime)...)
 	checks = append(checks, appArmorCheck())
 	return checks
 }
@@ -288,18 +291,41 @@ func runtimeDirectory() (string, error) {
 	return filepath.Join(runtime, "sway-session"), nil
 }
 
-func inspectRuntimePaths(root string, rootErr error) Check {
-	if rootErr != nil {
+type privateDirectoryObservation struct {
+	path         string
+	directory    *os.File
+	selectionErr error
+	err          error
+}
+
+func observePrivateDirectory(path string, pathErr error) privateDirectoryObservation {
+	observation := privateDirectoryObservation{path: path, selectionErr: pathErr}
+	if pathErr != nil {
+		return observation
+	}
+	observation.directory, observation.err = statefile.OpenPrivateDirectory(path, false)
+	return observation
+}
+
+func (observation *privateDirectoryObservation) Close() {
+	if observation == nil || observation.directory == nil {
+		return
+	}
+	_ = observation.directory.Close()
+	observation.directory = nil
+}
+
+func inspectRuntimePaths(observation privateDirectoryObservation) Check {
+	if observation.selectionErr != nil || observation.path == "" {
 		return Check{ID: "runtime.paths", Title: "Runtime paths", Status: Unavailable, Detail: "The private runtime directory cannot be located from XDG_RUNTIME_DIR.", Hint: "Set XDG_RUNTIME_DIR to the clean absolute runtime directory created for this login session."}
 	}
-	stat, err := inspectPrivateObjectStat(root, unix.S_IFDIR, 0o700, true)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return Check{ID: "runtime.paths", Title: "Runtime paths", Status: Unavailable, Detail: "No sway-session runtime directory exists; the daemon is not currently initialized.", Evidence: []string{"path=" + root}}
+	if observation.err != nil {
+		if errors.Is(observation.err, os.ErrNotExist) {
+			return Check{ID: "runtime.paths", Title: "Runtime paths", Status: Unavailable, Detail: "No sway-session runtime directory exists; the daemon is not currently initialized.", Evidence: []string{"path=" + observation.path}}
 		}
-		return privateObjectErrorCheck("runtime.paths", "Runtime paths", "The sway-session runtime directory is not an owner-only private directory.", root, "owner-only directory mode 0700", stat, "Correct the runtime directory ownership and permissions, or restart the user session to recreate it safely.")
+		return privateObjectErrorCheck("runtime.paths", "Runtime paths", "The sway-session runtime directory or one of its ancestors does not satisfy the private-path policy.", observation.path, "trusted ancestors and owner-only directory mode 0700", unix.Stat_t{}, "Correct the runtime path ownership and permissions, or restart the user session to recreate it safely.")
 	}
-	return Check{ID: "runtime.paths", Title: "Runtime paths", Status: OK, Detail: "The sway-session runtime directory is owner-only.", Evidence: []string{"path=" + root}}
+	return Check{ID: "runtime.paths", Title: "Runtime paths", Status: OK, Detail: "The sway-session runtime path has trusted ancestors and an owner-only directory.", Evidence: []string{"path=" + observation.path}}
 }
 
 type daemonObservation struct {
@@ -308,12 +334,18 @@ type daemonObservation struct {
 	valid bool
 }
 
-func inspectDaemonLock(root string, rootErr error) daemonObservation {
-	if rootErr != nil {
+func inspectDaemonLock(runtime privateDirectoryObservation) daemonObservation {
+	if runtime.selectionErr != nil || runtime.path == "" {
 		return daemonObservation{check: unavailableCheck("daemon.lock", "Daemon lock", "The runtime directory is unavailable, so daemon lock state cannot be inspected.")}
 	}
-	path := filepath.Join(root, "daemon.lock")
-	lockStat, err := inspectPrivateObjectStat(path, unix.S_IFREG, 0o600, false)
+	path := filepath.Join(runtime.path, "daemon.lock")
+	if runtime.err != nil && !errors.Is(runtime.err, os.ErrNotExist) {
+		return daemonObservation{check: Check{ID: "daemon.lock", Title: "Daemon lock", Status: Unavailable, Detail: "The daemon lock cannot be inspected because the runtime path is unsafe.", Evidence: []string{"path=" + path}}}
+	}
+	if runtime.directory == nil {
+		return daemonObservation{check: Check{ID: "daemon.lock", Title: "Daemon lock", Status: Unavailable, Detail: "No daemon lock file exists; no daemon is proven to be running.", Evidence: []string{"path=" + path}}}
+	}
+	lockStat, err := inspectPrivateObjectAt(runtime.directory, "daemon.lock", unix.S_IFREG, statefile.RegularFileMode)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return daemonObservation{check: Check{ID: "daemon.lock", Title: "Daemon lock", Status: Unavailable, Detail: "No daemon lock file exists; no daemon is proven to be running.", Evidence: []string{"path=" + path}}}
@@ -383,19 +415,27 @@ func inspectDaemonBinary(ctx context.Context, options Options, observation daemo
 	return Check{ID: "daemon.binary", Title: "Daemon binary", Status: Warning, Detail: detail, Hint: "Restart the daemon after upgrading sway-session.", Evidence: []string{"path=" + candidate, fmt.Sprintf("pid=%d", observation.pid)}}
 }
 
-func inspectOptionalSockets(root string, rootErr error) []Check {
+func inspectOptionalSockets(runtime privateDirectoryObservation) []Check {
 	checks := make([]Check, 0, 3)
 	for _, endpoint := range []struct{ id, title, name string }{
 		{"broker.session_start", "Session-start broker", sessionrequest.SocketFilename},
 		{"broker.agent_report", "Agent-report broker", agentreport.SocketFilename},
 		{"broker.codex_report", "Codex-report compatibility broker", codexreport.SocketFilename},
 	} {
-		if rootErr != nil {
+		if runtime.selectionErr != nil || runtime.path == "" {
 			checks = append(checks, unavailableCheck(endpoint.id, endpoint.title, "This optional broker endpoint is unavailable because XDG runtime paths are unavailable."))
 			continue
 		}
-		path := filepath.Join(root, endpoint.name)
-		stat, err := inspectPrivateObjectStat(path, unix.S_IFSOCK, 0o600, false)
+		path := filepath.Join(runtime.path, endpoint.name)
+		if runtime.err != nil && !errors.Is(runtime.err, os.ErrNotExist) {
+			checks = append(checks, Check{ID: endpoint.id, Title: endpoint.title, Status: Unavailable, Detail: "This optional broker endpoint cannot be inspected because the runtime path is unsafe.", Evidence: []string{"path=" + path}})
+			continue
+		}
+		if runtime.directory == nil {
+			checks = append(checks, Check{ID: endpoint.id, Title: endpoint.title, Status: Unavailable, Detail: "This optional broker endpoint is not running.", Evidence: []string{"path=" + path}})
+			continue
+		}
+		stat, err := inspectPrivateObjectAt(runtime.directory, endpoint.name, unix.S_IFSOCK, statefile.RegularFileMode)
 		if errors.Is(err, os.ErrNotExist) {
 			checks = append(checks, Check{ID: endpoint.id, Title: endpoint.title, Status: Unavailable, Detail: "This optional broker endpoint is not running.", Evidence: []string{"path=" + path}})
 		} else if err != nil {
@@ -417,19 +457,20 @@ func inspectStatePaths() Check {
 }
 
 func inspectStatePathsAt(root string, rootErr error) Check {
-	if rootErr != nil {
+	observation := observePrivateDirectory(root, rootErr)
+	defer observation.Close()
+	if observation.selectionErr != nil || observation.path == "" {
 		return Check{ID: "state.paths", Title: "State paths", Status: Unavailable, Detail: "The private state directory cannot be located from XDG_STATE_HOME.", Hint: "Set XDG_STATE_HOME to a clean absolute path, then run doctor again."}
 	}
-	rootStat, err := inspectPrivateObjectStat(root, unix.S_IFDIR, 0o700, true)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
+	if observation.err != nil {
+		if errors.Is(observation.err, os.ErrNotExist) {
 			return Check{ID: "state.paths", Title: "State paths", Status: Unavailable, Detail: "No sway-session state directory exists yet.", Evidence: []string{"path=" + root}}
 		}
-		return privateObjectErrorCheck("state.paths", "State paths", "The sway-session state directory is not an owner-only private directory.", root, "owner-only directory mode 0700", rootStat, "Correct the state directory ownership and permissions before starting the daemon.")
+		return privateObjectErrorCheck("state.paths", "State paths", "The sway-session state directory or one of its ancestors does not satisfy the private-path policy.", root, "trusted ancestors and owner-only directory mode 0700", unix.Stat_t{}, "Correct the state path ownership and permissions before starting the daemon.")
 	}
 	evidence := []string{"path=" + root}
 	database := filepath.Join(root, sessionstate.StateDatabaseFilename)
-	databaseStat, databaseErr := inspectPrivateObjectStat(database, unix.S_IFREG, 0o600, false)
+	databaseStat, databaseErr := inspectPrivateObjectAt(observation.directory, sessionstate.StateDatabaseFilename, unix.S_IFREG, statefile.RegularFileMode)
 	databaseExists := databaseErr == nil
 	if databaseErr != nil && !errors.Is(databaseErr, os.ErrNotExist) {
 		return privateObjectErrorCheck("state.paths", "State paths", "The sway-session state database is not an owner-only single-link regular file.", database, "single-link owner-only regular file mode 0600", databaseStat, "Restore safe ownership and permissions from a trusted backup before starting the daemon.")
@@ -443,7 +484,7 @@ func inspectStatePathsAt(root string, rootErr error) Check {
 	sidecarExists := false
 	for _, suffix := range []string{"-wal", "-shm", "-journal"} {
 		path := database + suffix
-		stat, sidecarErr := inspectPrivateObjectStat(path, unix.S_IFREG, 0o600, false)
+		stat, sidecarErr := inspectPrivateObjectAt(observation.directory, sessionstate.StateDatabaseFilename+suffix, unix.S_IFREG, statefile.RegularFileMode)
 		if errors.Is(sidecarErr, os.ErrNotExist) {
 			continue
 		}
@@ -472,33 +513,21 @@ func detachedPrivateSidecar(stat unix.Stat_t) bool {
 	return stat.Mode&unix.S_IFMT == unix.S_IFREG && stat.Mode&0o7777 == 0o600 && stat.Uid == uint32(os.Geteuid()) && stat.Nlink == 0
 }
 
-func inspectPrivateObjectStat(path string, wantType uint32, wantMode os.FileMode, directory bool) (unix.Stat_t, error) {
-	if !cleanAbsolute(path) {
-		return unix.Stat_t{}, errors.New("path is not clean and absolute")
+func inspectPrivateObjectAt(directory *os.File, name string, wantType uint32, wantMode uint32) (unix.Stat_t, error) {
+	if directory == nil || name == "" || name == "." || name == ".." || filepath.Base(name) != name {
+		return unix.Stat_t{}, errors.New("invalid private directory entry")
 	}
-	fd, err := unix.Openat2(unix.AT_FDCWD, path, &unix.OpenHow{
-		Flags:   unix.O_PATH | unix.O_CLOEXEC | unix.O_NOFOLLOW,
-		Resolve: unix.RESOLVE_NO_MAGICLINKS | unix.RESOLVE_NO_SYMLINKS,
-	})
-	if err != nil {
-		return unix.Stat_t{}, err
-	}
-	defer unix.Close(fd)
 	var stat unix.Stat_t
-	if err := unix.Fstat(fd, &stat); err != nil {
+	if err := unix.Fstatat(int(directory.Fd()), name, &stat, unix.AT_SYMLINK_NOFOLLOW); err != nil {
 		return unix.Stat_t{}, err
 	}
-	if stat.Uid != uint32(os.Geteuid()) || (!directory && stat.Nlink != 1) {
+	if stat.Uid != uint32(os.Geteuid()) || stat.Nlink != 1 {
 		return stat, errors.New("untrusted ownership or links")
 	}
-	if directory {
-		if stat.Mode&unix.S_IFMT != unix.S_IFDIR {
-			return stat, errors.New("not directory")
-		}
-	} else if stat.Mode&unix.S_IFMT != wantType {
+	if stat.Mode&unix.S_IFMT != wantType {
 		return stat, errors.New("unexpected object type")
 	}
-	if os.FileMode(stat.Mode).Perm() != wantMode {
+	if stat.Mode&0o7777 != wantMode {
 		return stat, errors.New("unexpected permissions")
 	}
 	return stat, nil

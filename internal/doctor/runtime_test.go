@@ -15,6 +15,7 @@ import (
 
 	sessionstate "github.com/marang/sway-session/internal/session"
 	"github.com/marang/sway-session/internal/sessionrequest"
+	"github.com/marang/sway-session/internal/statefile"
 	"github.com/marang/sway-session/internal/swayipc"
 	"golang.org/x/sys/unix"
 )
@@ -104,24 +105,41 @@ func TestResolveSwayConfigPathRejectsMalformedLiveReply(t *testing.T) {
 
 func TestPrivateObjectRejectsSymlinkAndAcceptsOwnerOnlyFile(t *testing.T) {
 	directory := t.TempDir()
+	if err := os.Chmod(directory, 0o700); err != nil {
+		t.Fatalf("make private directory: %v", err)
+	}
+	observation := observePrivateDirectory(directory, nil)
+	defer observation.Close()
+	if observation.err != nil {
+		t.Fatalf("open private directory: %v", observation.err)
+	}
 	file := filepath.Join(directory, "owner-only")
 	if err := os.WriteFile(file, nil, 0o600); err != nil {
 		t.Fatalf("write private file: %v", err)
 	}
-	if _, err := inspectPrivateObjectStat(file, unix.S_IFREG, 0o600, false); err != nil {
+	if _, err := inspectPrivateObjectAt(observation.directory, filepath.Base(file), unix.S_IFREG, 0o600); err != nil {
 		t.Fatalf("inspect private file: %v", err)
 	}
 	link := filepath.Join(directory, "link")
 	if err := os.Symlink(file, link); err != nil {
 		t.Fatalf("make link: %v", err)
 	}
-	if _, err := inspectPrivateObjectStat(link, unix.S_IFREG, 0o600, false); err == nil {
+	if _, err := inspectPrivateObjectAt(observation.directory, filepath.Base(link), unix.S_IFREG, 0o600); err == nil {
 		t.Fatal("symlink accepted")
 	}
 }
 
 func TestPrivateObjectAcceptsOwnerOnlySocketWithoutFollowingIt(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "broker.sock")
+	directory := t.TempDir()
+	if err := os.Chmod(directory, 0o700); err != nil {
+		t.Fatalf("make private directory: %v", err)
+	}
+	observation := observePrivateDirectory(directory, nil)
+	defer observation.Close()
+	if observation.err != nil {
+		t.Fatalf("open private directory: %v", observation.err)
+	}
+	path := filepath.Join(directory, "broker.sock")
 	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
 	if err != nil {
 		t.Fatalf("listen socket: %v", err)
@@ -130,13 +148,16 @@ func TestPrivateObjectAcceptsOwnerOnlySocketWithoutFollowingIt(t *testing.T) {
 	if err := os.Chmod(path, 0o600); err != nil {
 		t.Fatalf("chmod socket: %v", err)
 	}
-	if _, err := inspectPrivateObjectStat(path, unix.S_IFSOCK, 0o600, false); err != nil {
+	if _, err := inspectPrivateObjectAt(observation.directory, filepath.Base(path), unix.S_IFSOCK, 0o600); err != nil {
 		t.Fatalf("inspect private socket: %v", err)
 	}
 }
 
 func TestOptionalSocketDoesNotClaimUnverifiedListenerIsHealthy(t *testing.T) {
 	root := t.TempDir()
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatalf("make private directory: %v", err)
+	}
 	path := filepath.Join(root, sessionrequest.SocketFilename)
 	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
 	if err != nil {
@@ -150,10 +171,107 @@ func TestOptionalSocketDoesNotClaimUnverifiedListenerIsHealthy(t *testing.T) {
 		t.Fatalf("close listener: %v", err)
 	}
 
-	checks := inspectOptionalSockets(root, nil)
+	observation := observePrivateDirectory(root, nil)
+	defer observation.Close()
+	if observation.err != nil {
+		t.Fatalf("open private directory: %v", observation.err)
+	}
+	checks := inspectOptionalSockets(observation)
 	check := findRuntimeCheck(t, checks, "broker.session_start")
 	if check.Status != Unavailable || !slices.Contains(check.Evidence, "path="+path) {
 		t.Fatalf("stale socket check = %#v, want unavailable with path evidence", check)
+	}
+}
+
+func TestStatePathInspectionMatchesProductionDirectoryPolicy(t *testing.T) {
+	tests := map[string]struct {
+		prepare func(*testing.T) string
+		status  Status
+	}{
+		"accepted": {
+			prepare: func(t *testing.T) string {
+				root := t.TempDir()
+				if err := os.Chmod(root, 0o700); err != nil {
+					t.Fatalf("make private directory: %v", err)
+				}
+				return root
+			},
+			status: OK,
+		},
+		"special mode rejected": {
+			prepare: func(t *testing.T) string {
+				root := t.TempDir()
+				if err := os.Chmod(root, 0o700|os.ModeSetgid); err != nil {
+					t.Fatalf("set special mode: %v", err)
+				}
+				return root
+			},
+			status: Error,
+		},
+		"replaceable ancestor rejected": {
+			prepare: func(t *testing.T) string {
+				ancestor := filepath.Join(t.TempDir(), "replaceable")
+				root := filepath.Join(ancestor, "state")
+				if err := os.MkdirAll(root, 0o700); err != nil {
+					t.Fatalf("make state path: %v", err)
+				}
+				if err := os.Chmod(ancestor, 0o770); err != nil {
+					t.Fatalf("make ancestor replaceable: %v", err)
+				}
+				return root
+			},
+			status: Error,
+		},
+	}
+
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			root := test.prepare(t)
+			directory, productionErr := statefile.OpenPrivateDirectory(root, false)
+			if directory != nil {
+				if err := directory.Close(); err != nil {
+					t.Fatalf("close production observation: %v", err)
+				}
+			}
+			if got := inspectStatePathsAt(root, nil); got.Status != test.status {
+				t.Fatalf("doctor status = %s, want %s: %#v", got.Status, test.status, got)
+			}
+			if (productionErr == nil) != (test.status == OK) {
+				t.Fatalf("production error = %v, doctor expected status = %s", productionErr, test.status)
+			}
+		})
+	}
+}
+
+func TestStatePathsRejectDatabaseSpecialModeLikeProduction(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatalf("make private directory: %v", err)
+	}
+	database := filepath.Join(root, sessionstate.StateDatabaseFilename)
+	if err := os.WriteFile(database, nil, 0o600); err != nil {
+		t.Fatalf("write state database: %v", err)
+	}
+	if err := os.Chmod(database, 0o600|os.ModeSetgid); err != nil {
+		t.Fatalf("set database special mode: %v", err)
+	}
+	before, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatalf("list state root before inspection: %v", err)
+	}
+	if err := sessionstate.VerifyStateDatabaseContext(t.Context(), root); err == nil {
+		t.Fatal("production accepted database special mode")
+	}
+	check := inspectStatePathsAt(root, nil)
+	if check.Status != Error || !slices.Contains(check.Evidence, "path="+database) {
+		t.Fatalf("doctor state check = %#v, want matching special-mode rejection", check)
+	}
+	after, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatalf("list state root after inspection: %v", err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("read-only comparison changed state entries: before=%v after=%v", before, after)
 	}
 }
 

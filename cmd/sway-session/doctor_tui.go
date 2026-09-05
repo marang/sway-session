@@ -208,9 +208,9 @@ func (model doctorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			model.cursor = max(model.cursor-1, 0)
 			model.offset = 0
 		case "pgdown":
-			model.scroll(model.bodyHeight())
+			model.scroll(model.detailHeight())
 		case "pgup":
-			model.scroll(-model.bodyHeight())
+			model.scroll(-model.detailHeight())
 		case "/":
 			model.filtering = true
 			return model, model.filter.Focus()

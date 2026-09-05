@@ -21,7 +21,9 @@ const (
 	maxSwayConfigTotal   = 4 << 20
 	maxSwayConfigFiles   = 64
 	maxSwayIncludeDepth  = 16
+	maxSwayBlockDepth    = 64
 	maxSwayConfigLine    = 64 << 10
+	maxSwayEvidenceItems = 8
 )
 
 type integrationKind uint8
@@ -52,13 +54,22 @@ type integrationOccurrence struct {
 }
 
 type swayConfigAnalysis struct {
-	root        string
-	live        bool
-	occurrences map[integrationKind][]integrationOccurrence
-	includes    map[string]struct{}
-	files       int
-	unsupported error
-	observed    []configFingerprint
+	root              string
+	live              bool
+	occurrences       map[integrationKind][]integrationOccurrence
+	occurrenceCounts  map[integrationKind]int
+	matchingCounts    map[integrationKind]int
+	uncertain         map[integrationKind][]configUncertainty
+	uncertaintyCounts map[integrationKind]int
+	includes          map[string]struct{}
+	files             int
+	unsupported       error
+	observed          []configFingerprint
+}
+
+type configUncertainty struct {
+	where  configLocation
+	reason string
 }
 
 type configFingerprint struct {
@@ -70,12 +81,17 @@ type configFingerprint struct {
 func inspectSwayConfig(ctx context.Context, options Options) []Check {
 	analysis, err := analyzeSwayConfig(ctx, options)
 	if err != nil {
+		evidence := make([]string, 0, len(integrationOrder))
+		for _, kind := range integrationOrder {
+			evidence = append(evidence, fmt.Sprintf("%s: could not be fully checked", integrationLabel(kind)))
+		}
 		return []Check{{
-			ID:     swayIntegrationFixID,
-			Title:  "Sway integration",
-			Status: Unavailable,
-			Detail: "The selected Sway configuration could not be inspected safely.",
-			Hint:   err.Error(),
+			ID:       swayIntegrationFixID,
+			Title:    "Sway integration",
+			Status:   Unavailable,
+			Detail:   "The selected Sway configuration could not be inspected safely.",
+			Hint:     err.Error(),
+			Evidence: evidence,
 		}}
 	}
 
@@ -89,28 +105,21 @@ func inspectSwayConfig(ctx context.Context, options Options) []Check {
 		check.Evidence = append(check.Evidence, fmt.Sprintf("followed %d safe configuration files", analysis.files))
 	}
 
-	if analysis.unsupported != nil {
-		check.Status = Unavailable
-		check.Detail = "The Sway configuration uses syntax or paths this static check cannot safely interpret."
-		check.Hint = analysis.unsupported.Error()
-		return []Check{check}
-	}
-
 	missing := make([]string, 0, len(integrationOrder))
 	conflicts := make([]string, 0, len(integrationOrder))
+	unknown := make([]string, 0, len(integrationOrder))
+	concluded := 0
+	haveEvidence := false
 	for _, kind := range integrationOrder {
 		occurrences := analysis.occurrences[kind]
-		correct := 0
-		for _, occurrence := range occurrences {
-			if occurrence.correct {
-				correct++
-			}
-		}
-		switch {
-		case len(occurrences) == 0:
-			missing = append(missing, integrationLabel(kind))
-		case len(occurrences) != 1 || correct != 1:
+		occurrenceCount := analysis.occurrenceCounts[kind]
+		correct := analysis.matchingCounts[kind]
+		haveEvidence = haveEvidence || occurrenceCount != 0
+		conflicting := occurrenceCount > 1 || (occurrenceCount == 1 && correct != 1)
+		if conflicting {
+			concluded++
 			conflicts = append(conflicts, integrationLabel(kind))
+			check.Evidence = append(check.Evidence, fmt.Sprintf("%s: conflicting", integrationLabel(kind)))
 			for _, occurrence := range occurrences {
 				state := "conflicting declaration"
 				if occurrence.correct {
@@ -119,11 +128,60 @@ func inspectSwayConfig(ctx context.Context, options Options) []Check {
 				check.Evidence = append(check.Evidence,
 					fmt.Sprintf("%s: %s at %s:%d", integrationLabel(kind), state, occurrence.where.path, occurrence.where.line))
 			}
+			if omitted := occurrenceCount - len(occurrences); omitted > 0 {
+				check.Evidence = append(check.Evidence,
+					fmt.Sprintf("%s: %d additional declarations omitted", integrationLabel(kind), omitted))
+			}
+			if analysis.uncertaintyCounts[kind] == 0 {
+				continue
+			}
+		}
+		if analysis.uncertaintyCounts[kind] != 0 {
+			unknown = append(unknown, integrationLabel(kind))
+			evidence := fmt.Sprintf("%s: could not be fully checked", integrationLabel(kind))
+			if occurrenceCount == 1 && len(occurrences) == 1 && occurrences[0].correct {
+				evidence += fmt.Sprintf("; matching declaration observed at %s:%d", occurrences[0].where.path, occurrences[0].where.line)
+			}
+			check.Evidence = append(check.Evidence, evidence)
+			limitations := analysis.uncertain[kind]
+			for _, limitation := range limitations {
+				evidence := fmt.Sprintf("%s: %s", integrationLabel(kind), limitation.reason)
+				if limitation.where.path != "" && !strings.Contains(limitation.reason, limitation.where.path) {
+					evidence += fmt.Sprintf(" at %s:%d", limitation.where.path, limitation.where.line)
+				}
+				check.Evidence = append(check.Evidence, evidence)
+			}
+			if omitted := analysis.uncertaintyCounts[kind] - len(limitations); omitted > 0 {
+				check.Evidence = append(check.Evidence,
+					fmt.Sprintf("%s: %d additional limitations omitted", integrationLabel(kind), omitted))
+			}
+			continue
+		}
+		concluded++
+		switch {
+		case occurrenceCount == 0:
+			missing = append(missing, integrationLabel(kind))
+			check.Evidence = append(check.Evidence, fmt.Sprintf("%s: missing", integrationLabel(kind)))
 		default:
 			where := occurrences[0].where
 			check.Evidence = append(check.Evidence,
 				fmt.Sprintf("%s: present at %s:%d", integrationLabel(kind), where.path, where.line))
 		}
+	}
+
+	if len(unknown) != 0 {
+		check.Hint = "Automatic repair is unavailable because the uncertain declarations require manual review."
+		if analysis.unsupported != nil {
+			check.Hint = "Automatic repair is unavailable: " + analysis.unsupported.Error()
+		}
+		if concluded == 0 && !haveEvidence {
+			check.Status = Unavailable
+			check.Detail = "The Sway integration requirements could not be checked safely."
+		} else {
+			check.Status = Warning
+			check.Detail = "The Sway integration was partially checked; some requirements remain uncertain."
+		}
+		return []Check{check}
 	}
 
 	if len(conflicts) != 0 {
@@ -166,10 +224,14 @@ func analyzeSwayConfigWithEdits(ctx context.Context, options Options, edits []fi
 		return swayConfigAnalysis{}, fmt.Errorf("resolve Sway configuration: %w", err)
 	}
 	analysis := swayConfigAnalysis{
-		root:        selection.path,
-		live:        selection.live,
-		occurrences: make(map[integrationKind][]integrationOccurrence),
-		includes:    make(map[string]struct{}),
+		root:              selection.path,
+		live:              selection.live,
+		occurrences:       make(map[integrationKind][]integrationOccurrence),
+		occurrenceCounts:  make(map[integrationKind]int),
+		matchingCounts:    make(map[integrationKind]int),
+		uncertain:         make(map[integrationKind][]configUncertainty),
+		uncertaintyCounts: make(map[integrationKind]int),
+		includes:          make(map[string]struct{}),
 	}
 	variables := defaultSwayVariables()
 	scanner := swayStaticScanner{
@@ -200,30 +262,321 @@ type swayStaticScanner struct {
 	visited   map[string]bool
 	overrides map[string][]byte
 	total     int64
+	exhausted bool
+}
+
+type swayLogicalLine struct {
+	text  string
+	start int
+}
+
+type swayBlockKind uint8
+
+const (
+	swayBlockOpaque swayBlockKind = iota
+	swayBlockMode
+)
+
+type swayModeScope uint8
+
+const (
+	swayModeOther swayModeScope = iota
+	swayModeDefault
+	swayModeUnknown
+)
+
+type swayBlock struct {
+	kind swayBlockKind
+	mode swayModeScope
+}
+
+func forEachSwayLogicalLine(content []byte, visit func(swayLogicalLine) bool) error {
+	physical := bufio.NewScanner(strings.NewReader(string(content)))
+	physical.Buffer(make([]byte, 4096), maxSwayConfigLine)
+	var logical strings.Builder
+	var pending *swayLogicalLine
+	start := 0
+	line := 0
+	continued := false
+	emit := func(item swayLogicalLine) bool {
+		trimmed := strings.TrimSpace(item.text)
+		if pending != nil {
+			if trimmed == "" {
+				return true
+			}
+			if trimmed == "{" {
+				pending.text += " {"
+				ready := *pending
+				pending = nil
+				return visit(ready)
+			}
+			ready := *pending
+			pending = nil
+			if !visit(ready) {
+				return false
+			}
+		}
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") || strings.HasSuffix(trimmed, "{") || strings.HasSuffix(trimmed, "}") {
+			return visit(item)
+		}
+		copy := item
+		pending = &copy
+		return true
+	}
+	for physical.Scan() {
+		line++
+		part := physical.Text()
+		if start == 0 {
+			start = line
+		}
+		isContinuation := strings.HasSuffix(part, "\\") && (len(part) == 0 || part[0] != '#')
+		if isContinuation {
+			part = strings.TrimSuffix(part, "\\")
+		}
+		if logical.Len()+len(part) > maxSwayConfigLine {
+			return fmt.Errorf("continued line starting at %d exceeds the supported length", start)
+		}
+		logical.WriteString(part)
+		continued = isContinuation
+		if continued {
+			continue
+		}
+		if !emit(swayLogicalLine{text: logical.String(), start: start}) {
+			return nil
+		}
+		logical.Reset()
+		start = 0
+	}
+	if err := physical.Err(); err != nil {
+		return errors.New("a physical line exceeds the supported length")
+	}
+	if continued {
+		return fmt.Errorf("continued line starting at %d has no following line", start)
+	}
+	if pending != nil {
+		visit(*pending)
+	}
+	return nil
+}
+
+func terminalSwayBrace(line string) byte {
+	var quote byte
+	escaped := false
+	tokenActive := false
+	var tokenBrace byte
+	var lastBrace byte
+	finishToken := func() {
+		if tokenActive {
+			lastBrace = tokenBrace
+		}
+		tokenActive = false
+		tokenBrace = 0
+	}
+	for index := 0; index < len(line); index++ {
+		character := line[index]
+		if escaped {
+			if !tokenActive {
+				tokenActive = true
+			} else {
+				tokenBrace = 0
+			}
+			escaped = false
+			continue
+		}
+		if character == '\\' && quote != '\'' {
+			escaped = true
+			continue
+		}
+		if quote != 0 {
+			if character == quote {
+				quote = 0
+			} else {
+				tokenActive = true
+				tokenBrace = 0
+			}
+			continue
+		}
+		switch character {
+		case '\'', '"':
+			quote = character
+			tokenActive = true
+			tokenBrace = 0
+		case '#':
+			finishToken()
+			return lastBrace
+		case ' ', '\t', '\r':
+			finishToken()
+		default:
+			if tokenActive {
+				tokenBrace = 0
+			} else {
+				tokenActive = true
+				if character == '{' || character == '}' {
+					tokenBrace = character
+				}
+			}
+		}
+	}
+	finishToken()
+	return lastBrace
+}
+
+func (scanner *swayStaticScanner) classifyBlock(header []string, blocks []swayBlock, location configLocation) swayBlock {
+	if len(blocks) != 0 {
+		if blocks[len(blocks)-1].kind == swayBlockMode {
+			scanner.markShortcutUncertain(location, "nested syntax in a mode block requires manual shortcut review")
+		}
+		return swayBlock{kind: swayBlockOpaque}
+	}
+	if len(header) == 0 {
+		scanner.markUncertainAll(location, "a block without a command requires manual review")
+		return swayBlock{kind: swayBlockOpaque}
+	}
+	command := strings.ToLower(header[0])
+	if strings.ContainsRune(command, '$') {
+		scanner.markUncertainAll(location, "a variable-derived block command requires manual review")
+		return swayBlock{kind: swayBlockOpaque}
+	}
+	switch command {
+	case "mode":
+		return swayBlock{kind: swayBlockMode, mode: scanner.classifyModeBlock(header, location)}
+	case "output", "input", "bar":
+		return swayBlock{kind: swayBlockOpaque}
+	case "bindsym", "bindcode", "unbindsym", "unbindcode":
+		scanner.markShortcutUncertain(location, "a compound shortcut block requires manual review")
+	case "exec", "exec_always":
+		scanner.markStartupUncertain(location, "a compound startup block requires manual review")
+	default:
+		scanner.markUncertainAll(location, "an unsupported block command requires manual review")
+	}
+	return swayBlock{kind: swayBlockOpaque}
+}
+
+func (scanner *swayStaticScanner) classifyModeBlock(header []string, location configLocation) swayModeScope {
+	index := 1
+	if index < len(header) && strings.EqualFold(header[index], "--pango_markup") {
+		index++
+	}
+	if index != len(header)-1 {
+		scanner.markShortcutUncertain(location, "the binding mode name could not be resolved")
+		return swayModeUnknown
+	}
+	if strings.ContainsRune(header[index], '$') {
+		scanner.markShortcutUncertain(location, "a variable-derived binding mode name requires manual shortcut review")
+		return swayModeUnknown
+	}
+	name, err := expandSwayInclude(header[index], scanner.variables)
+	if err != nil {
+		scanner.markShortcutUncertain(location, "the binding mode name could not be resolved: "+err.Error())
+		return swayModeUnknown
+	}
+	if name == "default" {
+		return swayModeDefault
+	}
+	return swayModeOther
+}
+
+func (scanner *swayStaticScanner) recordSet(tokens []string, location configLocation) {
+	if len(tokens) < 3 || !strings.HasPrefix(tokens[1], "$") || !validSwayVariable(tokens[1]) {
+		return
+	}
+	value := strings.Join(tokens[2:], " ")
+	if tokens[1] == "$mod" {
+		if previous := scanner.variables["$mod"]; previous != "" && previous != value {
+			scanner.markShortcutUncertain(location, "changing $mod definitions require manual shortcut review")
+		}
+	}
+	scanner.variables[tokens[1]] = value
+}
+
+func (scanner *swayStaticScanner) markPotentialBindingUncertain(tokens []string, location configLocation) {
+	if len(tokens) == 0 {
+		return
+	}
+	command := strings.ToLower(tokens[0])
+	if strings.ContainsRune(command, '$') {
+		scanner.markShortcutUncertain(location, "a variable-derived command in an unresolved mode requires manual shortcut review")
+		return
+	}
+	switch command {
+	case "bindcode", "unbindcode", "unbindsym":
+		scanner.markShortcutUncertain(location, "a shortcut in an unresolved binding mode requires manual review")
+	case "bindsym":
+		copyTokens := append([]string(nil), tokens...)
+		copyTokens[0] = command
+		_, relevant, _, err := classifyBinding(copyTokens, scanner.variables)
+		if err != nil || relevant {
+			scanner.markShortcutUncertain(location, "a shortcut in an unresolved binding mode requires manual review")
+		}
+	}
+}
+
+func (scanner *swayStaticScanner) markUncertain(kinds []integrationKind, location configLocation, reason string) {
+	if scanner.analysis.unsupported == nil {
+		scanner.analysis.unsupported = errors.New(reason)
+	}
+	for _, kind := range kinds {
+		scanner.analysis.uncertaintyCounts[kind]++
+		if len(scanner.analysis.uncertain[kind]) < maxSwayEvidenceItems {
+			scanner.analysis.uncertain[kind] = append(scanner.analysis.uncertain[kind], configUncertainty{
+				where: location, reason: reason,
+			})
+		}
+	}
+}
+
+func (scanner *swayStaticScanner) recordOccurrence(kind integrationKind, correct bool, location configLocation) {
+	scanner.analysis.occurrenceCounts[kind]++
+	if correct {
+		scanner.analysis.matchingCounts[kind]++
+	}
+	if len(scanner.analysis.occurrences[kind]) < maxSwayEvidenceItems {
+		scanner.analysis.occurrences[kind] = append(scanner.analysis.occurrences[kind], integrationOccurrence{
+			kind: kind, correct: correct, where: location,
+		})
+	}
+}
+
+func (scanner *swayStaticScanner) markUncertainAll(location configLocation, reason string) {
+	scanner.markUncertain(integrationOrder, location, reason)
+}
+
+func (scanner *swayStaticScanner) markStartupUncertain(location configLocation, reason string) {
+	scanner.markUncertain([]integrationKind{integrationDaemon, integrationRestore}, location, reason)
+}
+
+func (scanner *swayStaticScanner) markShortcutUncertain(location configLocation, reason string) {
+	scanner.markUncertain([]integrationKind{integrationPersistent, integrationEphemeral}, location, reason)
 }
 
 func (scanner *swayStaticScanner) scan(path string, depth int) error {
 	if err := scanner.ctx.Err(); err != nil {
 		return err
 	}
+	if scanner.exhausted {
+		return nil
+	}
 	if depth > maxSwayIncludeDepth {
-		scanner.analysis.unsupported = fmt.Errorf("include nesting exceeds the supported depth of %d", maxSwayIncludeDepth)
+		scanner.markUncertainAll(configLocation{path: path},
+			fmt.Sprintf("include nesting exceeds the supported depth of %d", maxSwayIncludeDepth))
 		return nil
 	}
 	clean, err := cleanAbsolutePath(path)
 	if err != nil {
-		scanner.analysis.unsupported = fmt.Errorf("unsafe include path %q: %w", path, err)
+		scanner.markUncertainAll(configLocation{path: path}, fmt.Sprintf("unsafe include path %q: %v", path, err))
 		return nil
 	}
 	if scanner.active[clean] {
-		scanner.analysis.unsupported = fmt.Errorf("include cycle detected at %s", clean)
+		scanner.markUncertainAll(configLocation{path: clean}, fmt.Sprintf("include cycle detected at %s", clean))
 		return nil
 	}
 	if scanner.visited[clean] {
 		return nil
 	}
 	if scanner.analysis.files >= maxSwayConfigFiles {
-		scanner.analysis.unsupported = fmt.Errorf("include graph exceeds the supported limit of %d files", maxSwayConfigFiles)
+		scanner.exhausted = true
+		scanner.markUncertainAll(configLocation{path: clean},
+			fmt.Sprintf("include graph exceeds the supported limit of %d files", maxSwayConfigFiles))
 		return nil
 	}
 
@@ -232,13 +585,19 @@ func (scanner *swayStaticScanner) scan(path string, depth int) error {
 	if !overridden {
 		content, state, err = readSafeConfigFile(clean)
 		if err != nil {
+			if depth > 0 {
+				scanner.markUncertainAll(configLocation{path: clean},
+					fmt.Sprintf("included Sway configuration %s could not be inspected safely", clean))
+				return nil
+			}
 			return fmt.Errorf("inspect Sway configuration %s: %w", clean, err)
 		}
 	}
 	scanner.analysis.observed = append(scanner.analysis.observed, configFingerprint{path: clean, state: state, digest: sha256.Sum256(content)})
 	scanner.total += int64(len(content))
 	if scanner.total > maxSwayConfigTotal {
-		scanner.analysis.unsupported = fmt.Errorf("include graph exceeds the supported byte limit")
+		scanner.exhausted = true
+		scanner.markUncertainAll(configLocation{path: clean}, "include graph exceeds the supported byte limit")
 		return nil
 	}
 	scanner.analysis.files++
@@ -246,84 +605,153 @@ func (scanner *swayStaticScanner) scan(path string, depth int) error {
 	scanner.active[clean] = true
 	defer delete(scanner.active, clean)
 
-	lineScanner := bufio.NewScanner(strings.NewReader(string(content)))
-	lineScanner.Buffer(make([]byte, 4096), maxSwayConfigLine)
-	line := 0
-	for lineScanner.Scan() {
-		line++
+	blocks := make([]swayBlock, 0, 4)
+	blockDepthExhausted := false
+	var traversalErr error
+	err = forEachSwayLogicalLine(content, func(logical swayLogicalLine) bool {
 		if err := scanner.ctx.Err(); err != nil {
-			return err
+			return false
 		}
-		tokens, unsupported, err := tokenizeSwayLine(lineScanner.Text())
+		tokens, unsupported, err := tokenizeSwayLine(logical.text)
 		if err != nil {
-			scanner.analysis.unsupported = fmt.Errorf("cannot safely parse %s:%d: %w", clean, line, err)
-			return nil
+			scanner.markUncertainAll(configLocation{path: clean, line: logical.start},
+				fmt.Sprintf("cannot safely parse %s:%d: %v", clean, logical.start, err))
+			return true
 		}
 		if unsupported {
-			scanner.analysis.unsupported = fmt.Errorf("unsupported compound or continued syntax at %s:%d", clean, line)
-			return nil
+			scanner.markUncertainAll(configLocation{path: clean, line: logical.start},
+				fmt.Sprintf("unsupported syntax at %s:%d", clean, logical.start))
+			return true
 		}
 		if len(tokens) == 0 {
-			continue
+			return true
 		}
+		location := configLocation{path: clean, line: logical.start}
+		if blockDepthExhausted {
+			return true
+		}
+		brace := terminalSwayBrace(logical.text)
+		if brace == '}' {
+			if len(blocks) == 0 {
+				scanner.markUncertainAll(location, fmt.Sprintf("unmatched closing block at %s:%d", clean, logical.start))
+			} else {
+				if len(tokens) > 1 && blocks[len(blocks)-1].kind == swayBlockMode {
+					scanner.markUncertainAll(location, "a command combined with a mode block closing brace requires manual review")
+				}
+				blocks = blocks[:len(blocks)-1]
+			}
+			return true
+		}
+		if brace == '{' {
+			if len(blocks) >= maxSwayBlockDepth {
+				scanner.markUncertainAll(location,
+					fmt.Sprintf("block nesting exceeds the supported depth of %d", maxSwayBlockDepth))
+				blockDepthExhausted = true
+				return true
+			}
+			blocks = append(blocks, scanner.classifyBlock(tokens[:len(tokens)-1], blocks, location))
+			return true
+		}
+
+		if len(blocks) != 0 {
+			block := blocks[len(blocks)-1]
+			if block.kind != swayBlockMode {
+				return true
+			}
+			if strings.ContainsRune(tokens[0], '$') {
+				scanner.markUncertainAll(location, "a variable-derived command in a mode block requires manual review")
+				return true
+			}
+			if strings.EqualFold(tokens[0], "set") {
+				if len(tokens) < 3 || !strings.HasPrefix(tokens[1], "$") || !validSwayVariable(tokens[1]) {
+					scanner.markUncertainAll(location, "an unsupported variable assignment in a mode block requires manual review")
+					return true
+				}
+				scanner.recordSet(tokens, location)
+				return true
+			}
+			switch block.mode {
+			case swayModeDefault:
+				scanner.recordDefaultModeIntegration(tokens, location)
+			case swayModeUnknown:
+				scanner.markPotentialBindingUncertain(tokens, location)
+			}
+			return true
+		}
+
 		if strings.ContainsRune(tokens[0], '$') {
-			scanner.analysis.unsupported = fmt.Errorf("variable-derived command at %s:%d requires manual review", clean, line)
-			return nil
+			scanner.markUncertainAll(location,
+				fmt.Sprintf("variable-derived command at %s:%d requires manual review", clean, logical.start))
+			return true
 		}
 		// Sway command keywords are case-insensitive. Executable paths and their
 		// arguments remain case-sensitive and must not be normalized.
 		tokens[0] = strings.ToLower(tokens[0])
-		location := configLocation{path: clean, line: line}
 		scanner.recordIntegration(tokens, location)
-		if scanner.analysis.unsupported != nil {
-			return nil
-		}
-		switch strings.ToLower(tokens[0]) {
+		switch tokens[0] {
 		case "set":
-			if len(tokens) >= 3 && strings.HasPrefix(tokens[1], "$") && validSwayVariable(tokens[1]) {
-				value := strings.Join(tokens[2:], " ")
-				if tokens[1] == "$mod" {
-					if previous := scanner.variables["$mod"]; previous != "" && previous != value {
-						scanner.analysis.unsupported = errors.New("changing $mod definitions require manual review")
-						return nil
-					}
-				}
-				scanner.variables[tokens[1]] = value
-			}
+			scanner.recordSet(tokens, location)
 		case "include":
-			if err := scanner.followIncludes(clean, line, tokens[1:], depth); err != nil {
-				return err
-			}
-			if scanner.analysis.unsupported != nil {
-				return nil
+			if err := scanner.followIncludes(clean, logical.start, tokens[1:], depth); err != nil {
+				traversalErr = err
+				return false
 			}
 		}
+		return true
+	})
+	if err != nil {
+		scanner.markUncertainAll(configLocation{path: clean}, fmt.Sprintf("cannot safely parse %s: %v", clean, err))
 	}
-	if err := lineScanner.Err(); err != nil {
-		scanner.analysis.unsupported = fmt.Errorf("a line in %s exceeds the supported length", clean)
-		return nil
+	if traversalErr != nil {
+		return traversalErr
+	}
+	if contextErr := scanner.ctx.Err(); contextErr != nil {
+		return contextErr
+	}
+	if len(blocks) != 0 {
+		scanner.markUncertainAll(configLocation{path: clean}, fmt.Sprintf("unterminated block in %s", clean))
 	}
 	return nil
 }
 
+func (scanner *swayStaticScanner) recordDefaultModeIntegration(tokens []string, location configLocation) {
+	if len(tokens) == 0 {
+		return
+	}
+	command := strings.ToLower(tokens[0])
+	if strings.ContainsRune(command, '$') {
+		scanner.markShortcutUncertain(location, "a variable-derived default-mode command requires manual shortcut review")
+		return
+	}
+	switch command {
+	case "bindsym", "bindcode", "unbindsym", "unbindcode":
+		scanner.recordIntegration(tokens, location)
+	}
+}
+
 func (scanner *swayStaticScanner) followIncludes(parent string, line int, patterns []string, depth int) error {
+	if scanner.exhausted {
+		return nil
+	}
+	location := configLocation{path: parent, line: line}
 	if len(patterns) == 0 {
-		scanner.analysis.unsupported = fmt.Errorf("include at %s:%d has no path", parent, line)
+		scanner.markUncertainAll(location, fmt.Sprintf("include at %s:%d has no path", parent, line))
 		return nil
 	}
 	for _, pattern := range patterns {
 		expanded, err := expandSwayInclude(pattern, scanner.variables)
 		if err != nil {
-			scanner.analysis.unsupported = fmt.Errorf("cannot safely expand include at %s:%d: %w", parent, line, err)
-			return nil
+			scanner.markUncertainAll(location,
+				fmt.Sprintf("cannot safely expand include at %s:%d: %v", parent, line, err))
+			continue
 		}
 		if !filepath.IsAbs(expanded) {
 			expanded = filepath.Join(filepath.Dir(parent), expanded)
 		}
 		matches, err := filepath.Glob(expanded)
 		if err != nil {
-			scanner.analysis.unsupported = fmt.Errorf("invalid include glob at %s:%d", parent, line)
-			return nil
+			scanner.markUncertainAll(location, fmt.Sprintf("invalid include glob at %s:%d", parent, line))
+			continue
 		}
 		for path := range scanner.overrides {
 			if matched, _ := filepath.Match(expanded, path); matched && !containsPath(matches, path) {
@@ -338,11 +766,19 @@ func (scanner *swayStaticScanner) followIncludes(parent string, line int, patter
 				scanner.analysis.includes[clean] = struct{}{}
 				continue
 			}
-			scanner.analysis.unsupported = fmt.Errorf("include at %s:%d does not match an existing file", parent, line)
-			return nil
+			// Sway treats an include glob with no matches as a no-op. This is a
+			// common way to make optional config fragments available.
+			if strings.ContainsAny(expanded, "*?[") {
+				continue
+			}
+			scanner.markUncertainAll(location,
+				fmt.Sprintf("include at %s:%d does not match an existing file", parent, line))
+			continue
 		}
 		if len(matches)+scanner.analysis.files > maxSwayConfigFiles {
-			scanner.analysis.unsupported = fmt.Errorf("include graph exceeds the supported limit of %d files", maxSwayConfigFiles)
+			scanner.exhausted = true
+			scanner.markUncertainAll(location,
+				fmt.Sprintf("include graph exceeds the supported limit of %d files", maxSwayConfigFiles))
 			return nil
 		}
 		for _, match := range matches {
@@ -351,44 +787,49 @@ func (scanner *swayStaticScanner) followIncludes(parent string, line int, patter
 			if err := scanner.scan(clean, depth+1); err != nil {
 				return err
 			}
-			if scanner.analysis.unsupported != nil {
-				return nil
-			}
 		}
 	}
 	return nil
 }
 
 func (scanner *swayStaticScanner) recordIntegration(tokens []string, location configLocation) {
-	if tokens[0] == "bindcode" || tokens[0] == "unbindcode" || tokens[0] == "unbindsym" || tokens[0] == "mode" {
-		scanner.analysis.unsupported = errors.New("keycode, unbinding, or mode declarations require manual shortcut review")
+	if len(tokens) == 0 {
+		return
+	}
+	tokens = append([]string(nil), tokens...)
+	tokens[0] = strings.ToLower(tokens[0])
+	if tokens[0] == "mode" {
+		scanner.markShortcutUncertain(location, "binding mode selection requires manual shortcut review")
+		return
+	}
+	if tokens[0] == "bindcode" || tokens[0] == "unbindcode" || tokens[0] == "unbindsym" {
+		scanner.markShortcutUncertain(location, "keycode or unbinding syntax requires manual shortcut review")
 		return
 	}
 	if tokens[0] == "exec" || tokens[0] == "exec_always" {
 		for _, token := range tokens[1:] {
 			if strings.ContainsAny(token, "$`") {
-				scanner.analysis.unsupported = fmt.Errorf("variable or shell-derived startup at %s:%d requires manual review", location.path, location.line)
+				scanner.markStartupUncertain(location,
+					fmt.Sprintf("variable or shell-derived startup at %s:%d requires manual review", location.path, location.line))
 				return
 			}
 		}
 	}
 	if kind, relevant, correct := classifyStartup(tokens); relevant {
-		scanner.analysis.occurrences[kind] = append(scanner.analysis.occurrences[kind], integrationOccurrence{
-			kind: kind, correct: correct, where: location,
-		})
+		scanner.recordOccurrence(kind, correct, location)
 	} else if (tokens[0] == "exec" || tokens[0] == "exec_always") && strings.Contains(strings.Join(tokens[1:], " "), "sway-session") {
-		scanner.analysis.unsupported = fmt.Errorf("indirect sway-session startup at %s:%d requires manual review", location.path, location.line)
+		scanner.markStartupUncertain(location,
+			fmt.Sprintf("indirect sway-session startup at %s:%d requires manual review", location.path, location.line))
 		return
 	}
 	kind, relevant, correct, err := classifyBinding(tokens, scanner.variables)
 	if err != nil {
-		scanner.analysis.unsupported = fmt.Errorf("cannot safely resolve shortcut at %s:%d: %w", location.path, location.line, err)
+		scanner.markShortcutUncertain(location,
+			fmt.Sprintf("cannot safely resolve shortcut at %s:%d: %v", location.path, location.line, err))
 		return
 	}
 	if relevant {
-		scanner.analysis.occurrences[kind] = append(scanner.analysis.occurrences[kind], integrationOccurrence{
-			kind: kind, correct: correct, where: location,
-		})
+		scanner.recordOccurrence(kind, correct, location)
 	}
 }
 
@@ -656,8 +1097,6 @@ func tokenizeSwayLine(line string) ([]string, bool, error) {
 			haveToken = true
 		case '#':
 			index = len(line)
-		case ';', '{', '}':
-			return nil, true, nil
 		case ' ', '\t', '\r':
 			if haveToken {
 				tokens = append(tokens, token.String())

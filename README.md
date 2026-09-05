@@ -124,6 +124,16 @@ Reports containing an `error` exit with status 3; warnings and unavailable
 checks alone exit 0. Invalid arguments exit 2. Interactive quit exits 0.
 `--json` and non-TTY invocation always report without opening the TUI.
 
+The Sway integration check reports four separate findings in its details:
+daemon startup, restore startup, the default persistent-terminal shortcut and
+the default ephemeral-terminal shortcut. Normal output/input/bar and binding-mode
+blocks, continued lines and supported includes do not make the whole check
+unavailable. When only some requirements can be established, the summary is
+`warning` / partially checked, with known declarations and the exact remaining
+limitations. An uncertain shortcut does not erase known startup evidence.
+Each requirement retains up to eight limitation locations; larger reports show
+the omitted count instead of silently hiding additional blockers.
+
 The initial `sway.integration` fix only adds missing one-time startup commands
 and default terminal shortcuts through a sibling `50-sway-session-doctor.conf`
 snippet and, when needed, one include line. Existing files receive private
@@ -132,6 +142,13 @@ paths, and manual snippet edits require manual intervention. The scanner is
 deliberately static: it does not prove which keybinding is currently live.
 `--sway-config` selects an explicit file; otherwise doctor asks Sway for its
 loaded config path, falling back to the default on-disk path when unavailable.
+
+Sway's `get_config` returns main-file text, not an evaluated configuration or a
+complete shortcut inventory; included files are not included in that response.
+`get_binding_state` reports only the current mode. Doctor therefore uses Sway's
+reported config path and inspects the files, without claiming effective live
+bindings. Repairs require a complete, unambiguous inspection even when a partial
+diagnosis already provides useful information.
 
 Doctor never installs packages, changes session state, restarts services,
 reloads Sway, edits agent hooks, or changes AppArmor. Optional sockets are

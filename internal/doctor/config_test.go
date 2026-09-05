@@ -184,7 +184,8 @@ func writeSwayConfig(t *testing.T, content string) string {
 }
 
 func healthySwayConfig() string {
-	return "exec --no-startup-id /usr/bin/sway-session daemon\n" +
+	return "set $mod Mod4\n" +
+		"exec --no-startup-id /usr/bin/sway-session daemon\n" +
 		"exec --no-startup-id /usr/bin/sway-session restore\n" +
 		"bindsym $mod+Return exec --no-startup-id /usr/bin/sway-session terminal --new\n" +
 		"bindsym $mod+Shift+Return exec --no-startup-id /usr/bin/sway-session terminal --ephemeral\n"

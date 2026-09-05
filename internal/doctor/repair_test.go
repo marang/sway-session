@@ -12,7 +12,7 @@ import (
 func TestRepairPlanPreviewApplyBackupAndIdempotence(t *testing.T) {
 	directory := t.TempDir()
 	root := filepath.Join(directory, "config")
-	secret := "set $private super-secret-value\n"
+	secret := "set $mod Mod4\nset $private super-secret-value\n"
 	if err := os.WriteFile(root, []byte(secret), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +66,7 @@ func TestRepairPlanPreviewApplyBackupAndIdempotence(t *testing.T) {
 
 func TestRepairAddsOnlyMissingDirectives(t *testing.T) {
 	root := writeSwayConfig(t,
-		"exec --no-startup-id /custom/sway-session daemon\n"+
+		"set $mod Mod4\nexec --no-startup-id /custom/sway-session daemon\n"+
 			"bindsym $mod+Return exec --no-startup-id sway-session terminal --new\n")
 	service := New(Options{SwayConfigPath: root})
 	plan, err := service.Plan(context.Background(), swayIntegrationFixID)
@@ -88,7 +88,7 @@ func TestRepairRecoversMissingIncludedManagedSnippet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(root, []byte(includeLine+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(root, []byte("set $mod Mod4\n"+includeLine+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	service := New(Options{SwayConfigPath: root})

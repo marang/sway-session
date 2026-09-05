@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -36,6 +37,7 @@ type fileEdit struct {
 	missing         []integrationKind
 	root            string
 	snippetIncluded bool
+	observed        []configFingerprint
 }
 
 type safeDirectoryState struct {
@@ -44,6 +46,19 @@ type safeDirectoryState struct {
 	owner  uint32
 	mode   os.FileMode
 }
+
+// A receipt identifies the actual inode installed by this attempt. Equal bytes
+// alone never prove ownership of a file created by a different writer.
+type appliedFileEdit struct {
+	edit      fileEdit
+	installed safeFileState
+}
+
+// A failed compensation left a displaced file or an unverified destination.
+// Keep that uncertainty visible even when earlier writes roll back cleanly.
+type unresolvedRepairError struct{ error }
+
+func (err *unresolvedRepairError) Unwrap() error { return err.error }
 
 func (service *Service) Plan(ctx context.Context, fixID string) (Plan, error) {
 	if fixID != swayIntegrationFixID {
@@ -126,6 +141,7 @@ func (service *Service) Plan(ctx context.Context, fixID string) (Plan, error) {
 		missing:         slices.Clone(missing),
 		root:            analysis.root,
 		snippetIncluded: included,
+		observed:        slices.Clone(analysis.observed),
 	}
 	plan := Plan{ID: swayIntegrationFixID, Summary: "Add missing sway-session integration directives through a doctor-managed snippet."}
 	if !snippetExists || !bytes.Equal(snippetContent, newSnippet) {
@@ -165,6 +181,21 @@ func (service *Service) Plan(ctx context.Context, fixID string) (Plan, error) {
 	if len(plan.edits) == 0 {
 		return Plan{}, errors.New("sway integration repair produced no safe changes")
 	}
+	// A newly created snippet may also match an earlier include glob. Validate
+	// the proposed graph in memory, including variable state at that first use.
+	proposedOptions := service.options
+	proposedOptions.SwayConfigPath = analysis.root
+	proposed, err := analyzeSwayConfigWithEdits(ctx, proposedOptions, plan.edits)
+	if err != nil {
+		return Plan{}, fmt.Errorf("validate proposed configuration: %w", err)
+	}
+	if proposed.unsupported != nil {
+		return Plan{}, fmt.Errorf("repair cannot establish safe integration: %w", proposed.unsupported)
+	}
+	remaining, err := repairableMissing(proposed)
+	if err != nil || len(remaining) != 0 {
+		return Plan{}, errors.New("repair cannot establish unambiguous integration in the proposed include graph")
+	}
 	return plan, nil
 }
 
@@ -203,16 +234,19 @@ func (service *Service) Apply(ctx context.Context, plan Plan) (FixResult, error)
 		backups[index] = backup
 	}
 
-	applied := 0
-	for index, edit := range plan.edits {
+	var applied []appliedFileEdit
+	for _, edit := range plan.edits {
 		if err := ctx.Err(); err != nil {
-			return FixResult{}, service.rollbackFailure(plan.edits[:applied], backups, err)
+			return FixResult{}, service.rollbackFailure(applied, backups, err)
 		}
-		if err := atomicWriteEdit(edit); err != nil {
-			return FixResult{}, service.rollbackFailure(plan.edits[:index+1], backups,
+		receipt, err := atomicWriteEdit(edit)
+		if receipt.installed.inode != 0 {
+			applied = append(applied, receipt)
+		}
+		if err != nil {
+			return FixResult{}, service.rollbackFailure(applied, backups,
 				fmt.Errorf("apply %s: %w", edit.path, err))
 		}
-		applied = index + 1
 	}
 
 	resultBackups := make([]string, 0, len(backups))
@@ -228,39 +262,45 @@ func (service *Service) Apply(ctx context.Context, plan Plan) (FixResult, error)
 	}, nil
 }
 
-func (service *Service) rollbackFailure(applied []fileEdit, backups []string, cause error) error {
-	uncertain := false
+func (service *Service) rollbackFailure(applied []appliedFileEdit, backups []string, cause error) error {
+	var unresolved *unresolvedRepairError
+	uncertain := errors.As(cause, &unresolved)
+	var rollbackErrors []error
 	for index := len(applied) - 1; index >= 0; index-- {
-		edit := applied[index]
-		current, _, exists, err := readOptionalRepairFile(edit.path)
+		receipt := applied[index]
+		edit := receipt.edit
+		current, state, exists, err := readOptionalRepairFile(edit.path)
 		if err != nil {
 			uncertain = true
-			continue
-		}
-		if edit.existed && exists && bytes.Equal(current, edit.oldContent) {
 			continue
 		}
 		if !edit.existed && !exists {
 			continue
 		}
-		if !exists || !bytes.Equal(current, edit.newContent) {
+		if !exists || state != receipt.installed || !bytes.Equal(current, edit.newContent) {
 			uncertain = true
 			continue
 		}
 		if edit.existed {
 			restore := edit
+			restore.observed = nil
+			restore.oldContent = edit.newContent
+			restore.oldState = receipt.installed
 			restore.newContent = edit.oldContent
 			restore.mode = edit.oldState.mode
-			if err := atomicWriteEditWithoutOldIdentity(restore); err != nil {
+			if _, err := atomicWriteEdit(restore); err != nil {
 				uncertain = true
+				rollbackErrors = append(rollbackErrors, err)
 			}
 			continue
 		}
-		if err := unlinkProvenFile(edit); err != nil {
+		if err := unlinkProvenFile(receipt); err != nil {
 			uncertain = true
+			rollbackErrors = append(rollbackErrors, err)
 		}
 	}
 	hints := nonemptyStrings(backups)
+	cause = errors.Join(append([]error{cause}, rollbackErrors...)...)
 	if uncertain {
 		if len(hints) != 0 {
 			return fmt.Errorf("%w; rollback could not be proven complete; preserved backups: %s", cause, strings.Join(hints, ", "))
@@ -292,37 +332,6 @@ func repairableMissing(analysis swayConfigAnalysis) ([]integrationKind, error) {
 		}
 	}
 	return missing, nil
-}
-
-func repairSafetyAvailable(analysis swayConfigAnalysis, options Options) error {
-	_, rootState, err := readSafeConfigFile(analysis.root)
-	if err != nil {
-		return fmt.Errorf("root configuration is not safe to update: %w", err)
-	}
-	if rootState.owner != uint32(os.Getuid()) {
-		return errors.New("root configuration is not owned by the current user")
-	}
-	if _, err := inspectSafeRepairDirectory(filepath.Dir(analysis.root)); err != nil {
-		return fmt.Errorf("configuration directory is not safe to update: %w", err)
-	}
-	snippetPath := filepath.Join(filepath.Dir(analysis.root), doctorSnippetName)
-	if snippetPath == analysis.root {
-		return errors.New("root configuration path conflicts with the managed snippet path")
-	}
-	content, state, exists, err := readOptionalRepairFile(snippetPath)
-	if err != nil {
-		return fmt.Errorf("managed snippet is not safe to update: %w", err)
-	}
-	if exists {
-		if state.owner != uint32(os.Getuid()) {
-			return errors.New("managed snippet is not owned by the current user")
-		}
-		if _, err := parseManagedSnippet(content); err != nil {
-			return err
-		}
-	}
-	_, err = repairExecutable(options.Executable)
-	return err
 }
 
 func repairExecutable(value string) (string, error) {
@@ -528,7 +537,8 @@ func sameRepairPlan(left, right Plan) bool {
 		a, b := left.edits[index], right.edits[index]
 		if a.path != b.path || !bytes.Equal(a.oldContent, b.oldContent) || !bytes.Equal(a.newContent, b.newContent) ||
 			a.oldState != b.oldState || a.existed != b.existed || a.directory != b.directory || a.mode != b.mode ||
-			a.preview != b.preview || a.root != b.root || a.snippetIncluded != b.snippetIncluded || !slices.Equal(a.missing, b.missing) {
+			a.preview != b.preview || a.root != b.root || a.snippetIncluded != b.snippetIncluded || !slices.Equal(a.missing, b.missing) ||
+			!slices.Equal(a.observed, b.observed) {
 			return false
 		}
 	}
@@ -536,6 +546,15 @@ func sameRepairPlan(left, right Plan) bool {
 }
 
 func revalidateEdit(edit fileEdit) error {
+	for _, observed := range edit.observed {
+		content, state, err := readSafeConfigFile(observed.path)
+		if err != nil {
+			return fmt.Errorf("observed configuration cannot be revalidated: %w", err)
+		}
+		if state != observed.state || sha256.Sum256(content) != observed.digest {
+			return errors.New("observed configuration changed since the preview")
+		}
+	}
 	directory, err := inspectSafeRepairDirectory(filepath.Dir(edit.path))
 	if err != nil {
 		return err
@@ -591,24 +610,20 @@ func createExclusiveBackup(edit fileEdit) (string, error) {
 	return "", errors.New("could not allocate a unique backup path")
 }
 
-func atomicWriteEdit(edit fileEdit) error {
+func atomicWriteEdit(edit fileEdit) (appliedFileEdit, error) {
 	if err := revalidateEdit(edit); err != nil {
-		return err
+		return appliedFileEdit{}, err
 	}
-	return atomicWriteEditWithoutOldIdentity(edit)
-}
-
-func atomicWriteEditWithoutOldIdentity(edit fileEdit) error {
 	directory, err := openVerifiedDirectory(filepath.Dir(edit.path), edit.directory)
 	if err != nil {
-		return err
+		return appliedFileEdit{}, err
 	}
 	defer directory.Close()
 	name := filepath.Base(edit.path)
 	for range temporaryAttempts {
 		suffix, err := randomSuffix()
 		if err != nil {
-			return err
+			return appliedFileEdit{}, err
 		}
 		temporary := "." + name + ".tmp-" + suffix
 		fd, err := unix.Openat(int(directory.Fd()), temporary,
@@ -617,36 +632,95 @@ func atomicWriteEditWithoutOldIdentity(edit fileEdit) error {
 			continue
 		}
 		if err != nil {
-			return err
+			return appliedFileEdit{}, err
 		}
 		file := os.NewFile(uintptr(fd), temporary)
 		writeErr := writeAndSync(file, edit.newContent, edit.mode)
 		closeErr := file.Close()
 		if writeErr != nil || closeErr != nil {
 			_ = unix.Unlinkat(int(directory.Fd()), temporary, 0)
-			return errors.Join(writeErr, closeErr)
+			return appliedFileEdit{}, errors.Join(writeErr, closeErr)
 		}
-		if err := unix.Renameat(int(directory.Fd()), temporary, int(directory.Fd()), name); err != nil {
+		_, installed, err := readSafeConfigFileAt(int(directory.Fd()), temporary)
+		if err != nil {
 			_ = unix.Unlinkat(int(directory.Fd()), temporary, 0)
-			return err
+			return appliedFileEdit{}, err
 		}
-		return directory.Sync()
+		flags := uint(unix.RENAME_NOREPLACE)
+		if edit.existed {
+			flags = unix.RENAME_EXCHANGE
+		}
+		if err := unix.Renameat2(int(directory.Fd()), temporary, int(directory.Fd()), name, flags); err != nil {
+			_ = unix.Unlinkat(int(directory.Fd()), temporary, 0)
+			return appliedFileEdit{}, err
+		}
+		receipt := appliedFileEdit{edit: edit, installed: installed}
+		if edit.existed {
+			displaced, state, err := readSafeConfigFileAt(int(directory.Fd()), temporary)
+			if err != nil || state != edit.oldState || !bytes.Equal(displaced, edit.oldContent) {
+				return appliedFileEdit{}, restoreDisplacedFile(directory, temporary, name, receipt)
+			}
+			if err := unix.Unlinkat(int(directory.Fd()), temporary, 0); err != nil {
+				return receipt, fmt.Errorf("preserved displaced configuration at %s: %w", filepath.Join(filepath.Dir(edit.path), temporary), err)
+			}
+		}
+		return receipt, directory.Sync()
 	}
-	return errors.New("could not allocate a unique temporary path")
+	return appliedFileEdit{}, errors.New("could not allocate a unique temporary path")
 }
 
-func unlinkProvenFile(edit fileEdit) error {
+// Exchange preserves the displaced file until its identity and contents have
+// been checked. An ordinary editor save during staging is restored; if another
+// writer intervenes again, retain the displaced file and report its path.
+func restoreDisplacedFile(directory *os.File, temporary, name string, receipt appliedFileEdit) error {
+	path := filepath.Join(filepath.Dir(receipt.edit.path), temporary)
+	current, state, err := readSafeConfigFileAt(int(directory.Fd()), name)
+	if err != nil || state != receipt.installed || !bytes.Equal(current, receipt.edit.newContent) {
+		return &unresolvedRepairError{fmt.Errorf("target changed during repair; preserved concurrent configuration at %s", path)}
+	}
+	if err := unix.Renameat2(int(directory.Fd()), temporary, int(directory.Fd()), name, unix.RENAME_EXCHANGE); err != nil {
+		return &unresolvedRepairError{fmt.Errorf("target changed during repair; preserved concurrent configuration at %s: %w", path, err)}
+	}
+	current, state, err = readSafeConfigFileAt(int(directory.Fd()), temporary)
+	if err != nil || state != receipt.installed || !bytes.Equal(current, receipt.edit.newContent) {
+		return &unresolvedRepairError{fmt.Errorf("target changed again during repair; preserved additional concurrent configuration at %s", path)}
+	}
+	if err := unix.Unlinkat(int(directory.Fd()), temporary, 0); err != nil {
+		return &unresolvedRepairError{fmt.Errorf("concurrent configuration restored; temporary repair file remains at %s: %w", path, err)}
+	}
+	if err := directory.Sync(); err != nil {
+		return &unresolvedRepairError{fmt.Errorf("concurrent configuration restored but directory sync failed: %w", err)}
+	}
+	return errors.New("target changed during repair; concurrent configuration was restored")
+}
+
+func unlinkProvenFile(receipt appliedFileEdit) error {
+	edit := receipt.edit
 	directory, err := openVerifiedDirectory(filepath.Dir(edit.path), edit.directory)
 	if err != nil {
 		return err
 	}
 	defer directory.Close()
-	current, _, exists, err := readOptionalRepairFile(edit.path)
-	if err != nil || !exists || !bytes.Equal(current, edit.newContent) {
-		return errors.New("created target can no longer be proven to be doctor-owned")
-	}
-	if err := unix.Unlinkat(int(directory.Fd()), filepath.Base(edit.path), 0); err != nil {
+	// Move first, then verify, so a racing replacement is preserved instead of
+	// being unlinked merely because it has identical bytes.
+	suffix, err := randomSuffix()
+	if err != nil {
 		return err
+	}
+	name := filepath.Base(edit.path)
+	temporary := "." + name + ".rollback-" + suffix
+	if err := unix.Renameat2(int(directory.Fd()), name, int(directory.Fd()), temporary, unix.RENAME_NOREPLACE); err != nil {
+		return err
+	}
+	current, state, err := readSafeConfigFileAt(int(directory.Fd()), temporary)
+	if err != nil || state != receipt.installed || !bytes.Equal(current, edit.newContent) {
+		if err := unix.Renameat2(int(directory.Fd()), temporary, int(directory.Fd()), name, unix.RENAME_NOREPLACE); err != nil {
+			return fmt.Errorf("created target changed; preserved concurrent configuration at %s", filepath.Join(filepath.Dir(edit.path), temporary))
+		}
+		return errors.New("created target changed; concurrent configuration was restored")
+	}
+	if err := unix.Unlinkat(int(directory.Fd()), temporary, 0); err != nil {
+		return fmt.Errorf("temporary repair file remains at %s: %w", filepath.Join(filepath.Dir(edit.path), temporary), err)
 	}
 	return directory.Sync()
 }

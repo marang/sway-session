@@ -3,6 +3,7 @@ package doctor
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -57,6 +58,13 @@ type swayConfigAnalysis struct {
 	includes    map[string]struct{}
 	files       int
 	unsupported error
+	observed    []configFingerprint
+}
+
+type configFingerprint struct {
+	path   string
+	state  safeFileState
+	digest [sha256.Size]byte
 }
 
 func inspectSwayConfig(ctx context.Context, options Options) []Check {
@@ -128,7 +136,7 @@ func inspectSwayConfig(ctx context.Context, options Options) []Check {
 		check.Status = Warning
 		check.Detail = "The configuration file is missing: " + strings.Join(missing, ", ") + "."
 		check.Hint = "This is a static file check; apply the repair, then reload Sway when convenient."
-		if safetyErr := repairSafetyAvailable(analysis, options); safetyErr == nil {
+		if _, safetyErr := New(options).Plan(ctx, swayIntegrationFixID); safetyErr == nil {
 			check.FixID = swayIntegrationFixID
 		} else {
 			check.Hint = "Automatic repair is unavailable: " + safetyErr.Error()
@@ -143,6 +151,10 @@ func inspectSwayConfig(ctx context.Context, options Options) []Check {
 }
 
 func analyzeSwayConfig(ctx context.Context, options Options) (swayConfigAnalysis, error) {
+	return analyzeSwayConfigWithEdits(ctx, options, nil)
+}
+
+func analyzeSwayConfigWithEdits(ctx context.Context, options Options, edits []fileEdit) (swayConfigAnalysis, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -165,6 +177,11 @@ func analyzeSwayConfig(ctx context.Context, options Options) (swayConfigAnalysis
 		analysis:  &analysis,
 		variables: variables,
 		active:    make(map[string]bool),
+		visited:   make(map[string]bool),
+		overrides: make(map[string][]byte),
+	}
+	for _, edit := range edits {
+		scanner.overrides[edit.path] = edit.newContent
 	}
 	if err := scanner.scan(selection.path, 0); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -180,6 +197,8 @@ type swayStaticScanner struct {
 	analysis  *swayConfigAnalysis
 	variables map[string]string
 	active    map[string]bool
+	visited   map[string]bool
+	overrides map[string][]byte
 	total     int64
 }
 
@@ -200,21 +219,30 @@ func (scanner *swayStaticScanner) scan(path string, depth int) error {
 		scanner.analysis.unsupported = fmt.Errorf("include cycle detected at %s", clean)
 		return nil
 	}
+	if scanner.visited[clean] {
+		return nil
+	}
 	if scanner.analysis.files >= maxSwayConfigFiles {
 		scanner.analysis.unsupported = fmt.Errorf("include graph exceeds the supported limit of %d files", maxSwayConfigFiles)
 		return nil
 	}
 
-	content, _, err := readSafeConfigFile(clean)
-	if err != nil {
-		return fmt.Errorf("inspect Sway configuration %s: %w", clean, err)
+	content, overridden := scanner.overrides[clean]
+	var state safeFileState
+	if !overridden {
+		content, state, err = readSafeConfigFile(clean)
+		if err != nil {
+			return fmt.Errorf("inspect Sway configuration %s: %w", clean, err)
+		}
 	}
+	scanner.analysis.observed = append(scanner.analysis.observed, configFingerprint{path: clean, state: state, digest: sha256.Sum256(content)})
 	scanner.total += int64(len(content))
 	if scanner.total > maxSwayConfigTotal {
 		scanner.analysis.unsupported = fmt.Errorf("include graph exceeds the supported byte limit")
 		return nil
 	}
 	scanner.analysis.files++
+	scanner.visited[clean] = true
 	scanner.active[clean] = true
 	defer delete(scanner.active, clean)
 
@@ -240,10 +268,20 @@ func (scanner *swayStaticScanner) scan(path string, depth int) error {
 		}
 		location := configLocation{path: clean, line: line}
 		scanner.recordIntegration(tokens, location)
+		if scanner.analysis.unsupported != nil {
+			return nil
+		}
 		switch strings.ToLower(tokens[0]) {
 		case "set":
 			if len(tokens) >= 3 && strings.HasPrefix(tokens[1], "$") && validSwayVariable(tokens[1]) {
-				scanner.variables[tokens[1]] = strings.Join(tokens[2:], " ")
+				value := strings.Join(tokens[2:], " ")
+				if tokens[1] == "$mod" {
+					if previous := scanner.variables["$mod"]; previous != "" && previous != value {
+						scanner.analysis.unsupported = errors.New("changing $mod definitions require manual review")
+						return nil
+					}
+				}
+				scanner.variables[tokens[1]] = value
 			}
 		case "include":
 			if err := scanner.followIncludes(clean, line, tokens[1:], depth); err != nil {
@@ -280,6 +318,11 @@ func (scanner *swayStaticScanner) followIncludes(parent string, line int, patter
 			scanner.analysis.unsupported = fmt.Errorf("invalid include glob at %s:%d", parent, line)
 			return nil
 		}
+		for path := range scanner.overrides {
+			if matched, _ := filepath.Match(expanded, path); matched && !containsPath(matches, path) {
+				matches = append(matches, path)
+			}
+		}
 		sort.Strings(matches)
 		if len(matches) == 0 {
 			clean := filepath.Clean(expanded)
@@ -310,12 +353,21 @@ func (scanner *swayStaticScanner) followIncludes(parent string, line int, patter
 }
 
 func (scanner *swayStaticScanner) recordIntegration(tokens []string, location configLocation) {
+	if tokens[0] == "bindcode" || tokens[0] == "unbindcode" || tokens[0] == "unbindsym" || tokens[0] == "mode" {
+		scanner.analysis.unsupported = errors.New("keycode, unbinding, or mode declarations require manual shortcut review")
+		return
+	}
 	if kind, relevant, correct := classifyStartup(tokens); relevant {
 		scanner.analysis.occurrences[kind] = append(scanner.analysis.occurrences[kind], integrationOccurrence{
 			kind: kind, correct: correct, where: location,
 		})
 	}
-	if kind, relevant, correct := classifyBinding(tokens); relevant {
+	kind, relevant, correct, err := classifyBinding(tokens, scanner.variables)
+	if err != nil {
+		scanner.analysis.unsupported = fmt.Errorf("cannot safely resolve shortcut at %s:%d: %w", location.path, location.line, err)
+		return
+	}
+	if relevant {
 		scanner.analysis.occurrences[kind] = append(scanner.analysis.occurrences[kind], integrationOccurrence{
 			kind: kind, correct: correct, where: location,
 		})
@@ -342,39 +394,118 @@ func classifyStartup(tokens []string) (integrationKind, bool, bool) {
 	return kind, true, tokens[0] == "exec" && len(command) == 2
 }
 
-func classifyBinding(tokens []string) (integrationKind, bool, bool) {
+func classifyBinding(tokens []string, variables map[string]string) (integrationKind, bool, bool, error) {
 	if len(tokens) < 3 || tokens[0] != "bindsym" {
-		return 0, false, false
+		return 0, false, false, nil
 	}
 	index := 1
+	ordinaryOptions := true
 	for index < len(tokens) && strings.HasPrefix(tokens[index], "--") {
+		switch tokens[index] {
+		case "--no-warn":
+		case "--release", "--locked", "--no-repeat", "--inhibited", "--whole-window", "--border", "--exclude-titlebar", "--to-code":
+			ordinaryOptions = false
+		default:
+			if !strings.HasPrefix(tokens[index], "--input-device=") {
+				return 0, false, false, errors.New("unknown binding option requires manual review")
+			}
+			ordinaryOptions = false
+		}
 		index++
 	}
 	if index >= len(tokens) {
-		return 0, false, false
+		return 0, false, false, nil
 	}
-	key := tokens[index]
+	key, err := expandSwayInclude(tokens[index], variables)
+	if err != nil {
+		return 0, false, false, err
+	}
+	mod, ok := modifierMask(variables["$mod"])
+	if !ok || mod&1 != 0 {
+		return 0, false, false, errors.New("a known $mod definition without Shift is required to verify the default shortcuts")
+	}
+	parts := strings.Split(key, "+")
+	keyMask := uint16(0)
+	returnKey := false
+	unknownPart := false
+	for _, part := range parts {
+		if strings.EqualFold(part, "Return") {
+			returnKey = true
+			continue
+		}
+		mask, ok := modifierMask(part)
+		if !ok {
+			unknownPart = true
+			continue
+		}
+		keyMask |= mask
+	}
+	if !returnKey {
+		return 0, false, false, nil
+	}
+	if unknownPart {
+		return 0, false, false, errors.New("unsupported Return shortcut requires manual review")
+	}
 	var kind integrationKind
-	switch key {
-	case "$mod+Return":
+	switch keyMask {
+	case mod:
 		kind = integrationPersistent
-	case "$mod+Shift+Return":
+	case mod | 1:
 		kind = integrationEphemeral
 	default:
-		return 0, false, false
+		return 0, false, false, nil
 	}
 	command := tokens[index+1:]
+	if !ordinaryOptions {
+		return kind, true, false, nil
+	}
 	if len(command) == 0 || command[0] != "exec" {
-		return kind, true, false
+		return kind, true, false, nil
 	}
 	command = skipExecOptions(command[1:])
 	if len(command) != 3 || filepath.Base(command[0]) != "sway-session" || command[1] != "terminal" {
-		return kind, true, false
+		return kind, true, false, nil
 	}
 	if kind == integrationPersistent {
-		return kind, true, command[2] == "--new"
+		return kind, true, command[2] == "--new", nil
 	}
-	return kind, true, command[2] == "--ephemeral"
+	return kind, true, command[2] == "--ephemeral", nil
+}
+
+func modifierMask(value string) (uint16, bool) {
+	var mask uint16
+	for _, part := range strings.Split(value, "+") {
+		switch strings.ToLower(part) {
+		case "shift":
+			mask |= 1
+		case "lock":
+			mask |= 2
+		case "control", "ctrl":
+			mask |= 4
+		case "mod1":
+			mask |= 8
+		case "mod2":
+			mask |= 16
+		case "mod3":
+			mask |= 32
+		case "mod4":
+			mask |= 64
+		case "mod5":
+			mask |= 128
+		default:
+			return 0, false
+		}
+	}
+	return mask, mask != 0
+}
+
+func containsPath(paths []string, path string) bool {
+	for _, candidate := range paths {
+		if candidate == path {
+			return true
+		}
+	}
+	return false
 }
 
 func skipExecOptions(tokens []string) []string {
@@ -504,7 +635,7 @@ func tokenizeSwayLine(line string) ([]string, bool, error) {
 			haveToken = true
 		case '#':
 			index = len(line)
-		case ';':
+		case ';', '{', '}':
 			return nil, true, nil
 		case ' ', '\t', '\r':
 			if haveToken {
@@ -539,7 +670,11 @@ type safeFileState struct {
 }
 
 func readSafeConfigFile(path string) ([]byte, safeFileState, error) {
-	fd, err := unix.Openat2(unix.AT_FDCWD, path, &unix.OpenHow{
+	return readSafeConfigFileAt(unix.AT_FDCWD, path)
+}
+
+func readSafeConfigFileAt(directory int, path string) ([]byte, safeFileState, error) {
+	fd, err := unix.Openat2(directory, path, &unix.OpenHow{
 		Flags:   unix.O_RDONLY | unix.O_CLOEXEC | unix.O_NOFOLLOW | unix.O_NONBLOCK,
 		Resolve: unix.RESOLVE_NO_MAGICLINKS | unix.RESOLVE_NO_SYMLINKS,
 	})

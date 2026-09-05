@@ -3,9 +3,9 @@ package doctor
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -30,6 +30,8 @@ const (
 	maxProcRead                             = 64 * 1024
 	maxBinaryDigestSize                     = 128 * 1024 * 1024
 	maxCapabilityOutput                     = 4096
+	// Keep this read-only path check aligned with session.maxStateDatabaseBytes.
+	maxStateDatabaseSize = int64(1 << 30)
 )
 
 // runtimeProbes keeps observation boundaries replaceable by focused package
@@ -42,7 +44,6 @@ var runtimeProbes = struct {
 	readFile   func(string, int) ([]byte, error)
 	readlink   func(string) (string, error)
 	lstat      func(string) (os.FileInfo, error)
-	stat       func(string) (os.FileInfo, error)
 	run        func(context.Context, string, ...string) ([]byte, error)
 }{
 	getenv:     os.Getenv,
@@ -53,7 +54,6 @@ var runtimeProbes = struct {
 	readFile: readFileBounded,
 	readlink: os.Readlink,
 	lstat:    os.Lstat,
-	stat:     os.Stat,
 	run:      runReadOnlyProbe,
 }
 
@@ -96,6 +96,8 @@ func inspectRuntime(ctx context.Context, options Options) []Check {
 	checks = append(checks, socketCheck)
 	if socket != "" {
 		checks = append(checks, inspectSwayTree(ctx, socket))
+	} else {
+		checks = append(checks, unavailableCheck("sway.tree", "Sway tree", "No Sway IPC socket is available, so the compositor tree cannot be inspected."))
 	}
 
 	runtimeRoot, runtimeErr := runtimeDirectory()
@@ -103,7 +105,7 @@ func inspectRuntime(ctx context.Context, options Options) []Check {
 	checks = append(checks, inspectStatePaths())
 	observation := inspectDaemonLock(runtimeRoot, runtimeErr)
 	checks = append(checks, observation.check)
-	checks = append(checks, inspectDaemonBinary(options, observation))
+	checks = append(checks, inspectDaemonBinary(ctx, options, observation))
 	checks = append(checks, inspectOptionalSockets(runtimeRoot, runtimeErr)...)
 	checks = append(checks, appArmorCheck())
 	return checks
@@ -111,21 +113,26 @@ func inspectRuntime(ctx context.Context, options Options) []Check {
 
 func sessionConfigCheck(options Options, path string, config sessionstate.SessionConfig, err error) Check {
 	if err != nil {
-		return Check{ID: "session.config", Title: "Session configuration", Status: Error, Detail: "The session configuration is invalid.", Hint: "Correct the configuration and run doctor again."}
+		check := Check{ID: "session.config", Title: "Session configuration", Status: Error, Detail: "The session configuration is invalid.", Hint: "Correct the selected configuration file and run doctor again."}
+		if path != "" {
+			check.Evidence = []string{"path=" + path}
+		}
+		return check
 	}
+	evidence := []string{"path=" + path, "adapter=" + string(config.Terminal.Adapter)}
 	if options.ConfigPath == "" {
 		if _, statErr := runtimeProbes.lstat(path); errors.Is(statErr, os.ErrNotExist) {
-			return Check{ID: "session.config", Title: "Session configuration", Status: OK, Detail: "No default session configuration file exists; compiled defaults are active.", Evidence: []string{"adapter=" + string(config.Terminal.Adapter)}}
+			return Check{ID: "session.config", Title: "Session configuration", Status: OK, Detail: "No default session configuration file exists; compiled defaults are active.", Evidence: evidence}
 		}
-		return Check{ID: "session.config", Title: "Session configuration", Status: OK, Detail: "The default-location session configuration is valid.", Evidence: []string{"adapter=" + string(config.Terminal.Adapter)}}
+		return Check{ID: "session.config", Title: "Session configuration", Status: OK, Detail: "The default-location session configuration is valid.", Evidence: evidence}
 	}
-	return Check{ID: "session.config", Title: "Session configuration", Status: OK, Detail: "The explicit session configuration is valid.", Evidence: []string{"adapter=" + string(config.Terminal.Adapter)}}
+	return Check{ID: "session.config", Title: "Session configuration", Status: OK, Detail: "The explicit session configuration is valid.", Evidence: evidence}
 }
 
 func inspectTerminalPrograms(config sessionstate.SessionConfig) (Check, Check) {
 	adapterName, err := sessionstate.TerminalAdapterExecutableName(config.Terminal.Adapter)
 	if err != nil {
-		return errorCheck("terminal.adapter", "Terminal adapter", "The selected terminal adapter is unsupported."), unavailableCheck("herdr.executable", "Herdr executable", "Herdr is not evaluated because the terminal adapter is invalid.")
+		return Check{ID: "terminal.adapter", Title: "Terminal adapter", Status: Error, Detail: "The selected terminal adapter is unsupported.", Hint: "Select a supported terminal adapter in the session configuration."}, unavailableCheck("herdr.executable", "Herdr executable", "Herdr is not evaluated because the terminal adapter is invalid.")
 	}
 	terminalPath, err := sessionstate.ResolveTrustedExecutable(adapterName)
 	terminal := Check{ID: "terminal.adapter", Title: "Terminal adapter"}
@@ -152,7 +159,7 @@ func inspectHerdrHistory(config sessionstate.SessionConfig) Check {
 	}
 	paths, err := sessionstate.DefaultHerdrPaths()
 	if err != nil {
-		return errorCheck("herdr.pane_history", "Herdr pane history", "Herdr paths are invalid for this environment.")
+		return Check{ID: "herdr.pane_history", Title: "Herdr pane history", Status: Error, Detail: "Herdr paths are invalid for this environment.", Hint: "Set XDG_CONFIG_HOME and HERDR_CONFIG_PATH to clean absolute paths, then run doctor again."}
 	}
 	if err := sessionstate.ValidateHerdrPaneHistory(paths); err != nil {
 		return Check{ID: "herdr.pane_history", Title: "Herdr pane history", Status: Error, Detail: "Herdr pane history is not ready or its owner-only state is unsafe.", Hint: "Enable [experimental] pane_history = true and correct Herdr state permissions."}
@@ -188,9 +195,9 @@ func selectedSwaySocket(options Options) (string, Check) {
 		return "", unavailableCheck("sway.ipc", "Sway IPC", "No Sway IPC socket is available; this is expected outside a Sway session.")
 	}
 	if !cleanAbsolute(socket) {
-		return "", errorCheck("sway.ipc", "Sway IPC", "The selected Sway IPC socket is not a clean absolute path.")
+		return "", Check{ID: "sway.ipc", Title: "Sway IPC", Status: Error, Detail: "The selected Sway IPC socket is not a clean absolute path.", Hint: "Set SWAYSOCK or --socket to the clean absolute path reported by the active Sway session.", Evidence: []string{"path=" + socket}}
 	}
-	return socket, Check{ID: "sway.ipc", Title: "Sway IPC", Status: OK, Detail: "A Sway IPC socket was selected; the compositor tree is checked separately."}
+	return socket, Check{ID: "sway.ipc", Title: "Sway IPC", Status: OK, Detail: "A Sway IPC socket was selected; the compositor tree is checked separately.", Evidence: []string{"path=" + socket}}
 }
 
 func inspectSwayTree(ctx context.Context, socket string) Check {
@@ -204,11 +211,11 @@ func inspectSwayTree(ctx context.Context, socket string) Check {
 		return unavailableCheck("sway.tree", "Sway tree", "The Sway compositor tree is unavailable; this is expected when Sway is not running.")
 	}
 	if message.Type != swayipc.GetTree {
-		return errorCheck("sway.tree", "Sway tree", "Sway returned an unexpected response to the tree request.")
+		return Check{ID: "sway.tree", Title: "Sway tree", Status: Error, Detail: "Sway returned an unexpected response to the tree request.", Hint: "Verify that the selected socket belongs to a compatible Sway compositor."}
 	}
 	var tree swayipc.TreeNode
 	if err := json.Unmarshal(message.Payload, &tree); err != nil || tree.Type != "root" {
-		return errorCheck("sway.tree", "Sway tree", "Sway returned an invalid compositor tree.")
+		return Check{ID: "sway.tree", Title: "Sway tree", Status: Error, Detail: "Sway returned an invalid compositor tree.", Hint: "Verify the Sway version and selected IPC socket, then run doctor again."}
 	}
 	return Check{ID: "sway.tree", Title: "Sway tree", Status: OK, Detail: "Sway returned a valid compositor tree."}
 }
@@ -283,15 +290,16 @@ func runtimeDirectory() (string, error) {
 
 func inspectRuntimePaths(root string, rootErr error) Check {
 	if rootErr != nil {
-		return unavailableCheck("runtime.paths", "Runtime paths", "The private runtime directory cannot be located from XDG_RUNTIME_DIR.")
+		return Check{ID: "runtime.paths", Title: "Runtime paths", Status: Unavailable, Detail: "The private runtime directory cannot be located from XDG_RUNTIME_DIR.", Hint: "Set XDG_RUNTIME_DIR to the clean absolute runtime directory created for this login session."}
 	}
-	if _, err := inspectPrivateObjectStat(root, unix.S_IFDIR, 0o700, true); err != nil {
+	stat, err := inspectPrivateObjectStat(root, unix.S_IFDIR, 0o700, true)
+	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return unavailableCheck("runtime.paths", "Runtime paths", "No sway-session runtime directory exists; the daemon is not currently initialized.")
+			return Check{ID: "runtime.paths", Title: "Runtime paths", Status: Unavailable, Detail: "No sway-session runtime directory exists; the daemon is not currently initialized.", Evidence: []string{"path=" + root}}
 		}
-		return errorCheck("runtime.paths", "Runtime paths", "The sway-session runtime directory is not an owner-only private directory.")
+		return privateObjectErrorCheck("runtime.paths", "Runtime paths", "The sway-session runtime directory is not an owner-only private directory.", root, "owner-only directory mode 0700", stat, "Correct the runtime directory ownership and permissions, or restart the user session to recreate it safely.")
 	}
-	return Check{ID: "runtime.paths", Title: "Runtime paths", Status: OK, Detail: "The sway-session runtime directory is owner-only."}
+	return Check{ID: "runtime.paths", Title: "Runtime paths", Status: OK, Detail: "The sway-session runtime directory is owner-only.", Evidence: []string{"path=" + root}}
 }
 
 type daemonObservation struct {
@@ -308,21 +316,21 @@ func inspectDaemonLock(root string, rootErr error) daemonObservation {
 	lockStat, err := inspectPrivateObjectStat(path, unix.S_IFREG, 0o600, false)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return daemonObservation{check: unavailableCheck("daemon.lock", "Daemon lock", "No daemon lock file exists; no daemon is proven to be running.")}
+			return daemonObservation{check: Check{ID: "daemon.lock", Title: "Daemon lock", Status: Unavailable, Detail: "No daemon lock file exists; no daemon is proven to be running.", Evidence: []string{"path=" + path}}}
 		}
-		return daemonObservation{check: errorCheck("daemon.lock", "Daemon lock", "The daemon lock is not an owner-only single-link regular file.")}
+		return daemonObservation{check: privateObjectErrorCheck("daemon.lock", "Daemon lock", "The daemon lock is not an owner-only single-link regular file.", path, "single-link owner-only regular file mode 0600", lockStat, "Stop and inspect the lock holder before correcting this path; never replace it while a daemon may be running.")}
 	}
 	pid, err := lockedByPID(&lockStat)
 	if err != nil {
-		return daemonObservation{check: unavailableCheck("daemon.lock", "Daemon lock", "The daemon lock file exists, but no held advisory lock could be proven.")}
+		return daemonObservation{check: Check{ID: "daemon.lock", Title: "Daemon lock", Status: Unavailable, Detail: "The daemon lock file exists, but no held advisory lock could be proven.", Hint: "Start or restart the daemon if persistent-session service is expected.", Evidence: []string{"path=" + path}}}
 	}
 	if !sameUID(pid) || !daemonCommand(pid) {
-		return daemonObservation{check: unavailableCheck("daemon.lock", "Daemon lock", "A process holds the lock, but it is not proven to be this user's sway-session daemon.")}
+		return daemonObservation{check: Check{ID: "daemon.lock", Title: "Daemon lock", Status: Unavailable, Detail: "A process holds the lock, but it is not proven to be this user's sway-session daemon.", Hint: "Inspect the same-user lock holder before restarting the daemon.", Evidence: []string{"path=" + path, fmt.Sprintf("pid=%d", pid)}}}
 	}
-	return daemonObservation{pid: pid, valid: true, check: Check{ID: "daemon.lock", Title: "Daemon lock", Status: OK, Detail: "A same-user sway-session daemon holds the advisory lock.", Evidence: []string{"held"}}}
+	return daemonObservation{pid: pid, valid: true, check: Check{ID: "daemon.lock", Title: "Daemon lock", Status: OK, Detail: "A same-user sway-session daemon holds the advisory lock.", Evidence: []string{"path=" + path, fmt.Sprintf("pid=%d", pid), "held"}}}
 }
 
-func inspectDaemonBinary(options Options, observation daemonObservation) Check {
+func inspectDaemonBinary(ctx context.Context, options Options, observation daemonObservation) Check {
 	if !observation.valid {
 		return unavailableCheck("daemon.binary", "Daemon binary", "A live sway-session daemon binary cannot be proven without a verified held daemon lock.")
 	}
@@ -335,36 +343,44 @@ func inspectDaemonBinary(options Options, observation daemonObservation) Check {
 		}
 	}
 	if !cleanAbsolute(candidate) {
-		return errorCheck("daemon.binary", "Daemon binary", "The current sway-session executable is not a clean absolute path.")
+		return Check{ID: "daemon.binary", Title: "Daemon binary", Status: Error, Detail: "The current sway-session executable is not a clean absolute path.", Hint: "Run doctor through a clean absolute sway-session executable path.", Evidence: []string{"path=" + candidate}}
 	}
-	current, err := runtimeProbes.stat(candidate)
-	if err != nil || !current.Mode().IsRegular() {
-		return errorCheck("daemon.binary", "Daemon binary", "The current sway-session executable is not a regular file.")
+	currentFile, current, err := openBoundedBinary(candidate)
+	if err != nil {
+		return Check{ID: "daemon.binary", Title: "Daemon binary", Status: Error, Detail: "The current sway-session executable is not a bounded regular file.", Hint: "Reinstall sway-session at the reported executable path, then run doctor again.", Evidence: []string{"path=" + candidate}}
 	}
+	defer currentFile.Close()
+	runningExecutable := filepath.Join("/proc", strconv.Itoa(observation.pid), "exe")
 	runningPath, err := runtimeProbes.readlink(filepath.Join("/proc", strconv.Itoa(observation.pid), "exe"))
 	if err != nil {
 		return unavailableCheck("daemon.binary", "Daemon binary", "The running daemon executable cannot be inspected.")
 	}
 	deleted := strings.HasSuffix(runningPath, " (deleted)")
-	running, err := runtimeProbes.stat(filepath.Join("/proc", strconv.Itoa(observation.pid), "exe"))
-	if err != nil || !running.Mode().IsRegular() {
-		return unavailableCheck("daemon.binary", "Daemon binary", "The running daemon executable cannot be inspected as a regular file.")
-	}
-	if sameInode(current, running) {
-		return Check{ID: "daemon.binary", Title: "Daemon binary", Status: OK, Detail: "The running daemon uses the current sway-session binary.", Evidence: []string{"inode match"}}
-	}
-	match, err := sameDigest(candidate, filepath.Join("/proc", strconv.Itoa(observation.pid), "exe"))
+	runningFile, running, err := openBoundedBinary(runningExecutable)
 	if err != nil {
-		return unavailableCheck("daemon.binary", "Daemon binary", "The daemon differs by inode and a bounded binary comparison is unavailable.")
+		return Check{ID: "daemon.binary", Title: "Daemon binary", Status: Unavailable, Detail: "The running daemon executable cannot be inspected as a bounded regular file.", Hint: "Confirm that the reported daemon PID is still alive, then run doctor again.", Evidence: []string{fmt.Sprintf("pid=%d", observation.pid)}}
+	}
+	defer runningFile.Close()
+	if sameInode(current, running) {
+		return Check{ID: "daemon.binary", Title: "Daemon binary", Status: OK, Detail: "The running daemon uses the current sway-session binary.", Evidence: []string{"path=" + candidate, fmt.Sprintf("pid=%d", observation.pid), "inode match"}}
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	comparisonContext, cancel := context.WithTimeout(ctx, runtimeProbeTimeout)
+	defer cancel()
+	match, err := sameDigest(comparisonContext, currentFile, current, runningFile, running)
+	if err != nil {
+		return Check{ID: "daemon.binary", Title: "Daemon binary", Status: Unavailable, Detail: "The daemon differs by inode and a bounded binary comparison is unavailable.", Hint: "Run doctor again; restart the daemon if the comparison remains unavailable.", Evidence: []string{"path=" + candidate, fmt.Sprintf("pid=%d", observation.pid)}}
 	}
 	if match {
-		return Check{ID: "daemon.binary", Title: "Daemon binary", Status: OK, Detail: "The running daemon differs by inode but matches the current binary content.", Evidence: []string{"digest match"}}
+		return Check{ID: "daemon.binary", Title: "Daemon binary", Status: OK, Detail: "The running daemon differs by inode but matches the current binary content.", Evidence: []string{"path=" + candidate, fmt.Sprintf("pid=%d", observation.pid), "digest match"}}
 	}
 	detail := "The running daemon binary does not match the current sway-session binary."
 	if deleted {
 		detail = "The running daemon uses a deleted binary that does not match the current sway-session binary."
 	}
-	return Check{ID: "daemon.binary", Title: "Daemon binary", Status: Warning, Detail: detail, Hint: "Restart the daemon after upgrading sway-session."}
+	return Check{ID: "daemon.binary", Title: "Daemon binary", Status: Warning, Detail: detail, Hint: "Restart the daemon after upgrading sway-session.", Evidence: []string{"path=" + candidate, fmt.Sprintf("pid=%d", observation.pid)}}
 }
 
 func inspectOptionalSockets(root string, rootErr error) []Check {
@@ -378,13 +394,14 @@ func inspectOptionalSockets(root string, rootErr error) []Check {
 			checks = append(checks, unavailableCheck(endpoint.id, endpoint.title, "This optional broker endpoint is unavailable because XDG runtime paths are unavailable."))
 			continue
 		}
-		_, err := inspectPrivateObjectStat(filepath.Join(root, endpoint.name), unix.S_IFSOCK, 0o600, false)
+		path := filepath.Join(root, endpoint.name)
+		stat, err := inspectPrivateObjectStat(path, unix.S_IFSOCK, 0o600, false)
 		if errors.Is(err, os.ErrNotExist) {
-			checks = append(checks, unavailableCheck(endpoint.id, endpoint.title, "This optional broker endpoint is not running."))
+			checks = append(checks, Check{ID: endpoint.id, Title: endpoint.title, Status: Unavailable, Detail: "This optional broker endpoint is not running.", Evidence: []string{"path=" + path}})
 		} else if err != nil {
-			checks = append(checks, errorCheck(endpoint.id, endpoint.title, "This optional broker endpoint exists but is not an owner-only socket."))
+			checks = append(checks, privateObjectErrorCheck(endpoint.id, endpoint.title, "This optional broker endpoint exists but is not an owner-only socket.", path, "single-link owner-only socket mode 0600", stat, "Stop the daemon and inspect the reported endpoint before correcting it, then restart the daemon."))
 		} else {
-			checks = append(checks, Check{ID: endpoint.id, Title: endpoint.title, Status: OK, Detail: "The optional broker endpoint is an owner-only socket."})
+			checks = append(checks, Check{ID: endpoint.id, Title: endpoint.title, Status: Unavailable, Detail: "An owner-only broker socket exists, but read-only inspection cannot prove that a listener is serving it.", Hint: "If broker operations fail, restart the daemon and run doctor again.", Evidence: []string{"path=" + path, "owner-only socket", "listener unverified"}})
 		}
 	}
 	return checks
@@ -396,23 +413,63 @@ func appArmorCheck() Check {
 
 func inspectStatePaths() Check {
 	root, err := sessionstate.DefaultStateRoot()
+	return inspectStatePathsAt(root, err)
+}
+
+func inspectStatePathsAt(root string, rootErr error) Check {
+	if rootErr != nil {
+		return Check{ID: "state.paths", Title: "State paths", Status: Unavailable, Detail: "The private state directory cannot be located from XDG_STATE_HOME.", Hint: "Set XDG_STATE_HOME to a clean absolute path, then run doctor again."}
+	}
+	rootStat, err := inspectPrivateObjectStat(root, unix.S_IFDIR, 0o700, true)
 	if err != nil {
-		return unavailableCheck("state.paths", "State paths", "The private state directory cannot be located from XDG_STATE_HOME.")
-	}
-	if _, err := inspectPrivateObjectStat(root, unix.S_IFDIR, 0o700, true); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return unavailableCheck("state.paths", "State paths", "No sway-session state directory exists yet.")
+			return Check{ID: "state.paths", Title: "State paths", Status: Unavailable, Detail: "No sway-session state directory exists yet.", Evidence: []string{"path=" + root}}
 		}
-		return errorCheck("state.paths", "State paths", "The sway-session state directory is not an owner-only private directory.")
+		return privateObjectErrorCheck("state.paths", "State paths", "The sway-session state directory is not an owner-only private directory.", root, "owner-only directory mode 0700", rootStat, "Correct the state directory ownership and permissions before starting the daemon.")
 	}
+	evidence := []string{"path=" + root}
 	database := filepath.Join(root, sessionstate.StateDatabaseFilename)
-	if _, err := inspectPrivateObjectStat(database, unix.S_IFREG, 0o600, false); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return Check{ID: "state.paths", Title: "State paths", Status: OK, Detail: "The sway-session state directory is owner-only; no state database has been initialized."}
-		}
-		return errorCheck("state.paths", "State paths", "The sway-session state database is not an owner-only single-link regular file.")
+	databaseStat, databaseErr := inspectPrivateObjectStat(database, unix.S_IFREG, 0o600, false)
+	databaseExists := databaseErr == nil
+	if databaseErr != nil && !errors.Is(databaseErr, os.ErrNotExist) {
+		return privateObjectErrorCheck("state.paths", "State paths", "The sway-session state database is not an owner-only single-link regular file.", database, "single-link owner-only regular file mode 0600", databaseStat, "Restore safe ownership and permissions from a trusted backup before starting the daemon.")
 	}
-	return Check{ID: "state.paths", Title: "State paths", Status: OK, Detail: "The sway-session state directory and database are owner-only."}
+	if databaseExists {
+		evidence = append(evidence, "database="+database)
+		if databaseStat.Size < 0 || databaseStat.Size > maxStateDatabaseSize {
+			return Check{ID: "state.paths", Title: "State paths", Status: Error, Detail: "The sway-session state database exceeds its supported size bound.", Hint: "Do not truncate the database; restore or compact it with an approved recovery procedure.", Evidence: []string{"path=" + database, fmt.Sprintf("size=%d", databaseStat.Size), fmt.Sprintf("maximum=%d", maxStateDatabaseSize)}}
+		}
+	}
+	sidecarExists := false
+	for _, suffix := range []string{"-wal", "-shm", "-journal"} {
+		path := database + suffix
+		stat, sidecarErr := inspectPrivateObjectStat(path, unix.S_IFREG, 0o600, false)
+		if errors.Is(sidecarErr, os.ErrNotExist) {
+			continue
+		}
+		// SQLite may unlink a sidecar after the descriptor is opened but before
+		// it is inspected. The detached inode is no longer reachable and the
+		// production state-store validation treats the same race as absence.
+		if sidecarErr != nil && detachedPrivateSidecar(stat) {
+			continue
+		}
+		if sidecarErr != nil {
+			return privateObjectErrorCheck("state.paths", "State paths", "A sway-session SQLite sidecar is not an owner-only single-link regular file.", path, "single-link owner-only regular file mode 0600", stat, "Do not follow or replace the unsafe sidecar; restore the state directory from a trusted backup before starting the daemon.")
+		}
+		sidecarExists = true
+		evidence = append(evidence, "sidecar="+path)
+	}
+	if !databaseExists {
+		if sidecarExists {
+			return Check{ID: "state.paths", Title: "State paths", Status: Warning, Detail: "Owner-only SQLite sidecars exist without a main sway-session state database.", Hint: "Keep these files intact and use an approved database recovery procedure before starting the daemon.", Evidence: evidence}
+		}
+		return Check{ID: "state.paths", Title: "State paths", Status: OK, Detail: "The sway-session state directory is owner-only; no state database has been initialized.", Evidence: evidence}
+	}
+	return Check{ID: "state.paths", Title: "State paths", Status: OK, Detail: "The sway-session state directory and database objects are owner-only.", Evidence: evidence}
+}
+
+func detachedPrivateSidecar(stat unix.Stat_t) bool {
+	return stat.Mode&unix.S_IFMT == unix.S_IFREG && stat.Mode&0o7777 == 0o600 && stat.Uid == uint32(os.Geteuid()) && stat.Nlink == 0
 }
 
 func inspectPrivateObjectStat(path string, wantType uint32, wantMode os.FileMode, directory bool) (unix.Stat_t, error) {
@@ -432,17 +489,17 @@ func inspectPrivateObjectStat(path string, wantType uint32, wantMode os.FileMode
 		return unix.Stat_t{}, err
 	}
 	if stat.Uid != uint32(os.Geteuid()) || (!directory && stat.Nlink != 1) {
-		return unix.Stat_t{}, errors.New("untrusted ownership or links")
+		return stat, errors.New("untrusted ownership or links")
 	}
 	if directory {
 		if stat.Mode&unix.S_IFMT != unix.S_IFDIR {
-			return unix.Stat_t{}, errors.New("not directory")
+			return stat, errors.New("not directory")
 		}
 	} else if stat.Mode&unix.S_IFMT != wantType {
-		return unix.Stat_t{}, errors.New("unexpected object type")
+		return stat, errors.New("unexpected object type")
 	}
 	if os.FileMode(stat.Mode).Perm() != wantMode {
-		return unix.Stat_t{}, errors.New("unexpected permissions")
+		return stat, errors.New("unexpected permissions")
 	}
 	return stat, nil
 }
@@ -502,25 +559,39 @@ func daemonCommand(pid int) bool {
 	if err != nil {
 		return false
 	}
-	args := strings.Split(strings.TrimSuffix(string(data), "\x00"), "\x00")
+	return isDaemonCommand(strings.Split(strings.TrimSuffix(string(data), "\x00"), "\x00"))
+}
+
+func isDaemonCommand(args []string) bool {
 	if len(args) < 2 || filepath.Base(args[0]) != "sway-session" {
 		return false
 	}
-	index := 1
-	if args[index] == "--json" {
-		index++
+	filtered := make([]string, 0, len(args)-1)
+	optionsEnded := false
+	for _, argument := range args[1:] {
+		if optionsEnded {
+			filtered = append(filtered, argument)
+			continue
+		}
+		if argument == "--" {
+			optionsEnded = true
+			filtered = append(filtered, argument)
+			continue
+		}
+		if argument != "--json" {
+			filtered = append(filtered, argument)
+		}
 	}
-	if index >= len(args) || args[index] != "daemon" {
+	if len(filtered) == 0 || filtered[0] != "daemon" {
 		return false
 	}
-	remaining := args[index+1:]
-	if len(remaining) == 0 {
-		return true
+	set := flag.NewFlagSet("daemon-observation", flag.ContinueOnError)
+	set.SetOutput(io.Discard)
+	socket := set.String("socket", "", "")
+	if err := set.Parse(filtered[1:]); err != nil || set.NArg() != 0 {
+		return false
 	}
-	if len(remaining) == 1 {
-		return strings.HasPrefix(remaining[0], "--socket=") && cleanAbsolute(strings.TrimPrefix(remaining[0], "--socket="))
-	}
-	return len(remaining) == 2 && remaining[0] == "--socket" && cleanAbsolute(remaining[1])
+	return *socket == "" || cleanAbsolute(*socket)
 }
 
 func readBounded(path string, limit int) ([]byte, error) {
@@ -552,41 +623,85 @@ func sameInode(first, second os.FileInfo) bool {
 	return firstOK && secondOK && one.Dev == two.Dev && one.Ino == two.Ino
 }
 
-func sameDigest(first, second string) (bool, error) {
-	firstInfo, err := runtimeProbes.stat(first)
-	if err != nil || firstInfo.Size() < 0 || firstInfo.Size() > maxBinaryDigestSize {
-		return false, errors.New("first binary cannot be bounded")
+func openBoundedBinary(path string) (*os.File, os.FileInfo, error) {
+	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NONBLOCK|unix.O_NOCTTY, 0)
+	if err != nil {
+		return nil, nil, err
 	}
-	secondInfo, err := runtimeProbes.stat(second)
-	if err != nil || secondInfo.Size() < 0 || secondInfo.Size() > maxBinaryDigestSize {
-		return false, errors.New("second binary cannot be bounded")
+	file := os.NewFile(uintptr(fd), path)
+	if file == nil {
+		_ = unix.Close(fd)
+		return nil, nil, errors.New("create binary file handle")
 	}
-	firstHash, err := digestFile(first)
+	info, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return nil, nil, err
+	}
+	if !info.Mode().IsRegular() || info.Size() < 0 || info.Size() > maxBinaryDigestSize {
+		_ = file.Close()
+		return nil, nil, errors.New("binary is not a bounded regular file")
+	}
+	return file, info, nil
+}
+
+func sameDigest(ctx context.Context, first *os.File, firstInfo os.FileInfo, second *os.File, secondInfo os.FileInfo) (bool, error) {
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+	}
+	if firstInfo.Size() != secondInfo.Size() {
+		return false, nil
+	}
+	firstHash, err := digestOpenFile(ctx, first, firstInfo.Size())
 	if err != nil {
 		return false, err
 	}
-	secondHash, err := digestFile(second)
+	secondHash, err := digestOpenFile(ctx, second, secondInfo.Size())
 	if err != nil {
 		return false, err
 	}
 	return firstHash == secondHash, nil
 }
 
-func digestFile(path string) (string, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return "", err
+func digestOpenFile(ctx context.Context, file *os.File, expectedSize int64) ([sha256.Size]byte, error) {
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	defer file.Close()
+	if err := ctx.Err(); err != nil {
+		return [sha256.Size]byte{}, err
+	}
+	if file == nil || expectedSize < 0 || expectedSize > maxBinaryDigestSize {
+		return [sha256.Size]byte{}, errors.New("binary cannot be bounded")
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return [sha256.Size]byte{}, err
+	}
 	hash := sha256.New()
-	count, err := io.Copy(hash, io.LimitReader(file, maxBinaryDigestSize+1))
+	reader := &contextReader{ctx: ctx, reader: file}
+	count, err := io.Copy(hash, io.LimitReader(reader, expectedSize+1))
 	if err != nil {
-		return "", err
+		return [sha256.Size]byte{}, err
 	}
-	if count > maxBinaryDigestSize {
-		return "", errors.New("binary exceeds digest bound")
+	if count != expectedSize {
+		return [sha256.Size]byte{}, errors.New("binary changed during bounded comparison")
 	}
-	return hex.EncodeToString(hash.Sum(nil)), nil
+	var digest [sha256.Size]byte
+	copy(digest[:], hash.Sum(nil))
+	return digest, nil
+}
+
+type contextReader struct {
+	ctx    context.Context
+	reader io.Reader
+}
+
+func (reader *contextReader) Read(data []byte) (int, error) {
+	if err := reader.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return reader.reader.Read(data)
 }
 
 func runReadOnlyProbe(ctx context.Context, executable string, arguments ...string) ([]byte, error) {
@@ -646,8 +761,12 @@ func cleanAbsolute(path string) bool {
 	return path != "" && filepath.IsAbs(path) && filepath.Clean(path) == path
 }
 
-func errorCheck(id, title, detail string) Check {
-	return Check{ID: id, Title: title, Status: Error, Detail: detail}
+func privateObjectErrorCheck(id, title, detail, path, expected string, stat unix.Stat_t, hint string) Check {
+	evidence := []string{"path=" + path, "expected=" + expected}
+	if stat.Mode != 0 {
+		evidence = append(evidence, fmt.Sprintf("observed=type:%#o mode:%04o uid:%d links:%d size:%d", stat.Mode&unix.S_IFMT, stat.Mode&0o7777, stat.Uid, stat.Nlink, stat.Size))
+	}
+	return Check{ID: id, Title: title, Status: Error, Detail: detail, Hint: hint, Evidence: evidence}
 }
 
 func unavailableCheck(id, title, detail string) Check {

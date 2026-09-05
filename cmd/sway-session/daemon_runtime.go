@@ -30,6 +30,10 @@ const (
 	terminalFocusRetryMaximum  = 30 * time.Second
 	terminalFocusReportEvery   = time.Minute
 	maxPendingTerminalFocus    = 256
+	terminalCloseGrace         = 2 * time.Second
+	terminalCloseWriteTimeout  = 250 * time.Millisecond
+	terminalCloseRetryMaximum  = 30 * time.Second
+	maxTerminalCloseBatch      = 64
 	moveBarrierPrefix          = "_sway_session_move_v1:"
 )
 
@@ -43,6 +47,13 @@ type eventStreamGuard interface {
 	Snapshot() (uint64, bool)
 }
 
+// TerminalCloseGuard reports whether automatic terminal-close archival is safe
+// for the current external shutdown generation. A nil guard deliberately
+// disables automatic archival.
+type TerminalCloseGuard interface {
+	Snapshot() (uint64, bool)
+}
+
 type preparedApplicationLaunch interface {
 	Start() error
 }
@@ -50,6 +61,7 @@ type preparedApplicationLaunch interface {
 type sessionRuntimeOptions struct {
 	Context             context.Context
 	EventStreamState    eventStreamGuard
+	TerminalCloseGuard  TerminalCloseGuard
 	Root                string
 	CompositorID        string
 	StartedAt           time.Time
@@ -93,6 +105,7 @@ type sessionRuntime struct {
 	eventStreamReady           bool
 	eventStreamEpoch           uint64
 	eventStreamState           eventStreamGuard
+	terminalCloseGuard         TerminalCloseGuard
 	indicatorCatalog           func() (sessionstate.DesktopCatalog, error)
 	indicatorOperations        func() ([]sessionstate.ApplicationOperation, error)
 	indicatorCursor            *sessionstate.ApplicationIndicatorAction
@@ -100,6 +113,13 @@ type sessionRuntime struct {
 	terminalFocusDeadline      time.Time
 	terminalFocusRetry         time.Duration
 	terminalFocusReported      time.Time
+	observedTerminals          map[int64]terminalCloseObservation
+	pendingTerminalClose       map[int64]terminalCloseCandidate
+	terminalCloseDeadline      time.Time
+	terminalCloseRetry         time.Duration
+	terminalCloseRetryDeadline time.Time
+	terminalCloseBatchCursor   int64
+	terminalCloseContinuation  time.Time
 }
 
 func (runtime *sessionRuntime) context() context.Context {
@@ -155,26 +175,29 @@ func newSessionRuntimeWithOptions(client swayRequester, options sessionRuntimeOp
 		return nil, fmt.Errorf("initialize Sway layout debounce: %w", err)
 	}
 	runtime := &sessionRuntime{
-		ctx:                 ctx,
-		client:              client,
-		root:                root,
-		persisted:           previous,
-		desired:             previous,
-		debouncer:           debouncer,
-		registry:            registry,
-		registryRevision:    registryRevision,
-		registryCacheKnown:  true,
-		registryPresent:     registryPresent,
-		restoreEligible:     make(map[sessionstate.ContextID]struct{}),
-		restoreExcluded:     make(map[string]struct{}),
-		restoreSkipped:      make(map[string]struct{}),
-		restoreFailures:     make(map[string]error),
-		startupComplete:     len(previous.Workspaces) == 0,
-		applicationLauncher: options.ApplicationLauncher,
-		expectedMoves:       make(map[int64][]uint64),
-		eventStreamState:    options.EventStreamState,
-		indicatorCatalog:    options.IndicatorCatalog,
-		indicatorOperations: options.IndicatorOperations,
+		ctx:                  ctx,
+		client:               client,
+		root:                 root,
+		persisted:            previous,
+		desired:              previous,
+		debouncer:            debouncer,
+		registry:             registry,
+		registryRevision:     registryRevision,
+		registryCacheKnown:   true,
+		registryPresent:      registryPresent,
+		restoreEligible:      make(map[sessionstate.ContextID]struct{}),
+		restoreExcluded:      make(map[string]struct{}),
+		restoreSkipped:       make(map[string]struct{}),
+		restoreFailures:      make(map[string]error),
+		startupComplete:      len(previous.Workspaces) == 0,
+		applicationLauncher:  options.ApplicationLauncher,
+		expectedMoves:        make(map[int64][]uint64),
+		eventStreamState:     options.EventStreamState,
+		terminalCloseGuard:   options.TerminalCloseGuard,
+		indicatorCatalog:     options.IndicatorCatalog,
+		indicatorOperations:  options.IndicatorOperations,
+		observedTerminals:    make(map[int64]terminalCloseObservation),
+		pendingTerminalClose: make(map[int64]terminalCloseCandidate),
 	}
 	if options.CompositorID != "" {
 		applicationState := sessionstate.ApplicationSessionState{}
@@ -297,11 +320,29 @@ func (runtime *sessionRuntime) HandleEvent(event swayipc.Event, now time.Time) {
 	if runtime == nil || runtime.shutdown {
 		return
 	}
+	if event.Type == swayipc.EventShutdown {
+		runtime.eventStreamReady = false
+		clear(runtime.observedTerminals)
+		clear(runtime.pendingTerminalClose)
+		runtime.terminalCloseDeadline = time.Time{}
+		runtime.terminalCloseRetry = 0
+		runtime.terminalCloseRetryDeadline = time.Time{}
+		runtime.terminalCloseBatchCursor = 0
+		runtime.terminalCloseContinuation = time.Time{}
+		return
+	}
 	if event.Type == swayipc.EventStream && event.Change == "ready" {
 		// A reconnect creates a new event-generation boundary. Any move whose
 		// event was lost with the old connection must be rediscovered through
 		// the fresh tree instead of consuming later user intent.
 		clear(runtime.expectedMoves)
+		clear(runtime.observedTerminals)
+		clear(runtime.pendingTerminalClose)
+		runtime.terminalCloseDeadline = time.Time{}
+		runtime.terminalCloseRetry = 0
+		runtime.terminalCloseRetryDeadline = time.Time{}
+		runtime.terminalCloseBatchCursor = 0
+		runtime.terminalCloseContinuation = time.Time{}
 		if runtime.eventStreamReady && runtime.restoreMayConflictWithUserIntent() {
 			// Events may have been lost while disconnected. Continuing could
 			// overwrite user changes that the daemon never observed.
@@ -313,9 +354,17 @@ func (runtime *sessionRuntime) HandleEvent(event swayipc.Event, now time.Time) {
 	}
 	if event.Type == swayipc.EventStream && event.Change == "disconnected" {
 		clear(runtime.expectedMoves)
+		clear(runtime.observedTerminals)
+		clear(runtime.pendingTerminalClose)
+		runtime.terminalCloseDeadline = time.Time{}
+		runtime.terminalCloseRetry = 0
+		runtime.terminalCloseRetryDeadline = time.Time{}
+		runtime.terminalCloseBatchCursor = 0
+		runtime.terminalCloseContinuation = time.Time{}
 		if runtime.eventStreamReady && runtime.restoreMayConflictWithUserIntent() {
 			runtime.cancelConflictingRestore()
 		}
+		runtime.eventStreamReady = false
 		return
 	}
 	if event.Type == swayipc.EventTick {
@@ -336,6 +385,9 @@ func (runtime *sessionRuntime) HandleEvent(event swayipc.Event, now time.Time) {
 	}
 	if event.Type != swayipc.EventWindow || event.Change != "move" && event.Change != "close" {
 		return
+	}
+	if event.Change == "close" {
+		runtime.queueTerminalClose(event.Container, now)
 	}
 	if event.Change == "move" && event.Container != nil && runtime.consumeExpectedMove(event.Container.ID) {
 		return
@@ -562,6 +614,9 @@ func (runtime *sessionRuntime) Reconcile(root *Node, now time.Time) (needsRefres
 		return false, err
 	}
 	runtime.registryPresent = true
+	if err := runtime.observeTerminalCloseState(root, registry, now); err != nil {
+		return false, err
+	}
 	if !runtime.startupComplete && runtime.startupDeadline.IsZero() {
 		runtime.startupDeadline = now.Add(sessionStartupSettleDelay)
 	}
@@ -1284,6 +1339,11 @@ func (runtime *sessionRuntime) Deadline() (time.Time, bool) {
 		deadline = runtime.terminalFocusDeadline
 		scheduled = true
 	}
+	if !runtime.terminalCloseDeadline.IsZero() &&
+		(!scheduled || runtime.terminalCloseDeadline.Before(deadline)) {
+		deadline = runtime.terminalCloseDeadline
+		scheduled = true
+	}
 	if !runtime.startupComplete && !runtime.startupDeadline.IsZero() &&
 		(!scheduled || runtime.startupDeadline.Before(deadline)) {
 		return runtime.startupDeadline, true
@@ -1324,14 +1384,15 @@ func (runtime *sessionRuntime) Flush(now time.Time) error {
 		return nil
 	}
 	focusErr := runtime.flushTerminalFocus(now)
+	closeErr := runtime.flushTerminalClose(now)
 	candidate, due := runtime.debouncer.Due(now)
 	if !due {
-		return focusErr
+		return errors.Join(focusErr, closeErr)
 	}
 	err := sessionstate.LayoutStoreFor(runtime.root).SaveContext(runtime.context(), candidate)
 	if err == nil {
 		runtime.persisted = candidate
-		return errors.Join(focusErr, runtime.debouncer.MarkPersisted(candidate))
+		return errors.Join(focusErr, closeErr, runtime.debouncer.MarkPersisted(candidate))
 	}
 
 	var unknown *statefile.CommitOutcomeUnknownError
@@ -1339,23 +1400,23 @@ func (runtime *sessionRuntime) Flush(now time.Time) error {
 		var visible sessionstate.LayoutSnapshot
 		if loadErr := sessionstate.LayoutStoreFor(runtime.root).LoadIntoContext(runtime.context(), &visible); loadErr != nil {
 			runtime.debouncer.Postpone(now)
-			return errors.Join(focusErr, err, fmt.Errorf("reload layout after unknown commit outcome: %w", loadErr))
+			return errors.Join(focusErr, closeErr, err, fmt.Errorf("reload layout after unknown commit outcome: %w", loadErr))
 		}
 		candidateHash, candidateErr := sessionstate.SemanticSnapshotHash(candidate)
 		visibleHash, visibleErr := sessionstate.SemanticSnapshotHash(visible)
 		if candidateErr != nil || visibleErr != nil || candidateHash != visibleHash {
 			runtime.debouncer.Postpone(now)
-			return errors.Join(focusErr, err, candidateErr, visibleErr, errors.New("visible layout differs from the candidate after unknown commit outcome"))
+			return errors.Join(focusErr, closeErr, err, candidateErr, visibleErr, errors.New("visible layout differs from the candidate after unknown commit outcome"))
 		}
 		runtime.desired = visible
 		runtime.persisted = visible
 		if markErr := runtime.debouncer.MarkPersisted(visible); markErr != nil {
-			return errors.Join(focusErr, err, markErr)
+			return errors.Join(focusErr, closeErr, err, markErr)
 		}
-		return errors.Join(focusErr, err)
+		return errors.Join(focusErr, closeErr, err)
 	}
 	runtime.debouncer.Postpone(now)
-	return errors.Join(focusErr, err)
+	return errors.Join(focusErr, closeErr, err)
 }
 
 func (runtime *sessionRuntime) flushTerminalFocus(now time.Time) error {
@@ -1441,6 +1502,13 @@ func (runtime *sessionRuntime) Shutdown() {
 	runtime.terminalFocusRetry = 0
 	runtime.terminalFocusReported = time.Time{}
 	clear(runtime.pendingTerminalFocus)
+	clear(runtime.observedTerminals)
+	clear(runtime.pendingTerminalClose)
+	runtime.terminalCloseDeadline = time.Time{}
+	runtime.terminalCloseRetry = 0
+	runtime.terminalCloseRetryDeadline = time.Time{}
+	runtime.terminalCloseBatchCursor = 0
+	runtime.terminalCloseContinuation = time.Time{}
 	runtime.restoreProgress = nil
 	runtime.debouncer.Cancel()
 }

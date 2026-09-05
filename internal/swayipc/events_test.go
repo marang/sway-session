@@ -80,6 +80,78 @@ func TestSessionEventStreamReportsEverySuccessfulSubscription(t *testing.T) {
 	}
 }
 
+func TestSessionEventStreamDisconnectsStateBeforeCleanShutdownDelivery(t *testing.T) {
+	socket := filepath.Join(t.TempDir(), "sway.sock")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		if errors.Is(err, syscall.EPERM) {
+			t.Skipf("unix sockets are not permitted in this sandbox: %v", err)
+		}
+		t.Fatalf("listen on fake Sway socket: %v", err)
+	}
+	defer listener.Close()
+
+	serverDone := make(chan error, 1)
+	go func() {
+		connection, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			serverDone <- acceptErr
+			return
+		}
+		defer connection.Close()
+		if _, readErr := readMessage(connection); readErr != nil {
+			serverDone <- readErr
+			return
+		}
+		if writeErr := writeMessage(connection, Subscribe, []byte(`{"success":true}`)); writeErr != nil {
+			serverDone <- writeErr
+			return
+		}
+		serverDone <- writeMessage(connection, shutdownEventMessage, []byte(`{"change":"exit"}`))
+	}()
+
+	events := make(chan Event)
+	done := make(chan struct{})
+	defer close(done)
+	state := &EventStreamState{}
+	go StreamSessionEventsWithState(socket, events, done, state)
+	select {
+	case ready := <-events:
+		if ready.Type != EventStream || ready.Change != "ready" {
+			t.Fatalf("ready event = %+v", ready)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("session stream did not become ready")
+	}
+	// Deliberately leave shutdown delivery blocked. A busy daemon consumer
+	// must still see the disconnected guard before it can process the event.
+	deadline := time.Now().Add(time.Second)
+	for {
+		epoch, connected := state.Snapshot()
+		if epoch == 2 && !connected {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("blocked shutdown delivery kept stream connected: epoch=%d connected=%t", epoch, connected)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	select {
+	case shutdown := <-events:
+		if shutdown.Type != EventShutdown {
+			t.Fatalf("shutdown event = %+v", shutdown)
+		}
+		if epoch, connected := state.Snapshot(); connected || epoch != 2 {
+			t.Fatalf("clean shutdown left stream state connected: epoch=%d connected=%t", epoch, connected)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("session stream did not deliver clean shutdown")
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatalf("fake Sway server: %v", err)
+	}
+}
+
 func TestOpenSubscriptionContextBoundsEntireSetup(t *testing.T) {
 	socket := filepath.Join(t.TempDir(), "sway.sock")
 	listener, err := net.Listen("unix", socket)

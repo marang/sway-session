@@ -10,6 +10,7 @@ import (
 	"time"
 
 	sessionstate "github.com/marang/sway-session/internal/session"
+	"github.com/marang/sway-session/internal/shutdownwatch"
 	"github.com/marang/sway-session/internal/swayipc"
 )
 
@@ -81,9 +82,26 @@ func runSessionDaemon(ctx context.Context, swaySocket string, reportError func(e
 		return operationStore.ActiveContext(ctx)
 	}
 	eventStreamState := &swayipc.EventStreamState{}
+	// Missing shutdown protection must not stop capture or explicit restore, but
+	// it must disable automatic archival: absence alone does not prove intent.
+	shutdownMonitor, monitorErr := shutdownwatch.Start(ctx)
+	if monitorErr != nil {
+		if reportError != nil {
+			reportError(fmt.Errorf("automatic terminal close detection unavailable; use explicit archive: %w", monitorErr))
+		}
+	} else {
+		defer shutdownMonitor.Close()
+		go func() {
+			<-shutdownMonitor.Done()
+			if err := shutdownMonitor.Err(); err != nil && ctx.Err() == nil && reportError != nil {
+				reportError(fmt.Errorf("automatic terminal close detection disabled; use explicit archive: %w", err))
+			}
+		}()
+	}
 	runtime, err := newSessionRuntimeWithOptions(control, sessionRuntimeOptions{
 		Context:             ctx,
 		EventStreamState:    eventStreamState,
+		TerminalCloseGuard:  shutdownMonitor,
 		Root:                stateRoot,
 		CompositorID:        compositorID,
 		StartedAt:           time.Now(),

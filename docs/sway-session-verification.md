@@ -138,6 +138,39 @@ Also exercise:
 - application preflight rotation beyond its two-candidate pass bound; and
 - layout re-observation after every mutation and after bounded yield.
 
+### Terminal close intent
+
+With the candidate daemon and a working logind observer, close one exact
+disposable terminal on the private compositor. After the close grace, assert
+that the same context is archived, not deleted. Automatic restore must skip it;
+activation followed by explicit open must reuse the same identity and session.
+Stop the daemon, close that test adapter, and start the daemon again: startup
+absence must leave an active context active. Check that the daemon log does not
+report unavailable shutdown protection before claiming the automatic-close
+positive path passed.
+
+Unit/integration tests inject shutdown, sleep, session termination, disconnect,
+reconnect, identity ambiguity, reopened windows, and lock contention. The Sway
+transport test must block shutdown event delivery and still observe its stream
+guard as disconnected. The logind tests must verify that safety is invalidated
+before the inhibitor is released and cannot be re-enabled by stale setup work.
+Do not reboot or suspend the user's workstation to drive these tests. A private
+Sway close/exit test is not evidence of a real power-cycle test.
+
+For the manager, archive consecutive items at the middle and end of the active
+section; verify remaining active entries remain convenient to select. Delete,
+activate, rename and refresh under a filter that excludes at least one entry.
+Check keyboard navigation and the active-filter hint at 80x24.
+
+LAB-123 live evidence (2026-09-05): the source-built candidate passed on a
+private headless Sway compositor, workspace 98, disposable XDG roots, Alacritty,
+and Herdr. Its real logind observer acquired protection successfully. Closing
+the exact test terminal archived it; automatic restore skipped it; activation
+and open reused its identity. Daemon restart did not archive a context already
+absent at startup. Private Sway exit preserved active state, and after starting
+a new private compositor the same context restored. Exact purge emptied the
+test registry. No live user context, machine reboot, or system suspend was used.
+
 ### LAB-119 extraction evidence
 
 On 2026-09-05, source-built binaries were exercised against Sway 1.12,

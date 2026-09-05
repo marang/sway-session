@@ -35,6 +35,35 @@ func TestServerAcceptsOnlyValidatedGenericReport(t *testing.T) {
 	}
 }
 
+func TestServerAcceptsConnectOnlyLivenessProbeWithoutHandler(t *testing.T) {
+	socketPath := filepath.Join(t.TempDir(), "runtime", SocketFilename)
+	called := make(chan struct{}, 1)
+	errorsReported := make(chan error, 1)
+	server, err := StartServer(socketPath, func(context.Context, Report) error {
+		called <- struct{}{}
+		return nil
+	}, func(err error) { errorsReported <- err })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	connection, err := net.Dial("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := connection.Close(); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	select {
+	case <-called:
+		t.Fatal("connect-only probe invoked the handler")
+	case err := <-errorsReported:
+		t.Fatalf("connect-only probe reported an error: %v", err)
+	default:
+	}
+}
+
 func TestServerRefusesToReplaceNonSocketEndpoint(t *testing.T) {
 	runtimeDir := filepath.Join(t.TempDir(), "runtime")
 	if err := os.Mkdir(runtimeDir, 0o700); err != nil {

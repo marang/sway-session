@@ -85,7 +85,7 @@ install: build
 	install -m644 contrib/sway-session/config.toml $(DOC_ROOT)/contrib/sway-session/config.toml
 	install -m644 contrib/herdr/config.toml $(DOC_ROOT)/contrib/herdr/config.toml
 	install -m644 contrib/codex/hooks.json $(DOC_ROOT)/contrib/codex/hooks.json
-	install -m644 contrib/apparmor/codex-home-guard $(DOC_ROOT)/contrib/apparmor/codex-home-guard
+	install -m644 contrib/apparmor/agent-home-guard $(DOC_ROOT)/contrib/apparmor/agent-home-guard
 	install -m755 scripts/verify-codex-boundary.sh $(DOC_ROOT)/scripts/verify-codex-boundary.sh
 
 clean:

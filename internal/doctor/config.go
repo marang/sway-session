@@ -275,6 +275,8 @@ type swayBlockKind uint8
 const (
 	swayBlockOpaque swayBlockKind = iota
 	swayBlockMode
+	swayBlockBinding
+	swayBlockForWindow
 )
 
 type swayModeScope uint8
@@ -286,8 +288,9 @@ const (
 )
 
 type swayBlock struct {
-	kind swayBlockKind
-	mode swayModeScope
+	kind          swayBlockKind
+	mode          swayModeScope
+	bindingPrefix []string
 }
 
 func forEachSwayLogicalLine(content []byte, visit func(swayLogicalLine) bool) error {
@@ -442,7 +445,11 @@ func (scanner *swayStaticScanner) classifyBlock(header []string, blocks []swayBl
 		return swayBlock{kind: swayBlockMode, mode: scanner.classifyModeBlock(header, location)}
 	case "output", "input", "bar":
 		return swayBlock{kind: swayBlockOpaque}
-	case "bindsym", "bindcode", "unbindsym", "unbindcode":
+	case "for_window":
+		return swayBlock{kind: swayBlockForWindow}
+	case "bindsym":
+		return swayBlock{kind: swayBlockBinding, bindingPrefix: append([]string(nil), header[1:]...)}
+	case "bindcode", "unbindsym", "unbindcode":
 		scanner.markShortcutUncertain(location, "a compound shortcut block requires manual review")
 	case "exec", "exec_always":
 		scanner.markStartupUncertain(location, "a compound startup block requires manual review")
@@ -655,26 +662,55 @@ func (scanner *swayStaticScanner) scan(path string, depth int) error {
 
 		if len(blocks) != 0 {
 			block := blocks[len(blocks)-1]
-			if block.kind != swayBlockMode {
+			switch block.kind {
+			case swayBlockBinding:
+				combined := append([]string{"bindsym"}, block.bindingPrefix...)
+				combined = append(combined, tokens...)
+				scanner.recordIntegration(combined, location)
 				return true
-			}
-			if strings.ContainsRune(tokens[0], '$') {
-				scanner.markUncertainAll(location, "a variable-derived command in a mode block requires manual review")
-				return true
-			}
-			if strings.EqualFold(tokens[0], "set") {
-				if len(tokens) < 3 || !strings.HasPrefix(tokens[1], "$") || !validSwayVariable(tokens[1]) {
-					scanner.markUncertainAll(location, "an unsupported variable assignment in a mode block requires manual review")
+			case swayBlockForWindow:
+				if strings.ContainsRune(tokens[0], '$') {
+					expanded, err := expandSwayInclude(strings.Join(tokens, " "), scanner.variables)
+					if err != nil {
+						scanner.markStartupUncertain(location, "an unresolved variable-derived command in a for_window block requires manual startup review")
+						return true
+					}
+					command, unsupported, err := tokenizeSwayLine(expanded)
+					if err != nil || unsupported || len(command) == 0 {
+						scanner.markStartupUncertain(location, "a variable-derived command in a for_window block requires manual startup review")
+						return true
+					}
+					if (strings.EqualFold(command[0], "exec") || strings.EqualFold(command[0], "exec_always")) && execReferencesSwaySession(command[1:], scanner.variables) {
+						scanner.markStartupUncertain(location, "a conditional sway-session startup in a for_window block requires manual review")
+					}
 					return true
 				}
-				scanner.recordSet(tokens, location)
+				if (strings.EqualFold(tokens[0], "exec") || strings.EqualFold(tokens[0], "exec_always")) && execReferencesSwaySession(tokens[1:], scanner.variables) {
+					scanner.markStartupUncertain(location, "a conditional sway-session startup in a for_window block requires manual review")
+				}
 				return true
+			case swayBlockMode:
+				if strings.ContainsRune(tokens[0], '$') {
+					scanner.markUncertainAll(location, "a variable-derived command in a mode block requires manual review")
+					return true
+				}
+				if strings.EqualFold(tokens[0], "set") {
+					if len(tokens) < 3 || !strings.HasPrefix(tokens[1], "$") || !validSwayVariable(tokens[1]) {
+						scanner.markUncertainAll(location, "an unsupported variable assignment in a mode block requires manual review")
+						return true
+					}
+					scanner.recordSet(tokens, location)
+					return true
+				}
+				switch block.mode {
+				case swayModeDefault:
+					scanner.recordDefaultModeIntegration(tokens, location)
+				case swayModeUnknown:
+					scanner.markPotentialBindingUncertain(tokens, location)
+				}
 			}
-			switch block.mode {
-			case swayModeDefault:
-				scanner.recordDefaultModeIntegration(tokens, location)
-			case swayModeUnknown:
-				scanner.markPotentialBindingUncertain(tokens, location)
+			if block.kind != swayBlockMode {
+				return true
 			}
 			return true
 		}
@@ -806,18 +842,18 @@ func (scanner *swayStaticScanner) recordIntegration(tokens []string, location co
 		scanner.markShortcutUncertain(location, "keycode or unbinding syntax requires manual shortcut review")
 		return
 	}
-	if tokens[0] == "exec" || tokens[0] == "exec_always" {
+	if (tokens[0] == "exec" || tokens[0] == "exec_always") && execReferencesSwaySession(tokens[1:], scanner.variables) {
 		for _, token := range tokens[1:] {
 			if strings.ContainsAny(token, "$`") {
 				scanner.markStartupUncertain(location,
-					fmt.Sprintf("variable or shell-derived startup at %s:%d requires manual review", location.path, location.line))
+					fmt.Sprintf("variable or shell-derived sway-session startup at %s:%d requires manual review", location.path, location.line))
 				return
 			}
 		}
 	}
 	if kind, relevant, correct := classifyStartup(tokens); relevant {
 		scanner.recordOccurrence(kind, correct, location)
-	} else if (tokens[0] == "exec" || tokens[0] == "exec_always") && strings.Contains(strings.Join(tokens[1:], " "), "sway-session") {
+	} else if (tokens[0] == "exec" || tokens[0] == "exec_always") && execReferencesSwaySession(tokens[1:], scanner.variables) {
 		scanner.markStartupUncertain(location,
 			fmt.Sprintf("indirect sway-session startup at %s:%d requires manual review", location.path, location.line))
 		return
@@ -861,8 +897,8 @@ func classifyBinding(tokens []string, variables map[string]string) (integrationK
 	ordinaryOptions := true
 	for index < len(tokens) && strings.HasPrefix(tokens[index], "--") {
 		switch tokens[index] {
-		case "--no-warn":
-		case "--release", "--locked", "--no-repeat", "--inhibited", "--whole-window", "--border", "--exclude-titlebar", "--to-code":
+		case "--no-warn", "--inhibited":
+		case "--release", "--locked", "--no-repeat", "--whole-window", "--border", "--exclude-titlebar", "--to-code":
 			ordinaryOptions = false
 		default:
 			if !strings.HasPrefix(tokens[index], "--input-device=") {
@@ -929,6 +965,177 @@ func classifyBinding(tokens []string, variables map[string]string) (integrationK
 		return kind, true, command[2] == "--new", nil
 	}
 	return kind, true, command[2] == "--ephemeral", nil
+}
+
+func execReferencesSwaySession(tokens []string, variables map[string]string) bool {
+	command := skipExecOptions(tokens)
+	if len(command) == 0 {
+		return false
+	}
+	executable, err := expandSwayInclude(command[0], variables)
+	if err == nil && filepath.Base(executable) == "sway-session" {
+		return true
+	}
+	if err == nil && commandTokenStartsSwaySession(executable, variables) {
+		return true
+	}
+	if err != nil && strings.HasPrefix(command[0], "$") {
+		return true
+	}
+	if err == nil && filepath.Base(executable) == "env" {
+		return wrappedCommandReferencesSwaySession(command[1:], variables)
+	}
+	if err == nil {
+		switch filepath.Base(executable) {
+		case "sh", "bash", "zsh", "fish":
+			return shellCommandReferencesSwaySession(command[1:], variables)
+		}
+	}
+	if strings.HasPrefix(command[0], "--") {
+		return wrappedCommandReferencesSwaySession(command[1:], variables)
+	}
+	return false
+}
+
+func commandTokenStartsSwaySession(value string, variables map[string]string) bool {
+	return shellPayloadReferencesSwaySession(value, variables)
+}
+
+func wrappedCommandReferencesSwaySession(tokens []string, variables map[string]string) bool {
+	return wrappedCommandReferencesSwaySessionDepth(tokens, variables, 0)
+}
+
+const maxEnvSplitStringDepth = 4
+
+func wrappedCommandReferencesSwaySessionDepth(tokens []string, variables map[string]string, depth int) bool {
+	if depth > maxEnvSplitStringDepth {
+		return true
+	}
+	for index := 0; index < len(tokens); index++ {
+		token := tokens[index]
+		expanded, err := expandSwayInclude(token, variables)
+		if err != nil {
+			return strings.HasPrefix(token, "$")
+		}
+		if strings.HasPrefix(expanded, "-") {
+			switch expanded {
+			case "-i", "--ignore-environment", "-0", "--null", "--":
+				continue
+			case "-S", "--split-string":
+				if index+1 >= len(tokens) {
+					return true
+				}
+				return splitStringCommandReferencesSwaySession(tokens[index+1], tokens[index+2:], variables, depth+1)
+			case "-u", "-C", "-a", "--unset", "--chdir", "--argv0":
+				if index+1 >= len(tokens) {
+					return true
+				}
+				index++
+				continue
+			default:
+				if strings.HasPrefix(expanded, "--split-string=") {
+					return splitStringCommandReferencesSwaySession(strings.TrimPrefix(expanded, "--split-string="), tokens[index+1:], variables, depth+1)
+				}
+				if strings.HasPrefix(expanded, "-S") && len(expanded) > len("-S") {
+					return splitStringCommandReferencesSwaySession(strings.TrimPrefix(expanded, "-S"), tokens[index+1:], variables, depth+1)
+				}
+				if strings.Contains(expanded, "=") || (len(expanded) > 2 && expanded[0] == '-' && expanded[1] != '-') {
+					continue
+				}
+				// Unknown option shapes may consume the next token. Preserve repair
+				// safety rather than guessing where the wrapped executable begins.
+				return true
+			}
+		}
+		if shellAssignment(expanded) {
+			continue
+		}
+		if filepath.Base(expanded) == "sway-session" {
+			return true
+		}
+		switch filepath.Base(expanded) {
+		case "env":
+			return wrappedCommandReferencesSwaySessionDepth(tokens[index+1:], variables, depth+1)
+		case "sh", "bash", "zsh", "fish":
+			return shellCommandReferencesSwaySession(tokens[index+1:], variables)
+		}
+		return false
+	}
+	return false
+}
+
+func splitStringCommandReferencesSwaySession(split string, remaining []string, variables map[string]string, depth int) bool {
+	expanded, err := expandSwayInclude(split, variables)
+	if err != nil {
+		return true
+	}
+	command, unsupported, err := tokenizeSwayLine(expanded)
+	if err != nil || unsupported || len(command) == 0 {
+		return true
+	}
+	command = append(command, remaining...)
+	return wrappedCommandReferencesSwaySessionDepth(command, variables, depth)
+}
+
+func shellCommandReferencesSwaySession(tokens []string, variables map[string]string) bool {
+	for _, token := range tokens {
+		if strings.HasPrefix(token, "-") {
+			continue
+		}
+		expanded, err := expandSwayInclude(token, variables)
+		if err != nil {
+			return true
+		}
+		if shellPayloadReferencesSwaySession(expanded, variables) {
+			return true
+		}
+	}
+	return false
+}
+
+// shellPayloadReferencesSwaySession identifies only executable positions in a
+// shell payload. Sway's exec command delegates to a shell, so an executable
+// after a command separator is relevant, while an ordinary argument such as
+// "notify-send sway-session" is not.
+func shellPayloadReferencesSwaySession(payload string, variables map[string]string) bool {
+	segments := strings.FieldsFunc(payload, func(character rune) bool {
+		return strings.ContainsRune(";|&()<>", character)
+	})
+	for _, segment := range segments {
+		fields := strings.Fields(segment)
+		for len(fields) != 0 && shellAssignment(fields[0]) {
+			fields = fields[1:]
+		}
+		for len(fields) != 0 && (fields[0] == "exec" || fields[0] == "command") {
+			fields = fields[1:]
+			for len(fields) != 0 && strings.HasPrefix(fields[0], "-") {
+				fields = fields[1:]
+			}
+		}
+		if len(fields) != 0 && filepath.Base(fields[0]) == "env" {
+			if wrappedCommandReferencesSwaySession(fields[1:], variables) {
+				return true
+			}
+			continue
+		}
+		if len(fields) != 0 && filepath.Base(fields[0]) == "sway-session" {
+			return true
+		}
+	}
+	return false
+}
+
+func shellAssignment(token string) bool {
+	name, _, found := strings.Cut(token, "=")
+	if !found || name == "" {
+		return false
+	}
+	for index, character := range name {
+		if !(character == '_' || character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || (index != 0 && character >= '0' && character <= '9')) {
+			return false
+		}
+	}
+	return true
 }
 
 func modifierMask(value string) (uint16, bool) {

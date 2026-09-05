@@ -52,6 +52,35 @@ func TestServerAcceptsValidatedStartRequest(t *testing.T) {
 	}
 }
 
+func TestServerAcceptsConnectOnlyLivenessProbeWithoutHandler(t *testing.T) {
+	socketPath := filepath.Join(t.TempDir(), "runtime", SocketFilename)
+	called := make(chan struct{}, 1)
+	errorsReported := make(chan error, 1)
+	server, err := StartServer(socketPath, func(context.Context, Request) (Response, error) {
+		called <- struct{}{}
+		return Response{}, nil
+	}, func(err error) { errorsReported <- err })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	connection, err := net.Dial("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := connection.Close(); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	select {
+	case <-called:
+		t.Fatal("connect-only probe invoked the handler")
+	case err := <-errorsReported:
+		t.Fatalf("connect-only probe reported an error: %v", err)
+	default:
+	}
+}
+
 func TestServerCloseCancelsActiveHandler(t *testing.T) {
 	request := testRequest(t)
 	socketPath := filepath.Join(t.TempDir(), "runtime", SocketFilename)

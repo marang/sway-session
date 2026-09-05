@@ -37,6 +37,70 @@ func TestInspectSwayConfigHealthyStaticConfiguration(t *testing.T) {
 	}
 }
 
+func TestInspectSwayConfigAcceptsInstalledBindingsAndUnrelatedBlocks(t *testing.T) {
+	config := "set $mod Mod4\n" +
+		"exec --no-startup-id /usr/bin/sway-session daemon\n" +
+		"exec --no-startup-id /usr/bin/sway-session restore\n" +
+		"bindsym --inhibited $mod+Return exec /usr/bin/sway-session terminal --new\n" +
+		"bindsym --inhibited $mod+Shift+Return exec /usr/bin/sway-session terminal --ephemeral\n" +
+		"for_window [app_id=\\\"pavucontrol\\\"] {\n floating enable\n move position center\n}\n" +
+		"exec --no-startup-id swayidle -w timeout 60 'echo $random_wallpaper'\n" +
+		"bindsym --locked {\n XF86AudioRaiseVolume exec pactl set-sink-volume @DEFAULT_SINK@ +5%\n}\n" +
+		"bindsym {\n Print exec grimshot save screen\n}\n"
+	check := inspectSwayConfig(context.Background(), Options{SwayConfigPath: writeSwayConfig(t, config)})[0]
+	if check.Status != OK || check.FixID != "" {
+		t.Fatalf("installed integration with unrelated blocks = %+v", check)
+	}
+}
+
+func TestInspectSwayConfigRetainsRelevantCompoundBindingUncertainty(t *testing.T) {
+	config := healthySwayConfig() + "bindsym {\n $mod+Return exec foot\n}\n"
+	check := inspectSwayConfig(context.Background(), Options{SwayConfigPath: writeSwayConfig(t, config)})[0]
+	if check.Status != Warning || check.FixID != "" || !evidenceLineContains(check.Evidence, "persistent-terminal shortcut", "conflicting") {
+		t.Fatalf("relevant compound binding was not retained conservatively: %+v", check)
+	}
+}
+
+func TestInspectSwayConfigRetainsConditionalSwaySessionStartupUncertainty(t *testing.T) {
+	config := healthySwayConfig() + "for_window [app_id=\\\"example\\\"] {\n exec /usr/bin/sway-session daemon\n}\n"
+	check := inspectSwayConfig(context.Background(), Options{SwayConfigPath: writeSwayConfig(t, config)})[0]
+	if check.Status != Warning || check.FixID != "" || !evidenceLineContains(check.Evidence, "daemon startup", "conditional sway-session startup") {
+		t.Fatalf("conditional sway-session startup was not retained conservatively: %+v", check)
+	}
+}
+
+func TestInspectSwayConfigIgnoresSwaySessionAsUnrelatedStartupArgument(t *testing.T) {
+	config := healthySwayConfig() + "exec notify-send sway-session\nexec sh -c 'notify-send sway-session'\n"
+	check := inspectSwayConfig(context.Background(), Options{SwayConfigPath: writeSwayConfig(t, config)})[0]
+	if check.Status != OK || check.FixID != "" {
+		t.Fatalf("unrelated startup argument changed integration result: %+v", check)
+	}
+}
+
+func TestInspectSwayConfigRetainsLaterShellStartupUncertainty(t *testing.T) {
+	config := healthySwayConfig() + "exec 'true; sway-session daemon'\n"
+	check := inspectSwayConfig(context.Background(), Options{SwayConfigPath: writeSwayConfig(t, config)})[0]
+	if check.Status != Warning || check.FixID != "" || !evidenceLineContains(check.Evidence, "daemon startup", "indirect sway-session startup") {
+		t.Fatalf("later shell startup was not retained conservatively: %+v", check)
+	}
+}
+
+func TestInspectSwayConfigRetainsVariableForWindowStartupUncertainty(t *testing.T) {
+	config := healthySwayConfig() + "set $start exec /usr/bin/sway-session daemon\nfor_window [app_id=\"example\"] {\n $start\n}\n"
+	check := inspectSwayConfig(context.Background(), Options{SwayConfigPath: writeSwayConfig(t, config)})[0]
+	if check.Status != Warning || check.FixID != "" || !evidenceLineContains(check.Evidence, "daemon startup", "conditional sway-session startup") {
+		t.Fatalf("variable for_window startup was not retained conservatively: %+v", check)
+	}
+}
+
+func TestInspectSwayConfigIgnoresUnrelatedVariableForWindowCommand(t *testing.T) {
+	config := healthySwayConfig() + "set $float floating enable\nfor_window [app_id=\"example\"] {\n $float\n}\n"
+	check := inspectSwayConfig(context.Background(), Options{SwayConfigPath: writeSwayConfig(t, config)})[0]
+	if check.Status != OK || check.FixID != "" {
+		t.Fatalf("unrelated variable for_window command changed integration result: %+v", check)
+	}
+}
+
 func TestInspectSwayConfigMissingOffersNarrowRepair(t *testing.T) {
 	path := writeSwayConfig(t, "set $mod Mod4\n")
 	check := inspectSwayConfig(context.Background(), Options{SwayConfigPath: path})[0]

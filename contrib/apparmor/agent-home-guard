@@ -1,15 +1,19 @@
-# AppArmor deny-list guard for the native Codex CLI.
+# AppArmor deny-list template for a native coding agent.
 #
-# Install with:
-#   sudo install -m 0644 contrib/apparmor/codex-home-guard /etc/apparmor.d/codex-home-guard
-#   sudo apparmor_parser -r /etc/apparmor.d/codex-home-guard
+# This ready-to-use example attaches agent-home-guard to Codex. To protect a
+# different agent, copy this file, choose a unique profile name, and replace
+# /usr/bin/codex with that agent's root-owned executable path.
+#
+# Install the Codex example with:
+#   sudo install -m 0644 contrib/apparmor/agent-home-guard /etc/apparmor.d/agent-home-guard
+#   sudo apparmor_parser -r /etc/apparmor.d/agent-home-guard
 #
 # This template assumes the account's default XDG config/state roots.
 
 abi <abi/4.0>,
 include <tunables/global>
 
-profile codex-home-guard /usr/bin/codex flags=(attach_disconnected,mediate_deleted) {
+profile agent-home-guard /usr/bin/codex flags=(attach_disconnected,mediate_deleted) {
   allow all,
 
   # Keep all children inside the same profile. Session-manager initialization
@@ -30,7 +34,7 @@ profile codex-home-guard /usr/bin/codex flags=(attach_disconnected,mediate_delet
 
   # Service and package-manager credentials.
   audit deny @{HOME}/.config/gcloud/{,**} mrwkl,
-  # GitHub CLI configuration is intentionally available to Codex. Keep gh
+  # GitHub CLI configuration is intentionally available to the agent. Keep gh
   # authentication in the desktop keyring; file-backed tokens would no longer
   # be protected by this deny-list profile.
   audit deny @{HOME}/.config/glab-cli/{,**} mrwkl,
@@ -72,8 +76,8 @@ profile codex-home-guard /usr/bin/codex flags=(attach_disconnected,mediate_delet
 
   # Persistent terminal history, the sway-session SQLite database and WAL/SHM
   # sidecars, approved desktop launchers, and per-compositor launch attempts
-  # stay outside Codex. The same file rules protect Herdr socket pathnames, but do
-  # not claim to mediate pathname socket connect(2) on every supported kernel.
+  # stay outside the agent. The same file rules protect Herdr socket pathnames,
+  # but do not claim to mediate pathname socket connect(2) on every kernel.
   audit deny @{HOME}/.config/herdr/{,**} mrwkl,
   # SQLite canonicalizes database paths before opening its WAL/SHM sidecars.
   # Prevent a confined process from bypassing the state-tree deny by renaming

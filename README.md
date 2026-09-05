@@ -118,8 +118,13 @@ sway-session doctor --sway-config /absolute/path/to/sway/config --fix sway.integ
 
 Checks cover the selected terminal adapter and session-manager setup, Sway
 connectivity, daemon lock and running executable, private runtime/state paths,
-and optional broker sockets. Status is `ok`, `warning`, `error`, or
+and optional broker sockets. Broker checks pin the owner-only socket, make a
+connect-only liveness probe, and verify the accepting daemon PID without
+sending a broker request. Status is `ok`, `warning`, `error`, or
 `unavailable`; unavailable evidence is not a claim that an integration works.
+Doctor also reports whether AppArmor is enabled and points to the optional
+agent hardening template; it does not inspect, compare, or verify a policy
+deployment.
 Reports containing an `error` exit with status 3; warnings and unavailable
 checks alone exit 0. Invalid arguments exit 2. Interactive quit exits 0.
 `--json` and non-TTY invocation always report without opening the TUI.
@@ -127,7 +132,8 @@ checks alone exit 0. Invalid arguments exit 2. Interactive quit exits 0.
 The Sway integration check reports four separate findings in its details:
 daemon startup, restore startup, the default persistent-terminal shortcut and
 the default ephemeral-terminal shortcut. Normal output/input/bar and binding-mode
-blocks, continued lines and supported includes do not make the whole check
+blocks, `for_window` rules, unrelated startup and shortcut blocks, continued
+lines and supported includes do not make the whole check
 unavailable. When only some requirements can be established, the summary is
 `warning` / partially checked, with known declarations and the exact remaining
 limitations. An uncertain shortcut does not erase known startup evidence.
@@ -151,8 +157,8 @@ bindings. Repairs require a complete, unambiguous inspection even when a partial
 diagnosis already provides useful information.
 
 Doctor never installs packages, changes session state, restarts services,
-reloads Sway, edits agent hooks, or changes AppArmor. Optional sockets are
-checked for safe file properties, not advertised as authenticated health probes.
+reloads Sway, or edits agent hooks. Optional sockets are checked with a pinned,
+connect-only probe and verified against the daemon PID; no broker request is sent.
 Fixes require an explicit choice and recheck the preview against current files
 before applying. Configuration stays in text files, not SQLite.
 
@@ -412,18 +418,59 @@ command and `codex-report.sock` endpoint have been removed (LAB-125).
 the supplied template; see [upgrade steps](docs/agent-reporting.md#upgrade-from-the-legacy-codex-hook).
 There is no database migration or second agent manager.
 
-The supplied Codex hook and AppArmor policy remain an experimental boundary.
-They do not reliably mediate pathname-socket connect on every supported kernel,
+### Optional agent security hardening (Codex example)
+
+The supplied AppArmor policy is an optional, experimental hardening measure.
+It is not required for Sway, Herdr, or sway-session, and does not change
+ordinary session behavior. `agent-home-guard` is a reusable policy template;
+its ready-to-use example attaches to `/usr/bin/codex`. For another agent, copy
+the template and replace the profile name and executable attachment. The policy
+denies the selected agent direct access to private Herdr history, sway-session
+state, common credential stores, shell histories, and browser profiles, while
+explicitly permitting the two intended typed sway-session broker paths.
+
+It does not reliably mediate pathname-socket connect on every supported kernel,
 and broker-created terminals and panes are currently unconfined. Review that
 risk before enabling the integration.
 
 Source installs can merge contrib/codex/hooks.json. Package installs can merge
-/usr/share/doc/sway-session/contrib/codex/hooks.json. The AppArmor template is
-/usr/share/doc/sway-session/contrib/apparmor/codex-home-guard and the live
-positive/negative verification helper is
+/usr/share/doc/sway-session/contrib/codex/hooks.json. The generic AppArmor
+template is /usr/share/doc/sway-session/contrib/apparmor/agent-home-guard. The
+Codex-specific positive/negative verification helper is
 /usr/share/doc/sway-session/scripts/verify-codex-boundary.sh. The live verifier
 requires /usr/bin/sway-session to be a root-owned regular executable owned by
 the sway-session package.
+
+To load the ready-to-use Codex example:
+
+~~~sh
+sudo install -m 0644 \
+  /usr/share/doc/sway-session/contrib/apparmor/agent-home-guard \
+  /etc/apparmor.d/agent-home-guard
+sudo apparmor_parser -r /etc/apparmor.d/agent-home-guard
+~~~
+
+For another agent, copy the template under a different name, edit its `profile`
+line to use a unique profile name and that agent's trusted executable path, then
+load the copied policy. The packaged Codex verifier is not a general-agent
+verifier; it validates Codex's supplied hook only.
+
+Existing `codex-home-guard` deployments remain valid until deliberately
+migrated. To switch to the generic Codex example, remove the old loaded profile,
+load the new one, then restart Codex:
+
+~~~sh
+sudo apparmor_parser -R /etc/apparmor.d/codex-home-guard
+sudo mv /etc/apparmor.d/codex-home-guard \
+  /root/codex-home-guard.before-agent-home-guard
+sudo install -m 0644 \
+  /usr/share/doc/sway-session/contrib/apparmor/agent-home-guard \
+  /etc/apparmor.d/agent-home-guard
+sudo apparmor_parser -r /etc/apparmor.d/agent-home-guard
+~~~
+
+Until migration, the Codex verifier can target the legacy profile explicitly:
+`CODEX_APPARMOR_PROFILE=codex-home-guard verify-codex-boundary.sh ...`.
 
 ## Completion
 

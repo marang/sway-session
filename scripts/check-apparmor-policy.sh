@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-policy=${1:-contrib/apparmor/codex-home-guard}
+policy=${1:-contrib/apparmor/agent-home-guard}
 
 if command -v apparmor_parser >/dev/null 2>&1; then
   apparmor_parser -Q -T "$policy"
@@ -32,6 +32,7 @@ reject_rule() {
 }
 
 require_rule 'audit deny @{HOME}/.config/herdr/{,**} mrwkl,'
+require_rule 'profile agent-home-guard /usr/bin/codex flags=(attach_disconnected,mediate_deleted) {'
 require_rule 'audit deny @{HOME}/.local/ w,'
 require_rule 'audit deny @{HOME}/.local/state/ w,'
 require_rule 'audit deny @{HOME}/.local/state/sway-session/{,**} mrwkl,'

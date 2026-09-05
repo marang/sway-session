@@ -216,6 +216,11 @@ func (server *Server) handle(connection *net.UnixConn) {
 	}
 	reader := bufio.NewReader(io.LimitReader(connection, maxProtocolMessage+1))
 	data, err := reader.ReadBytes('\n')
+	if errors.Is(err, io.EOF) && len(data) == 0 {
+		// A connect-only owner probe verifies listener liveness without sending a
+		// request or invoking the typed handler.
+		return
+	}
 	if err != nil {
 		server.reject(connection, fmt.Errorf("read session start request: %w", err))
 		return

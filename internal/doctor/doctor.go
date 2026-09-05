@@ -54,6 +54,9 @@ func New(options Options) *Service { return &Service{options: options} }
 func (service *Service) Check(ctx context.Context) Report {
 	checks := inspectRuntime(ctx, service.options)
 	checks = append(checks, inspectSwayConfig(ctx, service.options)...)
+	// Optional hardening follows all runtime and Sway setup checks so the TUI
+	// can render it as a distinct final section.
+	checks = append(checks, appArmorAvailabilityCheck())
 	return Report{Checks: checks}
 }
 

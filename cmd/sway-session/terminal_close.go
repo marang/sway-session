@@ -209,10 +209,16 @@ func (runtime *sessionRuntime) rearmTerminalCloseDeadline() {
 	if runtime == nil {
 		return
 	}
+	if len(runtime.pendingTerminalClose) == 0 {
+		runtime.terminalCloseDeadline = time.Time{}
+		runtime.terminalCloseRetry = 0
+		runtime.terminalCloseRetryDeadline = time.Time{}
+		return
+	}
 	runtime.terminalCloseDeadline = time.Time{}
 	for _, candidate := range runtime.pendingTerminalClose {
 		deadline := candidate.deadline
-		if !runtime.terminalCloseRetryDeadline.IsZero() {
+		if runtime.terminalCloseRetryDeadline.After(deadline) {
 			deadline = runtime.terminalCloseRetryDeadline
 		}
 		if deadline.IsZero() {

@@ -137,6 +137,29 @@ func TestObservedTerminalCloseRetriesAFailedFreshAbsenceCheck(t *testing.T) {
 	}
 }
 
+func TestObservedTerminalCloseClearsRetryAfterReopenedCandidate(t *testing.T) {
+	guard := &testTerminalCloseGuard{generation: 7, safe: true}
+	runtime, _, _, now, leaf := armedTerminalClose(t, guard)
+	defer runtime.Shutdown()
+	runtime.client = &daemonLoopRequester{}
+	runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "close", Container: leaf}, now)
+	failedAt := now.Add(terminalCloseGrace)
+	if err := runtime.Flush(failedAt); err == nil {
+		t.Fatal("failed fresh tree observation did not report an error")
+	}
+	if _, err := runtime.Reconcile(daemonTree("98", leaf), failedAt.Add(time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	if len(runtime.pendingTerminalClose) != 0 {
+		t.Fatalf("reopened terminal retained close candidates: %+v", runtime.pendingTerminalClose)
+	}
+	newCloseAt := failedAt.Add(2 * terminalFocusBatchDelay)
+	runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "close", Container: leaf}, newCloseAt)
+	if got, want := runtime.terminalCloseDeadline, newCloseAt.Add(terminalCloseGrace); !got.Equal(want) {
+		t.Fatalf("new close deadline = %v, want its grace deadline %v", got, want)
+	}
+}
+
 func TestObservedTerminalCloseRetainsConcurrentUnrelatedRegistryEdit(t *testing.T) {
 	guard := &testTerminalCloseGuard{generation: 7, safe: true}
 	runtime, _, root, now, leaf := armedTerminalClose(t, guard)

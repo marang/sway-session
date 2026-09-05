@@ -61,7 +61,7 @@ func TestDoctorWorkstationReportRemainsInspectableInTUI(t *testing.T) {
 			if !ok || selected.ID != "sway.integration" || selected.Status != wantStatus || selected.FixID != "" {
 				t.Fatalf("unexpected real workstation report: %+v", selected)
 			}
-			for _, size := range [][2]int{{80, 24}, {48, 16}} {
+			for _, size := range [][2]int{{80, 24}, {48, 16}, {120, 30}} {
 				model, _ = doctorUpdate(t, model, tea.WindowSizeMsg{Width: size[0], Height: size[1]})
 				details := model.detailLines()
 				var pages strings.Builder
@@ -89,6 +89,13 @@ func TestDoctorWorkstationReportRemainsInspectableInTUI(t *testing.T) {
 				for _, detail := range details {
 					if detail = strings.TrimSpace(detail); detail != "" && !strings.Contains(pages.String(), detail) {
 						t.Errorf("detail is not reachable at %dx%d: %q", size[0], size[1], detail)
+					}
+				}
+				for model.offset > 0 {
+					want := max(0, model.offset-model.detailHeight())
+					model, _ = doctorUpdate(t, model, terminalManageKey("pgup"))
+					if model.offset != want {
+						t.Fatalf("PgUp skipped visible details: offset=%d want=%d", model.offset, want)
 					}
 				}
 			}

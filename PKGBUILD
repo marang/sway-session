@@ -10,16 +10,6 @@ arch=('x86_64' 'aarch64')
 url="https://github.com/marang/sway-title-animator"
 license=('MIT')
 depends=('sway')
-optdepends=(
-  'libpulse: enable sound-reactive presets through parec'
-  'alacritty: default terminal adapter for sway-session'
-  'foot: alternative terminal adapter for sway-session'
-  'herdr>=0.8.2: enable persistent managed terminal sessions'
-  'flatpak: launch registered Flatpak applications'
-  'glib2: launch registered desktop applications through gio'
-  'apparmor: load the optional Codex boundary policy'
-  'python: run the optional Codex boundary verification'
-)
 makedepends=('go>=1.26.5')
 options=('!debug')
 source=("sway-title-animator-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")

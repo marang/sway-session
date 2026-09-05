@@ -73,33 +73,6 @@ nfpms:
     bindir: /usr/bin
     dependencies:
       - sway
-    recommends:
-      - pulseaudio-utils
-      - alacritty
-      - flatpak
-      - apparmor
-      - python3
-    suggests:
-      - foot
-    overrides:
-      deb:
-        recommends:
-          - pulseaudio-utils
-          - alacritty
-          - herdr (>= 0.8.2)
-          - flatpak
-          - apparmor
-          - python3
-          - libglib2.0-bin
-      rpm:
-        recommends:
-          - pulseaudio-utils
-          - alacritty
-          - herdr >= 0.8.2
-          - flatpak
-          - apparmor
-          - python3
-          - glib2
     contents:
       - src: ./README.md
         dst: /usr/share/doc/sway-title-animator/README.md

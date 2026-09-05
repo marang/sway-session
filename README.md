@@ -94,7 +94,7 @@ treble adds restrained collision sparks. Silence keeps the calm base chain.
 Sound-reactive presets require the `parec` command. Install the PulseAudio
 command-line utilities for your distribution (`libpulse` on Arch Linux,
 `pulseaudio-utils` on Debian/Ubuntu). PipeWire users can use the same command
-through `pipewire-pulse`. Verify the dependency with:
+through `pipewire-pulse`. Verify the explicitly selected integration with:
 
 ```sh
 command -v parec
@@ -505,8 +505,8 @@ source entry or its user-owned executable block later launch until explicit
 executable token, never file/URI arguments.
 
 Desktop-entry restore uses the system `gio` command (GLib). Flatpak restore
-additionally needs `flatpak`; neither dependency is required for title
-animation or Herdr-only sessions.
+additionally needs `flatpak`; neither tool is a package dependency or required
+for title animation or Herdr-only sessions.
 
 Application lifecycle and repair commands accept an exact UUID or unambiguous
 label:

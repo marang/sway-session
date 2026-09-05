@@ -57,7 +57,6 @@ flowchart TB
         Init[internal/herdrinit]
         Start[internal/sessionrequest]
         Report[internal/agentreport]
-        Codex[Codex v1 compatibility adapter]
         Indicator[internal/titleindicator]
         Diagnostic[internal/diagnostic]
     end
@@ -74,9 +73,7 @@ flowchart TB
     Init --> HerdrProcess
     Daemon --> Start
     Daemon --> Report
-    Daemon --> Codex
     Start --> Session
-    Codex --> Report
     Report --> Session
     Session --> Indicator
     CLI --> Diagnostic
@@ -101,8 +98,6 @@ flowchart TB
 - internal/sessionrequest accepts one protocol-v1 ensure-and-start operation.
 - internal/agentreport accepts one protocol-v2 agent-session association and
   owns the shared bounded transport and service.
-- internal/codexreport adapts existing Codex hooks and the v1 wire contract to
-  the shared agent reporter.
 - internal/titleindicator owns only the versioned presentation mark wire
   contract.
 - internal/diagnostic owns stable human and JSON diagnostics.
@@ -330,10 +325,10 @@ lifecycle locks are held for their defined process/effect windows.
 
 session-start.sock accepts one versioned ensure-and-start request without pane
 roles or command strings. agent-report.sock accepts a protocol-v2 association
-after peer credentials and pane-process ancestry checks. The legacy
-codex-report.sock retains its v1 contract through the same transport and
-normalized service. Neither returns raw registry contents. LAB-122 adds the
-generic endpoint without changing existing socket names or stored state.
+after peer credentials and pane-process ancestry checks. Neither returns raw
+registry contents. LAB-125 removes the legacy Codex report endpoint and CLI;
+provider events are translated by hook assets into the generic input shape.
+The agent-report v2 and session-start v1 contracts and stored state are unchanged.
 See [agent reporting](agent-reporting.md) for the input and compatibility contract.
 
 The included AppArmor profile is experimental. Its file rules protect the

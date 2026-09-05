@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -31,6 +32,42 @@ func TestServerAcceptsOnlyValidatedGenericReport(t *testing.T) {
 	received := <-reports
 	if received.ContextID != report.ContextID || received.PaneID != report.PaneID || received.Agent != report.Agent || received.AgentSessionID != report.AgentSessionID || received.PeerPID <= 0 {
 		t.Fatalf("unexpected report: %+v", received)
+	}
+}
+
+func TestServerRefusesToReplaceNonSocketEndpoint(t *testing.T) {
+	runtimeDir := filepath.Join(t.TempDir(), "runtime")
+	if err := os.Mkdir(runtimeDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	socketPath := filepath.Join(runtimeDir, SocketFilename)
+	if err := os.WriteFile(socketPath, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := StartServer(socketPath, func(context.Context, Report) error { return nil }, nil); err == nil {
+		t.Fatal("expected non-socket endpoint to be preserved and rejected")
+	}
+	data, err := os.ReadFile(socketPath)
+	if err != nil || strings.TrimSpace(string(data)) != "keep" {
+		t.Fatalf("existing file was changed: data=%q err=%v", data, err)
+	}
+}
+
+func TestClientRedactsSensitiveHandlerFailure(t *testing.T) {
+	socketPath := filepath.Join(t.TempDir(), "runtime", SocketFilename)
+	server, err := StartServer(socketPath, func(context.Context, Report) error {
+		return errors.New("secret registry path /private/context")
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	err = Send(ctx, socketPath, Report{Version: ProtocolVersion, ContextID: testContextID, PaneID: "work:p1", Agent: "claude", AgentSessionID: "claude:thread-01"})
+	if err == nil || err.Error() != "report rejected" || strings.Contains(err.Error(), "/private/context") {
+		t.Fatalf("broker leaked internal handler failure: %v", err)
 	}
 }
 

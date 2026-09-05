@@ -23,39 +23,24 @@ const reportExchangeTimeout = 2 * time.Second
 
 type Handler func(context.Context, Report) error
 
-type decoder func([]byte) (Report, error)
-
-// Server serves either the canonical v2 wire contract or the v1 Codex
-// compatibility contract. Both modes share the same peer, path, size, timeout
+// Server serves the canonical v2 wire contract with peer, path, size, timeout,
 // and stale-socket protections.
 type Server struct {
-	listener        *net.UnixListener
-	directory       *os.File
-	socketFD        int
-	socketName      string
-	socketStat      unix.Stat_t
-	handler         Handler
-	decode          decoder
-	responseVersion int
-	reportError     func(error)
-	done            chan struct{}
-	closeOnce       sync.Once
-	wait            sync.WaitGroup
-	workers         chan struct{}
+	listener    *net.UnixListener
+	directory   *os.File
+	socketFD    int
+	socketName  string
+	socketStat  unix.Stat_t
+	handler     Handler
+	reportError func(error)
+	done        chan struct{}
+	closeOnce   sync.Once
+	wait        sync.WaitGroup
+	workers     chan struct{}
 }
 
 func StartServer(socketPath string, handler Handler, reportError func(error)) (*Server, error) {
-	return startServer(socketPath, handler, decodeReport, ProtocolVersion, reportError)
-}
-
-// StartLegacyServer retains codex-report.sock protocol v1 while dispatching
-// the normalized request through the generic Handler.
-func StartLegacyServer(socketPath string, handler Handler, reportError func(error)) (*Server, error) {
-	return startServer(socketPath, handler, decodeLegacyCodexReport, 1, reportError)
-}
-
-func startServer(socketPath string, handler Handler, decode decoder, responseVersion int, reportError func(error)) (*Server, error) {
-	if handler == nil || decode == nil {
+	if handler == nil {
 		return nil, errors.New("agent report handler is nil")
 	}
 	if socketPath == "" || !filepath.IsAbs(socketPath) || filepath.Clean(socketPath) != socketPath {
@@ -109,7 +94,7 @@ func startServer(socketPath string, handler Handler, decode decoder, responseVer
 		closeSetup()
 		return nil, errors.New("agent report endpoint is not an owner-only socket")
 	}
-	server := &Server{listener: listener, directory: directory, socketFD: socketFD, socketName: socketName, socketStat: socketStat, handler: handler, decode: decode, responseVersion: responseVersion, reportError: reportError, done: make(chan struct{}), workers: make(chan struct{}, 8)}
+	server := &Server{listener: listener, directory: directory, socketFD: socketFD, socketName: socketName, socketStat: socketStat, handler: handler, reportError: reportError, done: make(chan struct{}), workers: make(chan struct{}, 8)}
 	server.wait.Add(1)
 	go server.serve()
 	return server, nil
@@ -121,17 +106,6 @@ func decodeReport(data []byte) (Report, error) {
 		return Report{}, err
 	}
 	return report, report.Validate()
-}
-
-func decodeLegacyCodexReport(data []byte) (Report, error) {
-	var legacy LegacyCodexReport
-	if err := decodeSingle(data, &legacy); err != nil {
-		return Report{}, err
-	}
-	if err := legacy.Validate(); err != nil {
-		return Report{}, err
-	}
-	return legacy.Generic(), nil
 }
 
 func decodeSingle(data []byte, target any) error {
@@ -250,7 +224,7 @@ func (server *Server) handle(connection *net.UnixConn) {
 		server.reject(connection, fmt.Errorf("agent session report exceeds %d bytes", maxProtocolMessage))
 		return
 	}
-	report, err := server.decode(data)
+	report, err := decodeReport(data)
 	if err != nil {
 		server.reject(connection, fmt.Errorf("decode agent session report: %w", err))
 		return
@@ -262,7 +236,7 @@ func (server *Server) handle(connection *net.UnixConn) {
 		server.reject(connection, err)
 		return
 	}
-	server.writeResponse(connection, response{Version: server.responseVersion, OK: true})
+	server.writeResponse(connection, response{Version: ProtocolVersion, OK: true})
 }
 
 func requireCurrentUser(connection *net.UnixConn) (*unix.Ucred, error) {
@@ -288,7 +262,7 @@ func requireCurrentUser(connection *net.UnixConn) (*unix.Ucred, error) {
 
 func (server *Server) reject(connection net.Conn, cause error) {
 	server.report(cause)
-	server.writeResponse(connection, response{Version: server.responseVersion, Error: "report rejected"})
+	server.writeResponse(connection, response{Version: ProtocolVersion, Error: "report rejected"})
 }
 func (server *Server) writeResponse(connection net.Conn, result response) {
 	encoded, err := json.Marshal(result)

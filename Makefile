@@ -5,7 +5,7 @@ GO_LDFLAGS := -s -w -buildid=
 GO_FILES := $(shell find cmd internal -name '*.go' -type f)
 DOC_ROOT := $(PREFIX)/share/doc/sway-session
 
-.PHONY: build install clean fmt fmt-check test race vet lint apparmor-check completion-check packaging-check standalone-check diff-check verify
+.PHONY: build install clean fmt fmt-check test race vet lint apparmor-check codex-hook-check completion-check packaging-check standalone-check diff-check verify
 
 fmt:
 	gofmt -w $(GO_FILES)
@@ -32,6 +32,9 @@ lint:
 apparmor-check:
 	sh scripts/check-apparmor-policy.sh
 
+codex-hook-check:
+	sh scripts/check-codex-hook.sh
+
 completion-check:
 	sh scripts/check-completions.sh
 
@@ -48,11 +51,13 @@ diff-check:
 	git diff --check
 	git diff --cached --check
 
-verify: fmt-check test race vet lint apparmor-check completion-check packaging-check standalone-check build diff-check
+verify: fmt-check test race vet lint apparmor-check codex-hook-check completion-check packaging-check standalone-check build diff-check
 
 install: build
 	install -d $(PREFIX)/bin
 	install -m755 sway-session $(PREFIX)/bin/sway-session
+	install -d $(PREFIX)/lib/sway-session
+	install -m755 contrib/codex/report-agent-session.sh $(PREFIX)/lib/sway-session/codex-report-agent-session
 	install -d $(PREFIX)/share/bash-completion/completions
 	install -d $(PREFIX)/share/zsh/site-functions
 	install -d $(PREFIX)/share/fish/vendor_completions.d

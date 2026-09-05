@@ -117,12 +117,6 @@ func ReportHerdrAgentSession(ctx context.Context, paths HerdrPaths, launcher Lau
 	return nil
 }
 
-// ReportHerdrCodexSession preserves the former narrow Codex backend for the
-// version-1 compatibility endpoint.
-func ReportHerdrCodexSession(ctx context.Context, paths HerdrPaths, launcher Launcher, paneID string, codexSessionID string, reporterPID int, now time.Time) error {
-	return ReportHerdrAgentSession(ctx, paths, launcher, paneID, "codex", codexSessionID, reporterPID, now)
-}
-
 func openHerdrAPIEndpoint(rootPath string, sessionName string) (*herdrAPIEndpoint, error) {
 	if !filepath.IsAbs(rootPath) || filepath.Clean(rootPath) != rootPath {
 		return nil, errors.New("herdr state root must be a clean absolute path")

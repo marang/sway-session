@@ -31,18 +31,10 @@ func Send(ctx context.Context, socketPath string, report Report) error {
 	if err := report.Validate(); err != nil {
 		return err
 	}
-	return send(ctx, socketPath, report, ProtocolVersion)
+	return send(ctx, socketPath, report)
 }
 
-// SendLegacyCodex sends exactly the stable version-1 Codex request shape.
-func SendLegacyCodex(ctx context.Context, socketPath string, report LegacyCodexReport) error {
-	if err := report.Validate(); err != nil {
-		return err
-	}
-	return send(ctx, socketPath, report, 1)
-}
-
-func send(ctx context.Context, socketPath string, payload any, responseVersion int) error {
+func send(ctx context.Context, socketPath string, report Report) error {
 	if socketPath == "" || !filepath.IsAbs(socketPath) || filepath.Clean(socketPath) != socketPath {
 		return errors.New("agent report socket must be a clean absolute path")
 	}
@@ -61,7 +53,7 @@ func send(ctx context.Context, socketPath string, payload any, responseVersion i
 			return fmt.Errorf("bound agent report exchange: %w", err)
 		}
 	}
-	encoded, err := json.Marshal(payload)
+	encoded, err := json.Marshal(report)
 	if err != nil {
 		return fmt.Errorf("encode agent session report: %w", err)
 	}
@@ -85,7 +77,7 @@ func send(ctx context.Context, socketPath string, payload any, responseVersion i
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		return errors.New("agent report response contains trailing data")
 	}
-	if result.Version != responseVersion {
+	if result.Version != ProtocolVersion {
 		return fmt.Errorf("unsupported agent report response version %d", result.Version)
 	}
 	if !result.OK {

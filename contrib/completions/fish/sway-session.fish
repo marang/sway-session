@@ -599,7 +599,7 @@ complete -c sway-session -n '__sway_session_global_options_open; and not __sway_
 complete -c sway-session -n '__sway_session_global_options_open' -s h -d 'Show help'
 complete -c sway-session -n '__sway_session_global_options_open' -l help -d 'Show help'
 complete -c sway-session -n '__sway_session_global_options_open' -l config -r -F
-complete -c sway-session -n '__sway_session_no_command' -a 'register restore list archive activate purge app daemon broker request-start report-agent-session report-codex-session completion terminal doctor'
+complete -c sway-session -n '__sway_session_no_command' -a 'register restore list archive activate purge app daemon broker request-start report-agent-session completion terminal doctor'
 complete -c sway-session -n '__sway_session_marker_value_open' -a '(__sway_session_command_options)'
 
 complete -c sway-session -n '__sway_session_is_command doctor; and __sway_session_options_open; and __sway_session_doctor_mode allow-check' -l check -d 'Print read-only setup checks'

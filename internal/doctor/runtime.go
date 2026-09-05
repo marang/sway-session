@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/marang/sway-session/internal/agentreport"
-	"github.com/marang/sway-session/internal/codexreport"
 	sessionstate "github.com/marang/sway-session/internal/session"
 	"github.com/marang/sway-session/internal/sessionrequest"
 	"github.com/marang/sway-session/internal/statefile"
@@ -420,7 +419,6 @@ func inspectOptionalSockets(runtime privateDirectoryObservation) []Check {
 	for _, endpoint := range []struct{ id, title, name string }{
 		{"broker.session_start", "Session-start broker", sessionrequest.SocketFilename},
 		{"broker.agent_report", "Agent-report broker", agentreport.SocketFilename},
-		{"broker.codex_report", "Codex-report compatibility broker", codexreport.SocketFilename},
 	} {
 		if runtime.selectionErr != nil || runtime.path == "" {
 			checks = append(checks, unavailableCheck(endpoint.id, endpoint.title, "This optional broker endpoint is unavailable because XDG runtime paths are unavailable."))

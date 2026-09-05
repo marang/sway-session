@@ -142,19 +142,6 @@ func runSessionDaemon(ctx context.Context, swaySocket string, reportError func(e
 			}
 		}()
 	}
-	// Keep the v1 endpoint for installed Codex hooks; it uses the shared reporter.
-	codexBroker, err := startCodexReportBroker(reportError)
-	if err != nil && reportError != nil {
-		reportError(fmt.Errorf("start secure Codex session reporter: %w", err))
-	}
-	if codexBroker != nil {
-		defer func() {
-			if err := codexBroker.Close(); err != nil && reportError != nil {
-				reportError(fmt.Errorf("stop secure Codex session reporter: %w", err))
-			}
-		}()
-	}
-
 	events := make(chan swayipc.Event, 16)
 	done := make(chan struct{})
 	defer close(done)

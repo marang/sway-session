@@ -16,7 +16,8 @@ func TestServerRejectsInvalidV2WireWithoutCallingHandler(t *testing.T) {
 	for name, payload := range map[string][]byte{
 		"unknown method":        []byte(`{"version":2,"context_id":"123e4567-e89b-12d3-a456-426614174000","pane_id":"work:p1","agent":"claude","agent_session_id":"claude:thread-1","method":"pane.send_input"}`),
 		"peer PID override":     []byte(`{"version":2,"context_id":"123e4567-e89b-12d3-a456-426614174000","pane_id":"work:p1","agent":"claude","agent_session_id":"claude:thread-1","peer_pid":1}`),
-		"wrong version":         []byte(`{"version":1,"context_id":"123e4567-e89b-12d3-a456-426614174000","pane_id":"work:p1","agent":"claude","agent_session_id":"claude:thread-1"}`),
+		"generic v1 fields":     []byte(`{"version":1,"context_id":"123e4567-e89b-12d3-a456-426614174000","pane_id":"work:p1","agent":"claude","agent_session_id":"claude:thread-1"}`),
+		"legacy v1 wire":        []byte(`{"version":1,"context_id":"123e4567-e89b-12d3-a456-426614174000","pane_id":"work:p1","codex_session_id":"01a04a4b-7fb9-7a90-8ace-51f7ae68e0ee"}`),
 		"legacy field mixed in": []byte(`{"version":2,"context_id":"123e4567-e89b-12d3-a456-426614174000","pane_id":"work:p1","agent":"claude","agent_session_id":"claude:thread-1","codex_session_id":"01a04a4b-7fb9-7a90-8ace-51f7ae68e0ee"}`),
 		"invalid agent":         []byte(`{"version":2,"context_id":"123e4567-e89b-12d3-a456-426614174000","pane_id":"work:p1","agent":"not-an-agent","agent_session_id":"safe"}`),
 		"invalid session ID":    []byte(`{"version":2,"context_id":"123e4567-e89b-12d3-a456-426614174000","pane_id":"work:p1","agent":"claude","agent_session_id":"-unsafe"}`),

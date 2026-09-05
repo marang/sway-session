@@ -35,6 +35,7 @@ test -f contrib/sway-session/config.toml
 test -f contrib/herdr/config.toml
 test -f contrib/codex/hooks.json
 test -f contrib/codex/hooks-system.json
+test -x contrib/codex/report-agent-session.sh
 test -f contrib/apparmor/codex-home-guard
 test -f scripts/verify-codex-boundary.sh
 test -f docs/agent-reporting.md
@@ -53,11 +54,13 @@ require_fixed .goreleaser.yaml '        dst: /usr/share/doc/sway-session/docs/sw
 require_fixed .goreleaser.yaml '        dst: /usr/share/doc/sway-session/docs/adr/0001-sqlite-session-runtime-state.md'
 require_fixed .goreleaser.yaml '        dst: /usr/share/doc/sway-session/50-sway-session.conf'
 require_fixed .goreleaser.yaml '        dst: /usr/share/doc/sway-session/contrib/codex/hooks.json'
+require_fixed .goreleaser.yaml '        dst: /usr/lib/sway-session/codex-report-agent-session'
 require_fixed .goreleaser.yaml '        dst: /usr/share/doc/sway-session/contrib/apparmor/codex-home-guard'
 require_fixed .goreleaser.yaml '        dst: /usr/share/doc/sway-session/scripts/verify-codex-boundary.sh'
 reject_fixed .goreleaser.yaml 'sway-title-animator'
 reject_fixed .goreleaser.yaml 'pulseaudio'
 reject_fixed .goreleaser.yaml 'parec'
+reject_fixed .goreleaser.yaml '      - jq'
 
 require_fixed PKGBUILD 'pkgname=sway-session'
 require_fixed PKGBUILD 'url="https://github.com/marang/sway-session"'
@@ -66,8 +69,12 @@ require_fixed PKGBUILD "makedepends=('go>=1.26.5')"
 require_fixed PKGBUILD 'CGO_ENABLED=0 go build'
 require_fixed PKGBUILD '-o sway-session ./cmd/sway-session'
 require_fixed PKGBUILD 'install -Dm755 sway-session "$pkgdir/usr/bin/sway-session"'
+require_fixed PKGBUILD '_install_codex_hook'
+require_fixed PKGBUILD 'if (( $(vercmp "$pkgver" 0.2.0) <= 0 )); then'
+require_fixed PKGBUILD 'install -Dm755 "$hook" "$pkgdir/usr/lib/sway-session/codex-report-agent-session"'
 require_fixed PKGBUILD '"$pkgdir/usr/share/doc/$pkgname/50-sway-session.conf"'
 reject_fixed PKGBUILD 'optdepends='
+reject_fixed PKGBUILD "'jq'"
 reject_fixed PKGBUILD 'sway-title-animator'
 reject_fixed PKGBUILD './cmd/sway-title-animator'
 
@@ -76,6 +83,7 @@ require_fixed .SRCINFO 'pkgname = sway-session'
 require_fixed .SRCINFO 'depends = sway'
 reject_fixed .SRCINFO 'optdepends ='
 reject_fixed .SRCINFO 'sway-title-animator'
+reject_fixed .SRCINFO 'depends = jq'
 
 # Before the first v0.1.0 tag, SKIP is honest bootstrap state. Release metadata
 # may instead contain only the real 64-hex digest generated from an immutable
@@ -122,6 +130,7 @@ require_fixed .github/workflows/aur.yml 'secrets.RELEASE_SYNC_TOKEN'
 require_fixed .github/workflows/aur.yml '--force-with-lease='
 require_fixed .github/workflows/aur.yml 'gh pr close "$pr_url"'
 require_fixed .github/workflows/release.yml 'merge-base --is-ancestor "$GITHUB_SHA" origin/main'
+require_fixed .github/workflows/ci.yml 'sudo apt-get update && sudo apt-get install --yes fish jq zsh'
 
 require_count contrib/sway/50-sway-session.conf 'exec --no-startup-id /usr/bin/sway-session daemon' 1
 require_count contrib/sway/50-sway-session.conf 'exec --no-startup-id /usr/bin/sway-session restore' 1
@@ -132,9 +141,50 @@ reject_fixed contrib/sway/50-sway-session.conf 'sway-title-animator'
 
 require_fixed Makefile 'BINARIES := sway-session'
 require_fixed Makefile 'CGO_ENABLED=0 go build'
+require_fixed Makefile 'install -m755 contrib/codex/report-agent-session.sh $(PREFIX)/lib/sway-session/codex-report-agent-session'
 require_fixed Makefile '$(PREFIX)/share/doc/sway-session'
 require_fixed Makefile 'install -m644 docs/sway-session-verification.md $(DOC_ROOT)/docs/sway-session-verification.md'
 reject_fixed Makefile 'sway-title-animator'
+
+require_fixed contrib/codex/hooks.json '\"$HOME/.local/lib/sway-session/codex-report-agent-session\" \"$HOME/.local/bin/sway-session\"'
+require_fixed contrib/codex/hooks-system.json '/usr/lib/sway-session/codex-report-agent-session /usr/bin/sway-session'
+reject_fixed contrib/codex/hooks.json 'report-codex-session'
+reject_fixed contrib/codex/hooks-system.json 'report-codex-session'
+reject_fixed .goreleaser.yaml 'codex-report.sock'
+
+# Exercise both sides of the Arch compatibility guard. The current v0.2.0 tag
+# archive may omit the adapter; every later source archive must include it.
+bash -c '
+	set -eu
+	source "$1"
+	test_root=$(mktemp -d)
+	trap '\''rm -rf "$test_root"'\'' EXIT HUP INT TERM
+	mkdir -p "$test_root/source/contrib/codex" "$test_root/pkg"
+	cd "$test_root/source"
+	pkgdir=$test_root/pkg
+	vercmp() {
+		case $1:$2 in
+			0.1.0:0.2.0) printf '\''%s\n'\'' -1 ;;
+			0.2.0:0.2.0) printf '\''%s\n'\'' 0 ;;
+			0.2.1:0.2.0) printf '\''%s\n'\'' 1 ;;
+			*) return 1 ;;
+		esac
+	}
+	for compatible in 0.1.0 0.2.0; do
+		pkgver=$compatible
+		_install_codex_hook
+	done
+	test ! -e "$pkgdir/usr/lib/sway-session/codex-report-agent-session"
+	pkgver=0.2.1
+	if _install_codex_hook 2>/dev/null; then
+		echo '\''Future Arch recipes accepted a missing Codex hook adapter.'\'' >&2
+		exit 1
+	fi
+	printf '\''#!/bin/sh\n'\'' >contrib/codex/report-agent-session.sh
+	chmod 755 contrib/codex/report-agent-session.sh
+	_install_codex_hook
+	test -x "$pkgdir/usr/lib/sway-session/codex-report-agent-session"
+' packaging-guard "$PWD/PKGBUILD"
 
 if command -v makepkg >/dev/null 2>&1; then
 	generated=$(mktemp)

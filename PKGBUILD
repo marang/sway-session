@@ -45,6 +45,12 @@ package() {
   install -Dm644 contrib/completions/fish/sway-session.fish "$pkgdir/usr/share/fish/vendor_completions.d/sway-session.fish"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
   install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+  # Keep this recipe usable with the currently pinned pre-branding release.
+  if [[ -f docs/branding.md ]]; then
+    install -Dm644 docs/branding.md "$pkgdir/usr/share/doc/$pkgname/docs/branding.md"
+    install -d "$pkgdir/usr/share/doc/$pkgname/docs/assets"
+    install -m644 docs/assets/*.jpeg "$pkgdir/usr/share/doc/$pkgname/docs/assets/"
+  fi
   install -Dm644 docs/sway-session-plan.md "$pkgdir/usr/share/doc/$pkgname/docs/sway-session-plan.md"
   install -Dm644 docs/sway-session-verification.md "$pkgdir/usr/share/doc/$pkgname/docs/sway-session-verification.md"
   install -Dm644 docs/releasing.md "$pkgdir/usr/share/doc/$pkgname/docs/releasing.md"

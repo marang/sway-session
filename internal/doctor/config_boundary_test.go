@@ -4,21 +4,29 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
 func TestRepairRefusesAmbiguousShortcutSyntax(t *testing.T) {
 	for name, config := range map[string]string{
-		"block":                   "bindsym {\n $mod+Return exec foot\n}\n",
-		"mode":                    "mode resize {\n bindsym $mod+Return exec foot\n}\n",
-		"mode selection":          "mode resize\n",
-		"literal modifier":        "bindsym Mod4+Return exec foot\n",
-		"reordered modifiers":     "bindsym Shift+Mod4+Return exec foot\n",
-		"variable alias":          "set $terminalkey Mod4+Return\nbindsym $terminalkey exec foot\n",
-		"unknown option":          "bindsym --unknown $mod+Return exec foot\n",
-		"keycode":                 "bindcode Mod4+36 exec foot\n",
-		"unbind":                  "unbindsym $mod+Return\n",
-		"unknown return modifier": "bindsym Group1+Mod4+Return exec foot\n",
+		"block":                       "bindsym {\n $mod+Return exec foot\n}\n",
+		"mode":                        "mode resize {\n bindsym $mod+Return exec foot\n}\n",
+		"mode selection":              "mode resize\n",
+		"literal modifier":            "bindsym Mod4+Return exec foot\n",
+		"reordered modifiers":         "bindsym Shift+Mod4+Return exec foot\n",
+		"variable alias":              "set $terminalkey Mod4+Return\nbindsym $terminalkey exec foot\n",
+		"unknown option":              "bindsym --unknown $mod+Return exec foot\n",
+		"keycode":                     "bindcode Mod4+36 exec foot\n",
+		"unbind":                      "unbindsym $mod+Return\n",
+		"unknown return modifier":     "bindsym Group1+Mod4+Return exec foot\n",
+		"uppercase binding":           "BINDSYM Mod4+Return exec foot\n",
+		"uppercase mode":              "MODE resize\n",
+		"variable command":            "set $shortcut bindsym $mod+Return exec foot\n$shortcut\n",
+		"variable command prefix":     "set $binding bindsym\n$binding Mod4+Return exec foot\n",
+		"variable startup executable": "set $session sway-session\nexec $session daemon\n",
+		"variable startup argument":   "set $action daemon\nexec sway-session $action\n",
+		"variable uppercase startup":  "set $session sway-session\nEXEC --no-startup-id $session daemon\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			root := writeSwayConfig(t, "set $mod Mod4\n"+config)
@@ -30,6 +38,14 @@ func TestRepairRefusesAmbiguousShortcutSyntax(t *testing.T) {
 				t.Fatalf("inspection offered unsafe repair: %+v", check)
 			}
 		})
+	}
+}
+
+func TestInspectRecognizesUppercaseSwayKeywords(t *testing.T) {
+	config := strings.NewReplacer("set ", "SET ", "exec ", "EXEC ", "bindsym ", "BINDSYM ").Replace(healthySwayConfig())
+	root := writeSwayConfig(t, config)
+	if check := inspectSwayConfig(context.Background(), Options{SwayConfigPath: root})[0]; check.Status != OK {
+		t.Fatalf("case-insensitive Sway keywords were not recognized: %+v", check)
 	}
 }
 

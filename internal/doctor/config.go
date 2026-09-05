@@ -266,6 +266,13 @@ func (scanner *swayStaticScanner) scan(path string, depth int) error {
 		if len(tokens) == 0 {
 			continue
 		}
+		if strings.ContainsRune(tokens[0], '$') {
+			scanner.analysis.unsupported = fmt.Errorf("variable-derived command at %s:%d requires manual review", clean, line)
+			return nil
+		}
+		// Sway command keywords are case-insensitive. Executable paths and their
+		// arguments remain case-sensitive and must not be normalized.
+		tokens[0] = strings.ToLower(tokens[0])
 		location := configLocation{path: clean, line: line}
 		scanner.recordIntegration(tokens, location)
 		if scanner.analysis.unsupported != nil {
@@ -356,6 +363,14 @@ func (scanner *swayStaticScanner) recordIntegration(tokens []string, location co
 	if tokens[0] == "bindcode" || tokens[0] == "unbindcode" || tokens[0] == "unbindsym" || tokens[0] == "mode" {
 		scanner.analysis.unsupported = errors.New("keycode, unbinding, or mode declarations require manual shortcut review")
 		return
+	}
+	if tokens[0] == "exec" || tokens[0] == "exec_always" {
+		for _, token := range tokens[1:] {
+			if strings.ContainsAny(token, "$`") {
+				scanner.analysis.unsupported = fmt.Errorf("variable or shell-derived startup at %s:%d requires manual review", location.path, location.line)
+				return
+			}
+		}
 	}
 	if kind, relevant, correct := classifyStartup(tokens); relevant {
 		scanner.analysis.occurrences[kind] = append(scanner.analysis.occurrences[kind], integrationOccurrence{
@@ -459,7 +474,7 @@ func classifyBinding(tokens []string, variables map[string]string) (integrationK
 	if !ordinaryOptions {
 		return kind, true, false, nil
 	}
-	if len(command) == 0 || command[0] != "exec" {
+	if len(command) == 0 || !strings.EqualFold(command[0], "exec") {
 		return kind, true, false, nil
 	}
 	command = skipExecOptions(command[1:])

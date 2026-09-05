@@ -399,7 +399,7 @@ func parseManagedSnippet(content []byte) ([]integrationKind, error) {
 			return nil, errors.New("file contains unrecognized manual edits")
 		}
 		kind, lineExecutable, ok := parseExactManagedDirective(tokens)
-		if !ok {
+		if !ok || line != integrationDirective(lineExecutable, kind) {
 			return nil, errors.New("file contains unrecognized manual edits")
 		}
 		if executable != "" && executable != lineExecutable {

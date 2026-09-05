@@ -2,11 +2,13 @@ package doctor
 
 import (
 	"context"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/marang/sway-session/internal/swayipc"
+	"golang.org/x/sys/unix"
 )
 
 type runtimeTestSway struct {
@@ -85,15 +87,30 @@ func TestPrivateObjectRejectsSymlinkAndAcceptsOwnerOnlyFile(t *testing.T) {
 	if err := os.WriteFile(file, nil, 0o600); err != nil {
 		t.Fatalf("write private file: %v", err)
 	}
-	if err := inspectPrivateObject(file, 0, 0o600, false); err != nil {
+	if _, err := inspectPrivateObjectStat(file, unix.S_IFREG, 0o600, false); err != nil {
 		t.Fatalf("inspect private file: %v", err)
 	}
 	link := filepath.Join(directory, "link")
 	if err := os.Symlink(file, link); err != nil {
 		t.Fatalf("make link: %v", err)
 	}
-	if err := inspectPrivateObject(link, 0, 0o600, false); err == nil {
+	if _, err := inspectPrivateObjectStat(link, unix.S_IFREG, 0o600, false); err == nil {
 		t.Fatal("symlink accepted")
+	}
+}
+
+func TestPrivateObjectAcceptsOwnerOnlySocketWithoutFollowingIt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "broker.sock")
+	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
+	if err != nil {
+		t.Fatalf("listen socket: %v", err)
+	}
+	defer listener.Close()
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatalf("chmod socket: %v", err)
+	}
+	if _, err := inspectPrivateObjectStat(path, unix.S_IFSOCK, 0o600, false); err != nil {
+		t.Fatalf("inspect private socket: %v", err)
 	}
 }
 

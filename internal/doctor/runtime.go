@@ -21,6 +21,7 @@ import (
 	sessionstate "github.com/marang/sway-session/internal/session"
 	"github.com/marang/sway-session/internal/sessionrequest"
 	"github.com/marang/sway-session/internal/swayipc"
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -284,7 +285,7 @@ func inspectRuntimePaths(root string, rootErr error) Check {
 	if rootErr != nil {
 		return unavailableCheck("runtime.paths", "Runtime paths", "The private runtime directory cannot be located from XDG_RUNTIME_DIR.")
 	}
-	if err := inspectPrivateObject(root, os.ModeDir, 0o700, true); err != nil {
+	if _, err := inspectPrivateObjectStat(root, unix.S_IFDIR, 0o700, true); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return unavailableCheck("runtime.paths", "Runtime paths", "No sway-session runtime directory exists; the daemon is not currently initialized.")
 		}
@@ -304,21 +305,14 @@ func inspectDaemonLock(root string, rootErr error) daemonObservation {
 		return daemonObservation{check: unavailableCheck("daemon.lock", "Daemon lock", "The runtime directory is unavailable, so daemon lock state cannot be inspected.")}
 	}
 	path := filepath.Join(root, "daemon.lock")
-	if err := inspectPrivateObject(path, 0, 0o600, false); err != nil {
+	lockStat, err := inspectPrivateObjectStat(path, unix.S_IFREG, 0o600, false)
+	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return daemonObservation{check: unavailableCheck("daemon.lock", "Daemon lock", "No daemon lock file exists; no daemon is proven to be running.")}
 		}
 		return daemonObservation{check: errorCheck("daemon.lock", "Daemon lock", "The daemon lock is not an owner-only single-link regular file.")}
 	}
-	info, err := runtimeProbes.lstat(path)
-	if err != nil {
-		return daemonObservation{check: unavailableCheck("daemon.lock", "Daemon lock", "The daemon lock could not be inspected.")}
-	}
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	if !ok {
-		return daemonObservation{check: unavailableCheck("daemon.lock", "Daemon lock", "The platform cannot identify the daemon lock inode.")}
-	}
-	pid, err := lockedByPID(stat)
+	pid, err := lockedByPID(&lockStat)
 	if err != nil {
 		return daemonObservation{check: unavailableCheck("daemon.lock", "Daemon lock", "The daemon lock file exists, but no held advisory lock could be proven.")}
 	}
@@ -384,7 +378,7 @@ func inspectOptionalSockets(root string, rootErr error) []Check {
 			checks = append(checks, unavailableCheck(endpoint.id, endpoint.title, "This optional broker endpoint is unavailable because XDG runtime paths are unavailable."))
 			continue
 		}
-		err := inspectPrivateObject(filepath.Join(root, endpoint.name), os.ModeSocket, 0o600, false)
+		_, err := inspectPrivateObjectStat(filepath.Join(root, endpoint.name), unix.S_IFSOCK, 0o600, false)
 		if errors.Is(err, os.ErrNotExist) {
 			checks = append(checks, unavailableCheck(endpoint.id, endpoint.title, "This optional broker endpoint is not running."))
 		} else if err != nil {
@@ -405,14 +399,14 @@ func inspectStatePaths() Check {
 	if err != nil {
 		return unavailableCheck("state.paths", "State paths", "The private state directory cannot be located from XDG_STATE_HOME.")
 	}
-	if err := inspectPrivateObject(root, os.ModeDir, 0o700, true); err != nil {
+	if _, err := inspectPrivateObjectStat(root, unix.S_IFDIR, 0o700, true); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return unavailableCheck("state.paths", "State paths", "No sway-session state directory exists yet.")
 		}
 		return errorCheck("state.paths", "State paths", "The sway-session state directory is not an owner-only private directory.")
 	}
 	database := filepath.Join(root, sessionstate.StateDatabaseFilename)
-	if err := inspectPrivateObject(database, 0, 0o600, false); err != nil {
+	if _, err := inspectPrivateObjectStat(database, unix.S_IFREG, 0o600, false); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return Check{ID: "state.paths", Title: "State paths", Status: OK, Detail: "The sway-session state directory is owner-only; no state database has been initialized."}
 		}
@@ -421,53 +415,39 @@ func inspectStatePaths() Check {
 	return Check{ID: "state.paths", Title: "State paths", Status: OK, Detail: "The sway-session state directory and database are owner-only."}
 }
 
-func inspectPrivateObject(path string, wantType os.FileMode, wantMode os.FileMode, directory bool) error {
+func inspectPrivateObjectStat(path string, wantType uint32, wantMode os.FileMode, directory bool) (unix.Stat_t, error) {
 	if !cleanAbsolute(path) {
-		return errors.New("path is not clean and absolute")
+		return unix.Stat_t{}, errors.New("path is not clean and absolute")
 	}
-	if err := rejectSymlinkComponents(path); err != nil {
-		return err
-	}
-	info, err := runtimeProbes.lstat(path)
+	fd, err := unix.Openat2(unix.AT_FDCWD, path, &unix.OpenHow{
+		Flags:   unix.O_PATH | unix.O_CLOEXEC | unix.O_NOFOLLOW,
+		Resolve: unix.RESOLVE_NO_MAGICLINKS | unix.RESOLVE_NO_SYMLINKS,
+	})
 	if err != nil {
-		return err
+		return unix.Stat_t{}, err
 	}
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	if !ok || stat.Uid != uint32(os.Geteuid()) || (!directory && stat.Nlink != 1) {
-		return errors.New("untrusted ownership or links")
+	defer unix.Close(fd)
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err != nil {
+		return unix.Stat_t{}, err
+	}
+	if stat.Uid != uint32(os.Geteuid()) || (!directory && stat.Nlink != 1) {
+		return unix.Stat_t{}, errors.New("untrusted ownership or links")
 	}
 	if directory {
-		if !info.IsDir() {
-			return errors.New("not directory")
+		if stat.Mode&unix.S_IFMT != unix.S_IFDIR {
+			return unix.Stat_t{}, errors.New("not directory")
 		}
-	} else if info.Mode()&os.ModeType != wantType {
-		return errors.New("unexpected object type")
+	} else if stat.Mode&unix.S_IFMT != wantType {
+		return unix.Stat_t{}, errors.New("unexpected object type")
 	}
-	if info.Mode().Perm() != wantMode {
-		return errors.New("unexpected permissions")
+	if os.FileMode(stat.Mode).Perm() != wantMode {
+		return unix.Stat_t{}, errors.New("unexpected permissions")
 	}
-	return nil
+	return stat, nil
 }
 
-func rejectSymlinkComponents(path string) error {
-	current := string(filepath.Separator)
-	for _, component := range strings.Split(strings.TrimPrefix(path, string(filepath.Separator)), string(filepath.Separator)) {
-		if component == "" {
-			continue
-		}
-		current = filepath.Join(current, component)
-		info, err := runtimeProbes.lstat(current)
-		if err != nil {
-			return err
-		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			return errors.New("symlink component")
-		}
-	}
-	return nil
-}
-
-func lockedByPID(stat *syscall.Stat_t) (int, error) {
+func lockedByPID(stat *unix.Stat_t) (int, error) {
 	data, err := readBounded("/proc/locks", maxProcRead)
 	if err != nil {
 		return 0, err

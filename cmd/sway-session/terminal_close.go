@@ -76,7 +76,7 @@ func (runtime *sessionRuntime) observeTerminalCloseState(root *Node, registry se
 		return nil
 	}
 	if root == nil || root.ID <= 0 || root.Type != "root" {
-		return errors.New("Sway tree response has no valid root")
+		return errors.New("invalid root in Sway tree response")
 	}
 	observed, issues, err := observedActiveHerdrTerminals(root, registry, runtime.eventStreamEpoch)
 	if err != nil {

@@ -75,7 +75,7 @@ function __sway_session_options_open
             return 1
         end
         switch $token
-            case --config --socket --desktop-id --session --cwd --label --provider --id --workspace
+            case --config --socket --sway-config --fix --desktop-id --session --cwd --label --provider --id --workspace
                 set skip_next 1
             case --
                 set global_options_open 0
@@ -110,6 +110,9 @@ function __sway_session_marker_value_open
             set value_options --socket
             test "$command[1]" = restore
             and set bool_options --require-active
+        case doctor
+            set value_options --fix --socket --sway-config
+            set bool_options --check --yes
         case request-start
             set value_options --session --cwd --label --provider --workspace
         case app
@@ -197,6 +200,8 @@ function __sway_session_command_options
             printf '%s\n' --socket --require-active
         case daemon broker
             printf '%s\n' --socket
+        case doctor
+            printf '%s\n' --fix --socket --sway-config
         case request-start
             printf '%s\n' --session --cwd --label --provider --workspace
         case app
@@ -554,13 +559,54 @@ function __sway_session_app_context_pending --argument-names wanted
     test $skip_next -eq 0
 end
 
+function __sway_session_doctor_mode --argument-names wanted
+    set -l pending 0
+    set -l has_fix 0
+    set -l has_check 0
+    for token in (commandline -opc)
+        if test $pending -eq 1
+            contains -- "$token" --json -h --help
+            and continue
+            set pending 0
+            continue
+        end
+        switch $token
+            case --fix
+                set has_fix 1
+                set pending 1
+            case '--fix=*'
+                set has_fix 1
+            case --config --socket --sway-config
+                set pending 1
+            case --check --check=true --check=1
+                set has_check 1
+            case --check=false --check=0
+                set has_check 0
+        end
+    end
+    switch $wanted
+        case fix
+            test $has_fix -eq 1
+        case allow-check
+            test $has_fix -eq 0
+        case allow-fix
+            test $has_check -eq 0
+    end
+end
+
 complete -c sway-session -f
 complete -c sway-session -n '__sway_session_global_options_open; and not __sway_session_terminal_subcommand manage' -l json -d 'Emit machine-readable results and diagnostics'
 complete -c sway-session -n '__sway_session_global_options_open' -s h -d 'Show help'
 complete -c sway-session -n '__sway_session_global_options_open' -l help -d 'Show help'
 complete -c sway-session -n '__sway_session_global_options_open' -l config -r -F
-complete -c sway-session -n '__sway_session_no_command' -a 'register restore list archive activate purge app daemon broker request-start report-agent-session report-codex-session completion terminal'
+complete -c sway-session -n '__sway_session_no_command' -a 'register restore list archive activate purge app daemon broker request-start report-agent-session report-codex-session completion terminal doctor'
 complete -c sway-session -n '__sway_session_marker_value_open' -a '(__sway_session_command_options)'
+
+complete -c sway-session -n '__sway_session_is_command doctor; and __sway_session_options_open; and __sway_session_doctor_mode allow-check' -l check -d 'Print read-only setup checks'
+complete -c sway-session -n '__sway_session_is_command doctor; and __sway_session_options_open; and __sway_session_doctor_mode allow-fix' -l fix -x -a sway.integration
+complete -c sway-session -n '__sway_session_is_command doctor; and __sway_session_options_open' -l socket -r -F
+complete -c sway-session -n '__sway_session_is_command doctor; and __sway_session_options_open' -l sway-config -r -F
+complete -c sway-session -n '__sway_session_is_command doctor; and __sway_session_options_open; and __sway_session_doctor_mode fix' -l yes -d 'Apply the selected fix'
 
 complete -c sway-session -n '__sway_session_is_command register; and __sway_session_options_open' -l session -x
 complete -c sway-session -n '__sway_session_is_command register; and __sway_session_options_open' -l cwd -r -F

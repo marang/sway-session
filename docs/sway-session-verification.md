@@ -30,6 +30,33 @@ CI additionally runs GoReleaser configuration validation. A release candidate
 must also run a clean GoReleaser snapshot and inspect every archive, DEB, and
 RPM so only sway-session and the documented integration assets are present.
 
+## Doctor checks
+
+Run the focused shared-service, CLI, and TUI tests before the full gate:
+
+~~~sh
+GOTOOLCHAIN=go1.26.5 go test ./internal/doctor ./cmd/sway-session -run Doctor
+GOTOOLCHAIN=go1.26.5 go test -race ./internal/doctor ./cmd/sway-session
+~~~
+
+Use disposable configuration and XDG roots for end-to-end repair checks.
+Inspect the preview without `--yes` and confirm no file changed or was created.
+Apply only to that fixture; verify the private backup contains the original,
+the generated snippet includes only missing directives, the original config
+content is preserved, and a repeated check sees the declarations. Confirm
+cancelled and stale plans do not apply. No workstation reload is part of doctor.
+
+Check the TUI at 80×24, at its 48×16 minimum, with NO_COLOR, with a long repair
+preview, a filtered list, and reordered results after refresh. Select by stable
+check identity. Confirm errors remain inspectable, confirmation is distinct
+from preview, and all quit/cancel keys have explicit footer labels.
+
+For compositor evidence, use only a private Sway instance and disposable roots
+as below. Doctor's Sway IPC operations are read-only; no live user's session,
+config, process, broker, or workspace may be modified for a diagnostic test.
+An unavailable optional integration is an expected report, not passed live
+verification of that integration.
+
 ## Standalone extraction checks
 
 Confirm the Go package graph contains the sway-session command and exactly the

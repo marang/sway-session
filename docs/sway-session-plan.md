@@ -106,6 +106,33 @@ flowchart TB
 - internal/titleindicator owns only the versioned presentation mark wire
   contract.
 - internal/diagnostic owns stable human and JSON diagnostics.
+- internal/doctor owns read-only setup inspection and previewed, bounded
+  configuration repairs. The CLI and doctor TUI share one service; neither
+  interface has a second repair implementation.
+
+### Setup inspection and repair
+
+`doctor` defaults to the interactive setup view only when both stdin and stdout
+are terminals. `--check`, `--json`, and non-TTY invocation stay read-only.
+Stable check IDs accompany `ok`, `warning`, `error`, and `unavailable` statuses.
+Unavailability is explicit evidence uncertainty, not success or a new package
+dependency. An error report exits 3, usage errors exit 2; warnings alone do not
+fail the command.
+
+Repairs are separate from inspection: `--fix sway.integration` prepares a
+preview; adding `--yes` applies it. The TUI uses the same Plan/Apply boundary,
+requires confirmation, and never applies simply by selecting a check. Plans
+hold private input snapshots; Apply revalidates them, creates exclusive private
+backups, uses descriptor-relative atomic file replacements, and rolls back
+provable partial changes on failure. No state database, service, session,
+package, hook, or security policy is changed by this repair.
+
+Sway integration analysis follows a bounded, static include graph. Unsupported
+syntax or ambiguous existing bindings suppress repair rather than guessing.
+The only generated file is the recognized doctor-owned snippet beside the
+selected Sway config. Other config content is preserved and excluded from
+repair previews. File checks never imply that a binding or AppArmor/socket
+boundary is live. Users reload Sway separately after reviewing applied edits.
 
 ## Durable state
 

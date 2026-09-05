@@ -342,6 +342,55 @@ if [[ " ${COMPREPLY[*]} " != *' --json '* ]] || [[ " ${COMPREPLY[*]} " == *' res
 	printf 'bash completion mishandled globals after a completed scope: %q\n' "${COMPREPLY[*]-}" >&2
 	exit 1
 fi
+
+COMP_WORDS=(sway-session doctor '')
+COMP_CWORD=2
+_sway_session
+for expected in --check --fix --socket --sway-config; do
+	if [[ " ${COMPREPLY[*]} " != *" $expected "* ]]; then
+		printf 'bash doctor completion omitted %s: %q\n' "$expected" "${COMPREPLY[*]-}" >&2
+		exit 1
+	fi
+done
+if [[ " ${COMPREPLY[*]} " == *' --yes '* ]]; then
+	printf 'bash doctor completion offered --yes without --fix: %q\n' "${COMPREPLY[*]-}" >&2
+	exit 1
+fi
+
+COMP_WORDS=(sway-session doctor --fix '')
+COMP_CWORD=3
+_sway_session
+if [[ " ${COMPREPLY[*]} " != *' sway.integration '* ]]; then
+	printf 'bash doctor completion omitted the known fix ID: %q\n' "${COMPREPLY[*]-}" >&2
+	exit 1
+fi
+
+COMP_WORDS=(sway-session doctor --fix sway.integration '')
+COMP_CWORD=4
+_sway_session
+if [[ " ${COMPREPLY[*]} " != *' --yes '* ]]; then
+	printf 'bash doctor completion omitted --yes after --fix: %q\n' "${COMPREPLY[*]-}" >&2
+	exit 1
+fi
+if [[ " ${COMPREPLY[*]} " == *' --check '* ]]; then
+	echo 'bash doctor offered --check after --fix' >&2
+	exit 1
+fi
+COMP_WORDS=(sway-session doctor --check '')
+COMP_CWORD=3
+_sway_session
+if [[ " ${COMPREPLY[*]} " == *' --fix '* || " ${COMPREPLY[*]} " == *' --yes '* ]]; then
+	echo 'bash doctor offered repair after --check' >&2
+	exit 1
+fi
+
+COMP_WORDS=(sway-session doctor unexpected '')
+COMP_CWORD=3
+_sway_session
+if [ "${#COMPREPLY[@]}" -ne 0 ]; then
+	printf 'bash doctor completion proposed values after a positional argument: %q\n' "${COMPREPLY[*]-}" >&2
+	exit 1
+fi
 EOF
 
 for description in 'First $(touch "$SWAY_SESSION_COMPLETION_SENTINEL") · active · herdr:first' 'Second · active · herdr:second'; do
@@ -605,6 +654,51 @@ if (( ${captured_values[(Ie)--json]} == 0 )) || (( ${captured_values[(Ie)restore
 	print -u2 -r -- "zsh completion mishandled globals after a completed scope: ${(j:,:)captured_values}"
 	exit 1
 fi
+
+captured_values=()
+words=(sway-session doctor '')
+CURRENT=3
+_sway-session
+for expected in --check --fix --socket --sway-config; do
+	if (( ${captured_values[(Ie)$expected]} == 0 )); then
+		print -u2 -r -- "zsh doctor completion omitted $expected: ${(j:,:)captured_values}"
+		exit 1
+	fi
+done
+if (( ${captured_values[(Ie)--yes]} != 0 )); then
+	print -u2 -r -- "zsh doctor completion offered --yes without --fix: ${(j:,:)captured_values}"
+	exit 1
+fi
+
+captured_values=()
+words=(sway-session doctor --fix '')
+CURRENT=4
+_sway-session
+if (( ${captured_values[(Ie)sway.integration]} == 0 )); then
+	print -u2 -r -- "zsh doctor completion omitted the known fix ID: ${(j:,:)captured_values}"
+	exit 1
+fi
+
+captured_values=()
+words=(sway-session doctor --fix sway.integration '')
+CURRENT=5
+_sway-session
+if (( ${captured_values[(Ie)--yes]} == 0 )); then
+	print -u2 -r -- "zsh doctor completion omitted --yes after --fix: ${(j:,:)captured_values}"
+	exit 1
+fi
+if (( ${captured_values[(Ie)--check]} != 0 )); then
+	print -u2 -- 'zsh doctor offered --check after --fix'
+	exit 1
+fi
+captured_values=()
+words=(sway-session doctor --check '')
+CURRENT=4
+_sway-session
+if (( ${captured_values[(Ie)--fix]} != 0 || ${captured_values[(Ie)--yes]} != 0 )); then
+	print -u2 -- 'zsh doctor offered repair after --check'
+	exit 1
+fi
 EOF
 fi
 
@@ -616,6 +710,18 @@ fi
 if command -v fish >/dev/null 2>&1; then
 	output=$(PATH="$temporary:$PATH" SWAY_SESSION_COMPLETION_SENTINEL="$sentinel" \
 		fish -c "source '$fish_completion'; __sway_session_contexts restore")
+	doctor_fix_output=$(fish -c "source '$fish_completion'; complete -C 'sway-session doctor --fix sway.integration --'")
+	case $doctor_fix_output in
+	*--check*) echo 'fish doctor offered --check after --fix' >&2; exit 1 ;;
+	esac
+	case $doctor_fix_output in
+	*--yes*) ;;
+	*) echo 'fish doctor omitted --yes after --fix' >&2; exit 1 ;;
+	esac
+	doctor_check_output=$(fish -c "source '$fish_completion'; complete -C 'sway-session doctor --check --'")
+	case $doctor_check_output in
+	*--fix*|*--yes*) echo 'fish doctor offered repair after --check' >&2; exit 1 ;;
+	esac
 	for expected in \
 		'11111111-1111-4111-8111-111111111111' \
 		'First $(touch "$SWAY_SESSION_COMPLETION_SENTINEL") · active · herdr:first' \

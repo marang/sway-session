@@ -98,6 +98,47 @@ commands intentionally use exec, not exec_always: reloading the Sway config
 must not start another daemon or request another startup restore. The daemon
 also holds an owner-only exclusive runtime lock.
 
+### Setup doctor
+
+Run `sway-session doctor` in a terminal for the setup TUI, using the same
+styling as `terminal manage`. Select a check with ↑/↓ or j/k, filter with `/`,
+and read its evidence and next steps. `[f]` prepares a repair preview;
+`[y]` confirms it and `[n]` or Escape cancels without changing files.
+Page Up/Down scroll the details or preview. `[r]` repeats the checks.
+
+For scripts and agents, no interactive terminal is required:
+
+~~~sh
+sway-session doctor --check
+sway-session --json doctor
+sway-session doctor --sway-config /absolute/path/to/sway/config --fix sway.integration
+# Inspect the preview first, then explicitly apply:
+sway-session doctor --sway-config /absolute/path/to/sway/config --fix sway.integration --yes
+~~~
+
+Checks cover the selected terminal adapter and session-manager setup, Sway
+connectivity, daemon lock and running executable, private runtime/state paths,
+and optional broker sockets. Status is `ok`, `warning`, `error`, or
+`unavailable`; unavailable evidence is not a claim that an integration works.
+Reports containing an `error` exit with status 3; warnings and unavailable
+checks alone exit 0. Invalid arguments exit 2. Interactive quit exits 0.
+`--json` and non-TTY invocation always report without opening the TUI.
+
+The initial `sway.integration` fix only adds missing one-time startup commands
+and default terminal shortcuts through a sibling `50-sway-session-doctor.conf`
+snippet and, when needed, one include line. Existing files receive private
+`0600` backups. Unknown syntax, ambiguous or conflicting shortcuts, unsafe
+paths, and manual snippet edits require manual intervention. The scanner is
+deliberately static: it does not prove which keybinding is currently live.
+`--sway-config` selects an explicit file; otherwise doctor asks Sway for its
+loaded config path, falling back to the default on-disk path when unavailable.
+
+Doctor never installs packages, changes session state, restarts services,
+reloads Sway, edits agent hooks, or changes AppArmor. Optional sockets are
+checked for safe file properties, not advertised as authenticated health probes.
+Fixes require an explicit choice and recheck the preview against current files
+before applying. Configuration stays in text files, not SQLite.
+
 ## Persistent terminals
 
 Herdr pane history is required for persistent work contexts. Copy

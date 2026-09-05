@@ -97,6 +97,7 @@ _sway_session_marker_is_value() {
 		terminal) value_options=' --project --context --cwd --label --socket --role ' ;;
 		register) value_options=' --session --cwd --label --provider --id ' ;;
 		restore|daemon|broker) value_options=' --socket ' ;;
+		doctor) value_options=' --fix --socket --sway-config ' ;;
 		request-start) value_options=' --session --cwd --label --provider --workspace ' ;;
 		app)
 			start=2
@@ -127,6 +128,28 @@ _sway_session_marker_is_value() {
 		esac
 	done
 	((pending))
+}
+
+_sway_session_doctor_arguments_valid() {
+	local pending=0 word
+	doctor_has_fix=0 doctor_has_check=0
+	for word in "${arguments[@]:1}"; do
+		if ((pending)); then
+			pending=0
+			continue
+		fi
+		case $word in
+			--fix) doctor_has_fix=1; pending=1 ;;
+			--fix=*) doctor_has_fix=1 ;;
+			--socket|--sway-config) pending=1 ;;
+			--check|--check=true|--check=1) doctor_has_check=1 ;;
+			--check=false|--check=0) doctor_has_check=0 ;;
+			--yes|--json|-h|--help|--*=*) ;;
+			--*) ;;
+			*) return 1 ;;
+		esac
+	done
+	return 0
 }
 
 _sway_session() {
@@ -180,7 +203,7 @@ _sway_session() {
 	((invalid_command_option)) && return 0
 	if [[ -z $command ]]; then
 		((options_ended)) && return 0
-		_sway_session_static 'terminal register restore list archive activate purge app daemon broker request-start report-agent-session report-codex-session completion --config --json -h --help'
+		_sway_session_static 'terminal register restore list archive activate purge app daemon broker request-start report-agent-session report-codex-session completion doctor --config --json -h --help'
 		return 0
 	fi
 	app_command=${arguments[1]-}
@@ -258,6 +281,21 @@ _sway_session() {
 				fi
 			else
 				_sway_session_static '--json -h --help'
+			fi
+			;;
+		doctor)
+			local doctor_has_fix=0 doctor_has_check=0
+			_sway_session_doctor_arguments_valid || return 0
+			case ${arguments[-1]-} in
+				--socket|--sway-config) _sway_session_files; return 0 ;;
+				--fix) _sway_session_static 'sway.integration'; return 0 ;;
+			esac
+			if ((doctor_has_fix)); then
+				_sway_session_static '--fix --yes --socket --sway-config --json -h --help'
+			elif ((doctor_has_check)); then
+				_sway_session_static '--check --socket --sway-config --json -h --help'
+			else
+				_sway_session_static '--check --fix --socket --sway-config --json -h --help'
 			fi
 			;;
 		list|report-agent-session|report-codex-session)

@@ -30,21 +30,25 @@ type herdrAPIEndpoint struct {
 	socketStat  unix.Stat_t
 }
 
-// ReportHerdrCodexSession sends the one mutating Herdr operation exposed by
-// the Codex broker. A fixed read-only process query first proves that the Unix
-// peer which supplied the report actually descends from the selected pane.
-func ReportHerdrCodexSession(ctx context.Context, paths HerdrPaths, launcher Launcher, paneID string, codexSessionID string, reporterPID int, now time.Time) error {
+// ReportHerdrAgentSession sends the one mutating Herdr operation exposed by
+// the agent-report broker. A fixed read-only process query first proves that
+// the Unix peer which supplied the report actually descends from the selected
+// pane.
+func ReportHerdrAgentSession(ctx context.Context, paths HerdrPaths, launcher Launcher, paneID string, agent string, agentSessionID string, reporterPID int, now time.Time) error {
 	if launcher.Kind != LauncherHerdr || !validSessionName(launcher.Session) || launcher.Session == "default" {
 		return errors.New("invalid Herdr launcher")
 	}
 	if err := validateBoundedIdentity("Herdr pane ID", paneID, 256); err != nil {
 		return err
 	}
-	if err := validateBoundedIdentity("Codex session ID", codexSessionID, 512); err != nil {
+	if !ValidHerdrAgentKind(agent) {
+		return fmt.Errorf("unsupported Herdr agent kind %q", agent)
+	}
+	if err := ValidateHerdrAgentSessionID(agentSessionID); err != nil {
 		return err
 	}
 	if reporterPID <= 0 {
-		return errors.New("codex reporter PID must be positive")
+		return errors.New("agent reporter PID must be positive")
 	}
 	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
 		var cancel context.CancelFunc
@@ -57,12 +61,12 @@ func ReportHerdrCodexSession(ctx context.Context, paths HerdrPaths, launcher Lau
 	}
 	defer endpoint.Close()
 
-	processRequestID := fmt.Sprintf("sway-session:codex:process:%d", reporterPID)
+	processRequestID := fmt.Sprintf("sway-session:%s:process:%d", agent, reporterPID)
 	processResult, err := endpoint.request(ctx, processRequestID, "pane.process_info", struct {
 		PaneID string `json:"pane_id"`
 	}{PaneID: paneID})
 	if err != nil {
-		return fmt.Errorf("verify Codex reporter pane: %w", err)
+		return fmt.Errorf("verify agent reporter pane: %w", err)
 	}
 	var processResponse struct {
 		Type        string `json:"type"`
@@ -79,17 +83,17 @@ func ReportHerdrCodexSession(ctx context.Context, paths HerdrPaths, launcher Lau
 	}
 	belongs, err := processDescendsFrom(reporterPID, *processResponse.ProcessInfo.ShellPID)
 	if err != nil {
-		return fmt.Errorf("verify Codex reporter process ancestry: %w", err)
+		return fmt.Errorf("verify agent reporter process ancestry: %w", err)
 	}
 	if !belongs {
-		return errors.New("codex reporter does not belong to the selected Herdr pane")
+		return errors.New("agent reporter does not belong to the selected Herdr pane")
 	}
 
 	sequence := now.UnixNano()
 	if sequence < 0 {
 		sequence = 0
 	}
-	requestID := fmt.Sprintf("sway-session:codex:report:%d", sequence)
+	requestID := fmt.Sprintf("sway-session:%s:report:%d", agent, sequence)
 	params := struct {
 		PaneID         string `json:"pane_id"`
 		Source         string `json:"source"`
@@ -97,12 +101,12 @@ func ReportHerdrCodexSession(ctx context.Context, paths HerdrPaths, launcher Lau
 		Sequence       uint64 `json:"seq"`
 		AgentSessionID string `json:"agent_session_id"`
 	}{
-		PaneID: paneID, Source: "herdr:codex", Agent: "codex",
-		Sequence: uint64(sequence), AgentSessionID: codexSessionID,
+		PaneID: paneID, Source: "herdr:" + agent, Agent: agent,
+		Sequence: uint64(sequence), AgentSessionID: agentSessionID,
 	}
 	result, err := endpoint.request(ctx, requestID, "pane.report_agent_session", params)
 	if err != nil {
-		return fmt.Errorf("record Codex session association: %w", err)
+		return fmt.Errorf("record agent session association: %w", err)
 	}
 	var reportResponse struct {
 		Type string `json:"type"`
@@ -111,6 +115,12 @@ func ReportHerdrCodexSession(ctx context.Context, paths HerdrPaths, launcher Lau
 		return errors.New("herdr session association response was not an ok result")
 	}
 	return nil
+}
+
+// ReportHerdrCodexSession preserves the former narrow Codex backend for the
+// version-1 compatibility endpoint.
+func ReportHerdrCodexSession(ctx context.Context, paths HerdrPaths, launcher Launcher, paneID string, codexSessionID string, reporterPID int, now time.Time) error {
+	return ReportHerdrAgentSession(ctx, paths, launcher, paneID, "codex", codexSessionID, reporterPID, now)
 }
 
 func openHerdrAPIEndpoint(rootPath string, sessionName string) (*herdrAPIEndpoint, error) {
@@ -323,6 +333,21 @@ func validateBoundedIdentity(name string, value string, maximum int) error {
 	for _, character := range value {
 		if character < 0x20 || character == 0x7f {
 			return fmt.Errorf("%s must not contain control characters", name)
+		}
+	}
+	return nil
+}
+
+// ValidateHerdrAgentSessionID accepts only the opaque token vocabulary that
+// can safely be inserted into Herdr's fixed API request fields.
+func ValidateHerdrAgentSessionID(value string) error {
+	if len(value) == 0 || len(value) > 512 {
+		return errors.New("agent session ID must contain between 1 and 512 bytes")
+	}
+	for index, character := range []byte(value) {
+		valid := character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9' || character == '.' || character == '_' || character == ':' || character == '-'
+		if !valid || (index == 0 && !(character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9')) {
+			return errors.New("agent session ID must be an ASCII token beginning with a letter or digit")
 		}
 	}
 	return nil

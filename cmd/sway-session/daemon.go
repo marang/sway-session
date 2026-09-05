@@ -113,6 +113,18 @@ func runSessionDaemon(ctx context.Context, swaySocket string, reportError func(e
 			}
 		}()
 	}
+	agentBroker, err := startAgentReportBroker(reportError)
+	if err != nil && reportError != nil {
+		reportError(fmt.Errorf("start agent session reporter: %w", err))
+	}
+	if agentBroker != nil {
+		defer func() {
+			if err := agentBroker.Close(); err != nil && reportError != nil {
+				reportError(fmt.Errorf("stop agent session reporter: %w", err))
+			}
+		}()
+	}
+	// Keep the v1 endpoint for installed Codex hooks; it uses the shared reporter.
 	codexBroker, err := startCodexReportBroker(reportError)
 	if err != nil && reportError != nil {
 		reportError(fmt.Errorf("start secure Codex session reporter: %w", err))

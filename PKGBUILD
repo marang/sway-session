@@ -52,6 +52,9 @@ package() {
     install -m644 docs/assets/*.jpeg "$pkgdir/usr/share/doc/$pkgname/docs/assets/"
   fi
   install -Dm644 docs/sway-session-plan.md "$pkgdir/usr/share/doc/$pkgname/docs/sway-session-plan.md"
+  if [[ -f docs/agent-reporting.md ]]; then
+    install -Dm644 docs/agent-reporting.md "$pkgdir/usr/share/doc/$pkgname/docs/agent-reporting.md"
+  fi
   install -Dm644 docs/sway-session-verification.md "$pkgdir/usr/share/doc/$pkgname/docs/sway-session-verification.md"
   install -Dm644 docs/releasing.md "$pkgdir/usr/share/doc/$pkgname/docs/releasing.md"
   install -Dm644 docs/workflow_conventions.md "$pkgdir/usr/share/doc/$pkgname/docs/workflow_conventions.md"

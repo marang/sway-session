@@ -45,8 +45,10 @@ its LAB-* key, and reaches Done only after its PR is merged.
   owner-only SQLite state, activity, application lifecycle, capture, and
   restore coordination.
 - internal/sessionrequest: owner-only typed session-start protocol and service.
-- internal/codexreport: owner-only Codex SessionStart reporting protocol and
-  service.
+- internal/agentreport: owner-only typed agent-session reporting and shared
+  transport; delegates validated associations to the session-manager adapter.
+- internal/codexreport: thin compatibility adapter for existing Codex hooks
+  and the legacy v1 report contract.
 - internal/herdrinit: fixed initialization behind the typed Herdr adapter; it
   has no standalone executable.
 - internal/statefile: private-directory, file, and lock primitives.

@@ -300,17 +300,38 @@ legacy runtime documents are present. The import is idempotent, transactional,
 and does not delete its JSON source. No additional extraction migration is
 required.
 
-## Narrow Codex integration
+## Narrow agent integration
 
-The daemon hosts two owner-only typed endpoints: session-start.sock for a fixed
-ensure-and-start request and codex-report.sock for a validated SessionStart
+The daemon hosts owner-only typed endpoints: session-start.sock for a fixed
+ensure-and-start request and agent-report.sock for a validated agent-session
 association. Neither endpoint returns raw registry contents or accepts
-arbitrary commands.
+arbitrary commands. Agent lifecycle and resume handling remain with Herdr;
+sway-session only validates and forwards the association.
 
 ~~~sh
 /usr/bin/sway-session --json request-start \
   --session lab-119 --cwd "$PWD" --label LAB-119 --workspace 98
 ~~~
+
+An agent hook running inside a managed Herdr pane can report its session using
+strict JSON on stdin:
+
+~~~sh
+printf '%s\n' '{"agent":"claude","agent_session_id":"session-123"}' |
+  /usr/bin/sway-session report-agent-session
+~~~
+
+The session ID must be the actual ID supplied by the agent integration, not a
+generated placeholder. Context and pane identities come from the managed
+environment, and the daemon verifies that the reporting process belongs to
+that pane. Unsupported agent kinds and malformed identities are rejected;
+there is no executable, command, or destination-socket field. This does not
+install hooks automatically for other agents. See
+[the report contract](docs/agent-reporting.md) for integration requirements.
+
+Existing Codex hooks continue to use report-codex-session and codex-report.sock
+(v1). They are a compatibility adapter over the same reporting implementation,
+not a separate agent manager. No hook change is required on upgrade.
 
 The supplied Codex hook and AppArmor policy remain an experimental boundary.
 They do not reliably mediate pathname-socket connect on every supported kernel,

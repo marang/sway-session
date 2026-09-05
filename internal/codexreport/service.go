@@ -3,12 +3,13 @@ package codexreport
 import (
 	"context"
 	"errors"
-	"fmt"
 	"time"
 
+	"github.com/marang/sway-session/internal/agentreport"
 	sessionstate "github.com/marang/sway-session/internal/session"
 )
 
+// RegistryService is the v1 Codex adapter over the generic registry service.
 type RegistryService struct {
 	StateRoot  string
 	HerdrPaths sessionstate.HerdrPaths
@@ -20,29 +21,14 @@ func (service RegistryService) Handle(ctx context.Context, report Report) error 
 	if err := report.Validate(); err != nil {
 		return err
 	}
-	now := time.Now
-	if service.Now != nil {
-		now = service.Now
-	}
-	reportHerdr := sessionstate.ReportHerdrCodexSession
+	delegate := agentreport.RegistryService{StateRoot: service.StateRoot, HerdrPaths: service.HerdrPaths, Now: service.Now}
 	if service.Report != nil {
-		reportHerdr = service.Report
-	}
-	registry := sessionstate.Registry{}
-	if err := sessionstate.RegistryStoreFor(service.StateRoot).LoadSnapshotInto(&registry); err != nil {
-		return fmt.Errorf("load context registry snapshot: %w", err)
-	}
-	for _, candidate := range registry.Contexts {
-		if candidate.ID != report.ContextID {
-			continue
+		delegate.Report = func(ctx context.Context, paths sessionstate.HerdrPaths, launcher sessionstate.Launcher, paneID string, agent string, sessionID string, peerPID int, now time.Time) error {
+			if agent != "codex" {
+				return errors.New("legacy Codex broker received a non-Codex agent")
+			}
+			return service.Report(ctx, paths, launcher, paneID, sessionID, peerPID, now)
 		}
-		if candidate.Launcher.Kind != sessionstate.LauncherHerdr {
-			return errors.New("registered context does not use Herdr")
-		}
-		if err := reportHerdr(ctx, service.HerdrPaths, candidate.Launcher, report.PaneID, report.CodexSessionID, report.PeerPID, now()); err != nil {
-			return fmt.Errorf("record Codex session association: %w", err)
-		}
-		return nil
 	}
-	return errors.New("reported context is not registered")
+	return delegate.Handle(ctx, report.Generic())
 }

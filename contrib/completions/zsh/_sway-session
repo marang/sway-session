@@ -154,7 +154,7 @@ _sway-session() {
 	(( invalid_command_option )) && return 0
 	if [[ -z $command ]]; then
 		(( options_ended )) && return 0
-		_sway_session_add terminal register restore list archive activate purge app daemon broker request-start report-codex-session completion --config --json -h --help
+		_sway_session_add terminal register restore list archive activate purge app daemon broker request-start report-agent-session report-codex-session completion --config --json -h --help
 		return
 	fi
 	app_command=${arguments[2]-}
@@ -235,7 +235,7 @@ _sway-session() {
 				_sway_session_add --json -h --help
 			fi
 			;;
-		list|report-codex-session)
+		list|report-agent-session|report-codex-session)
 			_sway_session_add --json -h --help
 			;;
 		archive|activate|purge)

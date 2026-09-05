@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/marang/sway-session/internal/agentreport"
 	"github.com/marang/sway-session/internal/codexreport"
 	"github.com/marang/sway-session/internal/diagnostic"
 	"github.com/marang/sway-session/internal/herdrinit"
@@ -48,12 +49,13 @@ var commandSpecs = map[string]commandSpec{
 	"daemon":               {usage: "daemon [--socket <path>]", summary: "Observe and restore persistent Sway session state"},
 	"request-start":        {usage: "request-start --session <name> --workspace <number> [options]", summary: "Request a typed ensure-and-start operation"},
 	"report-codex-session": {usage: "report-codex-session", summary: "Report a managed Codex SessionStart event to the narrow broker"},
+	"report-agent-session": {usage: "report-agent-session", summary: "Report a managed agent session from typed JSON on stdin"},
 	"app":                  {usage: "app <subcommand> [options]", summary: "Manage explicitly registered desktop applications"},
 	"terminal":             {usage: "terminal [--new | --context <uuid> | --project <name> | --ephemeral] [options]", summary: "Open a typed terminal"},
 	"completion":           {usage: "completion contexts <command>", summary: "Emit read-only shell completion candidates"},
 }
 
-var commandOrder = []string{"terminal", "register", "restore", "list", "archive", "activate", "purge", "app", "daemon", "broker", "request-start", "report-codex-session", "completion"}
+var commandOrder = []string{"terminal", "register", "restore", "list", "archive", "activate", "purge", "app", "daemon", "broker", "request-start", "report-agent-session", "report-codex-session", "completion"}
 
 type swayRequester interface {
 	RequestContext(context.Context, swayipc.MessageType, []byte) (swayipc.Message, error)
@@ -85,6 +87,7 @@ type dependencies struct {
 	stabilityDelay     time.Duration
 	stdinTerminal      func() bool
 	reportCodexHook    func(context.Context, io.Reader, func(string) string) error
+	reportAgentSession func(context.Context, io.Reader, func(string) string) error
 	requestStart       func(context.Context, sessionrequest.Request) (sessionrequest.Response, error)
 	runBroker          func(context.Context, string, func(error)) error
 	runDaemon          func(context.Context, string, func(error)) error
@@ -125,7 +128,8 @@ func defaultDependencies(stdin io.Reader) dependencies {
 			file, ok := stdin.(*os.File)
 			return ok && term.IsTerminal(int(file.Fd()))
 		},
-		reportCodexHook: codexreport.ReportCodexHook,
+		reportCodexHook:    codexreport.ReportCodexHook,
+		reportAgentSession: agentreport.ReportAgentSession,
 		requestStart: func(ctx context.Context, request sessionrequest.Request) (sessionrequest.Response, error) {
 			socketPath, err := sessionrequest.DefaultSocketPath()
 			if err != nil {
@@ -556,6 +560,21 @@ func executeCommand(ctx context.Context, name string, arguments []string, stdin 
 		return executeDaemon(ctx, arguments, stderr, structured, deps)
 	case "request-start":
 		return executeRequestStart(ctx, arguments, deps)
+	case "report-agent-session":
+		if len(arguments) != 0 {
+			return commandResult{}, usageFailure(name, "report-agent-session accepts no arguments; supply agent and agent_session_id as JSON on stdin")
+		}
+		if deps.reportAgentSession == nil {
+			return commandResult{}, failure("agent_report", "report agent session", "agent report dependency is unavailable")
+		}
+		err := deps.reportAgentSession(ctx, stdin, os.Getenv)
+		if errors.Is(err, agentreport.ErrNotManagedSession) {
+			return commandResult{Command: name, Contexts: []sessionstate.Context{}}, nil
+		}
+		if err != nil {
+			return commandResult{}, failure("agent_report", "report agent session", err.Error())
+		}
+		return commandResult{Command: name, Contexts: []sessionstate.Context{}}, nil
 	case "report-codex-session":
 		if len(arguments) != 0 {
 			return commandResult{}, usageFailure(name, "report-codex-session accepts no arguments")

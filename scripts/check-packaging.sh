@@ -35,6 +35,7 @@ test -f contrib/sway-session/config.toml
 test -f contrib/herdr/config.toml
 test -f contrib/codex/hooks.json
 test -f contrib/codex/hooks-system.json
+test -x contrib/codex/report-agent-session.sh
 test -f contrib/apparmor/codex-home-guard
 test -f scripts/verify-codex-boundary.sh
 test -f docs/agent-reporting.md
@@ -53,11 +54,13 @@ require_fixed .goreleaser.yaml '        dst: /usr/share/doc/sway-session/docs/sw
 require_fixed .goreleaser.yaml '        dst: /usr/share/doc/sway-session/docs/adr/0001-sqlite-session-runtime-state.md'
 require_fixed .goreleaser.yaml '        dst: /usr/share/doc/sway-session/50-sway-session.conf'
 require_fixed .goreleaser.yaml '        dst: /usr/share/doc/sway-session/contrib/codex/hooks.json'
+require_fixed .goreleaser.yaml '        dst: /usr/lib/sway-session/codex-report-agent-session'
 require_fixed .goreleaser.yaml '        dst: /usr/share/doc/sway-session/contrib/apparmor/codex-home-guard'
 require_fixed .goreleaser.yaml '        dst: /usr/share/doc/sway-session/scripts/verify-codex-boundary.sh'
 reject_fixed .goreleaser.yaml 'sway-title-animator'
 reject_fixed .goreleaser.yaml 'pulseaudio'
 reject_fixed .goreleaser.yaml 'parec'
+reject_fixed .goreleaser.yaml '      - jq'
 
 require_fixed PKGBUILD 'pkgname=sway-session'
 require_fixed PKGBUILD 'url="https://github.com/marang/sway-session"'
@@ -66,8 +69,10 @@ require_fixed PKGBUILD "makedepends=('go>=1.26.5')"
 require_fixed PKGBUILD 'CGO_ENABLED=0 go build'
 require_fixed PKGBUILD '-o sway-session ./cmd/sway-session'
 require_fixed PKGBUILD 'install -Dm755 sway-session "$pkgdir/usr/bin/sway-session"'
+require_fixed PKGBUILD 'install -Dm755 contrib/codex/report-agent-session.sh "$pkgdir/usr/lib/sway-session/codex-report-agent-session"'
 require_fixed PKGBUILD '"$pkgdir/usr/share/doc/$pkgname/50-sway-session.conf"'
 reject_fixed PKGBUILD 'optdepends='
+reject_fixed PKGBUILD "'jq'"
 reject_fixed PKGBUILD 'sway-title-animator'
 reject_fixed PKGBUILD './cmd/sway-title-animator'
 
@@ -76,6 +81,7 @@ require_fixed .SRCINFO 'pkgname = sway-session'
 require_fixed .SRCINFO 'depends = sway'
 reject_fixed .SRCINFO 'optdepends ='
 reject_fixed .SRCINFO 'sway-title-animator'
+reject_fixed .SRCINFO 'depends = jq'
 
 # Before the first v0.1.0 tag, SKIP is honest bootstrap state. Release metadata
 # may instead contain only the real 64-hex digest generated from an immutable
@@ -132,9 +138,16 @@ reject_fixed contrib/sway/50-sway-session.conf 'sway-title-animator'
 
 require_fixed Makefile 'BINARIES := sway-session'
 require_fixed Makefile 'CGO_ENABLED=0 go build'
+require_fixed Makefile 'install -m755 contrib/codex/report-agent-session.sh $(PREFIX)/lib/sway-session/codex-report-agent-session'
 require_fixed Makefile '$(PREFIX)/share/doc/sway-session'
 require_fixed Makefile 'install -m644 docs/sway-session-verification.md $(DOC_ROOT)/docs/sway-session-verification.md'
 reject_fixed Makefile 'sway-title-animator'
+
+require_fixed contrib/codex/hooks.json '\"$HOME/.local/lib/sway-session/codex-report-agent-session\" \"$HOME/.local/bin/sway-session\"'
+require_fixed contrib/codex/hooks-system.json '/usr/lib/sway-session/codex-report-agent-session /usr/bin/sway-session'
+reject_fixed contrib/codex/hooks.json 'report-codex-session'
+reject_fixed contrib/codex/hooks-system.json 'report-codex-session'
+reject_fixed .goreleaser.yaml 'codex-report.sock'
 
 if command -v makepkg >/dev/null 2>&1; then
 	generated=$(mktemp)

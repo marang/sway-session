@@ -40,6 +40,7 @@ check() {
 package() {
   cd "sway-session-$pkgver"
   install -Dm755 sway-session "$pkgdir/usr/bin/sway-session"
+  install -Dm755 contrib/codex/report-agent-session.sh "$pkgdir/usr/lib/sway-session/codex-report-agent-session"
   install -Dm644 contrib/completions/bash/sway-session "$pkgdir/usr/share/bash-completion/completions/sway-session"
   install -Dm644 contrib/completions/zsh/_sway-session "$pkgdir/usr/share/zsh/site-functions/_sway-session"
   install -Dm644 contrib/completions/fish/sway-session.fish "$pkgdir/usr/share/fish/vendor_completions.d/sway-session.fish"

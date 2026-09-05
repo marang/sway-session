@@ -72,6 +72,7 @@ _sway_session_marker_is_value() {
 		terminal) value_options=' --project --context --cwd --label --socket --role ' ;;
 		register) value_options=' --session --cwd --label --provider --id ' ;;
 		restore|daemon|broker) value_options=' --socket ' ;;
+		doctor) value_options=' --fix --socket --sway-config ' ;;
 		request-start) value_options=' --session --cwd --label --provider --workspace ' ;;
 		app)
 			start=2
@@ -102,6 +103,23 @@ _sway_session_marker_is_value() {
 		esac
 	done
 	(( pending ))
+}
+
+_sway_session_doctor_arguments_valid() {
+	local pending=0 word
+	for word in "${arguments[@]:1}"; do
+		if (( pending )); then
+			pending=0
+			continue
+		fi
+		case $word in
+			--fix|--socket|--sway-config) pending=1 ;;
+			--check|--yes|--json|-h|--help|--*=*) ;;
+			--*) ;;
+			*) return 1 ;;
+		esac
+	done
+	return 0
 }
 
 _sway-session() {
@@ -154,7 +172,7 @@ _sway-session() {
 	(( invalid_command_option )) && return 0
 	if [[ -z $command ]]; then
 		(( options_ended )) && return 0
-		_sway_session_add terminal register restore list archive activate purge app daemon broker request-start report-agent-session report-codex-session completion --config --json -h --help
+		_sway_session_add terminal register restore list archive activate purge app daemon broker request-start report-agent-session report-codex-session completion doctor --config --json -h --help
 		return
 	fi
 	app_command=${arguments[2]-}
@@ -233,6 +251,18 @@ _sway-session() {
 				fi
 			else
 				_sway_session_add --json -h --help
+			fi
+			;;
+		doctor)
+			_sway_session_doctor_arguments_valid || return 0
+			case ${arguments[-1]-} in
+				--socket|--sway-config) _files; return ;;
+				--fix) _sway_session_add sway.integration; return ;;
+			esac
+			if [[ " ${arguments[*]} " == *' --fix '* || " ${arguments[*]} " == *' --fix='* ]]; then
+				_sway_session_add --check --fix --yes --socket --sway-config --json -h --help
+			else
+				_sway_session_add --check --fix --socket --sway-config --json -h --help
 			fi
 			;;
 		list|report-agent-session|report-codex-session)

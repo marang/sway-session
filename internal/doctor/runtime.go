@@ -708,6 +708,9 @@ func runReadOnlyProbe(ctx context.Context, executable string, arguments ...strin
 	probeCtx, cancel := context.WithTimeout(ctx, runtimeProbeTimeout)
 	defer cancel()
 	command := exec.CommandContext(probeCtx, executable, arguments...)
+	// A wrapper can exit while a child still owns its output pipe. Context
+	// cancellation alone does not bound os/exec's pipe-draining wait.
+	command.WaitDelay = runtimeProbeTimeout
 	var output limitedBuffer
 	command.Stdout, command.Stderr = &output, &output
 	err := command.Run()

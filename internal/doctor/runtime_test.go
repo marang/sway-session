@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -17,6 +18,19 @@ import (
 	"github.com/marang/sway-session/internal/swayipc"
 	"golang.org/x/sys/unix"
 )
+
+func TestReadOnlyProbeBoundsInheritedOutputPipes(t *testing.T) {
+	shell, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("POSIX shell unavailable")
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 4*time.Second)
+	defer cancel()
+	_, err = runReadOnlyProbe(ctx, shell, "-c", "sleep 3 &")
+	if !errors.Is(err, exec.ErrWaitDelay) {
+		t.Fatalf("inherited pipe was not bounded: %v", err)
+	}
+}
 
 type runtimeTestSway struct {
 	message swayipc.Message

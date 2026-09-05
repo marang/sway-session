@@ -28,7 +28,7 @@ func TestTerminalManageLoadsInventoryAndExplainsAnEmptyList(t *testing.T) {
 	model = terminalManageRunInit(t, model)
 
 	view := model.View().Content
-	for _, want := range []string{"Daily work", "Archived work", "active", "archived", "j/k", "Open"} {
+	for _, want := range []string{"2 saved", "0 open", "Daily work", "Archived work", "unknown", "restore enabled", "archived", "j/k", "Open"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("loaded inventory is missing %q:\n%s", want, view)
 		}
@@ -38,6 +38,88 @@ func TestTerminalManageLoadsInventoryAndExplainsAnEmptyList(t *testing.T) {
 	empty = terminalManageRunInit(t, empty)
 	if view := empty.View().Content; !strings.Contains(view, "No managed terminals") || !strings.Contains(view, "[q] Quit") {
 		t.Fatalf("empty inventory does not give a recovery path:\n%s", view)
+	}
+}
+
+func TestTerminalManageSeparatesSavedWindowAndRestoreState(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	first := terminalManageTestItem("11111111-1111-4111-8111-111111111111", "Daily work", sessionstate.ContextActive)
+	second := terminalManageTestItem("22222222-2222-4222-8222-222222222222", "Review", sessionstate.ContextActive)
+	archived := terminalManageTestItem("33333333-3333-4333-8333-333333333333", "Archived but open", sessionstate.ContextArchived)
+	archived.ArchivedAt = terminalManageTestArchivedAt()
+	windows := map[sessionstate.ContextID]terminalWindowPresence{
+		first.ContextID:    terminalWindowOpen,
+		second.ContextID:   terminalWindowClosed,
+		archived.ContextID: terminalWindowOpen,
+	}
+	model := terminalManageRunInit(t, newTerminalManageModel(&terminalManageTestOperations{
+		snapshots: [][]terminalInventoryResult{{first, second, archived}},
+		windows:   []map[sessionstate.ContextID]terminalWindowPresence{windows},
+	}))
+	model = terminalManageUpdate(t, model, tea.WindowSizeMsg{Width: 80, Height: 24})
+	view := model.View().Content
+	for _, want := range []string{
+		"3 saved · 2 open", "Snapshot [r] refresh",
+		"● open · restore enabled  Daily work",
+		"○ closed · restore enabled  Review",
+		"● open · archived  Archived but open",
+		"Window       open", "Restore      enabled", "Last focused ",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("80x24 presence view is missing %q:\n%s", want, view)
+		}
+	}
+	if strings.Contains(view, "State       ") || strings.Contains(view, "Last active") || strings.Contains(view, "\x1b[") {
+		t.Fatalf("80x24 NO_COLOR view retained obsolete or styled state:\n%s", view)
+	}
+	t.Logf("representative 80x24 NO_COLOR view:\n%s", view)
+
+	model = terminalManageUpdate(t, model, terminalManageKey("j"))
+	model = terminalManageUpdate(t, model, terminalManageKey("j"))
+	narrow := terminalManageUpdate(t, model, tea.WindowSizeMsg{Width: 48, Height: 16}).View().Content
+	for _, want := range []string{"3 saved · 2 open", "Snapshot · [r] refresh", "open · archived"} {
+		if !strings.Contains(narrow, want) {
+			t.Fatalf("48x16 presence view is missing %q:\n%s", want, narrow)
+		}
+	}
+	if strings.Contains(narrow, "\x1b[") {
+		t.Fatalf("48x16 NO_COLOR view contains ANSI styling: %q", narrow)
+	}
+	t.Logf("representative 48x16 NO_COLOR view:\n%s", narrow)
+}
+
+func TestTerminalManageRefreshRetainsSelectionAndClearsStalePresenceOnObservationError(t *testing.T) {
+	first := terminalManageTestItem("11111111-1111-4111-8111-111111111111", "First", sessionstate.ContextActive)
+	second := terminalManageTestItem("22222222-2222-4222-8222-222222222222", "Selected", sessionstate.ContextActive)
+	initialWindows := map[sessionstate.ContextID]terminalWindowPresence{
+		first.ContextID: terminalWindowOpen, second.ContextID: terminalWindowClosed,
+	}
+	ops := &terminalManageTestOperations{
+		snapshots:    [][]terminalInventoryResult{{first, second}, {second, first}},
+		windows:      []map[sessionstate.ContextID]terminalWindowPresence{initialWindows, {}},
+		windowErrors: []error{nil, errors.New("Sway socket is unavailable")},
+	}
+	model := terminalManageRunInit(t, newTerminalManageModel(ops))
+	model = terminalManageUpdate(t, model, tea.WindowSizeMsg{Width: 80, Height: 24})
+	model = terminalManageUpdate(t, model, terminalManageKey("j"))
+	selected, ok := model.selected()
+	if !ok || selected.ContextID != second.ContextID || model.windowPresence(first.ContextID) != terminalWindowOpen {
+		t.Fatalf("invalid initial state: selected=%+v windows=%v", selected, model.windows)
+	}
+
+	updated, command := terminalManageUpdateWithCommand(t, model, terminalManageKey("r"))
+	if command == nil || updated.windowPresence(first.ContextID) != terminalWindowUnknown || updated.windowPresence(second.ContextID) != terminalWindowUnknown {
+		t.Fatalf("refresh retained stale window certainty: loading=%t windows=%v", updated.loading, updated.windows)
+	}
+	updated = terminalManageRunCommand(t, updated, command)
+	selected, ok = updated.selected()
+	if !ok || selected.ContextID != second.ContextID {
+		t.Fatalf("selection drifted across failed observation refresh: selected=%+v", selected)
+	}
+	view := updated.View().Content
+	if !strings.Contains(view, "2 saved · 0 open · 2 unknown") ||
+		!strings.Contains(view, "Window observation incomplete") || !strings.Contains(view, "[r] Refresh") {
+		t.Fatalf("observation failure is stale or not actionable:\n%s", view)
 	}
 }
 
@@ -73,6 +155,31 @@ func TestTerminalManageFooterGroupsDiscoverableActions(t *testing.T) {
 	for _, want := range []string{"Navigate", "Selected", "System", "[Enter/o] Open", "[m] Migrate", "[?] Help"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("grouped footer is missing %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestTerminalManageNarrowFootersKeepEveryActionVisible(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	items := []terminalInventoryResult{
+		terminalManageTestItem("11111111-1111-4111-8111-111111111111", "First", sessionstate.ContextActive),
+		terminalManageTestItem("22222222-2222-4222-8222-222222222222", "Second", sessionstate.ContextActive),
+		terminalManageTestItem("33333333-3333-4333-8333-333333333333", "Third", sessionstate.ContextActive),
+		terminalManageTestItem("44444444-4444-4444-8444-444444444444", "Fourth", sessionstate.ContextActive),
+	}
+	model := terminalManageRunInit(t, newTerminalManageModel(&terminalManageTestOperations{snapshots: [][]terminalInventoryResult{items}}))
+	for _, width := range []int{58, 64, 71, 73, 74, 80} {
+		model = terminalManageUpdate(t, model, tea.WindowSizeMsg{Width: width, Height: 24})
+		view := model.View().Content
+		for _, want := range []string{"[Enter] Open", "[e] Rename", "[a] Archive/activate", "[d] Delete", "[m] Migrate", "[r] Refresh", "[?] Help", "[q] Quit"} {
+			if !strings.Contains(view, want) {
+				t.Fatalf("width %d clipped action %q:\n%s", width, want, view)
+			}
+		}
+		for _, line := range strings.Split(view, "\n") {
+			if ansi.StringWidth(line) > width {
+				t.Fatalf("width %d rendered %d-column line %q", width, ansi.StringWidth(line), line)
+			}
 		}
 	}
 }
@@ -320,7 +427,7 @@ func TestTerminalManageIgnoresObsoleteLoadsAndBlocksActionsWhileLoading(t *testi
 	}
 	updated = terminalManageUpdate(t, updated, terminalManageLoadedMsg{
 		generation: updated.loadID - 1,
-		items:      []terminalInventoryResult{stale},
+		snapshot:   terminalManageSnapshot{items: []terminalInventoryResult{stale}},
 	})
 	if !updated.loading || strings.Contains(updated.View().Content, "Stale") {
 		t.Fatalf("obsolete load replaced current state:\n%s", updated.View().Content)
@@ -580,6 +687,8 @@ func terminalManageTestArchivedAt() *time.Time {
 
 type terminalManageTestOperations struct {
 	snapshots    [][]terminalInventoryResult
+	windows      []map[sessionstate.ContextID]terminalWindowPresence
+	windowErrors []error
 	listCalls    int
 	listErr      error
 	openErr      error
@@ -605,16 +714,28 @@ type terminalManageTestRename struct {
 	title string
 }
 
-func (operations *terminalManageTestOperations) List(context.Context) ([]terminalInventoryResult, error) {
+func (operations *terminalManageTestOperations) Load(context.Context, string) (terminalManageSnapshot, error) {
 	operations.listCalls++
 	if operations.listErr != nil {
-		return nil, operations.listErr
+		return terminalManageSnapshot{}, operations.listErr
 	}
 	if len(operations.snapshots) == 0 {
-		return nil, nil
+		return terminalManageSnapshot{}, nil
 	}
 	index := min(operations.listCalls-1, len(operations.snapshots)-1)
-	return append([]terminalInventoryResult(nil), operations.snapshots[index]...), nil
+	items := append([]terminalInventoryResult(nil), operations.snapshots[index]...)
+	windows := terminalManageUnknownWindows(items)
+	if len(operations.windows) != 0 {
+		windowIndex := min(operations.listCalls-1, len(operations.windows)-1)
+		for id, presence := range operations.windows[windowIndex] {
+			windows[id] = presence
+		}
+	}
+	var windowError error
+	if len(operations.windowErrors) != 0 {
+		windowError = operations.windowErrors[min(operations.listCalls-1, len(operations.windowErrors)-1)]
+	}
+	return terminalManageSnapshot{items: items, windows: windows, windowError: windowError}, nil
 }
 
 func (operations *terminalManageTestOperations) Open(_ context.Context, id sessionstate.ContextID, _ string) error {

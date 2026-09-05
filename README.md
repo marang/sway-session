@@ -154,6 +154,18 @@ terminal without an identity reuses one default terminal; --project reuses one
 stable named identity. --ephemeral creates no registry state. cleanup only
 previews archived candidates; deletion always uses an exact reviewed UUID.
 
+In `terminal manage`, saved contexts and open windows are separate counts.
+Each entry shows its observed window presence (`open`, `closed`, or `unknown`)
+separately from whether automatic restore is enabled or the context is
+archived. Closing a window keeps its saved context; archiving excludes it from
+automatic restore and does not mean its window is closed. Codex and shell
+panes inside one terminal belong to the same context.
+
+Window presence is a Sway observation refreshed when the TUI opens, after
+successful actions, or with `r`. It does not indicate whether a background
+Herdr server or agent is running. An unavailable compositor or ambiguous
+window identity produces `unknown`, not a claim that the terminal is closed.
+
 ~~~mermaid
 sequenceDiagram
     actor User

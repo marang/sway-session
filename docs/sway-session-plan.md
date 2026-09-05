@@ -137,6 +137,16 @@ name from the full UUID. terminal --project NAME resolves one stable project
 identity. terminal with neither option resolves a default identity.
 --ephemeral launches an ordinary typed terminal and never touches the registry.
 
+The management TUI distinguishes durable restore eligibility from observed
+window presence. An active context is enabled for automatic restore; it need
+not have a mapped terminal. An archived context may still have an open window.
+Presence is transient presentation state derived from a bounded, read-only
+Sway tree observation, never persisted into the context state or substituted
+for it. Failed or ambiguous observations are unknown. Refreshing inventory
+must preserve selection and must not retain an old presence claim as current
+after an observation failure. Background Herdr/agent liveness is a separate
+concern and is not inferred from the presence of a terminal window.
+
 ~~~mermaid
 sequenceDiagram
     actor User

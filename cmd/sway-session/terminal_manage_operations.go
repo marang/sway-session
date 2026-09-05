@@ -11,7 +11,7 @@ import (
 )
 
 type terminalManageOperations interface {
-	List(context.Context) ([]terminalInventoryResult, error)
+	Load(context.Context, string) (terminalManageSnapshot, error)
 	Open(context.Context, sessionstate.ContextID, string) error
 	SetState(context.Context, sessionstate.ContextID, sessionstate.ContextState) error
 	Rename(context.Context, sessionstate.ContextID, string) error
@@ -19,20 +19,77 @@ type terminalManageOperations interface {
 	Migrate(context.Context) (string, error)
 }
 
+type terminalManageSnapshot struct {
+	items       []terminalInventoryResult
+	windows     map[sessionstate.ContextID]terminalWindowPresence
+	windowError error
+}
+
 type commandTerminalManageOperations struct {
 	configPath string
 	deps       dependencies
 }
 
-func (operations commandTerminalManageOperations) List(ctx context.Context) ([]terminalInventoryResult, error) {
-	result, commandFailure := executeTerminalList(ctx, nil, operations.deps)
+func (operations commandTerminalManageOperations) Load(ctx context.Context, socket string) (terminalManageSnapshot, error) {
+	inventory, commandFailure := loadTerminalInventory(ctx, operations.deps)
 	if commandFailure != nil {
-		return nil, terminalManageFailure(commandFailure)
+		return terminalManageSnapshot{}, terminalManageFailure(commandFailure)
 	}
-	if result.Terminals == nil {
-		return []terminalInventoryResult{}, nil
+	items := terminalInventory(inventory.Registry.Contexts, inventory.Activity)
+	result := terminalManageSnapshot{
+		items:   items,
+		windows: terminalManageUnknownWindows(items),
 	}
-	return append([]terminalInventoryResult(nil), (*result.Terminals)...), nil
+	if len(items) == 0 {
+		return result, nil
+	}
+	if operations.deps.newSwayClient == nil {
+		result.windowError = errors.New("sway window observation dependency is unavailable")
+		return result, nil
+	}
+	client := operations.deps.newSwayClient(socket)
+	if client == nil {
+		result.windowError = errors.New("sway window observation client is unavailable")
+		return result, nil
+	}
+	defer client.Close()
+	tree, err := requestTree(ctx, client)
+	if err != nil {
+		result.windowError = err
+		return result, nil
+	}
+	if tree.ID <= 0 || tree.Type != "root" {
+		result.windowError = errors.New("sway tree response has no valid root")
+		return result, nil
+	}
+	windows, issues, err := sessionstate.ObserveManagedWindowsIsolated(tree, inventory.Registry)
+	if err != nil {
+		result.windowError = fmt.Errorf("observe managed windows: %w", err)
+		return result, nil
+	}
+	for _, item := range items {
+		result.windows[item.ContextID] = terminalWindowClosed
+	}
+	for id := range windows {
+		if _, terminal := result.windows[id]; terminal {
+			result.windows[id] = terminalWindowOpen
+		}
+	}
+	terminalIssues := 0
+	for _, issue := range issues {
+		if _, terminal := result.windows[issue.ContextID]; terminal {
+			result.windows[issue.ContextID] = terminalWindowUnknown
+			terminalIssues++
+		}
+	}
+	if terminalIssues != 0 {
+		identity := "identity is"
+		if terminalIssues != 1 {
+			identity = "identities are"
+		}
+		result.windowError = fmt.Errorf("%d terminal window %s ambiguous", terminalIssues, identity)
+	}
+	return result, nil
 }
 
 func (operations commandTerminalManageOperations) Open(ctx context.Context, id sessionstate.ContextID, socket string) error {

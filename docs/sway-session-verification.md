@@ -57,6 +57,28 @@ config, process, broker, or workspace may be modified for a diagnostic test.
 An unavailable optional integration is an expected report, not passed live
 verification of that integration.
 
+## Realistic doctor configuration acceptance
+
+`internal/doctor/testdata/workstation` is a sanitized multi-file configuration
+with output/input/bar/resize-mode blocks, nested colors, unrelated shell syntax,
+continued commands, and included startup/shortcut declarations. Test through
+the public doctor report, not only token helpers. Its ordinary valid settings
+must not prevent a useful integration result.
+
+Verify that ambiguous keycode bindings preserve independent startup evidence,
+indirect startup commands preserve shortcut evidence, and incomplete includes
+retain known locations without enabling repair. Fully understood configurations
+with a missing shortcut should still offer the narrow preview. Unknown must
+never be reported as missing merely because no matching declaration was seen.
+
+Validate this realistic fixture with Sway itself (`sway -C`) using a disposable
+runtime and headless backend. Exercise a private-compositor doctor JSON/TUI run
+at workspace 98 or higher; preserve the host's windows, configuration and state.
+Use both a complete fixture and a partially checked fixture at 80x24 and verify
+that all four requirements, locations, and limitations remain inspectable.
+Independent review must assess everyday usefulness as well as fail-closed
+repair safety; safe-but-unusable is not sufficient acceptance.
+
 ## Standalone extraction checks
 
 Confirm the Go package graph contains the sway-session command and exactly the

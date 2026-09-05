@@ -122,12 +122,24 @@ backups, uses descriptor-relative atomic file replacements, and rolls back
 provable partial changes on failure. No state database, service, session,
 package, hook, or security policy is changed by this repair.
 
-Sway integration analysis follows a bounded, static include graph. Unsupported
-syntax or ambiguous existing bindings suppress repair rather than guessing.
+Sway integration analysis follows a bounded, static include graph. Ordinary
+output/input/bar blocks and binding modes retain their scope; logical lines
+support continuation without confusing a block's subcommands with top-level
+startup commands. Evidence and uncertainty are tracked independently for daemon
+startup, restore startup, and each of the two default terminal shortcuts.
+Recoverable uncertainty retains independent findings and known source locations;
+the report says partially checked rather than discarding useful evidence.
+Unsupported relevant syntax, incomplete include graphs, or ambiguous existing
+bindings suppress repair rather than guessing.
 The only generated file is the recognized doctor-owned snippet beside the
 selected Sway config. Other config content is preserved and excluded from
 repair previews. File checks never imply that a binding or AppArmor/socket
 boundary is live. Users reload Sway separately after reviewing applied edits.
+
+The existing GET_VERSION IPC query supplies the loaded root path. GET_CONFIG
+does not expose evaluated settings: Sway stores folded main-file text without
+included files, while GET_BINDING_STATE supplies only a mode name. Neither is
+used as a substitute for effective binding inventory or as repair authorization.
 
 ## Durable state
 

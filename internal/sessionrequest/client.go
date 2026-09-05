@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 	"time"
 
-	sessionstate "github.com/marang/sway-title-animator/internal/session"
+	sessionstate "github.com/marang/sway-session/internal/session"
 )
 
 const exchangeTimeout = 15 * time.Second

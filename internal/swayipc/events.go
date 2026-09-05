@@ -30,7 +30,7 @@ func (state *EventStreamState) transition() uint64 {
 }
 
 // StreamEvents reconnects one bounded subscription to the tree events needed
-// by title animation and persistent session observation. Delivery is
+// by compatible presentation clients and persistent session observation. Delivery is
 // coalescing: consumers must re-read GET_TREE instead of treating events as a
 // complete state log.
 func StreamEvents(socket string, events chan<- Event, done <-chan struct{}) {
@@ -38,8 +38,8 @@ func StreamEvents(socket string, events chan<- Event, done <-chan struct{}) {
 }
 
 // StreamSessionEvents adds binding activity needed to keep persistent restore
-// work subordinate to live user intent. The title animator deliberately uses
-// the narrower StreamEvents subscription.
+// work subordinate to live user intent. Presentation-only clients can use the
+// narrower StreamEvents subscription.
 func StreamSessionEvents(socket string, events chan<- Event, done <-chan struct{}) {
 	StreamSessionEventsWithState(socket, events, done, &EventStreamState{})
 }

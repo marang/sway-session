@@ -7,7 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/marang/sway-title-animator/internal/statefile"
+	"github.com/marang/sway-session/internal/statefile"
 )
 
 const (

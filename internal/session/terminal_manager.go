@@ -9,8 +9,8 @@ import (
 	"reflect"
 	"time"
 
-	"github.com/marang/sway-title-animator/internal/statefile"
-	"github.com/marang/sway-title-animator/internal/swayipc"
+	"github.com/marang/sway-session/internal/statefile"
+	"github.com/marang/sway-session/internal/swayipc"
 )
 
 type TerminalOpenAction string

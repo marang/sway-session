@@ -1,6 +1,6 @@
-// Package titleindicator defines the presentation-only Sway marks shared by
-// sway-session and sway-title-animator. The marks contain no session identity
-// or application-private data.
+// Package titleindicator defines sway-session's versioned presentation-only
+// Sway mark contract. A separate title renderer may consume these marks, but
+// they contain no session identity or application-private data.
 package titleindicator
 
 import (

@@ -42,8 +42,8 @@ require_packaged_binary() {
     echo "Cannot verify package ownership for $binary: no supported package database" >&2
     exit 1
   fi
-  if [ "$package" != 'sway-title-animator' ]; then
-    echo "Required binary is not owned by the sway-title-animator package: $binary" >&2
+  if [ "$package" != 'sway-session' ]; then
+    echo "Required binary is not owned by the sway-session package: $binary" >&2
     exit 1
   fi
 }

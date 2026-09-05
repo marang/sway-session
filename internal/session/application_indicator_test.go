@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marang/sway-title-animator/internal/swayipc"
-	"github.com/marang/sway-title-animator/internal/titleindicator"
+	"github.com/marang/sway-session/internal/swayipc"
+	"github.com/marang/sway-session/internal/titleindicator"
 )
 
 func TestPlanApplicationIndicatorsDerivesFourVisibleLifecycleStates(t *testing.T) {

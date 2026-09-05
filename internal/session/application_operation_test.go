@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marang/sway-title-animator/internal/statefile"
+	"github.com/marang/sway-session/internal/statefile"
 )
 
 type operationBarrierReader struct {

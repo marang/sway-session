@@ -1,0 +1,13 @@
+[
+  {"name":"unregistered","container":42,"marks":["_sway_session_app_indicator_v1_unregistered_42"],"state":"unregistered","valid":true},
+  {"name":"pending","container":42,"marks":["_sway_session_app_indicator_v1_pending_42"],"state":"pending","valid":true},
+  {"name":"registered","container":42,"marks":["_sway_session_app_indicator_v1_registered_42"],"state":"registered","valid":true},
+  {"name":"pinned","container":42,"marks":["_sway_session_app_indicator_v1_pinned_42"],"state":"pinned","valid":true},
+  {"name":"different container","container":43,"marks":["_sway_session_app_indicator_v1_registered_42"],"state":"","valid":false},
+  {"name":"unknown version","container":42,"marks":["_sway_session_app_indicator_v2_registered_42"],"state":"","valid":false},
+  {"name":"conflicting states","container":42,"marks":["_sway_session_app_indicator_v1_registered_42","_sway_session_app_indicator_v1_pinned_42"],"state":"","valid":false},
+  {"name":"duplicate same state","container":42,"marks":["_sway_session_app_indicator_v1_pending_42","_sway_session_app_indicator_v1_pending_42"],"state":"pending","valid":true},
+  {"name":"noncanonical number","container":42,"marks":["_sway_session_app_indicator_v1_registered_042"],"state":"","valid":false},
+  {"name":"unknown state","container":42,"marks":["_sway_session_app_indicator_v1_future_42"],"state":"","valid":false},
+  {"name":"identity is not presentation","container":42,"marks":["persist:123e4567-e89b-12d3-a456-426614174000"],"state":"","valid":false}
+]

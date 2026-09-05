@@ -38,7 +38,7 @@ func DefaultSessionConfig() SessionConfig {
 }
 
 // DefaultSessionConfigPath returns sway-session's versioned typed launcher
-// configuration. It is separate from animator configuration and state.
+// configuration. It is separate from runtime state.
 func DefaultSessionConfigPath() (string, error) {
 	configHome := os.Getenv("XDG_CONFIG_HOME")
 	if configHome == "" {

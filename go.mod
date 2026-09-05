@@ -1,4 +1,4 @@
-module github.com/marang/sway-title-animator
+module github.com/marang/sway-session
 
 go 1.26.0
 

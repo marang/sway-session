@@ -16,7 +16,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/colorprofile"
 	"github.com/charmbracelet/x/ansi"
-	sessionstate "github.com/marang/sway-title-animator/internal/session"
+	sessionstate "github.com/marang/sway-session/internal/session"
 	"golang.org/x/term"
 )
 

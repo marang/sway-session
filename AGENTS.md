@@ -2,126 +2,92 @@
 
 ## Project
 
-`sway-title-animator` is a Linux-only Go program that renders animated Unicode
-art in Sway title formats. It communicates directly with the Sway/i3 IPC socket.
+sway-session is a Linux-only Go program for explicit, persistent work sessions
+in Sway. It owns session registration, terminal and desktop-app lifecycle,
+capture, placement, layout restore, and narrow owner-only brokers. It
+communicates directly with the Sway/i3 IPC socket.
+
+This repository is independent of sway-title-animator. Do not add an animator,
+audio capture, animation presets, or a source dependency on the animator
+repository. The two repositories intentionally retain small copies of the
+bounded Sway IPC and presentation-mark packages; no third shared module is
+planned.
 
 ## Required checks
 
-Run the shared local/CI gate before handing off code changes:
+Run make verify before handing off code changes. It checks formatting, unit and
+race tests, go vet, staticcheck, AppArmor, completion, packaging, standalone
+boundaries, a CGO_ENABLED=0 build, and whitespace. Use make fmt for Go
+formatting. The module requires Go 1.26; the preferred security-patched
+toolchain is Go 1.26.5 as declared in go.mod.
 
-```sh
-make verify
-```
-
-This checks formatting, unit tests, race tests, `go vet`, `staticcheck`, the
-`CGO_ENABLED=0` build, and whitespace errors. Use `make fmt` to format Go files.
-Use `goimports` or `gofmt` on changed Go files. The module requires Go 1.26;
-the preferred security-patched toolchain is Go 1.26.5 as declared in `go.mod`.
+Run the code-review skill before opening or finalizing a PR. Run review-codebase
+after every fifth substantive branch or at a meaningful project checkpoint,
+whichever comes first.
 
 ## Workflow
 
-`docs/workflow_conventions.md` is the canonical planning, branch, PR, review,
-and cleanup workflow.
+docs/workflow_conventions.md is canonical for planning, branches, PRs, review,
+releases, and cleanup.
 
-Work is coordinated in the shared Linear `Lab` team. Every issue for this
+Work is coordinated in the shared Linear Lab team. Every issue for this
 repository must belong to the
-[Sway Title Animator P001 project](https://linear.app/riotbox/project/sway-title-animator-or-p001-or-sound-reactive-presets-e8a4308a9902)
-and carry the mutually exclusive `Codebase` → `Sway Title Animator` label.
-Normal implementation starts from one issue in `In Progress`, uses a branch
-containing its `LAB-*` key, and reaches `Done` only after its PR is merged.
-
-Run the `code-review` skill before opening or finalizing a PR. Run
-`review-codebase` after every fifth substantive branch or at a meaningful
-project checkpoint, whichever comes first.
+[Sway Session project](https://linear.app/riotbox/project/sway-session-74dd95a8e064)
+and carry the mutually exclusive Codebase → Sway Session label. Normal
+implementation starts from one issue in In Progress, uses a branch containing
+its LAB-* key, and reaches Done only after its PR is merged.
 
 ## Architecture
 
-- `main.go`: CLI parsing and process startup only.
-- `daemon.go`: animation-only event subscription and frame loop; it must not
-  read session state or host session brokers.
-- `animator.go`: title calculation, caching, and Sway title updates.
-- `instance_lock.go`: single-instance lock and safe replacement.
-- `config.go` / `model.go`: configuration and shared data types.
-- `animations.go`, `animations_extra.go`, `animation_random.go`: pure animation
-  rendering and deterministic seeded motion.
-- `audio_meter.go`: optional `parec` capture and spectral analysis.
-- `preview.go`: terminal preview and terminal-width handling.
-- `cmd/sway-session`: persistent work-session CLI and its explicit long-running
-  `daemon`, including desktop-app presence/lifecycle, bounded launch adoption,
-  capture, marking, placement, layout restore, typed terminal launch
-  and inventory, the interactive typed-terminal management TUI, the closed
-  `TerminalSessionManager` adapters, and the existing narrow broker endpoints.
-- `internal/herdrinit`: fixed initialization logic used only behind the typed
-  Herdr terminal-session-manager adapter; it has no standalone executable.
-- `internal/sessionrequest`: owner-only typed session-start protocol and broker
+- cmd/sway-session: CLI, explicit daemon, Sway integration, typed terminal
+  management TUI, and broker adapters.
+- internal/session: validated contexts and identities, terminal adapters,
+  owner-only SQLite state, activity, application lifecycle, capture, and
+  restore coordination.
+- internal/sessionrequest: owner-only typed session-start protocol and service.
+- internal/codexreport: owner-only Codex SessionStart reporting protocol and
   service.
-- `internal/swayipc`: bounded i3/Sway IPC framing and reconnect behavior shared
-  by both commands.
-- `internal/titleindicator`: versioned presentation-only Sway mark protocol
-  shared by the session daemon and animator; it contains no registry or restore
-  state.
-- `internal/session`: validated context/application and terminal identity,
-  strict typed terminal-adapter configuration (`alacritty` or `foot` only),
-  owner-only SQLite runtime state, terminal presentation activity, and the pure
-  desktop-app restore coordinator.
-- `internal/statefile`: owner-only private-directory and lock primitives used by
-  session persistence and the remaining file-backed artifacts.
-- `internal/diagnostic`: structured and human-readable CLI diagnostics.
+- internal/herdrinit: fixed initialization behind the typed Herdr adapter; it
+  has no standalone executable.
+- internal/statefile: private-directory, file, and lock primitives.
+- internal/swayipc: bounded i3/Sway IPC framing, tree types, events, and
+  reconnect behavior.
+- internal/titleindicator: versioned, presentation-only Sway mark protocol; it
+  contains no registry or restore state.
+- internal/diagnostic: stable structured and human-readable CLI diagnostics.
 
-Keep new responsibilities in the matching module instead of growing `main.go`.
-Prefer small pure helpers and injected process/time/terminal boundaries for
-long-running behavior.
+Keep new responsibilities in the matching package. Prefer small pure helpers
+and injected process, time, terminal, and compositor boundaries.
 
-`sway-title-animator` must remain usable without a registry or running
-`sway-session daemon`. It must not depend on `internal/session`,
-`internal/sessionrequest`, `internal/codexreport`, `internal/herdrinit`, or
-`internal/statefile`, and must never open `state.sqlite3`, its WAL/SHM sidecars,
-other session state files, or session sockets.
-Conversely, session capture and restore must not depend on the animator.
+Session runtime state belongs in the owner-only state.sqlite3 database;
+configuration stays in strict text files. Do not impose a total context-count
+limit. Keep Sway IPC work bounded per reconciliation pass and resumable from a
+fresh observation. SQLite transactions must be short and must never contain
+external Sway, Herdr, process, or desktop-launcher calls; coordinate effects as
+explicit retryable sagas around durable transitions.
 
-Session runtime state belongs in the owner-only `state.sqlite3` database;
-configuration remains in strict text files. Do not impose an arbitrary total
-context-count limit. Keep Sway IPC work bounded per reconciliation pass and
-resumable from a fresh observation when more work remains. SQLite transactions
-must be short and must never contain external Sway, Herdr, process, or desktop
-launcher calls; coordinate those effects as explicit retryable sagas around
-durable database transitions.
+## Compatibility
 
-## Animation invariants
+Keep the established CLI, XDG config/state paths, database and document schema
+versions, runtime socket names, environment variables, application IDs, hidden
+marks, and broker protocol v1 wire shape stable unless a dedicated issue
+explicitly changes that contract.
 
-- Every animation returns exactly the requested terminal width after truncation.
-- Widths at and near zero must not panic.
-- Organic movement may vary between launches, but a fixed `animationSeed` must
-  remain deterministic for tests.
-- `square` uses connected scan-line glyphs, never Braille, and builds in place
-  from left or right rather than shifting the completed waveform.
-- New presets must participate in the all-pairs visual-similarity guard.
-  Intentional relationships require a documented allowlist entry.
-- Sound variants use the `<base>_sound` name, keep the base preset's visual
-  language, use the base preset when capture is unavailable, and provide a calm
-  complete base animation when capture is available but silent.
-- Active sound variants must preserve the base preset's temporal choreography
-  between beats. Audio may reshape, thicken, brighten, or add bounded events,
-  but must not replace a moving base cycle with a mostly static instrument.
-- Shared visual smoothing must not discard analyzer-approved onset events.
-  Validate beat cadence and band range against numeric live-monitor metadata in
-  addition to synthetic snapshots; never store captured audio.
-- Do not add sound variants to the default rotation; users opt in explicitly.
-
-## Audio
-
-Audio capture is optional and must start only when an active preset requires it.
-`parec` failures must degrade safely, report one actionable diagnostic, retry
-without a busy loop, and stop promptly on cancellation. Keep FFT band ranges
-ordered and non-overlapping.
-
-The design backlog for additional sound presets is
-`docs/sound-presets-plan.md`.
+internal/titleindicator/testdata/v1.json is the authoritative v1 mark-wire
+fixture. Both this repository and sway-title-animator must keep an identical
+copy and test against it. Compare the files across sibling checkouts when the
+wire package changes; never silently update only one side.
 
 ## Safety
 
 - Never trust IPC payload lengths without a fixed upper bound.
-- Never cache a title-format update that Sway rejected or failed to acknowledge.
-- Never signal a PID from the instance file without validating executable and
-  process start time.
-- Preserve the exclusive instance lock for the full daemon lifetime.
+- Never mutate session state from a read-only completion path.
+- Never guess between ambiguous windows, contexts, launchers, or application
+  identities.
+- Preserve owner-only permissions and exclusive daemon/lifecycle locks.
+- Do not run Sway, Herdr, process, or launcher calls inside SQLite transactions.
+- Real compositor tests must use disposable state roots and workspace 98 or
+  higher. Never create, move, close, restore, or purge test windows on
+  single-digit workspaces.
+- Never commit credentials, private registry contents, pane history, captured
+  terminal output, sockets, generated binaries, or transient logs.

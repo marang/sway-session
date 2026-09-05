@@ -1,35 +1,35 @@
 # Maintainer: marang <1550038+marang@users.noreply.github.com>
-# Release template: the AUR workflow replaces pkgver and sha256sums from the
-# pushed version tag, resets pkgrel to 1, verifies the resulting source, and
-# builds it before push.
-pkgname=sway-title-animator
-pkgver=0.9.3
+# Release template: the AUR workflow replaces sha256sums from the immutable
+# pushed v0.1.0 tag before it verifies, builds, and publishes this package.
+# The bootstrap checksum is replaced before publication; an unverified source
+# must never reach the AUR.
+pkgname=sway-session
+pkgver=0.1.0
 pkgrel=1
-pkgdesc="Animated Unicode titlebars for Sway"
+pkgdesc="Persistent work sessions for Sway"
 arch=('x86_64' 'aarch64')
-url="https://github.com/marang/sway-title-animator"
+url="https://github.com/marang/sway-session"
 license=('MIT')
 depends=('sway')
 makedepends=('go>=1.26.5')
 options=('!debug')
-source=("sway-title-animator-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('68db6d205b4469eb4c9f92e5ace82403af65830dd06955fa5a4eba4218abd811')
+source=("sway-session-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
 
 _go_build_flags=(-buildmode=pie -trimpath -buildvcs=false -mod=readonly -modcacherw)
 _go_ldflags=(-s -w -buildid=)
 
 build() {
-  cd "sway-title-animator-$pkgver"
+  cd "sway-session-$pkgver"
   export GOCACHE="$srcdir/go-build"
   export GOMODCACHE="$srcdir/go-mod"
   export GOTOOLCHAIN=local
 
-  CGO_ENABLED=0 go build "${_go_build_flags[@]}" -ldflags="${_go_ldflags[*]}" -o sway-title-animator ./cmd/sway-title-animator
   CGO_ENABLED=0 go build "${_go_build_flags[@]}" -ldflags="${_go_ldflags[*]}" -o sway-session ./cmd/sway-session
 }
 
 check() {
-  cd "sway-title-animator-$pkgver"
+  cd "sway-session-$pkgver"
   export GOCACHE="$srcdir/go-build"
   export GOMODCACHE="$srcdir/go-mod"
   export GOTOOLCHAIN=local
@@ -38,16 +38,19 @@ check() {
 }
 
 package() {
-  cd "sway-title-animator-$pkgver"
-  install -Dm755 sway-title-animator "$pkgdir/usr/bin/sway-title-animator"
+  cd "sway-session-$pkgver"
   install -Dm755 sway-session "$pkgdir/usr/bin/sway-session"
   install -Dm644 contrib/completions/bash/sway-session "$pkgdir/usr/share/bash-completion/completions/sway-session"
   install -Dm644 contrib/completions/zsh/_sway-session "$pkgdir/usr/share/zsh/site-functions/_sway-session"
   install -Dm644 contrib/completions/fish/sway-session.fish "$pkgdir/usr/share/fish/vendor_completions.d/sway-session.fish"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
   install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
-  install -Dm644 config.example.toml "$pkgdir/usr/share/doc/$pkgname/config.example.toml"
-  install -Dm644 contrib/sway/45-title-animator.conf "$pkgdir/usr/share/doc/$pkgname/45-title-animator.conf"
+  install -Dm644 docs/sway-session-plan.md "$pkgdir/usr/share/doc/$pkgname/docs/sway-session-plan.md"
+  install -Dm644 docs/sway-session-verification.md "$pkgdir/usr/share/doc/$pkgname/docs/sway-session-verification.md"
+  install -Dm644 docs/releasing.md "$pkgdir/usr/share/doc/$pkgname/docs/releasing.md"
+  install -Dm644 docs/workflow_conventions.md "$pkgdir/usr/share/doc/$pkgname/docs/workflow_conventions.md"
+  install -Dm644 docs/adr/0001-sqlite-session-runtime-state.md "$pkgdir/usr/share/doc/$pkgname/docs/adr/0001-sqlite-session-runtime-state.md"
+  install -Dm644 contrib/sway/50-sway-session.conf "$pkgdir/usr/share/doc/$pkgname/50-sway-session.conf"
   install -Dm644 contrib/herdr/config.toml "$pkgdir/usr/share/doc/$pkgname/contrib/herdr/config.toml"
   install -Dm644 contrib/sway-session/config.toml "$pkgdir/usr/share/doc/$pkgname/contrib/sway-session/config.toml"
   install -Dm644 contrib/codex/hooks-system.json "$pkgdir/usr/share/doc/$pkgname/contrib/codex/hooks.json"

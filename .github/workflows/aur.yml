@@ -15,7 +15,7 @@ on:
           - publish-release
           - verify-sync-token
       version:
-        description: Existing release tag to publish, for example v0.3.0
+        description: Existing release tag to publish, for example v0.1.0
         required: false
         type: string
 
@@ -124,8 +124,8 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      PKGNAME: sway-title-animator
-      AUR_REPO: sway-title-animator
+      PKGNAME: sway-session
+      AUR_REPO: sway-session
       VERSION: ${{ github.event.inputs.version || github.ref_name }}
 
     steps:
@@ -268,7 +268,7 @@ jobs:
             --base main \
             --head "$branch" \
             --title "chore: sync Arch package for ${VERSION}" \
-            --body "Synchronizes the exact PKGBUILD and .SRCINFO used to build and publish sway-title-animator ${ver} to the AUR. The package passed makepkg before publication."
+            --body "Synchronizes the exact PKGBUILD and .SRCINFO used to build and publish sway-session ${ver} to the AUR. The package passed makepkg before publication."
 
   verify-release-sync-token:
     name: Verify release-sync token permissions

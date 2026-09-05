@@ -12,7 +12,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
-	sessionstate "github.com/marang/sway-title-animator/internal/session"
+	sessionstate "github.com/marang/sway-session/internal/session"
 )
 
 // These tests deliberately exercise the TUI only through its Bubble Tea seam

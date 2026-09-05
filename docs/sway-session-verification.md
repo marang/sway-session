@@ -1,589 +1,265 @@
-# Persistent Sway Session Verification
+# Sway Session verification
 
-> **Interactive-desktop safety:** never run these procedures on a single-digit
-> workspace. Create a disposable named workspace numbered 98 or higher, and
-> verify every target workspace before issuing a move, restore, or close.
+This document separates the repeatable automated gate from live compositor,
+packaging, migration, and security checks. Never report a live check that was
+not run.
 
-## SQLite runtime-state procedure (LAB-115)
+## Automated gate
 
-Use an isolated XDG state root and keep the interactive desktop's real state
-out of scope. First prove the explicit pre-1.0 migration boundary with all four
-legacy runtime documents. The stale IDs deliberately exercise filtered-row
-counts without weakening the authoritative registry:
+Run:
 
-```sh
-migration_state="$(mktemp -d)"
-export XDG_STATE_HOME="$migration_state"
-legacy_root="$XDG_STATE_HOME/sway-session"
-install -d -m 0700 "$legacy_root"
-install -d -m 0700 \
-  "$legacy_root/application-runtime" \
-  "$legacy_root/terminal-runtime"
-cat > "$legacy_root/contexts.json" <<'JSON'
-{"version":5,"preferences":{"desktop_indicators":true},"contexts":[{"id":"123e4567-e89b-12d3-a456-426614174000","label":"Migration terminal","provider":"verification","state":"active","launcher":{"kind":"herdr","session":"migration-terminal","cwd":"/tmp","terminal":{"adapter":"alacritty"}}},{"id":"6ba7b811-9dad-41d1-80b4-00c04fd430c8","label":"Migration app","state":"active","launcher":{"kind":"flatpak","flatpak_id":"com.slack.Slack","flatpak_installation":"user"},"app":{"identity":{"protocol":"xwayland","x11_class":"Slack","x11_instance":"slack","sandbox_app_id":"com.slack.Slack"},"desired_open":true,"restore_policy":"pinned"}}]}
-JSON
-cat > "$legacy_root/layout.json" <<'JSON'
-{"version":1,"workspaces":[{"name":"98: migration","restore_mode":"placement_only","placement_contexts":["123e4567-e89b-12d3-a456-426614174000","6ba7b811-9dad-41d1-80b4-00c04fd430c8"]}]}
-JSON
-cat > "$legacy_root/application-runtime/application-session.json" <<'JSON'
-{"version":1,"compositor_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","attempts":[{"context_id":"6ba7b811-9dad-41d1-80b4-00c04fd430c8","started_at":"2026-09-04T10:00:00Z"},{"context_id":"77777777-7777-4777-8777-777777777777","started_at":"2026-09-04T10:00:00Z"}]}
-JSON
-cat > "$legacy_root/terminal-runtime/terminal-activity.json" <<'JSON'
-{"version":1,"terminals":[{"context_id":"123e4567-e89b-12d3-a456-426614174000","created_at":"2026-09-04T09:00:00Z","last_focused_at":"2026-09-04T10:00:00Z"},{"context_id":"77777777-7777-4777-8777-777777777777","last_focused_at":"2026-09-04T10:00:00Z"}]}
-JSON
-chmod 0600 \
-  "$legacy_root/contexts.json" \
-  "$legacy_root/layout.json" \
-  "$legacy_root/application-runtime/application-session.json" \
-  "$legacy_root/terminal-runtime/terminal-activity.json"
-legacy_manifest="$(cd "$legacy_root" && sha256sum \
-  contexts.json layout.json \
-  application-runtime/application-session.json \
-  terminal-runtime/terminal-activity.json)"
-sway-session list && exit 1
-test ! -e "$legacy_root/state.sqlite3"
-test "$legacy_manifest" = "$(cd "$legacy_root" && sha256sum \
-  contexts.json layout.json \
-  application-runtime/application-session.json \
-  terminal-runtime/terminal-activity.json)"
-sway-session terminal manage
-test -f "$legacy_root/state.sqlite3"
-test "$legacy_manifest" = "$(cd "$legacy_root" && sha256sum \
-  contexts.json layout.json \
-  application-runtime/application-session.json \
-  terminal-runtime/terminal-activity.json)"
-test "$(sqlite3 "$legacy_root/state.sqlite3" 'SELECT count(*) FROM contexts')" -eq 2
-test "$(sqlite3 "$legacy_root/state.sqlite3" 'SELECT count(*) FROM layout_state')" -eq 1
-test "$(sqlite3 "$legacy_root/state.sqlite3" 'SELECT count(*) FROM application_launch_attempts')" -eq 1
-test "$(sqlite3 "$legacy_root/state.sqlite3" 'SELECT count(*) FROM terminal_activity')" -eq 1
-```
+~~~sh
+make verify
+~~~
 
-The first command must fail with the explicit migration diagnostic and must not
-create the database. In the TUI, press `m`; the database must appear while the
-four-file manifest remains unchanged. The result must report two skipped stale
-runtime rows. Repeating `m` is an idempotent no-op. Keep the legacy files until
-the imported inventory and restore have been verified.
-Migration holds all legacy document locks through the SQLite commit and reports
-the count of stale activity or launch-attempt records skipped because their
-registry context was already absent.
-Configuration must remain in
-`${XDG_CONFIG_HOME:-$HOME/.config}/sway-session/config.toml`; no configuration
-table belongs in the database.
+The gate covers:
 
-Separately prove schema-1 creation without legacy input, then create another
-fresh isolated root for the real Sway exercise:
+- gofmt;
+- uncached unit tests;
+- race-detector tests;
+- go vet and staticcheck;
+- CGO-disabled production build;
+- AppArmor policy structure;
+- Bash, Zsh, and Fish completion behavior;
+- standalone source and package boundaries;
+- GoReleaser, Arch, install-path, and release-workflow metadata;
+- git whitespace checks; and
+- the version-1 title-indicator golden wire fixture.
 
-```sh
-fresh_probe="$(mktemp -d)"
-XDG_STATE_HOME="$fresh_probe" sway-session register \
+CI additionally runs GoReleaser configuration validation. A release candidate
+must also run a clean GoReleaser snapshot and inspect every archive, DEB, and
+RPM so only sway-session and the documented integration assets are present.
+
+## Standalone extraction checks
+
+Confirm the Go package graph contains the sway-session command and exactly the
+retained internal responsibilities, with no animator command or old module
+imports:
+
+~~~sh
+sh scripts/check-standalone-boundary.sh
+go list ./...
+rg 'github\.com/marang/sway-title-animator' --glob '*.go'
+test ! -e cmd/sway-title-animator
+~~~
+
+The last rg command must produce no output. User-facing historical references
+may name sway-title-animator only to explain independence, shared mark
+compatibility, preserved Git history, or the package-ownership transition.
+
+The v1 presentation mark fixture must stay byte-identical in both sibling
+repositories:
+
+~~~sh
+cmp ../sway-session/internal/titleindicator/testdata/v1.json \
+  ../sway-title-animator/internal/titleindicator/testdata/v1.json
+go test ./internal/titleindicator
+~~~
+
+The fixture is authoritative. Do not normalize or regenerate it independently
+on one side.
+
+## State and migration checks
+
+All probes use disposable XDG roots. Never point a test command at live user
+state.
+
+Create a fresh schema-1 database:
+
+~~~sh
+probe=$(mktemp -d)
+XDG_STATE_HOME="$probe" sway-session register \
   --id 88888888-8888-4888-8888-888888888888 \
-  --session fresh-schema-probe --cwd /tmp --label 'Fresh schema probe'
-test -f "$fresh_probe/sway-session/state.sqlite3"
-test "$(sqlite3 "$fresh_probe/sway-session/state.sqlite3" 'PRAGMA user_version')" -eq 1
-rm -rf -- "$fresh_probe"
-
-test_state="$(mktemp -d)"
-export XDG_STATE_HOME="$test_state"
-```
-
-Create and exercise disposable terminal and desktop-application contexts only
-on workspace 98 or higher. After capture, focus activity, and one application
-launch attempt, verify that no legacy JSON documents were recreated and inspect
-the database invariants. The external `sqlite3` program is optional and is used
-only for this diagnostic inspection; the product itself uses a pure-Go driver.
-
-```sh
-state_root="$XDG_STATE_HOME/sway-session"
-state_db="$state_root/state.sqlite3"
-stat -c '%a %U %h %n' "$state_db"
-find "$state_root" -maxdepth 1 \
-  \( -name 'state.sqlite3-wal' -o -name 'state.sqlite3-shm' \
-     -o -name 'state.sqlite3-journal' \) \
-  -exec stat -c '%a %U %h %n' {} +
-sqlite3 "$state_db" \
-  'PRAGMA journal_mode; PRAGMA user_version; PRAGMA quick_check;'
-test ! -e "$state_root/contexts.json"
-test ! -e "$state_root/layout.json"
-test ! -e "$state_root/application-runtime/application-session.json"
-test ! -e "$state_root/terminal-runtime/terminal-activity.json"
-```
-
-Expect WAL mode, database schema version `1`, `ok`, and mode `600`, one link,
-and the current user for every database or sidecar file present. Exercise
-concurrent reads and writes while the daemon reconciles; contention beyond the
-250 ms busy timeout may return a retryable diagnostic, but cancellation must
-remain prompt and a later read plus `quick_check` must succeed. Sway IPC,
-Herdr, process inspection, and launch calls must be covered by seam tests
-proving they occur outside the short database transactions; ambiguous effects
-are resolved by fresh observation and reconciliation.
-
-Automated coverage must persist more than 128 contexts. Separately verify that
-placement and indicator planners emit bounded rotating batches and advance
-past a completely rejected batch, application preflight
-rotates candidates across passes after its two-candidate bound, and layout
-restore re-observes after each mutation and resumes after its bounded in-memory
-yield. A per-pass IPC batch limit is a latency and request-size bound, not a
-registry-capacity bound.
-Run the AppArmor policy checks and, when the profile can be loaded safely, the
-live state-root denial probe: the whole default
-`~/.local/state/sway-session/{,**}` rule must cover `state.sqlite3` and any
-WAL/SHM sidecars. Do not infer pathname-socket mediation from that file rule.
-Stop every process using the isolated roots, then remove only the disposable
-state root, test windows, and high-numbered workspaces created by
-this procedure.
-
-## Current process-boundary procedure (LAB-101)
-
-Current builds run session observation and restore in `sway-session daemon`.
-The title animator is tested separately and is not a prerequisite for any step
-below. Before release, start the packaged daemon in one terminal:
-
-```sh
-/usr/bin/sway-session daemon
-```
-
-Then request the one-shot context launch from a second terminal:
-
-```sh
-/usr/bin/sway-session restore
-```
-
-With at least one registered context, verify that the daemon repairs its
-`persist:<uuid>` mark, restores its saved workspace and layout after remapping,
-and updates the layout row in `state.sqlite3` after the debounce interval. Then
-stop only the title animator and repeat placement/layout restore; it must still
-converge. Finally,
-restart the animator with the session daemon stopped and verify title animation
-continues while neither `state.sqlite3`, its WAL/SHM sidecars, nor either
-session socket is opened or created by the animator. Re-run the narrow broker
-boundary check separately because moving its server did not change either
-protocol:
-
-```sh
-/usr/share/doc/sway-title-animator/scripts/verify-codex-boundary.sh \
-  CONTEXT_UUID PANE_ID CODEX_SESSION_UUID HERDR_HISTORY STATE_FILE HERDR_SOCKET
-```
-
-The automated `make verify` gate includes a dependency/source boundary check,
-an animator fake-Sway integration test with all session roots absent, daemon
-capture/placement/layout tests, and the existing broker security tests.
-
-## Terminal lifecycle recovery procedure (LAB-112)
-
-Use an isolated context on workspace `98: LAB-112 E2E`; never reuse or purge an
-unrelated terminal context. Start a fresh named project terminal with one agent
-and one shell role, record its context UUID and Herdr session, then close only
-the outer terminal window. Re-run the same `terminal --project` command and
-verify that the original UUID/session is reused, one Alacritty window remains
-mapped, and the existing agent is not started a second time. Close the outer
-window again and run `sway-session restore <uuid>`; the same session must become
-visible without the title animator running.
-
-The automated fake-Sway coverage also forces the otherwise timing-sensitive
-`absent -> mapped -> absent` sequence before and after role initialization. It
-requires an operational error rather than `created, attached, focused`, removes
-a fresh registry entry when adapter start itself is rejected, retains the
-recovery identity after any accepted manager-backed launch, rechecks the window
-even when role initialization fails, and confirms that a refused Herdr stop
-leaves both its session state and registry entry intact. It also covers a user
-focus change during both stability checks, pending or structurally conflicting
-target windows as manager-state evidence, and lifecycle-lock serialization
-across terminal, restore, and broker registration entry points.
-
-On 2026-09-03, the procedure was also exercised against Sway 1.12 on an
-isolated headless output and workspace 98 with Alacritty 0.17.0 and Herdr
-0.8.2. Ending the short-lived command runner reproduced the original immediate
-window loss before process-session detachment. With the fix, the outer window
-remained mapped after the invoking command exited; closing it and invoking
-both `terminal --project` and one-shot `restore` recreated the adapter with the
-same context UUID and named Herdr session. A two-pane Codex+shell session kept
-exactly one agent across explicit-role recovery. Exact-context purge removed
-only the isolated registry entry and Herdr session. The compositor, state, and
-configuration roots were deleted afterward; no interactive Sway workspace or
-unrelated persistent context was opened or changed.
-
-## Interactive terminal environment procedure (LAB-113)
-
-Use a fresh isolated Herdr session on workspace `98: LAB-113 E2E`; do not reuse,
-stop, or purge an unrelated context. Invoke `sway-session terminal` with
-`NO_COLOR=1`, `TERM`, `COLORTERM`, and one harmless sentinel value. From the
-disposable pane, report only the presence or expected value of those four names
-rather than dumping the complete environment. Verify that `NO_COLOR` is absent
-while the terminal capability values and sentinel remain available. Repeat the
-check for `terminal --ephemeral`, and compare one non-terminal command's output
-with and without `NO_COLOR`.
-
-Automated subprocess coverage observes the effective environment after the
-terminal process seam for persistent and ephemeral specifications. It also
-proves that unrelated `FORCE_COLOR`, `CLICOLOR`, and `CLICOLOR_FORCE` values are
-preserved and that `sway-session list` output remains byte-identical.
-
-## Persistent terminal manager procedure (LAB-114)
-
-Open `sway-session terminal manage` in an existing terminal. The inventory may
-show real contexts, but create and mutate only a disposable context whose
-window is on workspace `98: LAB-114 E2E` or higher. Verify that the list uses a
-friendly title, displays its full UUID and Herdr session only in details, and
-shows both creation time and the most recent confirmed Sway focus time. Press
-`e`, rename the disposable entry, and confirm that its UUID, cwd, manager
-session, window mapping, and restore behavior remain unchanged. Exercise
-filtering, archive/activate, refresh, and open/focus. Finally open the delete
-dialog, cancel once, then confirm with `y`; only the selected disposable
-registry context and matching Herdr session may disappear.
-
-Repeat the UI with `NO_COLOR=1` and at 80×24. Active and archived entries,
-selection, confirmation, errors, help, and quit must remain understandable
-without color. Do not run the manager with `--json`; automation continues to
-use `terminal list`, `terminal rename`, lifecycle commands, and exact-ID
-`purge --yes`.
-
-Automated model tests use injected operations and synthetic Bubble Tea events
-for loading, empty state, navigation, filtering, rename, lifecycle changes,
-confirmation isolation, asynchronous errors, selection-preserving reloads,
-responsive layouts, and colorless rendering. CLI tests additionally cover the
-interactive-only dispatch and non-TTY rejection without control output.
-
-## Desktop application group procedure (LAB-98)
-
-Use an isolated XDG state root and disposable workspace 98 or higher. Register
-one ordinary application, save its placement, close its last top-level window,
-and confirm follow mode changes `desired_open` only after the two-second grace.
-Queue it with `sway-session restore <context>` and verify the daemon launches it
-after the five-second adoption interval, moves and marks only one unique anchor,
-and commits its launch-attempt row in `state.sqlite3` before the window maps.
-
-Repeat with two indistinguishable top-level windows: the group must count as
-present, no duplicate process may launch, and neither window may be guessed as
-the layout anchor. Restart only the daemon and reload Sway; neither action may
-repeat a recorded launch. A real compositor restart must create a new attempt
-identity. During restore, manually focus or move a test window and confirm the
-pending focus/layout work yields to that live action. Keep Chrome/Slack
-application-internal restore prompts and additional windows app-owned; this
-project restores one optional outer anchor, not private tabs, profiles, URLs,
-or per-window application state.
-
-## Visible desktop integration procedure (LAB-99)
-
-Use only disposable named workspaces `98: LAB-99 E2E` and, when a landing
-workspace is needed, `99: LAB-99 Landing`. Verify the focused workspace before
-every move or close. Never create, move, close, or restore a test window on a
-single-digit workspace.
-
-1. Start the animator with an isolated config and the session daemon with
-   isolated state/runtime roots. Before any successful desktop registration,
-   confirm no application indicator is shown.
-2. Register one ordinary app, then exercise a later `swaynag` approval so all
-   four title states are visible: `○` unregistered, `◔` pending, `●`
-   registered/follow, and `▲` pinned/autostart. Dismiss one approval and verify
-   pending disappears after expiry. Check the glyphs with Sway configured for
-   Noto Sans Mono on normal, tabbed, stacked, narrow, focused, and unfocused
-   titlebars.
-3. Cover a native Wayland app, an XWayland app, Chrome's single top-level
-   application-owned restore, Slack Flatpak when installed, and an
-   Alacritty/Herdr context on a mixed workspace. Herdr windows and classifiable
-   XWayland dialogs must not receive desktop-app indicators. Record the known
-   Sway 1.12 limitation that native Wayland parent/type metadata is unavailable;
-   those surfaces remain part of the application-level group until LAB-93.
-   Additional application-owned windows must not be rearranged.
-4. Exercise register, rebind, reapprove after changing a disposable user-local
-   desktop entry, pin, unpin, archive, activate, and forget. Compare
-   `sway-session --json app list` with the private registry; do not publish its
-   paths or checksums.
-5. Reload the Sway config and confirm neither daemon nor restore is launched a
-   second time. Replace the compositor/socket in an isolated environment and
-   confirm the one-shot restore runs once. Stop the animator while the daemon
-   restores, then stop the daemon while the animator continues animating.
-6. Confirm one reconciliation pass emits one consolidated degraded diagnostic
-   when multiple indicator/catalog or workspace details fail. Verify supported
-   placement and capture continue despite the presentation failure.
-
-Before handoff, run `make verify`, `make packaging-check`, the AppArmor policy
-checks, the `code-review` workflow, and the repository-level architecture
-checkpoint. Remove only the isolated roots, test entries, windows, and
-workspaces created by this procedure.
-
-### LAB-98 live evidence (2026-08-31)
-
-This evidence predates LAB-115 and therefore names the then-current legacy JSON
-files. It does not verify the SQLite store.
-
-The source-built daemon was exercised against the real Sway compositor with
-isolated XDG state/runtime roots and a disposable user desktop entry launching
-Alacritty under the unique `lab98-e2e` Wayland app ID. Every test window stayed
-on `98: LAB-98 E2E`; no test window was created, moved, or closed on a
-single-digit workspace.
-
-- `app register-focused --yes` stored the approved desktop snapshot and added
-  exactly one `persist:<uuid>` mark.
-- The daemon captured the marked anchor and workspace 98 in `layout.json`.
-- Closing the last top-level changed follow-mode `desired_open` to false only
-  after the close grace.
-- An explicit `restore <uuid>` changed it back to true; the per-compositor
-  attempt was visible in `application-session.json` when the launched window
-  was first observed, and the resulting anchor was marked on workspace 98.
-- Restarting only the source daemon with the same real Sway socket left one
-  window and one attempt: no launch was replayed.
-
-The source daemon, both disposable Alacritty windows, its workspace, and all
-isolated test state were removed after the run.
-
-### LAB-99 live evidence (2026-08-31)
-
-The visible desktop integration was exercised against the interactive Sway
-1.12 compositor using only `98: LAB-99 E2E` and `99: LAB-99 Pending`. No test
-window was created, moved, restored, or closed on a single-digit workspace.
-State, runtime, desktop-catalog additions, binaries, and screenshots remained
-under one disposable `/tmp` root.
-
-- Before the first successful registration, the test Alacritty had neither a
-  persistence mark nor an application indicator. A deliberately mutable test
-  desktop entry was rejected by the launcher-trust boundary; registration was
-  repeated with root-owned `/usr/share/applications/Alacritty.desktop`.
-- `app register-focused --yes` enabled the opt-in latch, wrote one typed desktop
-  context, and converged on the container-scoped registered mark. `app pin` then
-  replaced it with the pinned mark. Real screenshots showed `●` and `▲`
-  immediately before the Alacritty icon, and `app list` returned only the one
-  desktop context as JSON.
-- A second root-owned Deepin Calculator application received `○`, then `◔`
-  while a one-time registration approval was active. This live case exposed
-  that Sway reports the floating application leaf as `floating_con`; the
-  animator had accepted only `con`. The window classifier and regression test
-  were corrected, after which both states rendered in the real floating
-  titlebar.
-- With the animator stopped, a fresh daemon launched the pinned Alacritty,
-  placed it on workspace 98, added its stable context mark, and added the
-  container-scoped pinned indicator. The daemon was started through Sway for
-  this step so its GUI child did not inherit the Codex AppArmor profile.
-- After stopping that daemon, the source-built animator continued independently
-  and rendered the restored window's `▲` title with no session daemon process
-  running. The automated process-boundary test separately proves it opens no
-  session state or session socket.
-
-The two disposable application windows, both high-numbered workspaces, all
-test processes, and the isolated roots were removed after the run. The wider
-manual matrix above remains the procedure for Chrome/Slack, XWayland dialogs,
-tabbed/stacked titlebars, and user-local reapproval; automated tests cover those
-planner and approval contracts where no matching live application was used in
-this run.
-
-### LAB-101 live evidence (2026-08-31)
-
-The process split was exercised against the interactive Sway compositor with
-an isolated XDG state root, runtime root, Herdr configuration, registry, and
-one disposable context on workspace 98. The installed animator was suspended
-while the source-built `sway-session daemon` recognized the new window, added
-its stable mark, captured a floating 520-by-360 outer rectangle, and restored
-the window to workspace 98 with that rectangle after it was closed.
-
-The restore process was launched by Sway itself and deliberately inherited
-foreign `HERDR_*` and `CODEX_THREAD_ID` values. The typed launcher removed
-those pane-local variables before starting the new Alacritty/Herdr context;
-the restored window remained mapped and correctly placed throughout a
-12-second stability observation. This also verifies that the session path does
-not require a running animator. After stopping the session daemon, the
-source-built animator ran against real Sway with separate empty state/runtime
-roots: it created only its own instance-lock file and no session directory,
-state file, or broker socket. The disposable context and Herdr state were
-purged and all temporary test files were removed afterward.
-
-### LAB-106 headless evidence (2026-09-02)
-
-The source-built `sway-session` was exercised with Sway 1.12, real Alacritty
-windows, and Herdr 0.8.2 inside a transient `systemd --user` service. The run
-used a private headless wlroots backend, IPC socket, Wayland socket, and XDG
-runtime/state/config/cache/data roots. Every Sway IPC request named that socket
-explicitly; inherited desktop socket and display variables were removed before
-the compositor started. The only workspaces were `98: LAB-106 A` and
-`99: LAB-106 B`.
-
-- Two sequential `terminal --new` calls produced different context UUIDs,
-  UUID-derived application IDs, and Herdr session names, and mapped exactly one
-  marked window to each workspace.
-- The post-review rerun persisted registry schema 4 and therefore predates the
-  current schema-5 release candidate and its strict migration contract. It
-  remains evidence for the outer-window and independent-instance behavior only;
-  it is not schema-5 release evidence.
-- `terminal list` reported both as independent `instance` identities, while
-  the daemon captured both placements in owner-only `contexts.json` and
-  `layout.json` files.
-- After stopping the daemon and closing only the two exact private-compositor
-  container IDs, one-shot `restore` reopened both windows on their saved
-  workspaces with no animator running. A restarted daemon converged without
-  leaving temporary restore marks.
-- Archiving and activating the first context left the second context and window
-  unchanged. A JSON purge without `--yes` returned the expected preview and
-  `confirmation_required` diagnostic without changing the registry hash.
-  Confirmed per-UUID purges then removed only their matching Herdr session, and
-  the final registry was empty.
-
-The transient service used `KillMode=control-group`, a three-minute runtime
-limit, and exact temporary-root identity checks. It terminated all private
-compositor descendants and removed the isolated root after the successful
-run. It never addressed or mutated the interactive Sway compositor.
-
-### Historical required schema-5 JSON release rerun
-
-This pre-LAB-115 requirement was completed by LAB-109 below. It is retained as
-historical context, not as the current SQLite release gate. Before releasing
-that build, the required procedure was to repeat the isolated
-headless procedure on workspace 98 or higher from a fresh schema-5 state root.
-Create a fresh terminal instance, verify that `contexts.json` validates as
-schema 5, and verify:
-
-- closing and restoring the registered terminal instance returns its marked
-  outer window to the saved high-numbered workspace while the animator is not
-  running;
-- foreign inherited `HERDR_*` values are absent while the validated
-  `HERDR_CONFIG_PATH` for the isolated test root reaches the launched Herdr
-  child; and
-- a daemon restart performs no duplicate launch or mark creation.
-
-Record the date, installed/source commit, Sway and Herdr versions, isolated
-workspace numbers, and cleanup result here. Until that record exists, the
-LAB-106 entry above is not sufficient schema-5 release evidence.
-
-### LAB-109 pre-SQLite schema-5 release evidence (2026-09-02)
-
-This evidence validates the context payload and terminal behavior of the
-legacy JSON implementation; it predates database schema 1 and does not replace
-the LAB-115 procedure above.
-
-The source code at commit `74cdf49` was built with the repository's Go 1.26.5
-toolchain and exercised with Sway 1.12, Alacritty, and Herdr 0.8.2 in a fresh
-private schema-5 state root. A transient headless wlroots compositor exposed
-only `98: LAB-109 schema5 E2E`; no request addressed the interactive compositor
-or a single-digit workspace.
-
-- `terminal --new` created one schema-5 terminal-instance context with the
-  short UUID-derived Herdr session name. The daemon marked its one outer window
-  and captured workspace 98 in `layout.json` without an animator process.
-- After closing that exact private-compositor container, one-shot `restore`
-  opened one new outer window with the same context mark on workspace 98 while
-  the animator remained absent.
-- The launched Herdr client received exactly the validated private
-  `HERDR_CONFIG_PATH` and `SWAY_SESSION_CONTEXT_ID`; injected foreign
-  `HERDR_TEST_FOREIGN` and `CODEX_THREAD_ID` values were absent.
-- Restarting only the session daemon kept exactly one marked window, one exact
-  Herdr client, and byte-identical `contexts.json` contents.
-- Cleanup used the typed `purge --yes` path, stopped both private services,
-  verified that no exact Herdr client remained, and removed only the two
-  validated disposable roots. The real session state was never opened or
-  changed.
-
-### LAB-110 session-manager evidence (2026-09-02)
-
-This session-manager evidence also predates LAB-115; references to a registry
-hash describe the then-current JSON store.
-
-The source worktree was built with Go 1.26.5 and exercised against the real
-Sway 1.12 compositor, Alacritty, and Herdr 0.8.2 using isolated XDG config,
-state, and broker-runtime roots. All created or restored windows stayed on
-disposable workspaces 98 and 99; no single-digit workspace received a test
-window.
-
-- A fresh `terminal --new --role codex --role shell` created one typed Herdr
-  context, two panes, and exactly one agent. The live run exposed a startup
-  race where the first shell process inspection could precede Zsh becoming
-  idle. A bounded readiness poll and regression test were added, and the fresh
-  run then converged.
-- `terminal --context UUID` reused the same window and context. Once the layout
-  existed, the manager returned its documented safe no-op instead of splitting
-  or starting another agent.
-- With the animator stopped, the isolated session daemon captured the context
-  on workspace 98. Closing its exact window and running one-shot `restore`
-  reopened it on workspace 98 with the same two panes and one agent.
-- The owner-only request broker created a second fixed Codex-plus-shell
-  context on workspace 99. Repeating the identical request returned the same
-  UUID and created no duplicate context, window, pane, or agent.
-- A config selecting unsupported `session_manager = "tmux"` failed with the
-  actionable `terminal_config` diagnostic before contacting Sway or mutating
-  state; the registry hash remained byte-identical.
-
-Cleanup closed only the two exact test application IDs, stopped and deleted
-the three isolated Herdr sessions, stopped the isolated daemon, removed the
-two validated temporary roots, returned to the original non-test workspace,
-and restarted the installed animator. The real sway-session registry was never
-opened or changed.
-
-This document records the manual LAB-80 evidence gathered on 2026-08-29. It
-separates the outer Sway restore from components which were not available in
-the verification environment.
-
-## Environment
-
-- Sway 1.12 with a fresh headless wlroots backend and a private IPC socket.
-- Alacritty windows launched through the real `sway-session` executable.
-- Five registered contexts with fixed UUIDs and a private XDG state root.
-- A typed fake `herdr --session <name>` executable which kept each Alacritty
-  window alive. It did not emulate Herdr panes, history, or agent resume.
-- The normal repository Go 1.26.5 toolchain and automated verification gate.
-
-The headless compositor was isolated from the interactive desktop session. Its
-state, runtime directory, processes, and sockets were removed after the test.
-
-## Observed results
-
-The following outer-window behavior was exercised against real Sway IPC:
-
-- Horizontal split, tabbed, and stacked child order restored and converged.
-- Parent-relative split proportions restored, including a workspace-fullscreen
-  child whose reported Sway `percent` temporarily changed to `1`.
-- A floating Alacritty outer rectangle restored to `(100, 120, 420, 260)`.
-  Sway reported a `(100, 147, 420, 233)` content rectangle plus a 27-pixel
-  decoration; capture and planning converged on the command-visible outer
-  rectangle.
-- Workspace fullscreen and the saved focused context restored.
-- No temporary `_sway_session_restore_...` marks remained after convergence.
-- `swaymsg reload` preserved a normalized hash of all managed tree nodes and
-  did not launch duplicate windows.
-- An old compositor was terminated, a new Sway process with a new IPC socket
-  was started, and the persisted stacked/floating/focus snapshot restored in
-  the new tree. This was a real compositor restart, not a config reload.
-- A context archived before `restore` was not launched. After activation, a
-  later launch in the same compositor run restored its saved floating state.
-- Removing the fixed Sway IPC endpoint ended the animator instead of leaving a
-  reconnect loop against a dead compositor.
-
-Failure exercises used separate state roots:
-
-- An empty executable search path produced a structured
-  `missing_executable` diagnostic and launched no context.
-- Malformed registry JSON produced one structured state diagnostic, and its
-  file hash was unchanged after the failed load.
-- With two contexts, one valid context mapped while the other reported its
-  vanished project directory. The valid context was not rolled back or
-  suppressed by the independent failure.
-
-The live checks exposed and led to regression tests for fullscreen proportion
-capture, decorated floating geometry, empty-workspace focus, delayed window
-mapping after the startup settle deadline, same-run archive/activate restore,
-and disappearance of a fixed Sway endpoint.
-
-## Commands and automated evidence
-
-The final branch gate is:
-
-```sh
-GOTOOLCHAIN=go1.26.5 make verify
-```
-
-Focused session, planner, IPC, and daemon packages were also run repeatedly,
-shuffled, and under the race detector during the manual fix/review loop.
-
-## Explicit verification gaps
-
-- No machine reboot was performed because that would disrupt the active user
-  environment. The new-process compositor restart above verifies the same
-  outer persisted-state boundary without claiming reboot coverage.
-- Only one headless output was available. No physical second monitor was
-  unplugged or reconnected, so output-hotplug behavior remains unverified.
-- Herdr was not installed. Inner pane reconstruction, genuine pane-history
-  display, resumed shells, and resumed Codex processes remain unverified. The
-  fake executable verifies only the typed outer launcher contract.
-- The updated AppArmor profile passed parser syntax validation, but the loaded
-  user profile was not reloaded because the environment did not provide
-  non-interactive privilege escalation. No live deny/allow claim is made.
-
-These gaps do not weaken the automated negative tests around state paths,
-Herdr sockets, the narrow Codex broker, or typed launcher input, but they must
-remain distinct from end-to-end operational evidence.
+  --session fresh-schema-probe --cwd /tmp --label "Fresh schema probe"
+test -f "$probe/sway-session/state.sqlite3"
+test "$(sqlite3 "$probe/sway-session/state.sqlite3" \
+  'PRAGMA user_version')" -eq 1
+sqlite3 "$probe/sway-session/state.sqlite3" \
+  'PRAGMA journal_mode; PRAGMA foreign_key_check; PRAGMA quick_check;'
+~~~
+
+Expect wal, no foreign-key rows, and ok. Verify the database and every present
+WAL, SHM, or journal sidecar are regular, single-link, current-owner files with
+mode 600. Stop every process using the disposable root before removing only
+that root.
+
+The pre-release JSON migration remains source-preserving. In a second
+disposable root, prepare recognized legacy contexts.json, layout.json,
+application-runtime/application-session.json, and
+terminal-runtime/terminal-activity.json fixtures. Confirm ordinary state
+opening fails closed while the database is absent, run terminal manage action
+m, then verify:
+
+- all valid rows were imported in one transaction;
+- stale activity or launch rows whose context is absent were reported and
+  skipped;
+- every source JSON file is unchanged;
+- repeating migration returns verified success without duplication; and
+- once state.sqlite3 exists, the legacy files are ignored and never recreated.
+
+LAB-119 introduces no path, schema, or migration change. Existing live state
+must not be opened or rewritten merely to verify the repository split.
+
+## Real Sway and Herdr check
+
+Use a private compositor/socket, disposable XDG config, state, and runtime
+roots, and workspace 98 or higher. Never create, move, close, restore, or purge
+a test window on a single-digit workspace. Enable pane history in the
+disposable Herdr config and use a short enough root for Herdr Unix socket path
+limits.
+
+1. Build the candidate sway-session binary.
+2. Start the daemon against the private Sway socket.
+3. Create a fresh persistent terminal with terminal --new and record only its
+   disposable context UUID.
+4. Confirm one typed terminal maps and receives the stable context mark.
+5. Let the daemon capture workspace and layout into state.sqlite3.
+6. Stop the daemon, close only that exact test window, and run one-shot restore.
+   Confirm the terminal maps again with the same UUID and Herdr session.
+7. Start the daemon and confirm it places the window on the saved high-numbered
+   workspace and converges its outer layout.
+8. Archive/activate and then exact-ID purge the disposable context.
+9. Confirm the registry is empty, stop every test process, and remove only the
+   disposable roots and high-numbered workspaces.
+
+One-shot restore proves launch or mapping. Saved workspace placement and layout
+require the daemon; never claim placement from a daemon-free mapping test.
+
+Also exercise:
+
+- absent → mapped → absent during both terminal stability checks;
+- reuse after closing the outer adapter without restarting an occupied agent;
+- role initialization failure followed by idempotent exact-context retry;
+- rejection of a conflicting persisted adapter or working directory;
+- lifecycle lock serialization across terminal, restore, and broker entry
+  points;
+- more than 128 stored contexts without a registry-capacity error;
+- rotating placement/indicator batches after a completely rejected batch;
+- application preflight rotation beyond its two-candidate pass bound; and
+- layout re-observation after every mutation and after bounded yield.
+
+### LAB-119 extraction evidence
+
+On 2026-09-05, source-built binaries were exercised against Sway 1.12,
+Alacritty 0.17.0, and Herdr 0.8.2 on a private headless compositor with
+isolated XDG roots and workspace 98. No live user state or single-digit
+workspace was used.
+
+- sway-session daemon created the SQLite state and remained alive independently
+  of sway-title-animator.
+- terminal --new created one marked persistent terminal context.
+- With both daemons stopped, one-shot restore remapped the same context and
+  Herdr session, proving launch/mapping independence.
+- After capture, the daemon was restarted from another high-numbered workspace;
+  restore remapped the terminal and daemon reconciliation returned it to saved
+  workspace 98 without an animator.
+- Exact purge emptied the disposable registry.
+- All test processes and disposable contexts were removed.
+
+The isolated harness first exposed test-setup mistakes—a too-long Herdr socket
+root and a missing pane-history setting. Retrying with the packaged Herdr
+template and a shorter private root passed; neither was a product failure.
+
+The same extraction also passed source-built Arch package transitions from the
+combined sway-title-animator 0.9.3 package in disposable pacman roots: both a
+single transaction installing animator 0.10.0 plus sway-session 0.1.0 and a
+sequential animator upgrade followed by sway-session installation. Neither
+required an overwrite flag. Package ownership checks assigned each binary to
+its respective package. These were isolated package-manager checks, not a
+change to the running workstation's installed packages.
+
+GoReleaser snapshots built Linux amd64 and arm64 archives, DEBs, and RPMs.
+Inspected session artifacts contain only the session executable and its
+documentation/integration assets; DEB runtime metadata lists only Sway.
+
+## Desktop application check
+
+Use a disposable desktop entry and workspace 98 or higher. Never reuse or purge
+an unrelated registration.
+
+1. Focus one eligible normal top-level and preview register-focused.
+2. Approve it explicitly; verify the exact identity, protected launch snapshot,
+   stable context mark, and list/status output.
+3. Exercise follow close grace, pin/unpin, archive/activate, rebind, reapprove,
+   and exact-ID forget.
+4. With two indistinguishable matching windows, verify presence is true but no
+   anchor is guessed or moved.
+5. Queue a missing desired app and verify launch intent is durable before
+   process start; daemon restart must not duplicate it in one compositor
+   session.
+6. Confirm a user focus or move invalidates stale automatic work.
+
+Treat Chrome, Slack, and similar application-internal restoration as app-owned.
+Scratchpad restore remains deferred. Native Wayland parent/type limits in Sway
+1.12 remain documented rather than guessed around.
+
+## AppArmor and broker check
+
+Static policy validation is part of make verify:
+
+~~~sh
+sh scripts/check-apparmor-policy.sh
+~~~
+
+When the matching profile can be loaded safely, use only package-installed
+root-owned binaries and invoke:
+
+~~~sh
+/usr/share/doc/sway-session/scripts/verify-codex-boundary.sh \
+  CONTEXT_UUID PANE_ID CODEX_SESSION_UUID \
+  HERDR_HISTORY STATE_FILE HERDR_SOCKET
+~~~
+
+The verifier requires /usr/bin/sway-session to be owned by the sway-session
+package. It proves the narrow positive report path and negative history/state
+access. A pathname-socket connect mediation gap is a failed or explicitly
+unsupported boundary, never a passing result.
+
+## Package build check
+
+Before v0.1.0 exists, do not fetch or checksum a nonexistent tag archive.
+Create a temporary source archive from the current worktree, copy PKGBUILD to a
+temporary build directory, point its source at that local archive, replace SKIP
+with the archive's real sha256, regenerate .SRCINFO, then run:
+
+~~~sh
+makepkg --verifysource
+makepkg --cleanbuild --clean --noconfirm
+pacman -Qlp sway-session-0.1.0-1-ARCH.pkg.tar.zst
+~~~
+
+Inspect that the package contains /usr/bin/sway-session, completions, the
+license, README, plan, verification guide, standalone Sway template, Herdr and
+sway-session config templates, packaged Codex hook, AppArmor profile, and live
+verifier—all below /usr/share/doc/sway-session where appropriate. It must
+contain no animator binary, animation/audio asset, parec metadata, optional
+dependency metadata, or old documentation root.
+
+For the package split, test a clean install and the ownership transition with
+actual built packages in an isolated package-manager root. The old combined
+package may own /usr/bin/sway-session. Either upgrade sway-title-animator to a
+version that no longer owns that path before installing sway-session, or
+install both verified replacement packages in one transaction. Never use
+--overwrite to conceal ownership mistakes.
+
+## Release gate
+
+Before tagging:
+
+- make verify passes;
+- the current worktree has no generated binary or transient package output;
+- a clean GoReleaser snapshot passes and its contents are inspected;
+- the temporary local-tarball Arch source package builds and tests;
+- title-indicator fixtures match across repositories;
+- real Sway/Herdr evidence above is current;
+- package ownership transition evidence is recorded;
+- the code-review workflow has no unresolved actionable finding;
+- CI configuration targets only sway-session;
+- GitHub release/AUR secrets and permissions are verified without publishing;
+  and
+- the release commit is on main.
+
+Only then create immutable tag v0.1.0. The AUR workflow computes the actual
+GitHub source archive checksum, refuses SKIP, verifies and builds the package,
+publishes exact metadata, and opens the metadata-sync PR. Do not move a release
+tag or invent a checksum.

@@ -1,5 +1,9 @@
 # sway-session
 
+<p align="center">
+  <a href="docs/branding.md"><img src="docs/assets/sway-session-icon.jpeg" width="160" height="160" alt="sway-session logo: a tiled window layout with a green pane"></a>
+</p>
+
 sway-session keeps explicitly registered work contexts available across Sway
 starts. It restores terminal adapters backed by named Herdr sessions, tracks
 desktop applications as application-level groups, and reconciles their outer

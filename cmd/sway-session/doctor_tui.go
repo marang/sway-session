@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
@@ -91,7 +92,9 @@ func (model doctorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case doctorPlannedMsg:
 		model.busy = ""
 		if msg.err != nil {
-			model.message = "Cannot prepare repair: " + doctorText(msg.err.Error())
+			model.message = "Cannot prepare repair; review details."
+			model.feedback = []string{"Repair preview unavailable", doctorText(msg.err.Error()), "No files changed."}
+			model.offset = 0
 			return model, nil
 		}
 		model.plan, model.offset = &msg.plan, 0
@@ -403,7 +406,13 @@ func (model doctorModel) View() tea.View {
 }
 
 func runDoctorUI(ctx context.Context, stdin io.Reader, stdout io.Writer, operations doctorOperations) error {
-	model := newDoctorModel(ctx, operations)
+	ctx, cancel := context.WithCancel(ctx)
+	guarded := &doctorUIOperations{doctorOperations: operations}
+	defer func() {
+		cancel()
+		guarded.stop()
+	}()
+	model := newDoctorModel(ctx, guarded)
 	model.noColor = os.Getenv("NO_COLOR") != ""
 	options := []tea.ProgramOption{tea.WithContext(ctx), tea.WithInput(stdin), tea.WithOutput(stdout), tea.WithEnvironment(os.Environ())}
 	if model.noColor {
@@ -411,4 +420,28 @@ func runDoctorUI(ctx context.Context, stdin io.Reader, stdout io.Writer, operati
 	}
 	_, err := tea.NewProgram(model, options...).Run()
 	return err
+}
+
+// Bubble Tea can stop on a signal or terminal I/O error while a command is
+// running. Wait for an in-flight repair's cancellation/rollback before main
+// exits; reject a queued Apply that starts after the UI has already stopped.
+type doctorUIOperations struct {
+	doctorOperations
+	mutex   sync.Mutex
+	stopped bool
+}
+
+func (operations *doctorUIOperations) Apply(ctx context.Context, plan doctor.Plan) (doctor.FixResult, error) {
+	operations.mutex.Lock()
+	defer operations.mutex.Unlock()
+	if operations.stopped || ctx.Err() != nil {
+		return doctor.FixResult{}, context.Canceled
+	}
+	return operations.doctorOperations.Apply(ctx, plan)
+}
+
+func (operations *doctorUIOperations) stop() {
+	operations.mutex.Lock()
+	defer operations.mutex.Unlock()
+	operations.stopped = true
 }

@@ -6,11 +6,52 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/marang/sway-session/internal/doctor"
 )
+
+type cancellingDoctorOperations struct {
+	fakeDoctorOperations
+	started, release chan struct{}
+}
+
+func (operations *cancellingDoctorOperations) Apply(ctx context.Context, _ doctor.Plan) (doctor.FixResult, error) {
+	close(operations.started)
+	<-ctx.Done()
+	<-operations.release // Model the repair engine finishing its rollback.
+	return doctor.FixResult{}, ctx.Err()
+}
+
+func TestDoctorUIShutdownWaitsForRepairAndRejectsQueuedApply(t *testing.T) {
+	operations := &cancellingDoctorOperations{started: make(chan struct{}), release: make(chan struct{})}
+	guarded := &doctorUIOperations{doctorOperations: operations}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan struct{})
+	go func() { defer close(done); _, _ = guarded.Apply(ctx, doctor.Plan{}) }()
+	<-operations.started
+	cancel()
+	stopped := make(chan struct{})
+	go func() { guarded.stop(); close(stopped) }()
+	select {
+	case <-stopped:
+		t.Fatal("UI stopped before rollback finished")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(operations.release)
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("UI did not finish after rollback")
+	}
+	<-done
+	if _, err := guarded.Apply(context.Background(), doctor.Plan{}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("late Apply: %v", err)
+	}
+}
 
 func doctorUpdate(t *testing.T, model doctorModel, msg tea.Msg) (doctorModel, tea.Cmd) {
 	t.Helper()

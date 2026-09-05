@@ -79,6 +79,6 @@ package() {
   install -Dm644 contrib/herdr/config.toml "$pkgdir/usr/share/doc/$pkgname/contrib/herdr/config.toml"
   install -Dm644 contrib/sway-session/config.toml "$pkgdir/usr/share/doc/$pkgname/contrib/sway-session/config.toml"
   install -Dm644 contrib/codex/hooks-system.json "$pkgdir/usr/share/doc/$pkgname/contrib/codex/hooks.json"
-  install -Dm644 contrib/apparmor/codex-home-guard "$pkgdir/usr/share/doc/$pkgname/contrib/apparmor/codex-home-guard"
+  install -Dm644 contrib/apparmor/agent-home-guard "$pkgdir/usr/share/doc/$pkgname/contrib/apparmor/agent-home-guard"
   install -Dm755 scripts/verify-codex-boundary.sh "$pkgdir/usr/share/doc/$pkgname/scripts/verify-codex-boundary.sh"
 }

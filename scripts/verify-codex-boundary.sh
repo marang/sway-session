@@ -16,7 +16,7 @@ codex_session_id=$3
 history_file=$4
 state_file=$5
 herdr_socket=$6
-profile=${CODEX_APPARMOR_PROFILE:-codex-home-guard}
+profile=${AGENT_APPARMOR_PROFILE:-${CODEX_APPARMOR_PROFILE:-agent-home-guard}}
 session_binary=/usr/bin/sway-session
 hook_binary=/usr/lib/sway-session/codex-report-agent-session
 

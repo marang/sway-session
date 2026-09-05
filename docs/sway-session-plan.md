@@ -102,8 +102,11 @@ flowchart TB
   contract.
 - internal/diagnostic owns stable human and JSON diagnostics.
 - internal/doctor owns read-only setup inspection and previewed, bounded
-  configuration repairs. The CLI and doctor TUI share one service; neither
-  interface has a second repair implementation.
+configuration repairs. The CLI and doctor TUI share one service; neither
+interface has a second repair implementation. Broker checks pin their
+owner-only Unix-socket entry, use a connect-only liveness probe, and compare
+the peer credentials with the verified daemon PID; they never send a broker
+request while diagnosing.
 
 ### Setup inspection and repair
 
@@ -133,8 +136,8 @@ Unsupported relevant syntax, incomplete include graphs, or ambiguous existing
 bindings suppress repair rather than guessing.
 The only generated file is the recognized doctor-owned snippet beside the
 selected Sway config. Other config content is preserved and excluded from
-repair previews. File checks never imply that a binding or AppArmor/socket
-boundary is live. Users reload Sway separately after reviewing applied edits.
+repair previews. File checks never imply that a binding or socket endpoint is
+live. Users reload Sway separately after reviewing applied edits.
 
 The existing GET_VERSION IPC query supplies the loaded root path. GET_CONFIG
 does not expose evaluated settings: Sway stores folded main-file text without
@@ -343,10 +346,13 @@ provider events are translated by hook assets into the generic input shape.
 The agent-report v2 and session-start v1 contracts and stored state are unchanged.
 See [agent reporting](agent-reporting.md) for the input and compatibility contract.
 
-The included AppArmor profile is experimental. Its file rules protect the
-default Herdr history and sway-session state trees, but pathname-socket connect
-mediation is not reliable on every supported kernel and launched terminal panes
-remain unconfined. LAB-89 tracks a stronger agent sandbox boundary.
+The included `agent-home-guard` AppArmor template is an optional agent
+hardening measure, not a sway-session runtime requirement. Its ready-to-use
+example attaches to Codex; a different agent needs its own profile name and
+executable attachment. Its file rules protect the default Herdr history and
+sway-session state trees, but pathname-socket connect mediation is not reliable
+on every supported kernel and launched terminal panes remain unconfined. LAB-89
+tracks a stronger agent sandbox boundary.
 
 ## Standalone and release decisions
 

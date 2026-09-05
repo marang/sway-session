@@ -39,6 +39,11 @@ type doctorModel struct {
 	feedback                      []string
 }
 
+type doctorListRow struct {
+	checkIndex int
+	heading    string
+}
+
 func newDoctorModel(ctx context.Context, operations doctorOperations) doctorModel {
 	filter := textinput.New()
 	filter.Placeholder = "Filter checks"
@@ -297,17 +302,45 @@ func (model doctorModel) filterView() string {
 	return model.filter.Prompt + left + "│" + right
 }
 
+func (model doctorModel) listRows() []doctorListRow {
+	rows := make([]doctorListRow, 0, len(model.visible)+1)
+	for _, checkIndex := range model.visible {
+		if model.report.Checks[checkIndex].ID == "apparmor" {
+			rows = append(rows, doctorListRow{heading: "Optional"})
+		}
+		rows = append(rows, doctorListRow{checkIndex: checkIndex})
+	}
+	return rows
+}
+
 func (model doctorModel) renderList(width, height int, styles terminalManageStyles) []string {
-	start := max(0, min(model.cursor-height+1, max(0, len(model.visible)-height)))
+	rows := model.listRows()
+	selectedIndex := -1
+	if model.cursor >= 0 && model.cursor < len(model.visible) {
+		selectedIndex = model.visible[model.cursor]
+	}
+	selectedRow := 0
+	for row, item := range rows {
+		if item.checkIndex == selectedIndex {
+			selectedRow = row
+			break
+		}
+	}
+	start := max(0, min(selectedRow-height+1, max(0, len(rows)-height)))
 	lines := make([]string, height)
 	for row := range height {
 		index := start + row
-		if index >= len(model.visible) {
+		if index >= len(rows) {
 			break
 		}
-		check := model.report.Checks[model.visible[index]]
+		item := rows[index]
+		if item.heading != "" {
+			lines[row] = ansi.Truncate("  "+styles.muted.Render(item.heading), width, "…")
+			continue
+		}
+		check := model.report.Checks[item.checkIndex]
 		prefix := "  "
-		if index == model.cursor {
+		if item.checkIndex == selectedIndex {
 			prefix = "› "
 		}
 		status := "[" + string(check.Status) + "]"
@@ -322,7 +355,7 @@ func (model doctorModel) renderList(width, height int, styles terminalManageStyl
 			status = styles.muted.Render(status)
 		}
 		line := ansi.Truncate(prefix+status+" "+doctorText(check.Title), width, "…")
-		if index == model.cursor {
+		if item.checkIndex == selectedIndex {
 			line = styles.selected.Render(terminalManagePad(line, width))
 		}
 		lines[row] = line

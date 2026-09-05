@@ -135,6 +135,26 @@ func TestDoctorTUIFilterRefreshSelectionAndNoColor(t *testing.T) {
 	}
 }
 
+func TestDoctorTUIPlacesAppArmorInOptionalSection(t *testing.T) {
+	ops := &fakeDoctorOperations{report: doctor.Report{Checks: []doctor.Check{
+		{ID: "runtime.paths", Title: "Runtime paths", Status: doctor.OK},
+		{ID: "apparmor", Title: "AppArmor", Status: doctor.OK},
+	}}}
+	model := newDoctorModel(context.Background(), ops)
+	model.noColor, model.width, model.height = true, 120, 30
+	model, _ = doctorUpdate(t, model, model.Init()())
+	view := ansi.Strip(model.View().Content)
+	optional := strings.Index(view, "Optional")
+	appArmor := strings.Index(view, "[ok] AppArmor")
+	if optional < 0 || appArmor < optional {
+		t.Fatalf("AppArmor was not shown in the optional section:\n%s", view)
+	}
+	model, _ = doctorUpdate(t, model, terminalManageKey("j"))
+	if selected, _ := model.selected(); selected.ID != "apparmor" {
+		t.Fatalf("optional section disrupted selection: %+v", selected)
+	}
+}
+
 func TestDoctorTUIHelpAtMinimumSizeHasAccurateExitKeys(t *testing.T) {
 	model := newDoctorModel(context.Background(), &fakeDoctorOperations{})
 	model.busy = ""

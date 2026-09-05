@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -32,6 +33,7 @@ const (
 	maxCapabilityOutput                     = 4096
 	// Keep this read-only path check aligned with session.maxStateDatabaseBytes.
 	maxStateDatabaseSize = int64(1 << 30)
+	appArmorEnabledPath  = "/sys/module/apparmor/parameters/enabled"
 )
 
 // runtimeProbes keeps observation boundaries replaceable by focused package
@@ -108,8 +110,7 @@ func inspectRuntime(ctx context.Context, options Options) []Check {
 	observation := inspectDaemonLock(runtime)
 	checks = append(checks, observation.check)
 	checks = append(checks, inspectDaemonBinary(ctx, options, observation))
-	checks = append(checks, inspectOptionalSockets(runtime)...)
-	checks = append(checks, appArmorCheck())
+	checks = append(checks, inspectOptionalSockets(ctx, runtime, observation)...)
 	return checks
 }
 
@@ -414,7 +415,7 @@ func inspectDaemonBinary(ctx context.Context, options Options, observation daemo
 	return Check{ID: "daemon.binary", Title: "Daemon binary", Status: Warning, Detail: detail, Hint: "Restart the daemon after upgrading sway-session.", Evidence: []string{"path=" + candidate, fmt.Sprintf("pid=%d", observation.pid)}}
 }
 
-func inspectOptionalSockets(runtime privateDirectoryObservation) []Check {
+func inspectOptionalSockets(ctx context.Context, runtime privateDirectoryObservation, daemon daemonObservation) []Check {
 	checks := make([]Check, 0, 3)
 	for _, endpoint := range []struct{ id, title, name string }{
 		{"broker.session_start", "Session-start broker", sessionrequest.SocketFilename},
@@ -435,18 +436,106 @@ func inspectOptionalSockets(runtime privateDirectoryObservation) []Check {
 		}
 		stat, err := inspectPrivateObjectAt(runtime.directory, endpoint.name, unix.S_IFSOCK, statefile.RegularFileMode)
 		if errors.Is(err, os.ErrNotExist) {
-			checks = append(checks, Check{ID: endpoint.id, Title: endpoint.title, Status: Unavailable, Detail: "This optional broker endpoint is not running.", Evidence: []string{"path=" + path}})
+			status := Unavailable
+			detail := "This optional broker endpoint is not running."
+			if daemon.valid {
+				status = Warning
+				detail = "The verified daemon is running, but this optional broker endpoint is absent."
+			}
+			checks = append(checks, Check{ID: endpoint.id, Title: endpoint.title, Status: status, Detail: detail, Evidence: []string{"path=" + path}})
 		} else if err != nil {
 			checks = append(checks, privateObjectErrorCheck(endpoint.id, endpoint.title, "This optional broker endpoint exists but is not an owner-only socket.", path, "single-link owner-only socket mode 0600", stat, "Stop the daemon and inspect the reported endpoint before correcting it, then restart the daemon."))
+		} else if !daemon.valid {
+			checks = append(checks, Check{ID: endpoint.id, Title: endpoint.title, Status: Unavailable, Detail: "An owner-only broker socket exists, but no verified sway-session daemon is running.", Evidence: []string{"path=" + path, "owner-only socket"}})
 		} else {
-			checks = append(checks, Check{ID: endpoint.id, Title: endpoint.title, Status: Unavailable, Detail: "An owner-only broker socket exists, but read-only inspection cannot prove that a listener is serving it.", Hint: "If broker operations fail, restart the daemon and run doctor again.", Evidence: []string{"path=" + path, "owner-only socket", "listener unverified"}})
+			err := probePinnedSocketListener(ctx, runtime.directory, endpoint.name, daemon.pid)
+			if err != nil {
+				checks = append(checks, Check{ID: endpoint.id, Title: endpoint.title, Status: Warning, Detail: "The verified daemon is running, but this owner-only broker socket did not accept a safe liveness probe.", Hint: "Restart the daemon and run doctor again if broker operations are expected.", Evidence: []string{"path=" + path, "owner-only socket", "probe=" + err.Error()}})
+				continue
+			}
+			checks = append(checks, Check{ID: endpoint.id, Title: endpoint.title, Status: OK, Detail: "An owner-only broker listener is accepting connections from the verified sway-session daemon.", Evidence: []string{"path=" + path, "owner-only socket", fmt.Sprintf("pid=%d", daemon.pid), "connect-only probe"}})
 		}
 	}
 	return checks
 }
 
-func appArmorCheck() Check {
-	return Check{ID: "apparmor", Title: "AppArmor boundary", Status: Unavailable, Detail: "A doctor inspection cannot prove that the optional AppArmor template is loaded or mediates pathname-socket connections; broker-created panes remain unconfined."}
+func probePinnedSocketListener(parent context.Context, directory *os.File, name string, expectedPID int) error {
+	if directory == nil || name == "" || expectedPID <= 0 {
+		return errors.New("invalid liveness probe inputs")
+	}
+	fd, err := unix.Openat(int(directory.Fd()), name, unix.O_PATH|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return fmt.Errorf("pin socket: %w", err)
+	}
+	defer unix.Close(fd)
+	var pinned unix.Stat_t
+	if err := unix.Fstat(fd, &pinned); err != nil {
+		return fmt.Errorf("inspect pinned socket: %w", err)
+	}
+	if pinned.Mode&unix.S_IFMT != unix.S_IFSOCK || pinned.Uid != uint32(os.Geteuid()) || pinned.Nlink != 1 || pinned.Mode&0o7777 != statefile.RegularFileMode {
+		return errors.New("pinned endpoint is not an owner-only socket")
+	}
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, runtimeProbeTimeout)
+	defer cancel()
+	connection, err := (&net.Dialer{}).DialContext(ctx, "unix", fmt.Sprintf("/proc/self/fd/%d", fd))
+	if err != nil {
+		return fmt.Errorf("connect: %w", err)
+	}
+	defer connection.Close()
+	unixConnection, ok := connection.(*net.UnixConn)
+	if !ok {
+		return errors.New("unexpected non-Unix liveness connection")
+	}
+	credentials, err := peerCredentials(unixConnection)
+	if err != nil {
+		return err
+	}
+	if credentials.Uid != uint32(os.Geteuid()) || int(credentials.Pid) != expectedPID {
+		return fmt.Errorf("listener credentials do not match verified daemon pid %d", expectedPID)
+	}
+	var current unix.Stat_t
+	if err := unix.Fstatat(int(directory.Fd()), name, &current, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		return fmt.Errorf("reinspect socket: %w", err)
+	}
+	if current.Dev != pinned.Dev || current.Ino != pinned.Ino {
+		return errors.New("socket path changed during liveness probe")
+	}
+	return nil
+}
+
+func peerCredentials(connection *net.UnixConn) (*unix.Ucred, error) {
+	raw, err := connection.SyscallConn()
+	if err != nil {
+		return nil, fmt.Errorf("inspect listener peer: %w", err)
+	}
+	var credentials *unix.Ucred
+	var socketErr error
+	if err := raw.Control(func(fd uintptr) {
+		credentials, socketErr = unix.GetsockoptUcred(int(fd), unix.SOL_SOCKET, unix.SO_PEERCRED)
+	}); err != nil {
+		return nil, fmt.Errorf("inspect listener peer: %w", err)
+	}
+	if socketErr != nil || credentials == nil {
+		return nil, fmt.Errorf("inspect listener credentials: %w", socketErr)
+	}
+	return credentials, nil
+}
+
+// appArmorAvailabilityCheck deliberately reports only whether AppArmor is
+// active. The policy is optional agent hardening, not a sway-session runtime
+// requirement, so doctor neither compares nor claims to verify a deployment.
+func appArmorAvailabilityCheck() Check {
+	enabled, err := runtimeProbes.readFile(appArmorEnabledPath, 16)
+	if err != nil {
+		return Check{ID: "apparmor", Title: "AppArmor", Status: Unavailable, Detail: "AppArmor availability cannot be inspected on this system.", Hint: "See the optional agent-home-guard template in the sway-session documentation.", Evidence: []string{"path=" + appArmorEnabledPath}}
+	}
+	if strings.TrimSpace(string(enabled)) != "Y" {
+		return Check{ID: "apparmor", Title: "AppArmor", Status: Unavailable, Detail: "AppArmor is not enabled; sway-session remains fully functional without it.", Hint: "See the optional agent-home-guard template in the sway-session documentation.", Evidence: []string{"path=" + appArmorEnabledPath}}
+	}
+	return Check{ID: "apparmor", Title: "AppArmor", Status: OK, Detail: "AppArmor is enabled. agent-home-guard is an optional explicit-hardening template.", Hint: "See the optional agent-home-guard template in the sway-session documentation.", Evidence: []string{"path=" + appArmorEnabledPath, "module enabled"}}
 }
 
 func inspectStatePaths() Check {

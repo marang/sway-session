@@ -30,13 +30,27 @@ require_count() {
 	fi
 }
 
+require_ordered_lines() {
+	file=$1
+	shift
+	previous=0
+	for value in "$@"; do
+		line=$(grep -n -F -- "$value" "$file" | awk -F: -v previous="$previous" '$1 > previous { print $1; exit }')
+		if [ -z "$line" ]; then
+			echo "Missing ordered packaging contract in $file after line $previous: $value" >&2
+			exit 1
+		fi
+		previous=$line
+	done
+}
+
 test -f contrib/sway/50-sway-session.conf
 test -f contrib/sway-session/config.toml
 test -f contrib/herdr/config.toml
 test -f contrib/codex/hooks.json
 test -f contrib/codex/hooks-system.json
 test -x contrib/codex/report-agent-session.sh
-test -f contrib/apparmor/codex-home-guard
+test -f contrib/apparmor/agent-home-guard
 test -f scripts/verify-codex-boundary.sh
 test -f docs/agent-reporting.md
 require_fixed Makefile 'install -m644 docs/agent-reporting.md $(DOC_ROOT)/docs/agent-reporting.md'
@@ -55,7 +69,15 @@ require_fixed .goreleaser.yaml '        dst: /usr/share/doc/sway-session/docs/ad
 require_fixed .goreleaser.yaml '        dst: /usr/share/doc/sway-session/50-sway-session.conf'
 require_fixed .goreleaser.yaml '        dst: /usr/share/doc/sway-session/contrib/codex/hooks.json'
 require_fixed .goreleaser.yaml '        dst: /usr/lib/sway-session/codex-report-agent-session'
-require_fixed .goreleaser.yaml '        dst: /usr/share/doc/sway-session/contrib/apparmor/codex-home-guard'
+require_fixed .goreleaser.yaml '        dst: /usr/share/doc/sway-session/contrib/apparmor/agent-home-guard'
+require_ordered_lines README.md \
+  'sudo apparmor_parser -R /etc/apparmor.d/codex-home-guard' \
+  'sudo mv /etc/apparmor.d/codex-home-guard' \
+  '/root/codex-home-guard.before-agent-home-guard' \
+  'sudo install -m 0644' \
+  '/usr/share/doc/sway-session/contrib/apparmor/agent-home-guard' \
+  '/etc/apparmor.d/agent-home-guard' \
+  'sudo apparmor_parser -r /etc/apparmor.d/agent-home-guard'
 require_fixed .goreleaser.yaml '        dst: /usr/share/doc/sway-session/scripts/verify-codex-boundary.sh'
 reject_fixed .goreleaser.yaml 'sway-title-animator'
 reject_fixed .goreleaser.yaml 'pulseaudio'

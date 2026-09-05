@@ -176,11 +176,48 @@ func TestOptionalSocketDoesNotClaimUnverifiedListenerIsHealthy(t *testing.T) {
 	if observation.err != nil {
 		t.Fatalf("open private directory: %v", observation.err)
 	}
-	checks := inspectOptionalSockets(observation)
+	checks := inspectOptionalSockets(t.Context(), observation, daemonObservation{valid: true, pid: os.Getpid()})
 	check := findRuntimeCheck(t, checks, "broker.session_start")
-	if check.Status != Unavailable || !slices.Contains(check.Evidence, "path="+path) {
-		t.Fatalf("stale socket check = %#v, want unavailable with path evidence", check)
+	if check.Status != Warning || !slices.Contains(check.Evidence, "path="+path) {
+		t.Fatalf("stale socket check = %#v, want warning with path evidence", check)
 	}
+}
+
+func TestOptionalSocketConfirmsLiveListenerFromVerifiedDaemon(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatalf("make private directory: %v", err)
+	}
+	path := filepath.Join(root, sessionrequest.SocketFilename)
+	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
+	if err != nil {
+		t.Fatalf("listen socket: %v", err)
+	}
+	listener.SetUnlinkOnClose(false)
+	defer listener.Close()
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatalf("chmod socket: %v", err)
+	}
+	accepted := make(chan struct{})
+	go func() {
+		connection, acceptErr := listener.AcceptUnix()
+		if acceptErr == nil {
+			_ = connection.Close()
+		}
+		close(accepted)
+	}()
+
+	observation := observePrivateDirectory(root, nil)
+	defer observation.Close()
+	if observation.err != nil {
+		t.Fatalf("open private directory: %v", observation.err)
+	}
+	checks := inspectOptionalSockets(t.Context(), observation, daemonObservation{valid: true, pid: os.Getpid()})
+	check := findRuntimeCheck(t, checks, "broker.session_start")
+	if check.Status != OK || !slices.Contains(check.Evidence, "connect-only probe") {
+		t.Fatalf("live socket check = %#v, want confirmed listener", check)
+	}
+	<-accepted
 }
 
 func TestStatePathInspectionMatchesProductionDirectoryPolicy(t *testing.T) {
@@ -240,6 +277,21 @@ func TestStatePathInspectionMatchesProductionDirectoryPolicy(t *testing.T) {
 				t.Fatalf("production error = %v, doctor expected status = %s", productionErr, test.status)
 			}
 		})
+	}
+}
+
+func TestAppArmorAvailabilityCheckDoesNotInspectPolicyDeployment(t *testing.T) {
+	previousReadFile := runtimeProbes.readFile
+	t.Cleanup(func() { runtimeProbes.readFile = previousReadFile })
+	runtimeProbes.readFile = func(path string, _ int) ([]byte, error) {
+		if path != appArmorEnabledPath {
+			t.Fatalf("unexpected AppArmor read: %s", path)
+		}
+		return []byte("Y\n"), nil
+	}
+	check := appArmorAvailabilityCheck()
+	if check.Status != OK || !containsEvidence(check.Evidence, "module enabled") || !strings.Contains(check.Hint, "agent-home-guard") || strings.Contains(check.Detail, "available") {
+		t.Fatalf("AppArmor availability check = %+v", check)
 	}
 }
 
@@ -444,6 +496,9 @@ func TestServiceCheckHasStableUnavailableSwayTreeAndDoesNotInitializeState(t *te
 		"sway.ipc", "sway.tree", "runtime.paths", "state.paths", "daemon.lock", "daemon.binary",
 		"broker.session_start", "broker.agent_report", "apparmor", "sway.integration",
 	}
+	if len(report.Checks) != len(expectedIDs) {
+		t.Fatalf("check count = %d, want %d: %#v", len(report.Checks), len(expectedIDs), report.Checks)
+	}
 	seen := make(map[string]int, len(report.Checks))
 	for _, check := range report.Checks {
 		seen[check.ID]++
@@ -452,6 +507,9 @@ func TestServiceCheckHasStableUnavailableSwayTreeAndDoesNotInitializeState(t *te
 		if seen[id] != 1 {
 			t.Errorf("check %q count = %d, want exactly one", id, seen[id])
 		}
+	}
+	if report.Checks[len(report.Checks)-1].ID != "apparmor" {
+		t.Fatalf("optional AppArmor check must follow core checks: %#v", report.Checks)
 	}
 	tree := findRuntimeCheck(t, report.Checks, "sway.tree")
 	if tree.Status != Unavailable || !strings.Contains(tree.Detail, "No Sway IPC socket") {

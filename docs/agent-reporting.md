@@ -73,8 +73,10 @@ normal hook timeout; no hook should wait indefinitely for a broker.
 
 ## Security limitations
 
-The AppArmor template includes session-start and agent-report paths. It remains experimental:
-pathname socket-connect mediation and unconfined broker-created panes have the
-limitations described in the README. Supporting more agent kinds is not a claim
-that those agents are sandboxed. This change does not install or reload the
-host's AppArmor policy.
+The optional `agent-home-guard` AppArmor template includes session-start and
+agent-report paths. Its ready-to-use attachment is Codex; another agent needs a
+separate copied profile with its executable attachment changed. It remains
+experimental: pathname socket-connect mediation and unconfined broker-created
+panes have the limitations described in the README. Supporting more agent kinds
+is not a claim that those agents are sandboxed. This change does not install or
+reload the host's AppArmor policy.

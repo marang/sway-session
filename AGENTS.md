@@ -47,8 +47,6 @@ its LAB-* key, and reaches Done only after its PR is merged.
 - internal/sessionrequest: owner-only typed session-start protocol and service.
 - internal/agentreport: owner-only typed agent-session reporting and shared
   transport; delegates validated associations to the session-manager adapter.
-- internal/codexreport: thin compatibility adapter for existing Codex hooks
-  and the legacy v1 report contract.
 - internal/herdrinit: fixed initialization behind the typed Herdr adapter; it
   has no standalone executable.
 - internal/statefile: private-directory, file, and lock primitives.
@@ -78,6 +76,11 @@ Keep the established CLI, XDG config/state paths, database and document schema
 versions, runtime socket names, environment variables, application IDs, hidden
 marks, and broker protocol v1 wire shape stable unless a dedicated issue
 explicitly changes that contract.
+
+LAB-125 removes the legacy Codex report command/socket and protocol-v1 report
+adapter. Agent reporting uses only protocol v2; session-start protocol v1 is
+unchanged. Provider event translation belongs in the supplied hook assets,
+not in a second broker or provider-specific daemon package.
 
 internal/titleindicator/testdata/v1.json is the authoritative v1 mark-wire
 fixture. Both this repository and sway-title-animator must keep an identical

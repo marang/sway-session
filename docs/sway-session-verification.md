@@ -256,7 +256,7 @@ Scratchpad restore remains deferred. Native Wayland parent/type limits in Sway
 ## AppArmor and broker check
 
 For agent-report changes, run the real Unix-socket regression tests in
-internal/agentreport and the v1 compatibility tests in internal/codexreport.
+internal/agentreport and the supplied provider-hook translation tests.
 Verify multiple agent kinds, non-UUID session tokens, rejected commands and
 unknown fields, payload limits, peer credentials, unrelated pane ancestry,
 socket replacement, and unchanged legacy replies. These tests use disposable

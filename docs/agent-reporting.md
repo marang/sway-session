@@ -23,9 +23,10 @@ CLI diagnostic envelope and exit code 3. No registry or Herdr state is read by
 the hook client. No socket override or command arguments are accepted.
 
 Integrations must translate their native hook event to these two fields; this
-command does not install or infer provider hooks. The existing Codex command
-continues to parse its native SessionStart event and check its UUID and
-CODEX_THREAD_ID agreement.
+command does not install or infer provider hooks. The supplied Codex shell
+adapter translates its native SessionStart event, checks its UUID and
+CODEX_THREAD_ID agreement, and invokes the generic command. Provider parsing
+is not part of the daemon or wire protocol.
 
 ## Wire and backend boundary
 
@@ -42,15 +43,37 @@ have deadlines. Replies contain protocol status only, never registry contents,
 transcripts, or general Herdr responses. No Sway or Herdr operation runs inside
 a SQLite transaction.
 
-## Compatibility and limitations
+## Upgrade from the legacy Codex hook
 
-LAB-122 adds protocol v2 on a new canonical socket. The legacy
-`codex-report.sock` keeps its v1 request/response shape and the installed
-`report-codex-session` hook remains supported. Both use the same transport and
-normalized service rather than independent implementations. Existing hooks
-need no changes. Stored state and configuration require no migration.
+LAB-125 intentionally removes `report-codex-session`, `codex-report.sock`, and
+the protocol-v1 report adapter. The generic protocol v2 and session-start
+protocol v1 are unchanged. Stored state and configuration require no migration.
 
-The AppArmor template includes both endpoint paths. It remains experimental:
+1. Install the updated sway-session package and ensure `jq` is available for
+   the optional Codex hook adapter. Neither the daemon nor the generic report
+   command requires jq; it is not a package dependency.
+2. Replace only the old sway-session SessionStart command in your Codex hook
+   configuration with the command from
+   `/usr/share/doc/sway-session/contrib/codex/hooks.json`. Preserve unrelated
+   hooks. It invokes `/usr/lib/sway-session/codex-report-agent-session` with
+   `/usr/bin/sway-session` as the fixed reporting executable.
+3. For a source installation, `make install` installs the adapter under
+   `$PREFIX/lib/sway-session/`; `contrib/codex/hooks.json` targets the default
+   user-local prefix. Adjust both absolute paths for another prefix.
+4. If using AppArmor, review and load the updated policy template with
+   `agent-report.sock` access. The hook does not install or reload policy.
+5. Restart the sway-session daemon to retire the legacy listener. Restart or
+   resume the relevant Codex process so its new SessionStart hook is used;
+   already running agents do not retroactively emit that event.
+
+The adapter reads at most 16 KiB of provider input, rejects malformed or
+mismatched identities, and reports only the actual session ID. It never reads
+the registry, starts an agent, or accepts a destination socket. Keep Codex's
+normal hook timeout; no hook should wait indefinitely for a broker.
+
+## Security limitations
+
+The AppArmor template includes session-start and agent-report paths. It remains experimental:
 pathname socket-connect mediation and unconfined broker-created panes have the
 limitations described in the README. Supporting more agent kinds is not a claim
 that those agents are sandboxed. This change does not install or reload the

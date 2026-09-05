@@ -10,6 +10,6 @@ pkgbase = sway-session
 	depends = sway
 	options = !debug
 	source = sway-session-0.1.0.tar.gz::https://github.com/marang/sway-session/archive/refs/tags/v0.1.0.tar.gz
-	sha256sums = SKIP
+	sha256sums = ee203c888de6079f8d6b59e6768b8402f5bb21bfea3cac133e1e34e590fe4096
 
 pkgname = sway-session

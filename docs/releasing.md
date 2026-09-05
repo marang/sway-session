@@ -43,12 +43,13 @@ beyond the AUR repository itself.
 
 The Arch package keeps only `sway` as a runtime dependency. Go is a
 `makedepends` entry because AUR builds compile from source, but installed
-GoReleaser binaries do not require Go. Audio (`libpulse`), terminal adapters
-(`alacritty` or `foot`), Herdr, Flatpak/GIO application restore, and the
-AppArmor verification boundary remain feature-specific `optdepends`. The
-SQLite driver is pure Go and built with `CGO_ENABLED=0`, so neither SQLite nor
-a C runtime/toolchain is a package dependency. DEB and RPM recommendations
-carry the same Herdr 0.8.2 minimum as the Arch metadata.
+GoReleaser binaries do not require Go. External programs used by explicitly
+selected integrations—audio capture, terminal adapters, session managers,
+application launchers, or manual security verification—are documented beside
+those features and resolved at runtime; they are not package dependencies or
+recommendations. The SQLite driver is pure Go and built with `CGO_ENABLED=0`,
+so neither SQLite nor a C runtime/toolchain is a package dependency. DEB and
+RPM metadata follows the same boundary.
 
 If the AUR workflow infrastructure fails after a GitHub release has already
 been published, rerun the fixed workflow for the existing immutable tag rather

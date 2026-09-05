@@ -1,0 +1,36 @@
+# Sanitized ordinary workstation configuration. No host-specific data.
+set $mod Mod4
+set $menu wmenu-run
+font pango:monospace 10
+floating_modifier $mod normal
+output eDP-1 {
+    mode 1920x1080@60Hz
+    position 0,0
+    scale 1
+}
+input type:touchpad {
+    tap enabled
+    natural_scroll enabled
+}
+input type:keyboard {
+    xkb_layout us
+}
+mode "resize" {
+    bindsym h resize shrink width 10 px
+    bindsym Return mode "default"
+    bindsym Escape mode "default"
+}
+bar {
+    position bottom
+    status_command while date; do sleep 1; done
+    colors {
+        background #202020
+        statusline #eeeeee
+    }
+}
+bindsym $mod+d exec $menu
+bindsym $mod+Shift+c reload
+exec swayidle -w \
+    timeout 300 'true' \
+    resume 'true'
+include conf.d/*.conf

@@ -19,6 +19,21 @@ sha256sums=('85eaf43bc3ed2b24bc237e498e502e155905485087e2274a134e163e81e23bef')
 _go_build_flags=(-buildmode=pie -trimpath -buildvcs=false -mod=readonly -modcacherw)
 _go_ldflags=(-s -w -buildid=)
 
+_install_codex_hook() {
+  local hook=contrib/codex/report-agent-session.sh
+
+  # The checked-in recipe remains pinned to the already published v0.2.0
+  # archive, which predates this integration. Newer releases must contain it.
+  if [[ ! -f $hook ]]; then
+    if (( $(vercmp "$pkgver" 0.2.0) <= 0 )); then
+      return
+    fi
+    printf 'Missing required Codex hook adapter in sway-session %s\n' "$pkgver" >&2
+    return 1
+  fi
+  install -Dm755 "$hook" "$pkgdir/usr/lib/sway-session/codex-report-agent-session"
+}
+
 build() {
   cd "sway-session-$pkgver"
   export GOCACHE="$srcdir/go-build"
@@ -40,7 +55,7 @@ check() {
 package() {
   cd "sway-session-$pkgver"
   install -Dm755 sway-session "$pkgdir/usr/bin/sway-session"
-  install -Dm755 contrib/codex/report-agent-session.sh "$pkgdir/usr/lib/sway-session/codex-report-agent-session"
+  _install_codex_hook
   install -Dm644 contrib/completions/bash/sway-session "$pkgdir/usr/share/bash-completion/completions/sway-session"
   install -Dm644 contrib/completions/zsh/_sway-session "$pkgdir/usr/share/zsh/site-functions/_sway-session"
   install -Dm644 contrib/completions/fish/sway-session.fish "$pkgdir/usr/share/fish/vendor_completions.d/sway-session.fish"

@@ -16,12 +16,17 @@ The green pane is the common accent across the icon and wordmarks.
 - [Icon](assets/sway-session-icon.jpeg): compact project identification.
 - [Light wordmark](assets/sway-session-wordmark-light.jpeg): light backgrounds.
 - [Dark wordmark](assets/sway-session-wordmark-dark.jpeg): dark backgrounds.
+- [Dark README banner](assets/sway-session-wordmark-dark-banner.jpeg): compact
+  horizontal presentation of the dark wordmark.
 
-These are the supplied JPEG originals, preserved without cropping, recoloring,
-or recompression. They include opaque backgrounds and generous outer margins.
-For future small icons or banner layouts, a tightly framed SVG export would
-retain cleaner edges and use the available space better.
+The icon and both wordmarks are the supplied JPEG originals, preserved without
+cropping, recoloring, or recompression. They include opaque backgrounds and
+generous outer margins. The README banner is a non-destructive crop of the dark
+wordmark for GitHub's narrower presentation. For future small icons or banner
+layouts, a tightly framed SVG export would retain cleaner edges and use the
+available space better.
 
-The README uses the dark wordmark and links here for the theme-aware variants.
+The README uses the compact dark banner and links here for the theme-aware
+wordmark variants.
 Release archives and installed documentation include the same assets with the
 same relative paths. This adds no graphical dependency to the terminal UI.

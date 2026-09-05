@@ -1,7 +1,7 @@
 # sway-session
 
 <p align="center">
-  <a href="docs/branding.md"><img src="docs/assets/sway-session-icon.jpeg" width="160" height="160" alt="sway-session logo: a tiled window layout with a green pane"></a>
+  <a href="docs/branding.md"><img src="docs/assets/sway-session-wordmark-dark.jpeg" width="640" alt="sway-session — persistent workspaces for the Sway compositor"></a>
 </p>
 
 sway-session keeps explicitly registered work contexts available across Sway

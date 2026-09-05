@@ -527,7 +527,7 @@ func containsPath(paths []string, path string) bool {
 }
 
 func skipExecOptions(tokens []string) []string {
-	for len(tokens) > 0 && strings.HasPrefix(tokens[0], "--") {
+	for len(tokens) > 0 && tokens[0] == "--no-startup-id" {
 		tokens = tokens[1:]
 	}
 	return tokens

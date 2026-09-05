@@ -710,6 +710,18 @@ fi
 if command -v fish >/dev/null 2>&1; then
 	output=$(PATH="$temporary:$PATH" SWAY_SESSION_COMPLETION_SENTINEL="$sentinel" \
 		fish -c "source '$fish_completion'; __sway_session_contexts restore")
+	doctor_fix_output=$(fish -c "source '$fish_completion'; complete -C 'sway-session doctor --fix sway.integration --'")
+	case $doctor_fix_output in
+	*--check*) echo 'fish doctor offered --check after --fix' >&2; exit 1 ;;
+	esac
+	case $doctor_fix_output in
+	*--yes*) ;;
+	*) echo 'fish doctor omitted --yes after --fix' >&2; exit 1 ;;
+	esac
+	doctor_check_output=$(fish -c "source '$fish_completion'; complete -C 'sway-session doctor --check --'")
+	case $doctor_check_output in
+	*--fix*|*--yes*) echo 'fish doctor offered repair after --check' >&2; exit 1 ;;
+	esac
 	for expected in \
 		'11111111-1111-4111-8111-111111111111' \
 		'First $(touch "$SWAY_SESSION_COMPLETION_SENTINEL") · active · herdr:first' \

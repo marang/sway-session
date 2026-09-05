@@ -1154,6 +1154,96 @@ func TestStateDatabaseRejectsUnsafeExistingSidecar(t *testing.T) {
 	}
 }
 
+func TestStateDatabaseTreatsTransientlyUnlinkedSidecarsAsAbsent(t *testing.T) {
+	for _, suffix := range []string{"-wal", "-shm", "-journal"} {
+		t.Run(suffix, func(t *testing.T) {
+			name := StateDatabaseFilename + suffix
+			original := statStateDatabaseObjectAt
+			statStateDatabaseObjectAt = func(directoryFD int, candidate string, stat *unix.Stat_t, flags int) error {
+				err := original(directoryFD, candidate, stat, flags)
+				if err == nil && candidate == name {
+					stat.Nlink = 0
+				}
+				return err
+			}
+			t.Cleanup(func() { statStateDatabaseObjectAt = original })
+
+			root := filepath.Join(t.TempDir(), "sway-session")
+			if err := os.Mkdir(root, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(root, name), nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			directory, err := statefile.OpenPrivateDirectory(root, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer directory.Close()
+
+			_, exists, err := inspectPrivateDatabaseObjectAt(directory, name)
+			if err != nil {
+				t.Fatalf("transiently unlinked SQLite sidecar was rejected: %v", err)
+			}
+			if exists {
+				t.Fatal("transiently unlinked SQLite sidecar still appeared present")
+			}
+		})
+	}
+}
+
+func TestStateDatabaseRejectsTransientlyUnlinkedMainFile(t *testing.T) {
+	original := statStateDatabaseObjectAt
+	statStateDatabaseObjectAt = func(directoryFD int, name string, stat *unix.Stat_t, flags int) error {
+		err := original(directoryFD, name, stat, flags)
+		if err == nil && name == StateDatabaseFilename {
+			stat.Nlink = 0
+		}
+		return err
+	}
+	t.Cleanup(func() { statStateDatabaseObjectAt = original })
+
+	root := filepath.Join(t.TempDir(), "sway-session")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, StateDatabaseFilename), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	directory, err := statefile.OpenPrivateDirectory(root, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer directory.Close()
+
+	if _, _, err := inspectDatabaseAt(directory); err == nil || !strings.Contains(err.Error(), "link count is 0") {
+		t.Fatalf("transiently unlinked main database returned %v", err)
+	}
+}
+
+func TestStateDatabaseRejectsHardLinkedSidecar(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sway-session")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(root, "sidecar-target")
+	if err := os.WriteFile(target, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(target, filepath.Join(root, StateDatabaseFilename+"-wal")); err != nil {
+		t.Fatal(err)
+	}
+	directory, err := statefile.OpenPrivateDirectory(root, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer directory.Close()
+
+	if _, _, err := inspectPrivateDatabaseObjectAt(directory, StateDatabaseFilename+"-wal"); err == nil || !strings.Contains(err.Error(), "link count is 2") {
+		t.Fatalf("hard-linked WAL sidecar returned %v", err)
+	}
+}
+
 func TestStateDatabaseRejectsOversizedMainFileBeforeSQLiteOpen(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "sway-session")
 	if err := RegistryStoreFor(root).Save(validRegistry()); err != nil {

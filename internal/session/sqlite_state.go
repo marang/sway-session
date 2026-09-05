@@ -36,6 +36,7 @@ var sqliteOFDLockingError error
 var sqliteOFDLockingEnabled = sqlite.OFDLockingEnabled
 var executeStateCommit = func(tx *stateWriteTransaction) error { return tx.Commit() }
 var acquireStateDatabaseInitializationLock = lockStateDatabaseInitialization
+var statStateDatabaseObjectAt = unix.Fstatat
 var ErrUninitializedStateDatabase = errors.New("state database schema is uninitialized")
 var ErrStateDatabaseBusy = errors.New("state database is busy")
 
@@ -350,7 +351,7 @@ func inspectDatabaseSidecarsAt(directory *os.File) error {
 
 func inspectPrivateDatabaseObjectAt(directory *os.File, name string) (unix.Stat_t, bool, error) {
 	var stat unix.Stat_t
-	err := unix.Fstatat(int(directory.Fd()), name, &stat, unix.AT_SYMLINK_NOFOLLOW)
+	err := statStateDatabaseObjectAt(int(directory.Fd()), name, &stat, unix.AT_SYMLINK_NOFOLLOW)
 	if errors.Is(err, unix.ENOENT) {
 		return stat, false, nil
 	}
@@ -366,6 +367,14 @@ func inspectPrivateDatabaseObjectAt(directory *os.File, name string) (unix.Stat_
 	if stat.Uid != uint32(os.Geteuid()) {
 		return stat, false, fmt.Errorf("state database object %s owner is UID %d; expected %d", name, stat.Uid, os.Geteuid())
 	}
+	// SQLite creates and removes WAL, SHM, and rollback-journal sidecars as
+	// connections change modes or close. fstatat may resolve one immediately
+	// before SQLite unlinks it and then report the detached inode with no links.
+	// Treat that transient sidecar as absent; the persistent main database must
+	// always remain linked, and every reachable object must still be single-link.
+	if stat.Nlink == 0 && isStateDatabaseSidecar(name) {
+		return stat, false, nil
+	}
 	if stat.Nlink != 1 {
 		return stat, false, fmt.Errorf("state database object %s link count is %d; expected 1", name, stat.Nlink)
 	}
@@ -377,6 +386,15 @@ func inspectPrivateDatabaseObjectAt(directory *os.File, name string) (unix.Stat_
 		return stat, false, fmt.Errorf("state database object %s is too large: %d bytes exceeds %d", name, stat.Size, maxStateDatabaseBytes)
 	}
 	return stat, true, nil
+}
+
+func isStateDatabaseSidecar(name string) bool {
+	switch name {
+	case StateDatabaseFilename + "-wal", StateDatabaseFilename + "-shm", StateDatabaseFilename + "-journal":
+		return true
+	default:
+		return false
+	}
 }
 
 func findLegacyState(directory *os.File) ([]string, error) {

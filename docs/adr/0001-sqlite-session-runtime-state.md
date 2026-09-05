@@ -41,14 +41,17 @@ database; normal runtime contention retains the 250 ms limit.
 Registry operations therefore open and, when necessary, initialize the
 database before acquiring the registry lifecycle lock. Their registry read,
 revision check, mutation or inspection, and commit remain inside that lock.
-`state.sqlite3` and any WAL, SHM, or rollback-journal sidecar must
-be regular, single-link, current-user-owned files with mode `0600`. The Codex
-AppArmor profile denies the complete default `sway-session` state root, which
-covers the database and its sidecars. SQLite's Unix VFS canonicalizes its input
-path, so relocating or replacing the state root while operations run is not a
-supported workflow. Unconfined same-UID processes are trusted state owners and
-can already modify the owner-only database directly. The supplied AppArmor
-profile additionally denies writes to the default `.local/` and
+`state.sqlite3` and any pathname-reachable WAL, SHM, or rollback-journal
+sidecar must be regular, single-link, current-user-owned files with mode
+`0600`. A sidecar inode which SQLite unlinks after pathname lookup may be
+observed with zero links; treat that transient state as absent, while the main
+database must remain linked and every object with multiple links is rejected.
+The Codex AppArmor profile denies the complete default `sway-session` state
+root, which covers the database and its sidecars. SQLite's Unix VFS
+canonicalizes its input path, so relocating or replacing the state root while
+operations run is not a supported workflow. Unconfined same-UID processes are
+trusted state owners and can already modify the owner-only database directly.
+The supplied AppArmor profile additionally denies writes to the default `.local/` and
 `.local/state/` directory objects, preventing a confined process from swapping
 an ancestor around the protected state tree.
 Reject a main database beyond the configured page budget before opening it, but

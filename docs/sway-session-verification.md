@@ -195,6 +195,14 @@ Scratchpad restore remains deferred. Native Wayland parent/type limits in Sway
 
 ## AppArmor and broker check
 
+For agent-report changes, run the real Unix-socket regression tests in
+internal/agentreport and the v1 compatibility tests in internal/codexreport.
+Verify multiple agent kinds, non-UUID session tokens, rejected commands and
+unknown fields, payload limits, peer credentials, unrelated pane ancestry,
+socket replacement, and unchanged legacy replies. These tests use disposable
+roots and a fake Herdr API; they do not prove provider-specific hook or resume
+behavior in a live Herdr session.
+
 Static policy validation is part of make verify:
 
 ~~~sh

@@ -37,6 +37,11 @@ test -f contrib/codex/hooks.json
 test -f contrib/codex/hooks-system.json
 test -f contrib/apparmor/codex-home-guard
 test -f scripts/verify-codex-boundary.sh
+test -f docs/agent-reporting.md
+require_fixed Makefile 'install -m644 docs/agent-reporting.md $(DOC_ROOT)/docs/agent-reporting.md'
+require_fixed PKGBUILD 'install -Dm644 docs/agent-reporting.md "$pkgdir/usr/share/doc/$pkgname/docs/agent-reporting.md"'
+require_fixed .goreleaser.yaml '      - docs/agent-reporting.md'
+require_fixed .goreleaser.yaml '        dst: /usr/share/doc/sway-session/docs/agent-reporting.md'
 
 require_fixed .goreleaser.yaml 'project_name: sway-session'
 require_count .goreleaser.yaml '  - id: sway-session' 1

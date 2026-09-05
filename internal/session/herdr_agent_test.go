@@ -103,6 +103,74 @@ func TestReportHerdrCodexSessionSendsOnlyFixedAssociation(t *testing.T) {
 	}
 }
 
+func TestReportHerdrAgentSessionUsesValidatedAgentKind(t *testing.T) {
+	root := privateHerdrRoot(t)
+	sessionDir := filepath.Join(root, "sessions", "lab-81")
+	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	socketPath := filepath.Join(sessionDir, herdrAgentSocketName)
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	if err := os.Chmod(socketPath, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	requests := make(chan map[string]any, 2)
+	done := make(chan error, 1)
+	go func() {
+		for index := range 2 {
+			connection, err := listener.Accept()
+			if err != nil {
+				done <- err
+				return
+			}
+			line, err := bufio.NewReader(connection).ReadBytes('\n')
+			if err != nil {
+				_ = connection.Close()
+				done <- err
+				return
+			}
+			var request map[string]any
+			if err := json.Unmarshal(line, &request); err != nil {
+				_ = connection.Close()
+				done <- err
+				return
+			}
+			requests <- request
+			result := map[string]any{"type": "ok"}
+			if index == 0 {
+				result = map[string]any{"type": "pane_process_info", "process_info": map[string]any{"pane_id": "work:p1", "shell_pid": os.Getpid()}}
+			}
+			response, _ := json.Marshal(map[string]any{"id": request["id"], "result": result})
+			_, err = connection.Write(append(response, '\n'))
+			_ = connection.Close()
+			if err != nil {
+				done <- err
+				return
+			}
+		}
+		done <- nil
+	}()
+	launcher := Launcher{Kind: LauncherHerdr, Session: "lab-81", Cwd: t.TempDir()}
+	if err := ReportHerdrAgentSession(context.Background(), HerdrPaths{Root: root}, launcher, "work:p1", "claude", "claude:thread-1", os.Getpid(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	<-requests
+	params := (<-requests)["params"].(map[string]any)
+	if params["agent"] != "claude" || params["source"] != "herdr:claude" || params["agent_session_id"] != "claude:thread-1" {
+		t.Fatalf("unexpected generic params: %#v", params)
+	}
+	if err := ReportHerdrAgentSession(context.Background(), HerdrPaths{Root: root}, launcher, "work:p1", "future-agent", "safe", os.Getpid(), time.Now()); err == nil {
+		t.Fatal("unknown agent kind reached Herdr")
+	}
+}
+
 func TestReportHerdrCodexSessionRejectsUnsafeEndpointBeforeConnect(t *testing.T) {
 	root := privateHerdrRoot(t)
 	sessionDir := filepath.Join(root, "sessions", "lab-80")

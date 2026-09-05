@@ -97,6 +97,8 @@ profile codex-home-guard /usr/bin/codex flags=(attach_disconnected,mediate_delet
   audit deny @{run}user/[0-9]*/sway-session/app-operations/{,**} mrwkl,
   audit deny @{run}user/[0-9]*/sway-session/codex-report.sock klm,
   owner @{run}user/[0-9]*/sway-session/codex-report.sock rw,
+  audit deny @{run}user/[0-9]*/sway-session/agent-report.sock klm,
+  owner @{run}user/[0-9]*/sway-session/agent-report.sock rw,
 
   # The context-start endpoint accepts only typed context metadata and a
   # numbered empty workspace. It does not accept pane roles or commands.

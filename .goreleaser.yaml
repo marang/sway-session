@@ -33,6 +33,7 @@ archives:
       - LICENSE
       - README.md
       - docs/branding.md
+      - docs/agent-reporting.md
       - docs/assets/*.jpeg
       - docs/sway-session-plan.md
       - docs/sway-session-verification.md
@@ -70,6 +71,8 @@ nfpms:
         dst: /usr/share/doc/sway-session/README.md
       - src: ./docs/branding.md
         dst: /usr/share/doc/sway-session/docs/branding.md
+      - src: ./docs/agent-reporting.md
+        dst: /usr/share/doc/sway-session/docs/agent-reporting.md
       - src: ./docs/assets/*.jpeg
         dst: /usr/share/doc/sway-session/docs/assets/
       - src: ./LICENSE

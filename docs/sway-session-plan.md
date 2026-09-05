@@ -9,7 +9,7 @@ Project: [Sway Session](https://linear.app/riotbox/project/sway-session-74dd95a8
 sway-session gives explicitly registered work contexts durable outer-window
 identity across Sway starts. It combines a private registry, typed terminal
 launch adapters, desktop-application presence groups, bounded compositor
-reconciliation, and two narrow owner-only brokers.
+reconciliation, and narrow owner-only brokers.
 
 The standalone repository was extracted under LAB-119 from the complete
 sway-title-animator history. The split changes source ownership, packaging, and
@@ -56,7 +56,8 @@ flowchart TB
         IPC[internal/swayipc]
         Init[internal/herdrinit]
         Start[internal/sessionrequest]
-        Codex[internal/codexreport]
+        Report[internal/agentreport]
+        Codex[Codex v1 compatibility adapter]
         Indicator[internal/titleindicator]
         Diagnostic[internal/diagnostic]
     end
@@ -72,9 +73,11 @@ flowchart TB
     Init --> Session
     Init --> HerdrProcess
     Daemon --> Start
+    Daemon --> Report
     Daemon --> Codex
     Start --> Session
-    Codex --> Session
+    Codex --> Report
+    Report --> Session
     Session --> Indicator
     CLI --> Diagnostic
     Daemon --> Diagnostic
@@ -94,7 +97,10 @@ flowchart TB
 - internal/herdrinit owns fixed, idempotent role initialization behind the
   closed Herdr session-manager adapter. It is not an executable.
 - internal/sessionrequest accepts one protocol-v1 ensure-and-start operation.
-- internal/codexreport accepts one protocol-v1 Codex SessionStart association.
+- internal/agentreport accepts one protocol-v2 agent-session association and
+  owns the shared bounded transport and service.
+- internal/codexreport adapts existing Codex hooks and the v1 wire contract to
+  the shared agent reporter.
 - internal/titleindicator owns only the versioned presentation mark wire
   contract.
 - internal/diagnostic owns stable human and JSON diagnostics.
@@ -267,9 +273,12 @@ requires private directories and safe regular files. Daemon and terminal
 lifecycle locks are held for their defined process/effect windows.
 
 session-start.sock accepts one versioned ensure-and-start request without pane
-roles or command strings. codex-report.sock accepts one versioned association
-after peer credentials and pane-process ancestry checks. Neither returns raw
-registry contents.
+roles or command strings. agent-report.sock accepts a protocol-v2 association
+after peer credentials and pane-process ancestry checks. The legacy
+codex-report.sock retains its v1 contract through the same transport and
+normalized service. Neither returns raw registry contents. LAB-122 adds the
+generic endpoint without changing existing socket names or stored state.
+See [agent reporting](agent-reporting.md) for the input and compatibility contract.
 
 The included AppArmor profile is experimental. Its file rules protect the
 default Herdr history and sway-session state trees, but pathname-socket connect

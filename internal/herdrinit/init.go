@@ -213,15 +213,7 @@ func ValidateRoles(roles []string) error {
 }
 
 func validRole(value string) bool {
-	switch value {
-	case "shell",
-		"agy", "amp", "claude", "cline", "codex", "copilot", "cursor",
-		"devin", "droid", "gemini", "grok", "hermes", "kilo", "kimi",
-		"kiro", "maki", "mastracode", "omp", "opencode", "pi", "qodercli", "qwen":
-		return true
-	default:
-		return false
-	}
+	return value == "shell" || sessionstate.ValidHerdrAgentKind(value)
 }
 
 type snapshotPane struct {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sort"
 	"time"
 
 	sessionstate "github.com/marang/sway-session/internal/session"
@@ -47,9 +48,6 @@ func (runtime *sessionRuntime) queueTerminalClose(node *Node, observedAt time.Ti
 	if runtime.pendingTerminalClose == nil {
 		runtime.pendingTerminalClose = make(map[int64]terminalCloseCandidate)
 	}
-	if _, exists := runtime.pendingTerminalClose[node.ID]; !exists && len(runtime.pendingTerminalClose) >= maxPendingTerminalCloses {
-		return
-	}
 	candidate := terminalCloseCandidate{
 		terminalCloseObservation: observation,
 		deadline:                 observedAt.Add(terminalCloseGrace),
@@ -73,16 +71,16 @@ func (runtime *sessionRuntime) terminalCloseStreamCurrent() bool {
 // observeTerminalCloseState re-observes candidates from a complete tree. It
 // never infers a close from startup absence: only a prior close event creates a
 // candidate, and a tree seen before its grace deadline is deliberately ignored.
-func (runtime *sessionRuntime) observeTerminalCloseState(root *Node, registry sessionstate.Registry, now time.Time) {
+func (runtime *sessionRuntime) observeTerminalCloseState(root *Node, registry sessionstate.Registry, now time.Time) error {
 	if runtime == nil {
-		return
+		return nil
+	}
+	if root == nil || root.ID <= 0 || root.Type != "root" {
+		return errors.New("Sway tree response has no valid root")
 	}
 	observed, issues, err := observedActiveHerdrTerminals(root, registry, runtime.eventStreamEpoch)
 	if err != nil {
-		clear(runtime.observedTerminals)
-		clear(runtime.pendingTerminalClose)
-		runtime.rearmTerminalCloseDeadline()
-		return
+		return fmt.Errorf("observe managed terminal windows: %w", err)
 	}
 	if runtime.observedTerminals == nil {
 		runtime.observedTerminals = make(map[int64]terminalCloseObservation)
@@ -103,7 +101,7 @@ func (runtime *sessionRuntime) observeTerminalCloseState(root *Node, registry se
 		runtime.observedTerminals[current.containerID] = current
 	}
 	if len(runtime.pendingTerminalClose) == 0 {
-		return
+		return nil
 	}
 	for containerID, candidate := range runtime.pendingTerminalClose {
 		if runtime.context().Err() != nil || !runtime.terminalCloseStreamCurrent() || candidate.epoch != runtime.eventStreamEpoch {
@@ -130,6 +128,7 @@ func (runtime *sessionRuntime) observeTerminalCloseState(root *Node, registry se
 		}
 	}
 	runtime.rearmTerminalCloseDeadline()
+	return nil
 }
 
 func terminalCloseObservationStillEligible(observation terminalCloseObservation, registry sessionstate.Registry) bool {
@@ -213,6 +212,8 @@ func (runtime *sessionRuntime) rearmTerminalCloseDeadline() {
 		runtime.terminalCloseDeadline = time.Time{}
 		runtime.terminalCloseRetry = 0
 		runtime.terminalCloseRetryDeadline = time.Time{}
+		runtime.terminalCloseBatchCursor = 0
+		runtime.terminalCloseContinuation = time.Time{}
 		return
 	}
 	runtime.terminalCloseDeadline = time.Time{}
@@ -228,6 +229,10 @@ func (runtime *sessionRuntime) rearmTerminalCloseDeadline() {
 			runtime.terminalCloseDeadline = deadline
 		}
 	}
+	if !runtime.terminalCloseContinuation.IsZero() &&
+		(runtime.terminalCloseDeadline.IsZero() || runtime.terminalCloseContinuation.Before(runtime.terminalCloseDeadline)) {
+		runtime.terminalCloseDeadline = runtime.terminalCloseContinuation
+	}
 }
 
 func (runtime *sessionRuntime) terminalCloseDue(now time.Time) bool {
@@ -236,6 +241,40 @@ func (runtime *sessionRuntime) terminalCloseDue(now time.Time) bool {
 	}
 	for _, candidate := range runtime.pendingTerminalClose {
 		if !now.Before(candidate.deadline) {
+			return true
+		}
+	}
+	return false
+}
+
+func (runtime *sessionRuntime) terminalCloseBatch(now time.Time) []int64 {
+	containerIDs := make([]int64, 0, maxTerminalCloseBatch)
+	for containerID, candidate := range runtime.pendingTerminalClose {
+		if candidate.absenceConfirmed && !now.Before(candidate.deadline) {
+			containerIDs = append(containerIDs, containerID)
+		}
+	}
+	if len(containerIDs) == 0 {
+		return nil
+	}
+	sort.Slice(containerIDs, func(left, right int) bool { return containerIDs[left] < containerIDs[right] })
+	start := sort.Search(len(containerIDs), func(index int) bool {
+		return containerIDs[index] > runtime.terminalCloseBatchCursor
+	})
+	if start == len(containerIDs) {
+		start = 0
+	}
+	batchSize := min(len(containerIDs), maxTerminalCloseBatch)
+	batch := make([]int64, 0, batchSize)
+	for offset := range batchSize {
+		batch = append(batch, containerIDs[(start+offset)%len(containerIDs)])
+	}
+	return batch
+}
+
+func (runtime *sessionRuntime) hasDueTerminalClose(now time.Time) bool {
+	for _, candidate := range runtime.pendingTerminalClose {
+		if candidate.absenceConfirmed && !now.Before(candidate.deadline) {
 			return true
 		}
 	}
@@ -256,6 +295,7 @@ func (runtime *sessionRuntime) flushTerminalClose(now time.Time) error {
 	defer cancel()
 	archived := make(map[int64]struct{})
 	discarded := make(map[int64]struct{})
+	var batch []int64
 	err := sessionstate.WithTerminalLifecycleLockContext(writeContext, runtime.root, func() error {
 		// This is the final, lock-serialized absence confirmation. It remains
 		// outside SQLite work: the lifecycle lock protects terminal effects,
@@ -264,8 +304,14 @@ func (runtime *sessionRuntime) flushTerminalClose(now time.Time) error {
 		if treeErr != nil {
 			return fmt.Errorf("confirm terminal close with Sway tree: %w", treeErr)
 		}
-		runtime.observeTerminalCloseState(root, runtime.registry, now)
+		if observeErr := runtime.observeTerminalCloseState(root, runtime.registry, now); observeErr != nil {
+			return observeErr
+		}
 		if len(runtime.pendingTerminalClose) == 0 {
+			return nil
+		}
+		batch = runtime.terminalCloseBatch(now)
+		if len(batch) == 0 {
 			return nil
 		}
 		updated, updateErr := sessionstate.UpdateRegistryContext(writeContext, runtime.root, func(registry *sessionstate.Registry) error {
@@ -279,8 +325,9 @@ func (runtime *sessionRuntime) flushTerminalClose(now time.Time) error {
 				}
 				return errTerminalCloseDiscarded
 			}
-			for _, candidate := range runtime.pendingTerminalClose {
-				if candidate.absenceConfirmed && !now.Before(candidate.deadline) && generation != candidate.guardGeneration {
+			for _, containerID := range batch {
+				candidate, exists := runtime.pendingTerminalClose[containerID]
+				if exists && generation != candidate.guardGeneration {
 					for containerID := range runtime.pendingTerminalClose {
 						discarded[containerID] = struct{}{}
 					}
@@ -288,8 +335,9 @@ func (runtime *sessionRuntime) flushTerminalClose(now time.Time) error {
 				}
 			}
 			changed := false
-			for containerID, candidate := range runtime.pendingTerminalClose {
-				if !candidate.absenceConfirmed || now.Before(candidate.deadline) {
+			for _, containerID := range batch {
+				candidate, exists := runtime.pendingTerminalClose[containerID]
+				if !exists {
 					continue
 				}
 				index, resolveErr := sessionstate.ResolveContext(*registry, string(candidate.contextID))
@@ -334,9 +382,18 @@ func (runtime *sessionRuntime) flushTerminalClose(now time.Time) error {
 	for containerID := range discarded {
 		delete(runtime.pendingTerminalClose, containerID)
 	}
-	if len(runtime.pendingTerminalClose) == 0 {
-		runtime.terminalCloseRetry = 0
-		runtime.terminalCloseRetryDeadline = time.Time{}
+	if len(batch) != 0 {
+		runtime.terminalCloseBatchCursor = batch[len(batch)-1]
+	}
+	// A successful fresh observation clears any prior transport/contention
+	// backoff. Remaining candidates use their own grace deadlines or the
+	// immediate bounded-batch continuation below.
+	runtime.terminalCloseRetry = 0
+	runtime.terminalCloseRetryDeadline = time.Time{}
+	if runtime.hasDueTerminalClose(now) {
+		runtime.terminalCloseContinuation = now
+	} else {
+		runtime.terminalCloseContinuation = time.Time{}
 	}
 	runtime.rearmTerminalCloseDeadline()
 	return nil
@@ -346,6 +403,7 @@ func (runtime *sessionRuntime) scheduleTerminalCloseRetry(now time.Time) {
 	if runtime == nil {
 		return
 	}
+	runtime.terminalCloseContinuation = time.Time{}
 	delay := runtime.terminalCloseRetry
 	if delay <= 0 {
 		delay = terminalFocusBatchDelay

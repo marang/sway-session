@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -158,6 +159,92 @@ func TestObservedTerminalCloseClearsRetryAfterReopenedCandidate(t *testing.T) {
 	if got, want := runtime.terminalCloseDeadline, newCloseAt.Add(terminalCloseGrace); !got.Equal(want) {
 		t.Fatalf("new close deadline = %v, want its grace deadline %v", got, want)
 	}
+}
+
+func TestObservedTerminalCloseRejectsMalformedFreshTree(t *testing.T) {
+	guard := &testTerminalCloseGuard{generation: 7, safe: true}
+	runtime, requester, root, now, leaf := armedTerminalClose(t, guard)
+	defer runtime.Shutdown()
+	runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "close", Container: leaf}, now)
+	requester.trees = []*swayipc.TreeNode{{}}
+	if err := runtime.Flush(now.Add(terminalCloseGrace)); err == nil {
+		t.Fatal("malformed fresh tree did not fail close confirmation")
+	}
+	assertTerminalCloseState(t, root, sessionstate.ContextActive)
+	if runtime.terminalCloseRetryDeadline.IsZero() {
+		t.Fatal("malformed fresh tree did not schedule a retry")
+	}
+}
+
+func TestObservedTerminalCloseArchivesEveryCandidateBeyondOneBatch(t *testing.T) {
+	const count = 257
+	root := filepath.Join(t.TempDir(), "state")
+	registry, ids := terminalCloseManyRegistry(count)
+	if err := sessionstate.RegistryStoreFor(root).Save(registry); err != nil {
+		t.Fatal(err)
+	}
+	requester := &daemonLoopRequester{trees: []*swayipc.TreeNode{daemonTree("98")}}
+	runtime, err := newSessionRuntimeWithOptions(requester, sessionRuntimeOptions{
+		Root:               root,
+		TerminalCloseGuard: &testTerminalCloseGuard{generation: 7, safe: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Shutdown()
+	now := time.Unix(100, 0)
+	leaves := make([]*Node, 0, count)
+	for index, id := range ids {
+		leaves = append(leaves, managedDaemonLeaf(t, int64(index+42), id))
+	}
+	runtime.HandleEvent(swayipc.Event{Type: swayipc.EventStream, Change: "ready", StreamEpoch: 1}, now)
+	if _, err := runtime.Reconcile(daemonTree("98", leaves...), now); err != nil {
+		t.Fatal(err)
+	}
+	for _, leaf := range leaves {
+		runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "close", Container: leaf}, now)
+	}
+	flushAt := now.Add(terminalCloseGrace)
+	for pass := 0; pass < 16 && len(runtime.pendingTerminalClose) != 0; pass++ {
+		if err := runtime.Flush(flushAt); err != nil {
+			t.Fatal(err)
+		}
+		flushAt = runtime.terminalCloseDeadline
+		if flushAt.IsZero() && len(runtime.pendingTerminalClose) != 0 {
+			t.Fatal("remaining close candidates have no continuation deadline")
+		}
+	}
+	if len(runtime.pendingTerminalClose) != 0 {
+		t.Fatalf("bounded close passes left %d candidates pending", len(runtime.pendingTerminalClose))
+	}
+	var saved sessionstate.Registry
+	if err := sessionstate.RegistryStoreFor(root).LoadInto(&saved); err != nil {
+		t.Fatal(err)
+	}
+	if len(saved.Contexts) != count {
+		t.Fatalf("saved contexts = %d, want %d", len(saved.Contexts), count)
+	}
+	for _, contextValue := range saved.Contexts {
+		if contextValue.State != sessionstate.ContextArchived {
+			t.Fatalf("candidate %s was silently dropped: state=%s", contextValue.ID, contextValue.State)
+		}
+	}
+}
+
+func terminalCloseManyRegistry(count int) (sessionstate.Registry, []sessionstate.ContextID) {
+	contexts := make([]sessionstate.Context, 0, count)
+	ids := make([]sessionstate.ContextID, 0, count)
+	for index := range count {
+		id := sessionstate.ContextID(fmt.Sprintf("%08x-e89b-42d3-a456-%012x", index+1, index+1))
+		contextValue := sessionRegistry(id).Contexts[0]
+		contextValue.Launcher.Session = fmt.Sprintf("terminal-%d", index)
+		contextValue.Launcher.Terminal.Identity = &sessionstate.TerminalIdentity{
+			Kind: sessionstate.TerminalIdentityProject, Project: fmt.Sprintf("project-%d", index),
+		}
+		contexts = append(contexts, contextValue)
+		ids = append(ids, id)
+	}
+	return sessionstate.Registry{Version: sessionstate.ContextsSchemaVersion, Contexts: contexts}, ids
 }
 
 func TestObservedTerminalCloseRetainsConcurrentUnrelatedRegistryEdit(t *testing.T) {

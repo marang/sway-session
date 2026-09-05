@@ -33,7 +33,7 @@ const (
 	terminalCloseGrace         = 2 * time.Second
 	terminalCloseWriteTimeout  = 250 * time.Millisecond
 	terminalCloseRetryMaximum  = 30 * time.Second
-	maxPendingTerminalCloses   = 256
+	maxTerminalCloseBatch      = 64
 	moveBarrierPrefix          = "_sway_session_move_v1:"
 )
 
@@ -118,6 +118,8 @@ type sessionRuntime struct {
 	terminalCloseDeadline      time.Time
 	terminalCloseRetry         time.Duration
 	terminalCloseRetryDeadline time.Time
+	terminalCloseBatchCursor   int64
+	terminalCloseContinuation  time.Time
 }
 
 func (runtime *sessionRuntime) context() context.Context {
@@ -325,6 +327,8 @@ func (runtime *sessionRuntime) HandleEvent(event swayipc.Event, now time.Time) {
 		runtime.terminalCloseDeadline = time.Time{}
 		runtime.terminalCloseRetry = 0
 		runtime.terminalCloseRetryDeadline = time.Time{}
+		runtime.terminalCloseBatchCursor = 0
+		runtime.terminalCloseContinuation = time.Time{}
 		return
 	}
 	if event.Type == swayipc.EventStream && event.Change == "ready" {
@@ -337,6 +341,8 @@ func (runtime *sessionRuntime) HandleEvent(event swayipc.Event, now time.Time) {
 		runtime.terminalCloseDeadline = time.Time{}
 		runtime.terminalCloseRetry = 0
 		runtime.terminalCloseRetryDeadline = time.Time{}
+		runtime.terminalCloseBatchCursor = 0
+		runtime.terminalCloseContinuation = time.Time{}
 		if runtime.eventStreamReady && runtime.restoreMayConflictWithUserIntent() {
 			// Events may have been lost while disconnected. Continuing could
 			// overwrite user changes that the daemon never observed.
@@ -353,6 +359,8 @@ func (runtime *sessionRuntime) HandleEvent(event swayipc.Event, now time.Time) {
 		runtime.terminalCloseDeadline = time.Time{}
 		runtime.terminalCloseRetry = 0
 		runtime.terminalCloseRetryDeadline = time.Time{}
+		runtime.terminalCloseBatchCursor = 0
+		runtime.terminalCloseContinuation = time.Time{}
 		if runtime.eventStreamReady && runtime.restoreMayConflictWithUserIntent() {
 			runtime.cancelConflictingRestore()
 		}
@@ -606,7 +614,9 @@ func (runtime *sessionRuntime) Reconcile(root *Node, now time.Time) (needsRefres
 		return false, err
 	}
 	runtime.registryPresent = true
-	runtime.observeTerminalCloseState(root, registry, now)
+	if err := runtime.observeTerminalCloseState(root, registry, now); err != nil {
+		return false, err
+	}
 	if !runtime.startupComplete && runtime.startupDeadline.IsZero() {
 		runtime.startupDeadline = now.Add(sessionStartupSettleDelay)
 	}
@@ -1497,6 +1507,8 @@ func (runtime *sessionRuntime) Shutdown() {
 	runtime.terminalCloseDeadline = time.Time{}
 	runtime.terminalCloseRetry = 0
 	runtime.terminalCloseRetryDeadline = time.Time{}
+	runtime.terminalCloseBatchCursor = 0
+	runtime.terminalCloseContinuation = time.Time{}
 	runtime.restoreProgress = nil
 	runtime.debouncer.Cancel()
 }

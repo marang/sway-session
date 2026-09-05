@@ -50,6 +50,22 @@ func TestDoctorTUIFilterRefreshSelectionAndNoColor(t *testing.T) {
 			}
 		}
 	}
+	model, _ = doctorUpdate(t, model, terminalManageKey("j"))
+	model, _ = doctorUpdate(t, model, terminalManageKey("/"))
+	if view := model.View().Content; strings.Contains(view, "\x1b[") {
+		t.Fatalf("NO_COLOR filter contains ANSI styling: %q", view)
+	}
+	tiny, _ := doctorUpdate(t, model, tea.WindowSizeMsg{Width: 20, Height: 8})
+	if _, command := doctorUpdate(t, tiny, terminalManageKey("q")); command == nil {
+		t.Fatal("tiny fallback advertised q but filter captured it")
+	}
+	model, _ = doctorUpdate(t, model, tea.WindowSizeMsg{Width: 120, Height: 30})
+	model, _ = doctorUpdate(t, model, terminalManageKey("check"))
+	if selected, _ := model.selected(); selected.ID != "first" || len(model.visible) != 2 {
+		t.Fatalf("filter lost matching selection: selected=%+v visible=%v", selected, model.visible)
+	}
+	model, _ = doctorUpdate(t, model, terminalManageKey("enter"))
+	model, _ = doctorUpdate(t, model, terminalManageKey("esc"))
 	model, _ = doctorUpdate(t, model, terminalManageKey("/"))
 	model, _ = doctorUpdate(t, model, terminalManageKey("first"))
 	model, _ = doctorUpdate(t, model, terminalManageKey("enter"))
@@ -62,8 +78,30 @@ func TestDoctorTUIFilterRefreshSelectionAndNoColor(t *testing.T) {
 	}
 }
 
+func TestDoctorTUIHelpAtMinimumSizeHasAccurateExitKeys(t *testing.T) {
+	model := newDoctorModel(context.Background(), &fakeDoctorOperations{})
+	model.busy = ""
+	model, _ = doctorUpdate(t, model, tea.WindowSizeMsg{Width: 48, Height: 16})
+	model, _ = doctorUpdate(t, model, terminalManageKey("?"))
+	view := ansi.Strip(model.View().Content)
+	if !strings.Contains(view, "[Esc/?] Close help") || !strings.Contains(view, "[q] Quit") {
+		t.Fatalf("minimum-size help lost accurate recovery controls:\n%s", view)
+	}
+	updated, command := doctorUpdate(t, model, terminalManageKey("q"))
+	if command == nil || !updated.help {
+		t.Fatalf("q did not quit directly from help: help=%v command=%v", updated.help, command)
+	}
+}
+
 func TestDoctorTUIRepairRequiresPreviewAndConfirmation(t *testing.T) {
-	ops := &fakeDoctorOperations{report: doctor.Report{Checks: []doctor.Check{{ID: "sway.startup", Title: "Startup", Status: doctor.Warning, FixID: "sway.integration"}}}, plan: doctor.Plan{ID: "sway.integration", Summary: "Add missing integration", Changes: []doctor.FileChange{{Path: "/test/config", Preview: "+ include managed.conf"}}}}
+	ops := &fakeDoctorOperations{
+		report: doctor.Report{Checks: []doctor.Check{{ID: "sway.startup", Title: "Startup", Status: doctor.Warning, FixID: "sway.integration"}}},
+		plan:   doctor.Plan{ID: "sway.integration", Summary: "Add missing integration", Changes: []doctor.FileChange{{Path: "/test/config", Preview: "+ include managed.conf"}}},
+		applyResult: doctor.FixResult{
+			Message: "Applied the managed Sway integration files. Reload Sway when convenient.",
+			Backups: []string{"/home/test/.config/sway/config.backup", "/home/test/.config/sway/50-sway-session-doctor.conf.backup"},
+		},
+	}
 	model := newDoctorModel(context.Background(), ops)
 	model, _ = doctorUpdate(t, model, model.Init()())
 	model, command := doctorUpdate(t, model, terminalManageKey("f"))
@@ -92,8 +130,18 @@ func TestDoctorTUIRepairRequiresPreviewAndConfirmation(t *testing.T) {
 		t.Fatal("confirmed repair did not recheck")
 	}
 	model, _ = doctorUpdate(t, model, recheck())
-	if model.busy != "" || model.plan != nil {
+	if model.busy != "" || model.plan != nil || len(model.feedback) == 0 {
 		t.Fatal("repair did not converge to report")
+	}
+	view := ansi.Strip(model.View().Content)
+	for _, backup := range ops.applyResult.Backups {
+		if !strings.Contains(view, backup) {
+			t.Fatalf("repair result hid backup %q:\n%s", backup, view)
+		}
+	}
+	model, _ = doctorUpdate(t, model, terminalManageKey("esc"))
+	if len(model.feedback) != 0 {
+		t.Fatal("repair feedback did not close explicitly")
 	}
 }
 
@@ -102,7 +150,9 @@ func TestDoctorTUIPreviewScrollAndFailure(t *testing.T) {
 	for i := range 90 {
 		fmt.Fprintf(&preview, "+ managed line %d\n", i)
 	}
-	ops := &fakeDoctorOperations{applyErr: errors.New("stale plan; no changes applied")}
+	recoveryPath := "/home/test/.config/sway/config.preserved-backup"
+	applyError := "stale plan; " + strings.Repeat("recovery context ", 120) + "preserved backup: " + recoveryPath
+	ops := &fakeDoctorOperations{applyErr: errors.New(applyError)}
 	model := newDoctorModel(context.Background(), ops)
 	model.busy = ""
 	model.plan = &doctor.Plan{ID: "sway.integration", Changes: []doctor.FileChange{{Path: "/test/config", Preview: preview.String()}}}
@@ -115,8 +165,17 @@ func TestDoctorTUIPreviewScrollAndFailure(t *testing.T) {
 	}
 	model, command := doctorUpdate(t, model, terminalManageKey("y"))
 	model, _ = doctorUpdate(t, model, command())
-	if model.busy != "" || !strings.Contains(model.message, "stale plan") {
+	if model.busy != "" || !strings.Contains(strings.Join(model.feedback, "\n"), "stale plan") || len(model.feedback) == 0 {
 		t.Fatal("failure not shown")
+	}
+	if strings.Contains(ansi.Strip(model.View().Content), recoveryPath) {
+		t.Fatal("long failure unexpectedly fit without scrolling")
+	}
+	for range 100 {
+		model, _ = doctorUpdate(t, model, terminalManageKey("j"))
+	}
+	if !strings.Contains(ansi.Strip(model.View().Content), recoveryPath) {
+		t.Fatal("end of repair failure details is not scrollable")
 	}
 	model, _ = doctorUpdate(t, model, tea.WindowSizeMsg{Width: 20, Height: 8})
 	if !strings.Contains(model.View().Content, "Resize") {

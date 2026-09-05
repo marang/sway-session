@@ -35,6 +35,7 @@ type doctorModel struct {
 	busy                          string
 	message                       string
 	plan                          *doctor.Plan
+	feedback                      []string
 }
 
 func newDoctorModel(ctx context.Context, operations doctorOperations) doctorModel {
@@ -82,6 +83,10 @@ func (model doctorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		selected, _ := model.selected()
 		model.report, model.busy = msg.report, ""
 		model.refilter(selected.ID)
+		if len(model.feedback) != 0 && model.feedback[0] == "Repair applied" {
+			model.feedback = append(model.feedback, "", "Setup recheck completed.")
+			model.message = "Repair applied; setup recheck completed."
+		}
 		return model, nil
 	case doctorPlannedMsg:
 		model.busy = ""
@@ -95,12 +100,19 @@ func (model doctorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		model.plan, model.offset = nil, 0
 		if msg.err != nil {
 			model.busy = ""
-			model.message = "Repair failed: " + doctorText(msg.err.Error())
+			model.message = "Repair failed; review recovery details."
+			model.feedback = []string{
+				"Repair failed",
+				doctorText(msg.err.Error()),
+				"",
+				"Review this result before retrying. Any preserved backup paths are listed above.",
+			}
 			return model, nil
 		}
-		model.message = doctorText(msg.result.Message)
+		model.message = "Repair applied; rechecking setup."
+		model.feedback = []string{"Repair applied", doctorText(msg.result.Message)}
 		for _, path := range msg.result.Backups {
-			model.message += " Backup: " + doctorText(path)
+			model.feedback = append(model.feedback, "Backup: "+doctorText(path))
 		}
 		model.busy = "Rechecking setup…"
 		return model, model.check()
@@ -114,20 +126,30 @@ func (model doctorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if key == "ctrl+c" {
 			return model, tea.Quit
 		}
+		if model.width < 48 || model.height < 16 {
+			if key == "q" {
+				return model, tea.Quit
+			}
+			return model, nil
+		}
 		if model.filtering {
 			if key == "enter" || key == "esc" {
 				model.filtering = false
 				model.filter.Blur()
 				return model, nil
 			}
+			selected, _ := model.selected()
 			var command tea.Cmd
 			model.filter, command = model.filter.Update(msg)
-			model.cursor, model.offset = 0, 0
-			model.refilter("")
+			model.offset = 0
+			model.refilter(selected.ID)
 			return model, command
 		}
 		if model.help {
-			if key == "esc" || key == "?" || key == "q" {
+			if key == "q" {
+				return model, tea.Quit
+			}
+			if key == "esc" || key == "?" {
 				model.help = false
 			}
 			return model, nil
@@ -135,7 +157,22 @@ func (model doctorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if key == "q" {
 			return model, tea.Quit
 		}
-		if model.width < 48 || model.height < 16 || model.busy != "" {
+		if model.busy != "" {
+			return model, nil
+		}
+		if len(model.feedback) != 0 {
+			switch key {
+			case "esc", "enter":
+				model.feedback, model.offset = nil, 0
+			case "down", "j":
+				model.scroll(1)
+			case "up", "k":
+				model.scroll(-1)
+			case "pgdown":
+				model.scroll(model.bodyHeight())
+			case "pgup":
+				model.scroll(-model.bodyHeight())
+			}
 			return model, nil
 		}
 		if model.plan != nil {
@@ -199,14 +236,16 @@ func (model doctorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (model doctorModel) bodyHeight() int { return max(1, model.height-9) }
 func (model doctorModel) detailWidth() int {
-	if model.plan == nil && model.width >= 100 {
+	if model.plan == nil && len(model.feedback) == 0 && model.width >= 100 {
 		return model.width - model.width*2/5 - 5
 	}
 	return max(1, model.width-4)
 }
 func (model doctorModel) detailLines() []string {
 	var lines []string
-	if model.plan != nil {
+	if len(model.feedback) != 0 {
+		lines = append(lines, model.feedback...)
+	} else if model.plan != nil {
 		lines = append(lines, "Repair: "+doctorText(model.plan.ID), doctorText(model.plan.Summary), "")
 		for _, change := range model.plan.Changes {
 			lines = append(lines, doctorText(change.Path))
@@ -236,11 +275,24 @@ func (model *doctorModel) scroll(delta int) {
 	model.offset = max(0, min(model.offset+delta, max(0, len(model.detailLines())-model.detailHeight())))
 }
 func (model doctorModel) detailHeight() int {
-	if model.plan == nil && model.width < 100 {
+	if model.plan == nil && len(model.feedback) == 0 && model.width < 100 {
 		return max(1, model.bodyHeight()-min(5, model.bodyHeight()/2)-1)
 	}
 	return model.bodyHeight()
 }
+
+func (model doctorModel) filterView() string {
+	if !model.noColor {
+		return model.filter.View()
+	}
+	characters := []rune(model.filter.Value())
+	position := min(max(model.filter.Position(), 0), len(characters))
+	characters = append(characters, 0)
+	copy(characters[position+1:], characters[position:])
+	characters[position] = '│'
+	return model.filter.Prompt + string(characters)
+}
+
 func (model doctorModel) renderList(width, height int, styles terminalManageStyles) []string {
 	start := max(0, min(model.cursor-height+1, max(0, len(model.visible)-height)))
 	lines := make([]string, height)
@@ -264,7 +316,11 @@ func (model doctorModel) renderList(width, height int, styles terminalManageStyl
 }
 func (model doctorModel) View() tea.View {
 	if model.width < 48 || model.height < 16 {
-		view := tea.NewView("Resize to at least 48×16. [q] Quit")
+		message := "Resize to at least 48×16. [q] Quit"
+		if model.busy == "Applying repair…" {
+			message = "Repair in progress; resize to at least 48×16."
+		}
+		view := tea.NewView(message)
 		view.AltScreen = true
 		return view
 	}
@@ -276,16 +332,16 @@ func (model doctorModel) View() tea.View {
 	}
 	filter := "[/] Filter · " + doctorText(model.filter.Value())
 	if model.filtering {
-		filter = model.filter.View()
+		filter = model.filterView()
 	}
 	body := make([]string, model.bodyHeight())
 	if model.help {
-		copy(body, []string{"Doctor inspects setup without starting sessions or services.", "[↑/↓ or j/k] Select check    [PgUp/PgDn] Scroll details", "[/] Filter   [Esc] Clear filter   [r] Refresh", "[f] Prepare a repair preview; no file changes yet.", "In preview: [y] Apply with backups, [n/Esc] Cancel.", "Unknown or conflicting configuration requires manual edits.", "Optional checks can be unavailable without blocking use.", "[? / Esc] Back"})
+		copy(body, []string{"Doctor inspects setup without starting sessions or services.", "[↑/↓ or j/k] Select check    [PgUp/PgDn] Scroll details", "[/] Filter   [Esc] Clear filter   [r] Refresh", "[f] Prepare a repair preview; no file changes yet.", "Preview: [y] Apply with backups, [n/Esc] Cancel.", "Unknown or conflicting checks require manual review.", "[Esc/?] Close help   [q] Quit"})
 	} else {
 		details := model.detailLines()
 		offset := min(model.offset, max(0, len(details)-model.detailHeight()))
 		visible := details[offset:min(len(details), offset+model.detailHeight())]
-		if model.plan != nil {
+		if model.plan != nil || len(model.feedback) != 0 {
 			copy(body, visible)
 		} else if model.width >= 100 {
 			listWidth := model.width * 2 / 5
@@ -311,9 +367,28 @@ func (model doctorModel) View() tea.View {
 		footer = "[↑/↓ PgUp/PgDn] Scroll preview"
 		actions = "[y] Apply + backup  [n/Esc] Cancel  [q] Quit"
 	}
-	if model.width < 70 && model.plan == nil {
+	if len(model.feedback) != 0 {
+		footer = "[↑/↓ PgUp/PgDn] Scroll repair result"
+		actions = "[Enter/Esc] Back  [q] Quit"
+	}
+	if model.help {
+		footer = "[Esc/?] Close help"
+		actions = "[q] Quit"
+	} else if model.filtering {
+		footer = "[Enter] Apply filter  [Esc] Stop editing"
+		actions = "[Ctrl+C] Quit"
+	} else if model.busy == "Applying repair…" {
+		footer = "File transaction in progress"
+		actions = "Please wait for the repair result"
+	} else if model.busy != "" {
+		footer = model.busy
+		actions = "[q/Ctrl+C] Quit"
+	} else if model.width < 70 && model.plan == nil && len(model.feedback) == 0 {
 		footer = "[↑/↓ j/k] Select  [/] Filter  [PgUp/Dn] More"
-		actions = "[f] Fix preview  [r] Check  [?] Help  [q] Quit"
+		actions = "[r] Check  [?] Help  [q] Quit"
+		if check, ok := model.selected(); ok && check.FixID != "" {
+			actions = "[f] Fix  " + actions
+		}
 	}
 	message := model.message
 	if model.busy != "" {

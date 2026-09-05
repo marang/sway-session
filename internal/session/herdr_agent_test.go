@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-func TestReportHerdrCodexSessionSendsOnlyFixedAssociation(t *testing.T) {
+func TestReportHerdrAgentSessionSendsOnlyFixedAssociation(t *testing.T) {
 	root := privateHerdrRoot(t)
 	sessionDir := filepath.Join(root, "sessions", "lab-80")
 	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
@@ -71,7 +71,7 @@ func TestReportHerdrCodexSessionSendsOnlyFixedAssociation(t *testing.T) {
 	launcher := Launcher{Kind: LauncherHerdr, Session: "lab-80", Cwd: t.TempDir()}
 	sessionID := "01a04a4b-7fb9-7a90-8ace-51f7ae68e0ee"
 	now := time.Unix(0, 123456789)
-	if err := ReportHerdrCodexSession(ctx, HerdrPaths{Root: root}, launcher, "work:p1", sessionID, os.Getpid(), now); err != nil {
+	if err := ReportHerdrAgentSession(ctx, HerdrPaths{Root: root}, launcher, "work:p1", "codex", sessionID, os.Getpid(), now); err != nil {
 		t.Fatal(err)
 	}
 	if err := <-serverError; err != nil {
@@ -171,7 +171,7 @@ func TestReportHerdrAgentSessionUsesValidatedAgentKind(t *testing.T) {
 	}
 }
 
-func TestReportHerdrCodexSessionRejectsUnsafeEndpointBeforeConnect(t *testing.T) {
+func TestReportHerdrAgentSessionRejectsUnsafeEndpointBeforeConnect(t *testing.T) {
 	root := privateHerdrRoot(t)
 	sessionDir := filepath.Join(root, "sessions", "lab-80")
 	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
@@ -181,7 +181,7 @@ func TestReportHerdrCodexSessionRejectsUnsafeEndpointBeforeConnect(t *testing.T)
 		t.Fatal(err)
 	}
 	launcher := Launcher{Kind: LauncherHerdr, Session: "lab-80", Cwd: t.TempDir()}
-	if err := ReportHerdrCodexSession(context.Background(), HerdrPaths{Root: root}, launcher, "work:p1", string(testContextID), os.Getpid(), time.Now()); err == nil {
+	if err := ReportHerdrAgentSession(context.Background(), HerdrPaths{Root: root}, launcher, "work:p1", "codex", string(testContextID), os.Getpid(), time.Now()); err == nil {
 		t.Fatal("expected a regular-file endpoint to be rejected")
 	}
 }

@@ -34,8 +34,27 @@ const (
 
 type terminalManageLoadedMsg struct {
 	generation uint64
-	items      []terminalInventoryResult
+	snapshot   terminalManageSnapshot
 	err        error
+}
+
+type terminalWindowPresence uint8
+
+const (
+	terminalWindowUnknown terminalWindowPresence = iota
+	terminalWindowOpen
+	terminalWindowClosed
+)
+
+func (presence terminalWindowPresence) String() string {
+	switch presence {
+	case terminalWindowOpen:
+		return "open"
+	case terminalWindowClosed:
+		return "closed"
+	default:
+		return "unknown"
+	}
 }
 
 type terminalManageActionMsg struct {
@@ -58,6 +77,7 @@ type terminalManageModel struct {
 	operations terminalManageOperations
 	socket     string
 	items      []terminalInventoryResult
+	windows    map[sessionstate.ContextID]terminalWindowPresence
 	visible    []int
 	selectedID sessionstate.ContextID
 	cursor     int
@@ -70,6 +90,7 @@ type terminalManageModel struct {
 	pending    bool
 	status     string
 	err        error
+	windowErr  error
 	noColor    bool
 	animate    bool
 	pulsePhase int
@@ -110,9 +131,14 @@ func (model terminalManageModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		model.pending = false
 		model.err = message.err
 		if message.err == nil {
-			model.items = sortTerminalManageItems(message.items)
+			model.items = sortTerminalManageItems(message.snapshot.items)
+			model.windows = message.snapshot.windows
+			model.windowErr = message.snapshot.windowError
 			model.rebuildVisible()
 			model.restoreSelection()
+		} else {
+			model.windows = terminalManageUnknownWindows(model.items)
+			model.windowErr = message.err
 		}
 		return model, nil
 	case terminalManageActionMsg:
@@ -360,9 +386,19 @@ func (model terminalManageModel) render() string {
 		}
 	}
 	var output strings.Builder
-	hasFeedback := model.err != nil || model.status != ""
+	hasFeedback := model.err != nil || model.status != "" || model.windowErr != nil
 	output.WriteString(styles.title.Render("Persistent terminals"))
-	output.WriteString(styles.muted.Render(fmt.Sprintf("  %d saved", len(model.items))))
+	open, unknown := model.windowCounts()
+	counts := fmt.Sprintf("%d saved · %d open", len(model.items), open)
+	if unknown != 0 {
+		counts += fmt.Sprintf(" · %d unknown", unknown)
+	}
+	if width >= 72 {
+		output.WriteString(styles.muted.Render("  " + counts + " · Snapshot [r] refresh"))
+	} else {
+		output.WriteString("\n" + styles.muted.Render(counts))
+		output.WriteString("\n" + styles.muted.Render("Snapshot · [r] refresh"))
+	}
 	output.WriteByte('\n')
 	if model.loading {
 		output.WriteString("\nLoading terminal sessions…\n")
@@ -381,7 +417,7 @@ func (model terminalManageModel) render() string {
 		if wideLayout {
 			detail := model.renderDetails(styles, width-listWidth-3)
 			output.WriteString("\n" + lipgloss.JoinHorizontal(lipgloss.Top, list, "   ", detail))
-		} else if model.mode == terminalManagePurgeMode || hasFeedback || (model.height > 0 && model.height < 22) {
+		} else if model.mode == terminalManagePurgeMode || hasFeedback || width < 72 || (model.height > 0 && model.height < 22) {
 			output.WriteString("\n" + list)
 		} else {
 			output.WriteString("\n" + list + "\n\n" + model.renderDetails(styles, width))
@@ -421,6 +457,10 @@ func (model terminalManageModel) render() string {
 	} else if model.status != "" {
 		output.WriteString("\n" + styles.success.Render(terminalManageWrap(model.status, width)))
 	}
+	if model.err == nil && model.windowErr != nil {
+		warning := "Window observation incomplete; unknown entries need [r] Refresh. " + terminalManageSentence(model.windowErr.Error())
+		output.WriteString("\n" + styles.danger.Render(terminalManageWrap(warning, width)))
+	}
 	content := terminalManageFit(output.String(), width, height)
 	if framed {
 		return terminalManageFrame(content, width+2, model.pulsePhase, model.noColor)
@@ -440,6 +480,17 @@ func (model terminalManageModel) renderFooter(styles terminalManageStyles, width
 	if width >= 96 {
 		return styles.muted.Render("Navigate") + " [↑/↓ or j/k] Select  [/] Filter\n" +
 			styles.muted.Render("Selected") + " [Enter/o] Open  [e] Rename  [a] Archive/activate  [d] Delete\n" + global
+	}
+	if width >= 72 {
+		return styles.muted.Render("Navigate") + " [↑/↓ or j/k] Select  [/] Filter\n" +
+			styles.muted.Render("Selected") + " [Enter] Open  [e] Rename  [a] Archive/activate  [d] Delete\n" +
+			styles.muted.Render("System") + "   [m] Migrate  [r] Refresh  [?] Help  [q] Quit"
+	}
+	if width >= 56 {
+		return styles.muted.Render("Navigate") + " [↑/↓ or j/k] Select  [/] Filter\n" +
+			styles.muted.Render("Selected") + " [Enter] Open  [e] Rename\n" +
+			"         [a] Archive/activate  [d] Delete\n" +
+			styles.muted.Render("System") + "   [m] Migrate  [r] Refresh  [?] Help  [q] Quit"
 	}
 	return styles.muted.Render("Navigate") + " [↑/↓ or j/k] Select  [/] Filter\n" +
 		styles.muted.Render("Selected") + " [Enter] Open  [e] Rename\n" +
@@ -509,11 +560,18 @@ func (model terminalManageModel) renderList(styles terminalManageStyles, width i
 		if row == model.cursor {
 			cursor = "› "
 		}
-		state := "● active"
+		presence := model.windowPresence(item.ContextID)
+		restore := "restore enabled"
 		if item.State == sessionstate.ContextArchived {
-			state = "○ archived"
+			restore = "archived"
 		}
-		line := fmt.Sprintf("%s%s  %s", cursor, state, terminalManageName(item))
+		indicator := "?"
+		if presence == terminalWindowOpen {
+			indicator = "●"
+		} else if presence == terminalWindowClosed {
+			indicator = "○"
+		}
+		line := fmt.Sprintf("%s%s %s · %s  %s", cursor, indicator, presence, restore, terminalManageName(item))
 		line = ansi.Truncate(line, max(width, 1), "…")
 		if row == model.cursor {
 			if !model.noColor {
@@ -595,18 +653,58 @@ func (model terminalManageModel) renderDetails(styles terminalManageStyles, widt
 	}
 	lines := []string{
 		styles.accent.Render(terminalManageName(item)),
-		"State       " + string(item.State),
-		"Last active " + terminalManageTime(item.LastFocusedAt),
-		"Created     " + terminalManageTime(item.CreatedAt),
-		"Project     " + terminalManageProject(item),
-		"Directory   " + item.Cwd,
-		"Session     " + item.Session,
-		"Context     " + string(item.ContextID),
+		terminalManageDetail("Window", model.windowPresence(item.ContextID).String()),
+		terminalManageDetail("Restore", terminalManageRestore(item)),
+		terminalManageDetail("Last focused", terminalManageTime(item.LastFocusedAt)),
+		terminalManageDetail("Created", terminalManageTime(item.CreatedAt)),
+		terminalManageDetail("Project", terminalManageProject(item)),
+		terminalManageDetail("Directory", item.Cwd),
+		terminalManageDetail("Session", item.Session),
+		terminalManageDetail("Context", string(item.ContextID)),
 	}
 	for index := range lines {
 		lines[index] = ansi.Truncate(lines[index], max(width, 1), "…")
 	}
 	return strings.Join(lines, "\n")
+}
+
+func terminalManageDetail(label string, value string) string {
+	return fmt.Sprintf("%-13s%s", label, value)
+}
+
+func terminalManageRestore(item terminalInventoryResult) string {
+	if item.State == sessionstate.ContextArchived {
+		return "archived"
+	}
+	return "enabled"
+}
+
+func terminalManageUnknownWindows(items []terminalInventoryResult) map[sessionstate.ContextID]terminalWindowPresence {
+	windows := make(map[sessionstate.ContextID]terminalWindowPresence, len(items))
+	for _, item := range items {
+		windows[item.ContextID] = terminalWindowUnknown
+	}
+	return windows
+}
+
+func (model terminalManageModel) windowPresence(id sessionstate.ContextID) terminalWindowPresence {
+	if presence, exists := model.windows[id]; exists {
+		return presence
+	}
+	return terminalWindowUnknown
+}
+
+func (model terminalManageModel) windowCounts() (int, int) {
+	open, unknown := 0, 0
+	for _, item := range model.items {
+		switch model.windowPresence(item.ContextID) {
+		case terminalWindowOpen:
+			open++
+		case terminalWindowUnknown:
+			unknown++
+		}
+	}
+	return open, unknown
 }
 
 func terminalManageName(item terminalInventoryResult) string {
@@ -724,14 +822,16 @@ func (model terminalManageModel) selected() (terminalInventoryResult, bool) {
 
 func (model *terminalManageModel) beginLoad() tea.Cmd {
 	model.loading = true
+	model.windows = terminalManageUnknownWindows(model.items)
+	model.windowErr = nil
 	model.loadID++
 	return model.loadCommand(model.loadID)
 }
 
 func (model terminalManageModel) loadCommand(generation uint64) tea.Cmd {
 	return func() tea.Msg {
-		items, err := model.operations.List(model.ctx)
-		return terminalManageLoadedMsg{generation: generation, items: items, err: err}
+		snapshot, err := model.operations.Load(model.ctx, model.socket)
+		return terminalManageLoadedMsg{generation: generation, snapshot: snapshot, err: err}
 	}
 }
 

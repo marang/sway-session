@@ -59,6 +59,22 @@ func doctorUpdate(t *testing.T, model doctorModel, msg tea.Msg) (doctorModel, te
 	return updated.(doctorModel), command
 }
 
+func TestDoctorNoColorFilterKeepsLongInputCursorVisible(t *testing.T) {
+	model := newDoctorModel(context.Background(), &fakeDoctorOperations{})
+	model.width, model.height, model.noColor, model.filtering = 48, 16, true, true
+	model.filter.SetValue(strings.Repeat("x", 90) + "界終")
+	model.filter.CursorEnd()
+	view := model.filterView()
+	if !strings.Contains(view, "界終│") || ansi.StringWidth(view) > 44 || strings.Contains(view, "\x1b") {
+		t.Fatalf("long filter lost visible cursor: %q", view)
+	}
+	model.filter.SetCursor(5)
+	view = model.filterView()
+	if !strings.Contains(view, "xxxxx│x") || ansi.StringWidth(view) > 44 {
+		t.Fatalf("mid-input cursor invisible: %q", view)
+	}
+}
+
 func TestDoctorTUIFilterRefreshSelectionAndNoColor(t *testing.T) {
 	ops := &fakeDoctorOperations{report: doctor.Report{Checks: []doctor.Check{
 		{ID: "first", Title: "First check", Status: doctor.OK},

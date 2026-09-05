@@ -290,10 +290,11 @@ func (model doctorModel) filterView() string {
 	}
 	characters := []rune(model.filter.Value())
 	position := min(max(model.filter.Position(), 0), len(characters))
-	characters = append(characters, 0)
-	copy(characters[position+1:], characters[position:])
-	characters[position] = '│'
-	return model.filter.Prompt + string(characters)
+	available := max(0, model.width-4-ansi.StringWidth(model.filter.Prompt)-1)
+	left, right := string(characters[:position]), string(characters[position:])
+	left = ansi.TruncateLeft(left, max(0, ansi.StringWidth(left)-available), "")
+	right = ansi.Truncate(right, max(0, available-ansi.StringWidth(left)), "")
+	return model.filter.Prompt + left + "│" + right
 }
 
 func (model doctorModel) renderList(width, height int, styles terminalManageStyles) []string {

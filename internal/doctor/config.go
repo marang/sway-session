@@ -376,6 +376,9 @@ func (scanner *swayStaticScanner) recordIntegration(tokens []string, location co
 		scanner.analysis.occurrences[kind] = append(scanner.analysis.occurrences[kind], integrationOccurrence{
 			kind: kind, correct: correct, where: location,
 		})
+	} else if (tokens[0] == "exec" || tokens[0] == "exec_always") && strings.Contains(strings.Join(tokens[1:], " "), "sway-session") {
+		scanner.analysis.unsupported = fmt.Errorf("indirect sway-session startup at %s:%d requires manual review", location.path, location.line)
+		return
 	}
 	kind, relevant, correct, err := classifyBinding(tokens, scanner.variables)
 	if err != nil {
@@ -609,6 +612,9 @@ func expandSwayInclude(value string, variables map[string]string) (string, error
 		}
 	} else if strings.HasPrefix(result, "~") {
 		return "", errors.New("named-user home expansion is unsupported")
+	}
+	if strings.ContainsAny(result, "$`") {
+		return "", errors.New("nested variable or command expansion requires manual review")
 	}
 	if strings.ContainsRune(result, '\x00') || strings.ContainsAny(result, "\r\n") {
 		return "", errors.New("include path contains control characters")

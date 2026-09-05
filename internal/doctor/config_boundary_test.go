@@ -27,6 +27,10 @@ func TestRepairRefusesAmbiguousShortcutSyntax(t *testing.T) {
 		"variable startup executable": "set $session sway-session\nexec $session daemon\n",
 		"variable startup argument":   "set $action daemon\nexec sway-session $action\n",
 		"variable uppercase startup":  "set $session sway-session\nEXEC --no-startup-id $session daemon\n",
+		"nested key alias":            "set $base Mod4+Return\nset $key $base\nbindsym $key exec foot\n",
+		"quoted startup":              "exec \"sway-session daemon\"\n",
+		"env wrapped startup":         "exec env sway-session daemon\n",
+		"shell wrapped startup":       "exec sh -c 'sway-session daemon'\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			root := writeSwayConfig(t, "set $mod Mod4\n"+config)

@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	sessionstate "github.com/marang/sway-title-animator/internal/session"
+	sessionstate "github.com/marang/sway-session/internal/session"
 )
 
 func TestBrokerTerminalManagerRejectsUserOwnedExecutableFromPath(t *testing.T) {

@@ -6,7 +6,7 @@ import (
 	"errors"
 	"io"
 
-	sessionstate "github.com/marang/sway-title-animator/internal/session"
+	sessionstate "github.com/marang/sway-session/internal/session"
 )
 
 // responseWireV1 deliberately mirrors the original protocol-v1 response.

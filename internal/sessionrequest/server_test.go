@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	sessionstate "github.com/marang/sway-title-animator/internal/session"
+	sessionstate "github.com/marang/sway-session/internal/session"
 )
 
 const testContextID = sessionstate.ContextID("11111111-1111-4111-8111-111111111111")

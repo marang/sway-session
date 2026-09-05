@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/marang/sway-title-animator/internal/swayipc"
+	"github.com/marang/sway-session/internal/swayipc"
 )
 
 type PlacementActionKind string

@@ -12,9 +12,9 @@ import (
 func TestEnsureTerminalContextCreatesAndReusesTypedIdentity(t *testing.T) {
 	registry := Registry{Version: ContextsSchemaVersion, Contexts: []Context{}}
 	request := TerminalContextRequest{
-		Identity: TerminalIdentity{Kind: TerminalIdentityProject, Project: "sway-title-animator"},
+		Identity: TerminalIdentity{Kind: TerminalIdentityProject, Project: "example-project"},
 		Adapter:  TerminalAdapterFoot,
-		Cwd:      "/work/sway-title-animator",
+		Cwd:      "/work/example-project",
 		Label:    "Project terminal",
 	}
 
@@ -22,7 +22,7 @@ func TestEnsureTerminalContextCreatesAndReusesTypedIdentity(t *testing.T) {
 	if err != nil || !wasCreated {
 		t.Fatalf("create terminal context: context=%+v created=%t err=%v", created, wasCreated, err)
 	}
-	if created.Launcher.Session != "sway-terminal-project-14e5c8d81d5e834d3d5c2c06" ||
+	if created.Launcher.Session != "sway-terminal-project-759b2c42ed72330d995bfc53" ||
 		created.Launcher.Terminal == nil || created.Launcher.Terminal.Adapter != TerminalAdapterFoot ||
 		created.Launcher.Terminal.Identity == nil || *created.Launcher.Terminal.Identity != request.Identity {
 		t.Fatalf("unexpected created context: %+v", created)

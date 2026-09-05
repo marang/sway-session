@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	sessionstate "github.com/marang/sway-title-animator/internal/session"
+	sessionstate "github.com/marang/sway-session/internal/session"
 )
 
 func TestCompletionContextsHonorsCanceledCommandContext(t *testing.T) {
@@ -180,8 +180,8 @@ func TestCompletionContextDescriptionShowsUsefulMetadataWithoutPrivateLauncherPa
 	t.Setenv("HOME", home)
 	contexts := []sessionstate.Context{
 		{
-			ID: "11111111-1111-4111-8111-111111111111", Label: "Sway Title Animator", Provider: "linear", State: sessionstate.ContextActive,
-			Launcher: sessionstate.Launcher{Kind: sessionstate.LauncherHerdr, Session: "sway-title-animator", Cwd: filepath.Join(home, "Dev", "sway-title-animator"), Terminal: &sessionstate.TerminalLauncher{Adapter: sessionstate.TerminalAdapterAlacritty}},
+			ID: "11111111-1111-4111-8111-111111111111", Label: "Example Project", Provider: "linear", State: sessionstate.ContextActive,
+			Launcher: sessionstate.Launcher{Kind: sessionstate.LauncherHerdr, Session: "example-project", Cwd: filepath.Join(home, "Dev", "example-project"), Terminal: &sessionstate.TerminalLauncher{Adapter: sessionstate.TerminalAdapterAlacritty}},
 		},
 		{
 			ID: "22222222-2222-4222-8222-222222222222", Label: "Calculator", Provider: "desktop", State: sessionstate.ContextActive,
@@ -196,7 +196,7 @@ func TestCompletionContextDescriptionShowsUsefulMetadataWithoutPrivateLauncherPa
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	code := runWith([]string{"completion", "contexts", "archive"}, strings.NewReader(""), &stdout, &stderr, deps)
-	want := "11111111-1111-4111-8111-111111111111\tSway Title Animator · active · herdr:sway-title-animator · ~/Dev/sway-title-animator · provider:linear\n" +
+	want := "11111111-1111-4111-8111-111111111111\tExample Project · active · herdr:example-project · ~/Dev/example-project · provider:linear\n" +
 		"22222222-2222-4222-8222-222222222222\tCalculator · active · desktop:org.example.Calculator.desktop · provider:desktop\n"
 	if code != exitSuccess || stdout.String() != want || stderr.Len() != 0 {
 		t.Fatalf("unexpected completion metadata code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())

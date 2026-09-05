@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marang/sway-title-animator/internal/statefile"
+	"github.com/marang/sway-session/internal/statefile"
 	"golang.org/x/sys/unix"
 )
 

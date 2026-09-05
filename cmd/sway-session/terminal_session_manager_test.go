@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marang/sway-title-animator/internal/herdrinit"
-	sessionstate "github.com/marang/sway-title-animator/internal/session"
+	"github.com/marang/sway-session/internal/herdrinit"
+	sessionstate "github.com/marang/sway-session/internal/session"
 )
 
 func TestHerdrTerminalSessionInitializationHasOverallDeadline(t *testing.T) {

@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/marang/sway-title-animator/internal/swayipc"
+	"github.com/marang/sway-session/internal/swayipc"
 )
 
 // WindowApplication is the bounded compositor evidence used while registering

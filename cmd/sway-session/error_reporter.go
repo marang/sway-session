@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/marang/sway-title-animator/internal/diagnostic"
+	"github.com/marang/sway-session/internal/diagnostic"
 )
 
 type diagnosticErrorReporter struct {

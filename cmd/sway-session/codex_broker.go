@@ -3,8 +3,8 @@ package main
 import (
 	"fmt"
 
-	"github.com/marang/sway-title-animator/internal/codexreport"
-	sessionstate "github.com/marang/sway-title-animator/internal/session"
+	"github.com/marang/sway-session/internal/codexreport"
+	sessionstate "github.com/marang/sway-session/internal/session"
 )
 
 func startCodexReportBroker(reportError func(error)) (*codexreport.Server, error) {

@@ -12,7 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	sessionstate "github.com/marang/sway-title-animator/internal/session"
+	sessionstate "github.com/marang/sway-session/internal/session"
 )
 
 const (

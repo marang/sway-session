@@ -1,10 +1,11 @@
-BINARIES := sway-title-animator sway-session
+BINARIES := sway-session
 PREFIX ?= $(HOME)/.local
 GO_BUILD_FLAGS := -trimpath -buildvcs=false
 GO_LDFLAGS := -s -w -buildid=
-GO_FILES := $(shell find . -name '*.go' -type f)
+GO_FILES := $(shell find cmd internal -name '*.go' -type f)
+DOC_ROOT := $(PREFIX)/share/doc/sway-session
 
-.PHONY: build install clean fmt fmt-check test race vet lint apparmor-check completion-check packaging-check process-boundary-check diff-check verify
+.PHONY: build install clean fmt fmt-check test race vet lint apparmor-check completion-check packaging-check standalone-check diff-check verify
 
 fmt:
 	gofmt -w $(GO_FILES)
@@ -37,30 +38,46 @@ completion-check:
 packaging-check:
 	sh scripts/check-packaging.sh
 
-process-boundary-check:
-	sh scripts/check-process-boundary.sh
+standalone-check:
+	sh scripts/check-standalone-boundary.sh
 
 build:
-	CGO_ENABLED=0 go build $(GO_BUILD_FLAGS) -ldflags='$(GO_LDFLAGS)' -o sway-title-animator ./cmd/sway-title-animator
 	CGO_ENABLED=0 go build $(GO_BUILD_FLAGS) -ldflags='$(GO_LDFLAGS)' -o sway-session ./cmd/sway-session
 
 diff-check:
 	git diff --check
 	git diff --cached --check
 
-verify: fmt-check test race vet lint apparmor-check completion-check packaging-check process-boundary-check build diff-check
+verify: fmt-check test race vet lint apparmor-check completion-check packaging-check standalone-check build diff-check
 
 install: build
 	install -d $(PREFIX)/bin
-	for binary in $(BINARIES); do install -m755 $$binary $(PREFIX)/bin/$$binary; done
+	install -m755 sway-session $(PREFIX)/bin/sway-session
 	install -d $(PREFIX)/share/bash-completion/completions
 	install -d $(PREFIX)/share/zsh/site-functions
 	install -d $(PREFIX)/share/fish/vendor_completions.d
-	install -d $(PREFIX)/share/doc/sway-title-animator/contrib/sway-session
+	install -d $(DOC_ROOT)/contrib/sway-session
+	install -d $(DOC_ROOT)/contrib/herdr
+	install -d $(DOC_ROOT)/contrib/codex
+	install -d $(DOC_ROOT)/contrib/apparmor
+	install -d $(DOC_ROOT)/scripts
+	install -d $(DOC_ROOT)/docs/adr
+	install -m644 README.md $(DOC_ROOT)/README.md
+	install -m644 LICENSE $(DOC_ROOT)/LICENSE
+	install -m644 docs/sway-session-plan.md $(DOC_ROOT)/docs/sway-session-plan.md
+	install -m644 docs/sway-session-verification.md $(DOC_ROOT)/docs/sway-session-verification.md
+	install -m644 docs/releasing.md $(DOC_ROOT)/docs/releasing.md
+	install -m644 docs/workflow_conventions.md $(DOC_ROOT)/docs/workflow_conventions.md
+	install -m644 docs/adr/0001-sqlite-session-runtime-state.md $(DOC_ROOT)/docs/adr/0001-sqlite-session-runtime-state.md
 	install -m644 contrib/completions/bash/sway-session $(PREFIX)/share/bash-completion/completions/sway-session
 	install -m644 contrib/completions/zsh/_sway-session $(PREFIX)/share/zsh/site-functions/_sway-session
 	install -m644 contrib/completions/fish/sway-session.fish $(PREFIX)/share/fish/vendor_completions.d/sway-session.fish
-	install -m644 contrib/sway-session/config.toml $(PREFIX)/share/doc/sway-title-animator/contrib/sway-session/config.toml
+	install -m644 contrib/sway/50-sway-session.conf $(DOC_ROOT)/50-sway-session.conf
+	install -m644 contrib/sway-session/config.toml $(DOC_ROOT)/contrib/sway-session/config.toml
+	install -m644 contrib/herdr/config.toml $(DOC_ROOT)/contrib/herdr/config.toml
+	install -m644 contrib/codex/hooks.json $(DOC_ROOT)/contrib/codex/hooks.json
+	install -m644 contrib/apparmor/codex-home-guard $(DOC_ROOT)/contrib/apparmor/codex-home-guard
+	install -m755 scripts/verify-codex-boundary.sh $(DOC_ROOT)/scripts/verify-codex-boundary.sh
 
 clean:
 	rm -f $(BINARIES)

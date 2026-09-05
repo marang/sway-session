@@ -10,7 +10,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/marang/sway-title-animator/internal/statefile"
+	"github.com/marang/sway-session/internal/statefile"
 )
 
 // LegacyMigrationResult describes the runtime state copied by an explicit

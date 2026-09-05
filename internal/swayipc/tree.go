@@ -31,8 +31,7 @@ type WindowProperties struct {
 	TransientFor *int64 `json:"transient_for"`
 }
 
-// TreeNode is the bounded GET_TREE subset shared by title animation and
-// persistent session capture.
+// TreeNode is the bounded GET_TREE subset used by persistent session capture.
 type TreeNode struct {
 	ID               int64            `json:"id"`
 	Name             string           `json:"name"`
@@ -88,7 +87,7 @@ type Event struct {
 }
 
 // AffectsSessionLayout excludes presentation-only notifications which may be
-// generated continuously by title animation. Unknown changes remain relevant
+// generated continuously by another title renderer. Unknown changes remain relevant
 // so a newer Sway event cannot silently bypass capture.
 func (event Event) AffectsSessionLayout() bool {
 	switch event.Type {

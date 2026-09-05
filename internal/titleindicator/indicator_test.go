@@ -3,7 +3,7 @@ package titleindicator_test
 import (
 	"testing"
 
-	"github.com/marang/sway-title-animator/internal/titleindicator"
+	"github.com/marang/sway-session/internal/titleindicator"
 )
 
 func TestApplicationStateRoundTripsThroughOneHiddenSwayMark(t *testing.T) {

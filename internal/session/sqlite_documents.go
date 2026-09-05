@@ -11,7 +11,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/marang/sway-title-animator/internal/statefile"
+	"github.com/marang/sway-session/internal/statefile"
 )
 
 var ErrRegistryConflict = errors.New("context registry changed concurrently")

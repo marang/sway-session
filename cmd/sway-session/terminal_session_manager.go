@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/marang/sway-title-animator/internal/herdrinit"
-	sessionstate "github.com/marang/sway-title-animator/internal/session"
+	"github.com/marang/sway-session/internal/herdrinit"
+	sessionstate "github.com/marang/sway-session/internal/session"
 )
 
 const herdrInitializationTimeout = 90 * time.Second

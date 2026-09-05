@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	sessionstate "github.com/marang/sway-title-animator/internal/session"
-	"github.com/marang/sway-title-animator/internal/swayipc"
+	sessionstate "github.com/marang/sway-session/internal/session"
+	"github.com/marang/sway-session/internal/swayipc"
 )
 
 func TestAppRegisterFocusedFlatpakIsExplicitMarkedAndIdempotent(t *testing.T) {

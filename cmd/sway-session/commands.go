@@ -14,11 +14,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/marang/sway-title-animator/internal/diagnostic"
-	sessionstate "github.com/marang/sway-title-animator/internal/session"
-	"github.com/marang/sway-title-animator/internal/sessionrequest"
-	"github.com/marang/sway-title-animator/internal/statefile"
-	"github.com/marang/sway-title-animator/internal/swayipc"
+	"github.com/marang/sway-session/internal/diagnostic"
+	sessionstate "github.com/marang/sway-session/internal/session"
+	"github.com/marang/sway-session/internal/sessionrequest"
+	"github.com/marang/sway-session/internal/statefile"
+	"github.com/marang/sway-session/internal/swayipc"
 )
 
 // maxConcurrentTerminalRestores bounds only one automatic restore wave. The

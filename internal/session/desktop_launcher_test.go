@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marang/sway-title-animator/internal/statefile"
+	"github.com/marang/sway-session/internal/statefile"
 )
 
 func TestUserDesktopApprovalCreatesProtectedSnapshotAndTypedGioLaunch(t *testing.T) {

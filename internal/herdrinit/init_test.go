@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	sessionstate "github.com/marang/sway-title-animator/internal/session"
+	sessionstate "github.com/marang/sway-session/internal/session"
 )
 
 const emptySnapshot = `{"id":"snapshot","result":{"type":"session_snapshot","snapshot":{"version":"0.8.2","protocol":20,"workspaces":[{"workspace_id":"w1"}],"tabs":[{"workspace_id":"w1","tab_id":"w1:t1"}],"panes":[{"workspace_id":"w1","tab_id":"w1:t1","pane_id":"w1:p1","agent":null}],"layouts":[{"workspace_id":"w1","tab_id":"w1:t1","panes":[{"pane_id":"w1:p1"}],"splits":[]}],"agents":[]}}}`

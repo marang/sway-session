@@ -14,10 +14,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marang/sway-title-animator/internal/herdrinit"
-	sessionstate "github.com/marang/sway-title-animator/internal/session"
-	"github.com/marang/sway-title-animator/internal/statefile"
-	"github.com/marang/sway-title-animator/internal/swayipc"
+	"github.com/marang/sway-session/internal/herdrinit"
+	sessionstate "github.com/marang/sway-session/internal/session"
+	"github.com/marang/sway-session/internal/statefile"
+	"github.com/marang/sway-session/internal/swayipc"
 )
 
 func TestTerminalCommandCreatesThenReusesOneAgentAddressableDefault(t *testing.T) {

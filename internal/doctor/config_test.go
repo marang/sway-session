@@ -66,6 +66,60 @@ func TestInspectSwayConfigFollowsQuotedVariableGlobIncludes(t *testing.T) {
 	}
 }
 
+func TestInspectSwayConfigRecognizesBlockBraceOnFollowingLine(t *testing.T) {
+	config := "set $mod Mod4\n" +
+		"output eDP-1\n\n{\n    mode 1920x1080\n}\n" +
+		strings.TrimPrefix(healthySwayConfig(), "set $mod Mod4\n")
+	path := writeSwayConfig(t, config)
+
+	check := inspectSwayConfig(context.Background(), Options{SwayConfigPath: path})[0]
+	if check.Status != OK {
+		t.Fatalf("brace on following line disabled inspection: %+v", check)
+	}
+}
+
+func TestInspectSwayConfigRetainsObservedDeclarationsWhenIncludeIsUnsafe(t *testing.T) {
+	root := writeSwayConfig(t, healthySwayConfig()+"include unsafe.conf\n")
+	unsafe := filepath.Join(filepath.Dir(root), "unsafe.conf")
+	if err := os.WriteFile(unsafe, []byte("# contents must not be reported\n"), 0o620); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(unsafe, 0o620); err != nil {
+		t.Fatal(err)
+	}
+
+	check := inspectSwayConfig(context.Background(), Options{SwayConfigPath: root})[0]
+	if check.Status != Warning || !strings.Contains(check.Detail, "partially checked") || check.FixID != "" {
+		t.Fatalf("observed declarations were not retained as partial evidence: %+v", check)
+	}
+	for _, label := range []string{"daemon startup", "restore startup", "persistent-terminal shortcut", "ephemeral-terminal shortcut"} {
+		if !evidenceLineContains(check.Evidence, label, "matching declaration observed") {
+			t.Errorf("lost observed location for %s: %+v", label, check)
+		}
+	}
+	if strings.Contains(strings.Join(check.Evidence, "\n")+check.Hint, "contents must not be reported") {
+		t.Fatalf("configuration contents leaked: %+v", check)
+	}
+}
+
+func TestInspectSwayConfigAcceptsEmptyOptionalIncludeGlob(t *testing.T) {
+	root := writeSwayConfig(t, healthySwayConfig()+"include optional/*.conf\n")
+	check := inspectSwayConfig(context.Background(), Options{SwayConfigPath: root})[0]
+	if check.Status != OK {
+		t.Fatalf("empty optional glob is a valid Sway no-op: %+v", check)
+	}
+}
+
+func TestInspectSwayConfigDoesNotTreatQuotedBracesAsBlocks(t *testing.T) {
+	root := writeSwayConfig(t,
+		"set $mod Mod4\nbar {\n status_command printf '{'\n status_command printf '}'\n}\n"+
+			strings.TrimPrefix(healthySwayConfig(), "set $mod Mod4\n"))
+	check := inspectSwayConfig(context.Background(), Options{SwayConfigPath: root})[0]
+	if check.Status != OK {
+		t.Fatalf("quoted command arguments changed block structure: %+v", check)
+	}
+}
+
 func TestInspectSwayConfigRefusesDuplicateAndOverriddenShortcut(t *testing.T) {
 	config := healthySwayConfig() + "bindsym $mod+Return exec foot\n"
 	path := writeSwayConfig(t, config)

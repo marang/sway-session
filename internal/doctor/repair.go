@@ -316,18 +316,16 @@ func (service *Service) rollbackFailure(applied []appliedFileEdit, backups []str
 func repairableMissing(analysis swayConfigAnalysis) ([]integrationKind, error) {
 	missing := make([]integrationKind, 0, len(integrationOrder))
 	for _, kind := range integrationOrder {
-		occurrences := analysis.occurrences[kind]
-		correct := 0
-		for _, occurrence := range occurrences {
-			if occurrence.correct {
-				correct++
-			}
+		if analysis.uncertaintyCounts[kind] != 0 {
+			return nil, fmt.Errorf("repair is unavailable because %s could not be fully checked", integrationLabel(kind))
 		}
-		if len(occurrences) == 0 {
+		occurrences := analysis.occurrenceCounts[kind]
+		correct := analysis.matchingCounts[kind]
+		if occurrences == 0 {
 			missing = append(missing, kind)
 			continue
 		}
-		if len(occurrences) != 1 || correct != 1 {
+		if occurrences != 1 || correct != 1 {
 			return nil, fmt.Errorf("repair is unavailable because %s is duplicated or conflicting", integrationLabel(kind))
 		}
 	}

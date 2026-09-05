@@ -309,7 +309,18 @@ func (model doctorModel) renderList(width, height int, styles terminalManageStyl
 		if index == model.cursor {
 			prefix = "› "
 		}
-		line := ansi.Truncate(prefix+"["+string(check.Status)+"] "+doctorText(check.Title), width, "…")
+		status := "[" + string(check.Status) + "]"
+		switch check.Status {
+		case doctor.OK:
+			status = styles.success.Render(status)
+		case doctor.Error:
+			status = styles.danger.Render(status)
+		case doctor.Warning:
+			status = styles.accent.Render(status)
+		case doctor.Unavailable:
+			status = styles.muted.Render(status)
+		}
+		line := ansi.Truncate(prefix+status+" "+doctorText(check.Title), width, "…")
 		if index == model.cursor {
 			line = styles.selected.Render(terminalManagePad(line, width))
 		}

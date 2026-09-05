@@ -58,10 +58,18 @@ func (presence terminalWindowPresence) String() string {
 }
 
 type terminalManageActionMsg struct {
-	id     sessionstate.ContextID
-	action string
-	err    error
+	id              sessionstate.ContextID
+	action          string
+	selectionPolicy terminalManageSelectionPolicy
+	err             error
 }
+
+type terminalManageSelectionPolicy uint8
+
+const (
+	terminalManageSelectIdentity terminalManageSelectionPolicy = iota
+	terminalManageSelectCursorPosition
+)
 
 type terminalManageMigrationMsg struct {
 	action string
@@ -81,6 +89,8 @@ type terminalManageModel struct {
 	visible    []int
 	selectedID sessionstate.ContextID
 	cursor     int
+	filter     string
+	selection  terminalManageSelectionPolicy
 	width      int
 	height     int
 	mode       terminalManageMode
@@ -139,6 +149,7 @@ func (model terminalManageModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			model.windows = terminalManageUnknownWindows(model.items)
 			model.windowErr = message.err
+			model.selection = terminalManageSelectIdentity
 		}
 		return model, nil
 	case terminalManageActionMsg:
@@ -148,6 +159,7 @@ func (model terminalManageModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return model, nil
 		}
 		model.selectedID = message.id
+		model.selection = message.selectionPolicy
 		model.status = message.action
 		return model, model.beginLoad()
 	case terminalManageMigrationMsg:
@@ -171,6 +183,7 @@ func (model terminalManageModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		var command tea.Cmd
 		model.input, command = model.input.Update(message)
 		if model.mode == terminalManageFilterMode {
+			model.filter = model.input.Value()
 			model.rebuildVisible()
 			model.clampCursor()
 		}
@@ -206,17 +219,21 @@ func (model terminalManageModel) handleKey(message tea.KeyPressMsg) (tea.Model, 
 			model.mode = terminalManageListMode
 			model.input.Blur()
 			model.input.Reset()
+			model.filter = ""
 			model.rebuildVisible()
 			model.restoreSelection()
 			return model, nil
 		case "enter":
 			model.mode = terminalManageListMode
 			model.input.Blur()
+			model.filter = model.input.Value()
+			model.rebuildVisible()
 			model.rememberSelected()
 			return model, nil
 		}
 		var command tea.Cmd
 		model.input, command = model.input.Update(message)
+		model.filter = model.input.Value()
 		model.rebuildVisible()
 		model.clampCursor()
 		model.rememberSelected()
@@ -301,7 +318,8 @@ func (model terminalManageModel) handleKey(message tea.KeyPressMsg) (tea.Model, 
 	case "/":
 		model.mode = terminalManageFilterMode
 		model.input.Placeholder = "filter by title, project, path, or ID"
-		model.input.Reset()
+		model.input.SetValue(model.filter)
+		model.input.CursorEnd()
 		return model, model.input.Focus()
 	case "e":
 		item, ok := model.selected()
@@ -400,6 +418,10 @@ func (model terminalManageModel) render() string {
 		output.WriteString("\n" + styles.muted.Render("Snapshot · [r] refresh"))
 	}
 	output.WriteByte('\n')
+	if model.mode != terminalManageFilterMode && model.filter != "" {
+		output.WriteString(styles.muted.Render("Filter: " + model.filter + "  [/] Edit or clear"))
+		output.WriteByte('\n')
+	}
 	if model.loading {
 		output.WriteString("\nLoading terminal sessions…\n")
 	} else if model.err != nil && len(model.items) == 0 {
@@ -604,6 +626,9 @@ func (model terminalManageModel) listWindow() (int, int) {
 			case terminalManageFilterMode, terminalManageRenameMode:
 				reserved++
 			}
+			if model.mode == terminalManageListMode && model.filter != "" {
+				reserved++
+			}
 			rows = max(height-reserved, 1)
 		} else {
 			reserved := 19
@@ -613,6 +638,9 @@ func (model terminalManageModel) listWindow() (int, int) {
 			case terminalManageHelpMode:
 				reserved += 2
 			case terminalManageFilterMode, terminalManageRenameMode:
+				reserved++
+			}
+			if model.mode == terminalManageListMode && model.filter != "" {
 				reserved++
 			}
 			rows = max(height-reserved, 1)
@@ -764,10 +792,7 @@ func terminalManageSortTime(item terminalInventoryResult) time.Time {
 }
 
 func (model *terminalManageModel) rebuildVisible() {
-	query := ""
-	if model.mode == terminalManageFilterMode {
-		query = strings.ToLower(strings.TrimSpace(model.input.Value()))
-	}
+	query := strings.ToLower(strings.TrimSpace(model.filter))
 	model.visible = model.visible[:0]
 	for index, item := range model.items {
 		haystack := strings.ToLower(strings.Join([]string{
@@ -783,16 +808,25 @@ func (model *terminalManageModel) restoreSelection() {
 	if len(model.visible) == 0 {
 		model.cursor = 0
 		model.selectedID = ""
+		model.selection = terminalManageSelectIdentity
+		return
+	}
+	if model.selection == terminalManageSelectCursorPosition {
+		model.clampCursor()
+		model.rememberSelected()
+		model.selection = terminalManageSelectIdentity
 		return
 	}
 	for row, index := range model.visible {
 		if model.items[index].ContextID == model.selectedID {
 			model.cursor = row
+			model.selection = terminalManageSelectIdentity
 			return
 		}
 	}
 	model.clampCursor()
 	model.rememberSelected()
+	model.selection = terminalManageSelectIdentity
 }
 
 func (model *terminalManageModel) clampCursor() {
@@ -838,21 +872,25 @@ func (model terminalManageModel) loadCommand(generation uint64) tea.Cmd {
 func (model terminalManageModel) openCommand(id sessionstate.ContextID) tea.Cmd {
 	return func() tea.Msg {
 		err := model.operations.Open(model.ctx, id, model.socket)
-		return terminalManageActionMsg{id: id, action: "Opened " + string(id), err: err}
+		return terminalManageActionMsg{id: id, action: "Opened " + string(id), selectionPolicy: terminalManageSelectIdentity, err: err}
 	}
 }
 
 func (model terminalManageModel) stateCommand(id sessionstate.ContextID, state sessionstate.ContextState, action string) tea.Cmd {
 	return func() tea.Msg {
 		err := model.operations.SetState(model.ctx, id, state)
-		return terminalManageActionMsg{id: id, action: action, err: err}
+		selectionPolicy := terminalManageSelectIdentity
+		if state == sessionstate.ContextArchived {
+			selectionPolicy = terminalManageSelectCursorPosition
+		}
+		return terminalManageActionMsg{id: id, action: action, selectionPolicy: selectionPolicy, err: err}
 	}
 }
 
 func (model terminalManageModel) renameCommand(id sessionstate.ContextID, label string) tea.Cmd {
 	return func() tea.Msg {
 		err := model.operations.Rename(model.ctx, id, label)
-		return terminalManageActionMsg{id: id, action: "Renamed to “" + label + "”", err: err}
+		return terminalManageActionMsg{id: id, action: "Renamed to “" + label + "”", selectionPolicy: terminalManageSelectIdentity, err: err}
 	}
 }
 
@@ -862,7 +900,7 @@ func (model terminalManageModel) purgeCommand(id sessionstate.ContextID) tea.Cmd
 		if message == "" {
 			message = "Terminal permanently deleted"
 		}
-		return terminalManageActionMsg{id: id, action: message, err: err}
+		return terminalManageActionMsg{id: id, action: message, selectionPolicy: terminalManageSelectCursorPosition, err: err}
 	}
 }
 

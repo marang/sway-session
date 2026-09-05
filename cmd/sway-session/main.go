@@ -18,6 +18,7 @@ import (
 	"github.com/marang/sway-session/internal/agentreport"
 	"github.com/marang/sway-session/internal/codexreport"
 	"github.com/marang/sway-session/internal/diagnostic"
+	"github.com/marang/sway-session/internal/doctor"
 	"github.com/marang/sway-session/internal/herdrinit"
 	sessionstate "github.com/marang/sway-session/internal/session"
 	"github.com/marang/sway-session/internal/sessionrequest"
@@ -52,10 +53,11 @@ var commandSpecs = map[string]commandSpec{
 	"report-agent-session": {usage: "report-agent-session", summary: "Report a managed agent session from typed JSON on stdin"},
 	"app":                  {usage: "app <subcommand> [options]", summary: "Manage explicitly registered desktop applications"},
 	"terminal":             {usage: "terminal [--new | --context <uuid> | --project <name> | --ephemeral] [options]", summary: "Open a typed terminal"},
+	"doctor":               {usage: "doctor [--check | --fix <id> [--yes]] [options]", summary: "Check setup and preview safe configuration fixes"},
 	"completion":           {usage: "completion contexts <command>", summary: "Emit read-only shell completion candidates"},
 }
 
-var commandOrder = []string{"terminal", "register", "restore", "list", "archive", "activate", "purge", "app", "daemon", "broker", "request-start", "report-agent-session", "report-codex-session", "completion"}
+var commandOrder = []string{"terminal", "doctor", "register", "restore", "list", "archive", "activate", "purge", "app", "daemon", "broker", "request-start", "report-agent-session", "report-codex-session", "completion"}
 
 type swayRequester interface {
 	RequestContext(context.Context, swayipc.MessageType, []byte) (swayipc.Message, error)
@@ -92,6 +94,9 @@ type dependencies struct {
 	runBroker          func(context.Context, string, func(error)) error
 	runDaemon          func(context.Context, string, func(error)) error
 	runTerminalManage  terminalManageRunner
+	newDoctor          func(doctor.Options) doctorOperations
+	runDoctor          doctorRunner
+	doctorInteractive  func(io.Reader, io.Writer) bool
 }
 
 func defaultDependencies(stdin io.Reader) dependencies {
@@ -140,6 +145,11 @@ func defaultDependencies(stdin io.Reader) dependencies {
 		runBroker:         runSessionRequestBroker,
 		runDaemon:         runSessionDaemon,
 		runTerminalManage: runTerminalManager,
+		newDoctor: func(options doctor.Options) doctorOperations {
+			return doctor.New(options)
+		},
+		runDoctor:         runDoctorUI,
+		doctorInteractive: doctorTerminals,
 	}
 	deps.presentApproval = func(message string, choices []sessionstate.ApprovalChoice) error {
 		swaynag, err := deps.resolveSystem("swaynag")
@@ -251,6 +261,9 @@ type commandResult struct {
 	Terminal             *terminalCommandResult     `json:"terminal,omitempty"`
 	Terminals            *[]terminalInventoryResult `json:"terminals,omitempty"`
 	Preview              bool                       `json:"preview,omitempty"`
+	Doctor               *doctor.Report             `json:"doctor,omitempty"`
+	DoctorPlan           *doctor.Plan               `json:"doctor_plan,omitempty"`
+	DoctorFix            *doctor.FixResult          `json:"doctor_fix,omitempty"`
 }
 
 type terminalCommandResult struct {
@@ -322,6 +335,9 @@ func writeResult(writer io.Writer, structured bool, result commandResult) error 
 			result.Contexts = []sessionstate.Context{}
 		}
 		return json.NewEncoder(writer).Encode(result)
+	}
+	if result.Doctor != nil || result.DoctorPlan != nil || result.DoctorFix != nil {
+		return writeDoctorResult(writer, result)
 	}
 	if len(result.CompletionCandidates) != 0 {
 		for _, candidate := range result.CompletionCandidates {
@@ -482,6 +498,12 @@ func writeCommandUsage(writer io.Writer, name string, spec commandSpec) {
 		_, _ = fmt.Fprintln(writer, "Options: [--new | --context UUID | --project NAME | --ephemeral] [--cwd PATH] [--label LABEL] [--socket PATH] [--role LEFT --role RIGHT]")
 		_, _ = fmt.Fprintln(writer, "Subcommands: manage [--socket PATH], list, status, cleanup, rename --label NAME <context>, reconfigure [--project NAME] [--socket PATH]")
 	}
+	if name == "doctor" {
+		_, _ = fmt.Fprintln(writer, "Options: --check, --fix ID [--yes], --socket PATH, --sway-config PATH; global --config PATH selects terminal configuration.")
+		_, _ = fmt.Fprintln(writer, "Default: interactive TUI when stdin/stdout are terminals; otherwise a read-only report. --json always stays noninteractive.")
+		_, _ = fmt.Fprintln(writer, "--fix sway.integration previews a narrow config repair; only --yes or the TUI confirmation applies it. No service reloads or package installs.")
+		_, _ = fmt.Fprintln(writer, "Exit status: 0 no failed checks (warnings/unavailable may remain), 2 invalid arguments, 3 failed checks or repair. TUI exit is 0 unless it cannot run.")
+	}
 	if name == "request-start" {
 		_, _ = fmt.Fprintln(writer, "Options: --session NAME --workspace NUMBER [--cwd PATH] [--label LABEL] [--provider NAME]")
 	}
@@ -534,12 +556,14 @@ func writeCommandUsageForArguments(writer io.Writer, name string, spec commandSp
 }
 
 func executeCommand(ctx context.Context, name string, arguments []string, stdin io.Reader, stdout io.Writer, stderr io.Writer, structured bool, configPath string, deps dependencies) (commandResult, *commandFailure) {
-	if configPath != "" && name != "terminal" {
-		return commandResult{}, usageFailure(name, "--config is only valid with the terminal command")
+	if configPath != "" && name != "terminal" && name != "doctor" {
+		return commandResult{}, usageFailure(name, "--config is only valid with the terminal or doctor command")
 	}
 	switch name {
 	case "terminal":
 		return executeTerminal(ctx, arguments, stdin, stdout, structured, configPath, deps)
+	case "doctor":
+		return executeDoctor(ctx, arguments, stdin, stdout, structured, configPath, deps)
 	case "register":
 		return executeRegister(ctx, arguments, deps)
 	case "list":

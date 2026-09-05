@@ -227,7 +227,7 @@ func resolveSwayConfigPathSelection(ctx context.Context, options Options) (swayC
 	}
 	if options.SwayConfigPath != "" {
 		if !cleanAbsolute(options.SwayConfigPath) {
-			return swayConfigPathSelection{}, errors.New("Sway config path must be a clean absolute path")
+			return swayConfigPathSelection{}, errors.New("sway config path must be a clean absolute path")
 		}
 		return swayConfigPathSelection{path: options.SwayConfigPath}, nil
 	}
@@ -239,13 +239,13 @@ func resolveSwayConfigPathSelection(ctx context.Context, options Options) (swayC
 			message, err := client.RequestContext(ctx, getVersionMessage, nil)
 			if err == nil {
 				if message.Type != getVersionMessage {
-					return swayConfigPathSelection{}, errors.New("Sway returned an unexpected version response")
+					return swayConfigPathSelection{}, errors.New("sway returned an unexpected version response")
 				}
 				var version struct {
 					LoadedConfigFileName string `json:"loaded_config_file_name"`
 				}
 				if err := json.Unmarshal(message.Payload, &version); err != nil || !cleanAbsolute(version.LoadedConfigFileName) {
-					return swayConfigPathSelection{}, errors.New("Sway returned an invalid loaded config path")
+					return swayConfigPathSelection{}, errors.New("sway returned an invalid loaded config path")
 				}
 				return swayConfigPathSelection{path: version.LoadedConfigFileName, live: true}, nil
 			}

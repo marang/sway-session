@@ -27,7 +27,7 @@ func TestDoctorTUIFilterRefreshSelectionAndNoColor(t *testing.T) {
 	model.noColor = true
 	model, _ = doctorUpdate(t, model, model.Init()())
 	model, _ = doctorUpdate(t, model, terminalManageKey("j"))
-	ops.report.Checks[0], ops.report.Checks[1] = ops.report.Checks[1], ops.report.Checks[0]
+	ops.report.Checks = []doctor.Check{ops.report.Checks[1], ops.report.Checks[0]}
 	var command tea.Cmd
 	model, command = doctorUpdate(t, model, terminalManageKey("r"))
 	model, _ = doctorUpdate(t, model, command())

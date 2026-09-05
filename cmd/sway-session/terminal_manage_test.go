@@ -325,6 +325,31 @@ func TestTerminalManageArchiveKeepsCursorPositionForRepeatedArchive(t *testing.T
 	}
 }
 
+func TestTerminalManageArchivePrefersPreviousActiveAtBoundary(t *testing.T) {
+	previous := terminalManageTestItem("11111111-1111-4111-8111-111111111111", "Alpha", sessionstate.ContextActive)
+	selected := terminalManageTestItem("22222222-2222-4222-8222-222222222222", "Bravo", sessionstate.ContextActive)
+	existingArchived := terminalManageTestItem("33333333-3333-4333-8333-333333333333", "Charlie", sessionstate.ContextArchived)
+	archived := selected
+	archived.State = sessionstate.ContextArchived
+	ops := &terminalManageTestOperations{snapshots: [][]terminalInventoryResult{
+		{previous, selected, existingArchived},
+		{previous, archived, existingArchived},
+	}}
+	model := terminalManageRunInit(t, newTerminalManageModel(ops))
+	model = terminalManageUpdate(t, model, terminalManageKey("j"))
+
+	model = terminalManageSend(t, model, terminalManageKey("a"))
+	item, ok := model.selected()
+	if !ok || item.ContextID != previous.ContextID || model.cursor != 0 {
+		t.Fatalf("archive selected an archived boundary row instead of the previous active row: selected=%+v cursor=%d", item, model.cursor)
+	}
+
+	_ = terminalManageSend(t, model, terminalManageKey("a"))
+	if got := ops.stateChanges; len(got) != 2 || got[1].id != previous.ContextID || got[1].state != sessionstate.ContextArchived {
+		t.Fatalf("repeated archive targeted %+v, want Alpha archived", got)
+	}
+}
+
 func TestTerminalManageActivateFollowsMovedContext(t *testing.T) {
 	active := terminalManageTestItem("11111111-1111-4111-8111-111111111111", "Zulu", sessionstate.ContextActive)
 	archived := terminalManageTestItem("22222222-2222-4222-8222-222222222222", "Alpha", sessionstate.ContextArchived)
@@ -389,8 +414,8 @@ func TestTerminalManageRenameFollowsContextAcrossReordering(t *testing.T) {
 
 func TestTerminalManageArchivePreservesFilterViewport(t *testing.T) {
 	first := terminalManageTestItem("11111111-1111-4111-8111-111111111111", "Alpha", sessionstate.ContextActive)
-	selected := terminalManageTestItem("22222222-2222-4222-8222-222222222222", "Bravo", sessionstate.ContextActive)
-	next := terminalManageTestItem("33333333-3333-4333-8333-333333333333", "Charlie", sessionstate.ContextActive)
+	selected := terminalManageTestItem("22222222-2222-4222-8222-222222222222", "Cleanup Bravo", sessionstate.ContextActive)
+	next := terminalManageTestItem("33333333-3333-4333-8333-333333333333", "Cleanup Charlie", sessionstate.ContextActive)
 	archived := selected
 	archived.State = sessionstate.ContextArchived
 	ops := &terminalManageTestOperations{snapshots: [][]terminalInventoryResult{
@@ -399,17 +424,16 @@ func TestTerminalManageArchivePreservesFilterViewport(t *testing.T) {
 	}}
 	model := terminalManageRunInit(t, newTerminalManageModel(ops))
 	model = terminalManageUpdate(t, model, tea.WindowSizeMsg{Width: 80, Height: 24})
-	model = terminalManageUpdate(t, model, terminalManageKey("j"))
 	model = terminalManageUpdate(t, model, terminalManageKey("/"))
-	model = terminalManageUpdate(t, model, terminalManageKey("a"))
+	model = terminalManageUpdate(t, model, terminalManageKey("cleanup"))
 	model = terminalManageUpdate(t, model, terminalManageKey("enter"))
 
 	model = terminalManageSend(t, model, terminalManageKey("a"))
 	item, ok := model.selected()
-	if model.filter != "a" || len(model.visible) != 3 || !ok || item.ContextID != next.ContextID || model.cursor != 1 {
+	if model.filter != "cleanup" || len(model.visible) != 2 || !ok || item.ContextID != next.ContextID || model.cursor != 0 {
 		t.Fatalf("archive lost filtered viewport: filter=%q visible=%v selected=%+v cursor=%d", model.filter, model.visible, item, model.cursor)
 	}
-	if view := model.View().Content; !strings.Contains(view, "Filter: a  [/] Edit or clear") {
+	if view := model.View().Content; !strings.Contains(view, "Filter: cleanup  [/] Edit or clear") {
 		t.Fatalf("80x24 filtered viewport did not show its active filter:\n%s", view)
 	}
 }

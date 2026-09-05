@@ -69,6 +69,7 @@ type terminalManageSelectionPolicy uint8
 const (
 	terminalManageSelectIdentity terminalManageSelectionPolicy = iota
 	terminalManageSelectCursorPosition
+	terminalManageSelectActiveCursorPosition
 )
 
 type terminalManageMigrationMsg struct {
@@ -811,8 +812,21 @@ func (model *terminalManageModel) restoreSelection() {
 		model.selection = terminalManageSelectIdentity
 		return
 	}
-	if model.selection == terminalManageSelectCursorPosition {
+	switch model.selection {
+	case terminalManageSelectCursorPosition:
 		model.clampCursor()
+		model.rememberSelected()
+		model.selection = terminalManageSelectIdentity
+		return
+	case terminalManageSelectActiveCursorPosition:
+		model.clampCursor()
+		for row := model.cursor; row >= 0; row-- {
+			index := model.visible[row]
+			if model.items[index].State == sessionstate.ContextActive {
+				model.cursor = row
+				break
+			}
+		}
 		model.rememberSelected()
 		model.selection = terminalManageSelectIdentity
 		return
@@ -881,7 +895,7 @@ func (model terminalManageModel) stateCommand(id sessionstate.ContextID, state s
 		err := model.operations.SetState(model.ctx, id, state)
 		selectionPolicy := terminalManageSelectIdentity
 		if state == sessionstate.ContextArchived {
-			selectionPolicy = terminalManageSelectCursorPosition
+			selectionPolicy = terminalManageSelectActiveCursorPosition
 		}
 		return terminalManageActionMsg{id: id, action: action, selectionPolicy: selectionPolicy, err: err}
 	}

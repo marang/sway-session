@@ -131,7 +131,7 @@ func TestStartupCaptureReadyDoesNotWaitForArchivedContext(t *testing.T) {
 	}
 }
 
-func TestPreserveMissingPlacementsRetainsArchivedContextForLaterActivation(t *testing.T) {
+func TestPreserveMissingPlacementsDropsArchivedContextFromCurrentLayout(t *testing.T) {
 	previous := placementSnapshot("98: apps", testContextID)
 	captured := LayoutSnapshot{Version: LayoutSchemaVersion, Workspaces: []WorkspaceLayout{}}
 	registry := registryWithContexts(testContextID)
@@ -141,8 +141,64 @@ func TestPreserveMissingPlacementsRetainsArchivedContextForLaterActivation(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(preserved, previous) {
-		t.Fatalf("archiving discarded the saved placement: got=%+v want=%+v", preserved, previous)
+	if len(preserved.Workspaces) != 0 {
+		t.Fatalf("archived placement remained in current layout: %+v", preserved)
+	}
+}
+
+func TestPreserveMissingPlacementsDoesNotLetArchivedPlacementDowngradeCurrentTabbedLayout(t *testing.T) {
+	previous := placementSnapshot("2", testContextID, secondContextID, thirdContextID)
+	captured := LayoutSnapshot{
+		Version: LayoutSchemaVersion,
+		Workspaces: []WorkspaceLayout{{
+			Name:        "2",
+			RestoreMode: WorkspaceRestoreLayout,
+			Tiling: &LayoutNode{
+				Layout: LayoutTabbed,
+				Children: []LayoutNode{
+					{ContextID: contextIDPointerValue(testContextID)},
+					{ContextID: contextIDPointerValue(secondContextID)},
+				},
+			},
+		}},
+	}
+	registry := registryWithContexts(testContextID, secondContextID, thirdContextID)
+	registry.Contexts[2].State = ContextArchived
+
+	merged, err := PreserveMissingPlacements(previous, captured, registry)
+	if err != nil {
+		t.Fatalf("preserve current tabbed layout: %v", err)
+	}
+	workspace := merged.Workspaces[0]
+	if workspace.RestoreMode != WorkspaceRestoreLayout || workspace.Tiling == nil || workspace.Tiling.Layout != LayoutTabbed {
+		t.Fatalf("archived placement downgraded current tabbed layout: %+v", workspace)
+	}
+	if got := workspaceContextIDs(workspace); !sameContextSet(got, []ContextID{testContextID, secondContextID}) {
+		t.Fatalf("archived context remained in current layout: %v", got)
+	}
+}
+
+func TestPreserveMissingPlacementsDoesNotPromotePreviousPlacementOnlySnapshot(t *testing.T) {
+	previous := placementSnapshot("2", testContextID, secondContextID)
+	captured := LayoutSnapshot{
+		Version: LayoutSchemaVersion,
+		Workspaces: []WorkspaceLayout{{
+			Name:        "2",
+			RestoreMode: WorkspaceRestoreLayout,
+			Tiling:      &LayoutNode{ContextID: contextIDPointerValue(secondContextID)},
+		}},
+	}
+
+	merged, err := PreserveMissingPlacements(previous, captured, registryWithContexts(testContextID, secondContextID))
+	if err != nil {
+		t.Fatalf("preserve incomplete current layout: %v", err)
+	}
+	workspace := merged.Workspaces[0]
+	if workspace.RestoreMode != WorkspaceRestorePlacementOnly || workspace.Tiling != nil {
+		t.Fatalf("previous placement-only snapshot was promoted to exact layout: %+v", workspace)
+	}
+	if !sameContextSet(workspace.PlacementContexts, []ContextID{testContextID, secondContextID}) {
+		t.Fatalf("missing active context was not retained for placement restore: %v", workspace.PlacementContexts)
 	}
 }
 

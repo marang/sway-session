@@ -49,10 +49,11 @@ func StartupCaptureReady(previous LayoutSnapshot, captured LayoutSnapshot, regis
 	return true, nil
 }
 
-// PreserveMissingPlacements retains the last exact workspace while an expected
-// registered leaf is merely absent. If visible siblings moved elsewhere or
-// new contexts joined that workspace, it safely degrades the divergent old
-// workspace to placement-only state.
+// PreserveMissingPlacements retains the last exact workspace while an active,
+// desired leaf is merely absent. Archived or otherwise inactive contexts are
+// removed from the current layout and never make an old snapshot authoritative.
+// If visible siblings moved elsewhere or new contexts joined that workspace,
+// it safely degrades the divergent old workspace to placement-only state.
 func PreserveMissingPlacements(previous LayoutSnapshot, captured LayoutSnapshot, registry Registry) (LayoutSnapshot, error) {
 	if err := previous.Validate(); err != nil {
 		return LayoutSnapshot{}, fmt.Errorf("validate previous layout: %w", err)
@@ -67,7 +68,7 @@ func PreserveMissingPlacements(previous LayoutSnapshot, captured LayoutSnapshot,
 	if err != nil {
 		return LayoutSnapshot{}, err
 	}
-	registered := registeredContextIDs(registry)
+	active := activeContextIDs(registry)
 	visible := snapshotContextIDs(captured)
 	visibleTargets := placementTargets(captured)
 	resultByName := make(map[string]int, len(result.Workspaces))
@@ -78,10 +79,10 @@ func PreserveMissingPlacements(previous LayoutSnapshot, captured LayoutSnapshot,
 	for _, previousWorkspace := range previous.Workspaces {
 		previousIDs := workspaceContextIDs(previousWorkspace)
 		missing := make([]ContextID, 0)
-		allStillRegistered := true
+		allPreviousContextsActive := true
 		for _, id := range previousIDs {
-			if _, keep := registered[id]; !keep {
-				allStillRegistered = false
+			if _, keep := active[id]; !keep {
+				allPreviousContextsActive = false
 				continue
 			}
 			if _, exists := visible[id]; !exists {
@@ -92,7 +93,7 @@ func PreserveMissingPlacements(previous LayoutSnapshot, captured LayoutSnapshot,
 			continue
 		}
 
-		preserveExact := allStillRegistered
+		preserveExact := previousWorkspace.RestoreMode == WorkspaceRestoreLayout && allPreviousContextsActive
 		previousSet := make(map[ContextID]struct{}, len(previousIDs))
 		for _, id := range previousIDs {
 			previousSet[id] = struct{}{}

@@ -131,7 +131,7 @@ func TestStartupCaptureReadyDoesNotWaitForArchivedContext(t *testing.T) {
 	}
 }
 
-func TestPreserveMissingPlacementsRetainsArchivedContextForLaterActivation(t *testing.T) {
+func TestPreserveMissingPlacementsDropsArchivedContextFromCurrentLayout(t *testing.T) {
 	previous := placementSnapshot("98: apps", testContextID)
 	captured := LayoutSnapshot{Version: LayoutSchemaVersion, Workspaces: []WorkspaceLayout{}}
 	registry := registryWithContexts(testContextID)
@@ -141,8 +141,231 @@ func TestPreserveMissingPlacementsRetainsArchivedContextForLaterActivation(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(preserved, previous) {
-		t.Fatalf("archiving discarded the saved placement: got=%+v want=%+v", preserved, previous)
+	if len(preserved.Workspaces) != 0 {
+		t.Fatalf("archived placement remained in current layout: %+v", preserved)
+	}
+}
+
+func TestPreserveMissingPlacementsDoesNotLetArchivedPlacementDowngradeCurrentTabbedLayout(t *testing.T) {
+	previous := placementSnapshot("2", testContextID, secondContextID, thirdContextID)
+	captured := LayoutSnapshot{
+		Version: LayoutSchemaVersion,
+		Workspaces: []WorkspaceLayout{{
+			Name:        "2",
+			RestoreMode: WorkspaceRestoreLayout,
+			Tiling: &LayoutNode{
+				Layout: LayoutTabbed,
+				Children: []LayoutNode{
+					{ContextID: contextIDPointerValue(testContextID)},
+					{ContextID: contextIDPointerValue(secondContextID)},
+				},
+			},
+		}},
+	}
+	registry := registryWithContexts(testContextID, secondContextID, thirdContextID)
+	registry.Contexts[2].State = ContextArchived
+
+	merged, err := PreserveMissingPlacements(previous, captured, registry)
+	if err != nil {
+		t.Fatalf("preserve current tabbed layout: %v", err)
+	}
+	workspace := merged.Workspaces[0]
+	if workspace.RestoreMode != WorkspaceRestoreLayout || workspace.Tiling == nil || workspace.Tiling.Layout != LayoutTabbed {
+		t.Fatalf("archived placement downgraded current tabbed layout: %+v", workspace)
+	}
+	if got := workspaceContextIDs(workspace); !sameContextSet(got, []ContextID{testContextID, secondContextID}) {
+		t.Fatalf("archived context remained in current layout: %v", got)
+	}
+}
+
+func TestPreserveMissingPlacementsDropsArchivedContextsAcrossLayouts(t *testing.T) {
+	archivedID := ContextID("6ba7b812-9dad-41d1-80b4-00c04fd430c8")
+	fourthID := ContextID("6ba7b813-9dad-41d1-80b4-00c04fd430c8")
+	registry := registryWithContexts(testContextID, secondContextID, fourthID, archivedID)
+	registry.Contexts[3].State = ContextArchived
+
+	cases := []struct {
+		name     string
+		previous WorkspaceLayout
+		captured WorkspaceLayout
+	}{
+		{
+			name: "split",
+			previous: WorkspaceLayout{
+				Name:        "2",
+				RestoreMode: WorkspaceRestoreLayout,
+				Tiling: &LayoutNode{Layout: LayoutSplitHorizontal, Children: []LayoutNode{
+					{ContextID: contextIDPointerValue(testContextID)},
+					{ContextID: contextIDPointerValue(archivedID)},
+					{ContextID: contextIDPointerValue(secondContextID)},
+					{ContextID: contextIDPointerValue(fourthID)},
+				}},
+			},
+			captured: WorkspaceLayout{
+				Name:        "2",
+				RestoreMode: WorkspaceRestoreLayout,
+				Tiling: &LayoutNode{Layout: LayoutSplitHorizontal, Children: []LayoutNode{
+					{ContextID: contextIDPointerValue(testContextID)},
+					{ContextID: contextIDPointerValue(secondContextID)},
+					{ContextID: contextIDPointerValue(fourthID)},
+				}},
+			},
+		},
+		{
+			name: "stacked",
+			previous: WorkspaceLayout{
+				Name:        "2",
+				RestoreMode: WorkspaceRestoreLayout,
+				Tiling: &LayoutNode{Layout: LayoutStacked, Children: []LayoutNode{
+					{ContextID: contextIDPointerValue(testContextID)},
+					{ContextID: contextIDPointerValue(archivedID)},
+					{ContextID: contextIDPointerValue(secondContextID)},
+					{ContextID: contextIDPointerValue(fourthID)},
+				}},
+			},
+			captured: WorkspaceLayout{
+				Name:        "2",
+				RestoreMode: WorkspaceRestoreLayout,
+				Tiling: &LayoutNode{Layout: LayoutStacked, Children: []LayoutNode{
+					{ContextID: contextIDPointerValue(testContextID)},
+					{ContextID: contextIDPointerValue(secondContextID)},
+					{ContextID: contextIDPointerValue(fourthID)},
+				}},
+			},
+		},
+		{
+			name: "nested",
+			previous: WorkspaceLayout{
+				Name:        "2",
+				RestoreMode: WorkspaceRestoreLayout,
+				Tiling: &LayoutNode{Layout: LayoutSplitHorizontal, Children: []LayoutNode{
+					{ContextID: contextIDPointerValue(testContextID)},
+					{Layout: LayoutTabbed, Children: []LayoutNode{
+						{ContextID: contextIDPointerValue(secondContextID)},
+						{ContextID: contextIDPointerValue(archivedID)},
+						{ContextID: contextIDPointerValue(fourthID)},
+					}},
+				}},
+			},
+			captured: WorkspaceLayout{
+				Name:        "2",
+				RestoreMode: WorkspaceRestoreLayout,
+				Tiling: &LayoutNode{Layout: LayoutSplitHorizontal, Children: []LayoutNode{
+					{ContextID: contextIDPointerValue(testContextID)},
+					{Layout: LayoutTabbed, Children: []LayoutNode{
+						{ContextID: contextIDPointerValue(secondContextID)},
+						{ContextID: contextIDPointerValue(fourthID)},
+					}},
+				}},
+			},
+		},
+		{
+			name: "floating",
+			previous: WorkspaceLayout{
+				Name:        "2",
+				RestoreMode: WorkspaceRestoreLayout,
+				Tiling: &LayoutNode{Layout: LayoutSplitHorizontal, Children: []LayoutNode{
+					{ContextID: contextIDPointerValue(testContextID)},
+					{ContextID: contextIDPointerValue(archivedID)},
+					{ContextID: contextIDPointerValue(secondContextID)},
+				}},
+				Floating: []LayoutNode{{ContextID: contextIDPointerValue(fourthID), Geometry: &Geometry{X: 10, Y: 20, Width: 800, Height: 600}}},
+			},
+			captured: WorkspaceLayout{
+				Name:        "2",
+				RestoreMode: WorkspaceRestoreLayout,
+				Tiling: &LayoutNode{Layout: LayoutSplitHorizontal, Children: []LayoutNode{
+					{ContextID: contextIDPointerValue(testContextID)},
+					{ContextID: contextIDPointerValue(secondContextID)},
+				}},
+				Floating: []LayoutNode{{ContextID: contextIDPointerValue(fourthID), Geometry: &Geometry{X: 10, Y: 20, Width: 800, Height: 600}}},
+			},
+		},
+	}
+
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			previous := LayoutSnapshot{Version: LayoutSchemaVersion, Workspaces: []WorkspaceLayout{test.previous}}
+			captured := LayoutSnapshot{Version: LayoutSchemaVersion, Workspaces: []WorkspaceLayout{test.captured}}
+			merged, err := PreserveMissingPlacements(previous, captured, registry)
+			if err != nil {
+				t.Fatalf("preserve current layout: %v", err)
+			}
+			if !reflect.DeepEqual(merged, captured) {
+				t.Fatalf("archived context changed current %s layout:\n got: %+v\nwant: %+v", test.name, merged, captured)
+			}
+
+			repeated, err := PreserveMissingPlacements(merged, captured, registry)
+			if err != nil {
+				t.Fatalf("repeat preserve current layout: %v", err)
+			}
+			if !reflect.DeepEqual(repeated, captured) {
+				t.Fatalf("repeated merge changed current %s layout: %+v", test.name, repeated)
+			}
+		})
+	}
+}
+
+func TestPreserveMissingPlacementsHonorsDesiredOpenForApplications(t *testing.T) {
+	openID := ContextID("6ba7b814-9dad-41d1-80b4-00c04fd430c8")
+	closedID := ContextID("6ba7b815-9dad-41d1-80b4-00c04fd430c8")
+	open := flatpakApplicationContext("org.example.Open", "org.example.Open")
+	open.ID = openID
+	open.App.DesiredOpen = true
+	closed := flatpakApplicationContext("org.example.Closed", "org.example.Closed")
+	closed.ID = closedID
+	closed.App.DesiredOpen = false
+	registry := registryWithContexts(testContextID)
+	registry.Contexts = append(registry.Contexts, open, closed)
+
+	previous := LayoutSnapshot{Version: LayoutSchemaVersion, Workspaces: []WorkspaceLayout{{
+		Name:        "2",
+		RestoreMode: WorkspaceRestoreLayout,
+		Tiling: &LayoutNode{Layout: LayoutSplitHorizontal, Children: []LayoutNode{
+			{ContextID: contextIDPointerValue(testContextID)},
+			{ContextID: contextIDPointerValue(openID)},
+			{ContextID: contextIDPointerValue(closedID)},
+		}},
+	}}}
+	captured := LayoutSnapshot{Version: LayoutSchemaVersion, Workspaces: []WorkspaceLayout{{
+		Name:        "2",
+		RestoreMode: WorkspaceRestoreLayout,
+		Tiling: &LayoutNode{Layout: LayoutSplitHorizontal, Children: []LayoutNode{
+			{ContextID: contextIDPointerValue(testContextID)},
+			{ContextID: contextIDPointerValue(openID)},
+		}},
+	}}}
+
+	merged, err := PreserveMissingPlacements(previous, captured, registry)
+	if err != nil {
+		t.Fatalf("preserve application layout: %v", err)
+	}
+	if !reflect.DeepEqual(merged, captured) {
+		t.Fatalf("desired-closed application kept stale layout:\n got: %+v\nwant: %+v", merged, captured)
+	}
+}
+
+func TestPreserveMissingPlacementsDoesNotPromotePreviousPlacementOnlySnapshot(t *testing.T) {
+	previous := placementSnapshot("2", testContextID, secondContextID)
+	captured := LayoutSnapshot{
+		Version: LayoutSchemaVersion,
+		Workspaces: []WorkspaceLayout{{
+			Name:        "2",
+			RestoreMode: WorkspaceRestoreLayout,
+			Tiling:      &LayoutNode{ContextID: contextIDPointerValue(secondContextID)},
+		}},
+	}
+
+	merged, err := PreserveMissingPlacements(previous, captured, registryWithContexts(testContextID, secondContextID))
+	if err != nil {
+		t.Fatalf("preserve incomplete current layout: %v", err)
+	}
+	workspace := merged.Workspaces[0]
+	if workspace.RestoreMode != WorkspaceRestorePlacementOnly || workspace.Tiling != nil {
+		t.Fatalf("previous placement-only snapshot was promoted to exact layout: %+v", workspace)
+	}
+	if !sameContextSet(workspace.PlacementContexts, []ContextID{testContextID, secondContextID}) {
+		t.Fatalf("missing active context was not retained for placement restore: %v", workspace.PlacementContexts)
 	}
 }
 

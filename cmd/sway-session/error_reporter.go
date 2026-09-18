@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"io"
 	"sync"
 	"time"
@@ -41,7 +42,28 @@ func (reporter *diagnosticErrorReporter) Report(err error) {
 	}
 	reporter.lastMessage = text
 	reporter.lastAt = time.Now()
-	_ = diagnostic.WriteAll(reporter.writer, "sway-session", []diagnostic.Diagnostic{{
-		Level: diagnostic.LevelError, Code: reporter.code, Message: reporter.message, Hint: text,
-	}}, reporter.structured)
+	_ = diagnostic.WriteAll(reporter.writer, "sway-session", runtimeDiagnostics(err, reporter.code, reporter.message, text), reporter.structured)
+}
+
+type diagnosticProvider interface {
+	Diagnostic() diagnostic.Diagnostic
+}
+
+func runtimeDiagnostics(err error, code string, message string, fallbackHint string) []diagnostic.Diagnostic {
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		items := make([]diagnostic.Diagnostic, 0)
+		for _, child := range joined.Unwrap() {
+			items = append(items, runtimeDiagnostics(child, code, message, child.Error())...)
+		}
+		if len(items) != 0 {
+			return items
+		}
+	}
+	var provider diagnosticProvider
+	if errors.As(err, &provider) {
+		return []diagnostic.Diagnostic{provider.Diagnostic()}
+	}
+	return []diagnostic.Diagnostic{{
+		Level: diagnostic.LevelError, Code: code, Message: message, Hint: fallbackHint,
+	}}
 }

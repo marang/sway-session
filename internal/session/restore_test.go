@@ -125,6 +125,10 @@ func TestSelectRestoreWorkspaceDegradesMixedWorkspace(t *testing.T) {
 		!strings.Contains(selection.Degradations[0].Reason, "placement-only") {
 		t.Fatalf("mixed workspace was not explicitly degraded: %+v", selection)
 	}
+	degradation := selection.Degradations[0]
+	if degradation.RestoreMode != WorkspaceRestorePlacementOnly || degradation.Layout != "" || degradation.ManagedChildren != 2 {
+		t.Fatalf("mixed workspace diagnostic metadata = %+v", degradation)
+	}
 }
 
 func TestSelectRestoreWorkspaceDegradesExtraManagedContext(t *testing.T) {

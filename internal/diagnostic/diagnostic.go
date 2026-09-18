@@ -16,10 +16,11 @@ const LevelError Level = "error"
 
 // Diagnostic is one actionable, non-sensitive command result.
 type Diagnostic struct {
-	Level   Level  `json:"level"`
-	Code    string `json:"code"`
-	Message string `json:"message"`
-	Hint    string `json:"hint,omitempty"`
+	Level   Level          `json:"level"`
+	Code    string         `json:"code"`
+	Message string         `json:"message"`
+	Hint    string         `json:"hint,omitempty"`
+	Details map[string]any `json:"details,omitempty"`
 }
 
 type envelope struct {

@@ -948,12 +948,11 @@ func (runtime *sessionRuntime) restoreStartupLayout(root *Node) (bool, bool, err
 			var degradationErrors []error
 			for _, degradation := range selection.Degradations {
 				runtime.restoreExcluded[degradation.Workspace] = struct{}{}
-				degradationErr := fmt.Errorf(
-					"degrade workspace %q restore: %s",
-					degradation.Workspace,
-					degradation.Reason,
-				)
-				runtime.restoreFailures[degradation.Workspace] = degradationErr
+				degradationErr := restoreDegradationError{degradation: degradation}
+				// An excluded workspace reflects a deliberate safety decision based
+				// on the current tree. It is not a failed restore command, so it
+				// must not make PreserveFailedRestoreWorkspaces resurrect an old
+				// exact snapshot over the current degraded capture.
 				degradationErrors = append(degradationErrors, degradationErr)
 			}
 			if selection.Progress == nil {

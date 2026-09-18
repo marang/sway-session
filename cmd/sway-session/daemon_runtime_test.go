@@ -1721,6 +1721,67 @@ func TestSessionRuntimeDoesNotPersistImmediateFailedRestoreDegradation(t *testin
 	}
 }
 
+func TestSessionRuntimePersistsCurrentMixedLayoutAfterExcludedRestore(t *testing.T) {
+	secondID := sessionstate.ContextID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
+	stateHome := filepath.Join(t.TempDir(), "state")
+	setSessionTestStateHome(t, stateHome)
+	root := filepath.Join(stateHome, "sway-session")
+	if err := sessionstate.RegistryStoreFor(root).Save(sessionRegistryIDs(testManagedContextID, secondID)); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+	previous := exactDaemonSnapshot("2", testManagedContextID, secondID)
+	if err := sessionstate.LayoutStoreFor(root).Save(previous); err != nil {
+		t.Fatalf("save exact layout: %v", err)
+	}
+	runtime, err := newSessionRuntime(&recordingRequester{})
+	if err != nil {
+		t.Fatalf("create runtime: %v", err)
+	}
+	// An eligible context makes startup consider the saved exact workspace. The
+	// unmanaged window then forces the current capture into placement_only.
+	runtime.restoreEligible[testManagedContextID] = struct{}{}
+	appID := "firefox"
+	mixed := daemonTree("2",
+		managedDaemonLeaf(t, 41, testManagedContextID),
+		&Node{ID: 99, Name: "browser", Type: "con", AppID: &appID},
+		managedDaemonLeaf(t, 42, secondID),
+	)
+	start := time.Unix(500, 0)
+	if refresh, err := runtime.Reconcile(mixed, start); refresh || err == nil {
+		t.Fatalf("mixed startup layout was not reported as an excluded restore: refresh=%v err=%v", refresh, err)
+	}
+	if _, failed := runtime.restoreFailures["2"]; failed {
+		t.Fatal("excluded mixed layout was recorded as a restore failure")
+	}
+	if _, excluded := runtime.restoreExcluded["2"]; !excluded {
+		t.Fatal("mixed startup layout was not excluded from structural restore")
+	}
+	if refresh, err := runtime.Reconcile(mixed, start.Add(time.Second)); refresh || err != nil {
+		t.Fatalf("complete startup after excluded restore: refresh=%v err=%v", refresh, err)
+	}
+	if !runtime.startupComplete {
+		t.Fatal("startup remained incomplete after excluded restore")
+	}
+	if err := runtime.Flush(start.Add(2 * time.Second)); err != nil {
+		t.Fatalf("flush current mixed layout: %v", err)
+	}
+
+	var persisted sessionstate.LayoutSnapshot
+	if err := sessionstate.LayoutStoreFor(root).LoadInto(&persisted); err != nil {
+		t.Fatalf("load persisted mixed layout: %v", err)
+	}
+	workspace, exists := workspaceByName(persisted, "2")
+	if !exists || workspace.RestoreMode != sessionstate.WorkspaceRestorePlacementOnly {
+		t.Fatalf("current mixed layout was not persisted as placement-only: %+v", persisted)
+	}
+	if workspace.Tiling != nil || len(workspace.Floating) != 0 || !reflect.DeepEqual(
+		workspace.PlacementContexts,
+		[]sessionstate.ContextID{testManagedContextID, secondID},
+	) {
+		t.Fatalf("persisted placement-only layout lost current placements: %+v", workspace)
+	}
+}
+
 func TestSessionRuntimeRendersRestoreCommandsWithoutShellEvaluation(t *testing.T) {
 	tests := []struct {
 		name   string

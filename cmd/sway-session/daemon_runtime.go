@@ -83,6 +83,9 @@ type sessionRuntime struct {
 	registryCacheKnown         bool
 	registryPresent            bool
 	restoreProgress            *sessionstate.RestoreProgress
+	restoreCleanup             sessionstate.RestoreCleanup
+	restoreCleanupPending      bool
+	restoreRecoveryPending     bool
 	restoreEligible            map[sessionstate.ContextID]struct{}
 	restoreExcluded            map[string]struct{}
 	restoreSkipped             map[string]struct{}
@@ -175,29 +178,30 @@ func newSessionRuntimeWithOptions(client swayRequester, options sessionRuntimeOp
 		return nil, fmt.Errorf("initialize Sway layout debounce: %w", err)
 	}
 	runtime := &sessionRuntime{
-		ctx:                  ctx,
-		client:               client,
-		root:                 root,
-		persisted:            previous,
-		desired:              previous,
-		debouncer:            debouncer,
-		registry:             registry,
-		registryRevision:     registryRevision,
-		registryCacheKnown:   true,
-		registryPresent:      registryPresent,
-		restoreEligible:      make(map[sessionstate.ContextID]struct{}),
-		restoreExcluded:      make(map[string]struct{}),
-		restoreSkipped:       make(map[string]struct{}),
-		restoreFailures:      make(map[string]error),
-		startupComplete:      len(previous.Workspaces) == 0,
-		applicationLauncher:  options.ApplicationLauncher,
-		expectedMoves:        make(map[int64][]uint64),
-		eventStreamState:     options.EventStreamState,
-		terminalCloseGuard:   options.TerminalCloseGuard,
-		indicatorCatalog:     options.IndicatorCatalog,
-		indicatorOperations:  options.IndicatorOperations,
-		observedTerminals:    make(map[int64]terminalCloseObservation),
-		pendingTerminalClose: make(map[int64]terminalCloseCandidate),
+		ctx:                    ctx,
+		client:                 client,
+		root:                   root,
+		persisted:              previous,
+		desired:                previous,
+		debouncer:              debouncer,
+		registry:               registry,
+		registryRevision:       registryRevision,
+		registryCacheKnown:     true,
+		registryPresent:        registryPresent,
+		restoreEligible:        make(map[sessionstate.ContextID]struct{}),
+		restoreExcluded:        make(map[string]struct{}),
+		restoreSkipped:         make(map[string]struct{}),
+		restoreFailures:        make(map[string]error),
+		restoreRecoveryPending: true,
+		startupComplete:        len(previous.Workspaces) == 0,
+		applicationLauncher:    options.ApplicationLauncher,
+		expectedMoves:          make(map[int64][]uint64),
+		eventStreamState:       options.EventStreamState,
+		terminalCloseGuard:     options.TerminalCloseGuard,
+		indicatorCatalog:       options.IndicatorCatalog,
+		indicatorOperations:    options.IndicatorOperations,
+		observedTerminals:      make(map[int64]terminalCloseObservation),
+		pendingTerminalClose:   make(map[int64]terminalCloseCandidate),
 	}
 	if options.CompositorID != "" {
 		applicationState := sessionstate.ApplicationSessionState{}
@@ -467,6 +471,12 @@ func (runtime *sessionRuntime) requireCurrentEventStream() error {
 }
 
 func (runtime *sessionRuntime) cancelConflictingRestore() {
+	// Cancelling reconstruction must not discard ownership of staging effects.
+	// Cleanup proceeds separately, even through later focus or binding events.
+	runtime.restoreCleanupPending = runtime.restoreCleanup.Pending() || runtime.restoreRecoveryPending || runtime.restoreCleanupPending
+	if runtime.restoreCleanupPending && runtime.debouncer != nil {
+		runtime.debouncer.Cancel()
+	}
 	runtime.originalFocusDone = true
 	runtime.restoreProgress = nil
 	runtime.lateRestorePending = false
@@ -614,6 +624,26 @@ func (runtime *sessionRuntime) Reconcile(root *Node, now time.Time) (needsRefres
 		return false, err
 	}
 	runtime.registryPresent = true
+	runtime.observeDeadline = now.Add(sessionObservationDelay)
+	if runtime.restoreRecoveryPending {
+		if err := runtime.restoreCleanup.Recover(root, registry, runtime.persisted); err != nil {
+			return false, fmt.Errorf("observe interrupted restore: %w", err)
+		}
+		runtime.restoreRecoveryPending = false
+	}
+	if runtime.restoreCleanupPending {
+		action, err := runtime.restoreCleanup.Plan(root, registry)
+		if err != nil {
+			return false, fmt.Errorf("plan cancelled restore cleanup: %w", err)
+		}
+		if action != nil {
+			if err := runtime.applyRestoreAction(*action); err != nil {
+				return false, fmt.Errorf("apply cancelled restore cleanup: %w", err)
+			}
+			return true, nil
+		}
+		runtime.restoreCleanupPending = false
+	}
 	if err := runtime.observeTerminalCloseState(root, registry, now); err != nil {
 		return false, err
 	}
@@ -1016,9 +1046,15 @@ func (runtime *sessionRuntime) restoreStartupLayout(root *Node) (bool, bool, err
 			workspace := runtime.restoreProgress.Workspace
 			runtime.restoreExcluded[workspace] = struct{}{}
 			failed := runtime.restoreProgress.Phase == sessionstate.RestoreRollbackIn
+			// Done can include a skipped, rejected unmark. Retain ownership until
+			// a fresh observation confirms that all temporary effects are gone.
+			runtime.restoreCleanupPending = runtime.restoreCleanup.Pending()
 			runtime.restoreProgress = nil
 			if failed {
 				return false, false, runtime.restoreFailures[workspace]
+			}
+			if runtime.restoreCleanupPending {
+				return true, false, nil
 			}
 			continue
 		}
@@ -1254,6 +1290,7 @@ func (runtime *sessionRuntime) applyRestoreAction(action sessionstate.RestoreAct
 	if move {
 		moveSequence = runtime.expectMove(action.ContainerID)
 	}
+	runtime.restoreCleanup.Remember(action)
 	err := runtime.runSwayCommand(command)
 	if err != nil && move {
 		runtime.handleFailedMove(action.ContainerID, moveSequence, err)
@@ -1384,6 +1421,9 @@ func (runtime *sessionRuntime) Flush(now time.Time) error {
 	}
 	focusErr := runtime.flushTerminalFocus(now)
 	closeErr := runtime.flushTerminalClose(now)
+	if runtime.restoreCleanupPending {
+		return errors.Join(focusErr, closeErr)
+	}
 	candidate, due := runtime.debouncer.Due(now)
 	if !due {
 		return errors.Join(focusErr, closeErr)

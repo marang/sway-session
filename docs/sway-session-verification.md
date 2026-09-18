@@ -187,6 +187,46 @@ Also exercise:
 - application preflight rotation beyond its two-candidate pass bound; and
 - layout re-observation after every mutation and after bounded yield.
 
+### Cancelled layout restore cleanup
+
+The runtime regression tests exercise a successful staging move, cancellation,
+and the subsequent move/focus/tick events before further reconciliation. They
+verify that cleanup returns only windows still owned by that operation and
+still in staging. A window moved to another workspace by the user stays there.
+The suite also covers connection loss and fresh reconnection, rejected and
+ambiguous return moves, retaining the saved layout during incomplete cleanup,
+and daemon restart followed by cancellation before startup selection.
+
+Cleanup retains attempted staging moves and temporary marks independently of
+the structural restore cursor. Every action is planned from a fresh tree and
+uses the observed container identity. A missing reply is reobserved before any
+retry. Each reconciliation issues at most one cleanup mutation; observation
+continues after failures. Attempts rotate across pending windows and marks so
+one rejected return cannot starve the others. Structural completion does not
+release a rejected unmark: ownership ends only after observation confirms the
+effect is gone. Layout persistence waits until cleanup finishes.
+After a daemon restart, the saved layout, active identities, reserved staging
+workspace and related deterministic restore marks provide recovery evidence.
+No new database schema or recovery sidecar is introduced.
+
+This cleanup does not distinguish restore-generated focus events from user
+focus changes (LAB-142), nor does it repair Herdr agent working-directory
+restoration. It prevents cancellation from abandoning temporary staging
+effects; it does not complete structural reconstruction against user intent.
+
+Run the optional real-compositor regression with Sway and Alacritty installed:
+
+```sh
+SWAY_SESSION_HEADLESS_INTEGRATION=1 go test -race ./cmd/sway-session \
+  -run '^TestSessionRuntimeRestoreCleanupHeadless$' -count=1 -v
+```
+
+It creates its own headless compositor, configuration, runtime sockets and
+state roots. Its windows use workspaces 98 and 99. The test drives actual Sway
+focus/move events and verifies cleanup, persistent-mark preservation, retained
+user placement and the absence of further structural reconstruction. Ordinary
+test runs skip it; a private compositor test is not evidence of a real reboot.
+
 ### Terminal close intent
 
 With the candidate daemon and a working logind observer, close one exact

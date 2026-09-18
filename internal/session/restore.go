@@ -95,8 +95,11 @@ func (action RestoreAction) Key() string {
 }
 
 type RestoreDegradation struct {
-	Workspace string
-	Reason    string
+	Workspace       string
+	RestoreMode     WorkspaceRestoreMode
+	Layout          LayoutKind
+	ManagedChildren int
+	Reason          string
 }
 
 type RestoreSelection struct {
@@ -181,17 +184,17 @@ func SelectRestoreWorkspace(
 			continue
 		}
 		if current.RestoreMode == WorkspaceRestorePlacementOnly {
-			selection.Degradations = append(selection.Degradations, RestoreDegradation{
-				Workspace: workspace.Name,
-				Reason:    "mixed managed and unregistered layout is placement-only",
-			})
+			selection.Degradations = append(selection.Degradations, restoreDegradation(
+				current,
+				"mixed managed and unregistered layout is placement-only",
+			))
 			continue
 		}
 		if !sameContextSet(workspaceContextIDs(workspace), workspaceContextIDs(current)) {
-			selection.Degradations = append(selection.Degradations, RestoreDegradation{
-				Workspace: workspace.Name,
-				Reason:    "current workspace contains managed contexts outside the saved exact layout",
-			})
+			selection.Degradations = append(selection.Degradations, restoreDegradation(
+				current,
+				"current workspace contains managed contexts outside the saved exact layout",
+			))
 			continue
 		}
 		if workspaceLayoutsEqual(workspace, current) {
@@ -202,10 +205,10 @@ func SelectRestoreWorkspace(
 			continue
 		}
 		if workspaceHasSingletonGroup(workspace) {
-			selection.Degradations = append(selection.Degradations, RestoreDegradation{
-				Workspace: workspace.Name,
-				Reason:    "single-child layout groups cannot be reconstructed reliably with runtime Sway commands",
-			})
+			selection.Degradations = append(selection.Degradations, restoreDegradation(
+				current,
+				"single-child layout groups cannot be reconstructed reliably with runtime Sway commands",
+			))
 			continue
 		}
 		phase := RestoreStageOut
@@ -216,6 +219,22 @@ func SelectRestoreWorkspace(
 		return selection, nil
 	}
 	return selection, nil
+}
+
+func restoreDegradation(workspace WorkspaceLayout, reason string) RestoreDegradation {
+	layout := LayoutKind("")
+	if workspace.Tiling != nil {
+		layout = workspace.Tiling.Layout
+	} else if len(workspace.Floating) != 0 {
+		layout = LayoutKind("floating")
+	}
+	return RestoreDegradation{
+		Workspace:       workspace.Name,
+		RestoreMode:     workspace.RestoreMode,
+		Layout:          layout,
+		ManagedChildren: len(workspaceContextIDs(workspace)),
+		Reason:          reason,
+	}
 }
 
 // PlanWorkspaceRestoreStep returns one mutation and updated progress. The

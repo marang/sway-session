@@ -315,11 +315,12 @@ not receive another startup restore opportunity. User interaction and lost
 event-stream continuity cancel the pending opportunity, including while the
 application is still missing. Fresh observations also retire it when the
 surviving workspace structure changes without an input event, including before
-the startup deadline. Geometry is compared after startup settles and while the
-window set is unchanged; initial client/decorations geometry can settle without
-user input, and mapping a new view legitimately
-resizes its siblings, so a simultaneous resize cannot be distinguished from
-that mapping by this check. Placement-only snapshots retain placement-only
+the startup deadline. Successful daemon-owned initial placement refreshes the
+affected workspace observations before comparison resumes. Geometry is compared
+after startup settles and while the window set is unchanged. Initial client and
+decoration geometry can settle without user input, and mapping a new view
+legitimately resizes its siblings, so a simultaneous resize cannot be
+distinguished from that mapping by this check. Placement-only snapshots retain placement-only
 behavior, and a fresh degradation retires the pending structural intent before
 the debounced snapshot is written. A live application in the daemon's temporary
 restore workspace still counts as present for application lifecycle tracking;

@@ -1282,6 +1282,9 @@ func (runtime *sessionRuntime) applyPlacementAction(root *Node, action sessionst
 	if err := runtime.runAttributedCommand(root, effect, command, move); err != nil {
 		return fmt.Errorf("apply %s for context %q: %w", action.Kind, action.ContextID, err)
 	}
+	if move {
+		runtime.rebaseStartupApplicationPlacement(root, action)
+	}
 	return nil
 }
 

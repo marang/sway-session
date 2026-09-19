@@ -139,6 +139,26 @@ func startupApplicationLayoutFingerprint(root *Node, keep map[int64]struct{}) *s
 	return result
 }
 
+// Initial placement can move a newly mapped window before structural restore
+// begins. Rebase only its affected workspaces on the next fresh tree; those
+// known successful effects must not be mistaken for independent user edits.
+func (runtime *sessionRuntime) rebaseStartupApplicationPlacement(root *Node, action sessionstate.PlacementAction) {
+	if len(runtime.startupApplications) == 0 {
+		return
+	}
+	source := ""
+	if workspace := pathWorkspace(containerPath(root, action.ContainerID)); workspace != nil {
+		source = workspace.Name
+	}
+	for id, pending := range runtime.startupApplications {
+		name, found := snapshotContextWorkspace(runtime.desired, id)
+		if found && (name == source || name == action.Workspace) {
+			pending.observation = nil
+			runtime.startupApplications[id] = pending
+		}
+	}
+}
+
 func pendingStartupApplications(registry sessionstate.Registry, desired sessionstate.LayoutSnapshot) map[sessionstate.ContextID]startupApplication {
 	pending := make(map[sessionstate.ContextID]startupApplication)
 	for _, context := range registry.Contexts {

@@ -4,6 +4,11 @@ This document is for maintainers. The first standalone release is v0.1.0.
 Although the repository preserves the complete source history, do not push or
 recreate sway-title-animator tags in the sway-session remote.
 
+`sway-session --version` prints the embedded build version. GoReleaser embeds
+the release version, and Arch builds embed `pkgver`. Local `make build` builds
+report `dev` unless an explicit version is supplied with `make build VERSION=...`.
+Check the packaged binary's version when inspecting release artifacts.
+
 ## Preconditions
 
 The release commit must be merged to main and associated with a correctly

@@ -17,7 +17,7 @@ source=("sway-session-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
 sha256sums=('3027aa93de77e186163e8634a3d932ddccd2d98513eebdba84ea20f662674bc7')
 
 _go_build_flags=(-buildmode=pie -trimpath -buildvcs=false -mod=readonly -modcacherw)
-_go_ldflags=(-s -w -buildid=)
+_go_ldflags=(-s -w -buildid= -X "main.version=$pkgver")
 
 _install_codex_hook() {
   local hook=contrib/codex/report-agent-session.sh

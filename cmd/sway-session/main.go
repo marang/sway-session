@@ -33,6 +33,9 @@ const (
 	commandResultVersion = 1
 )
 
+// version is set by release and package builds through -ldflags.
+var version = "dev"
+
 type commandSpec struct {
 	usage   string
 	summary string
@@ -185,6 +188,13 @@ func runWith(arguments []string, stdin io.Reader, stdout io.Writer, stderr io.Wr
 }
 
 func runWithContext(ctx context.Context, arguments []string, stdin io.Reader, stdout io.Writer, stderr io.Writer, deps dependencies) int {
+	if len(arguments) == 1 && arguments[0] == "--version" {
+		if _, err := fmt.Fprintf(stdout, "sway-session %s\n", version); err != nil {
+			writeFailure(stderr, false, failure("output", "write version", err.Error()))
+			return exitOperation
+		}
+		return exitSuccess
+	}
 	arguments, structured, help, configPath, optionFailure := globalOptions(arguments)
 	if optionFailure != nil {
 		writeFailure(stderr, structured, optionFailure)
@@ -449,6 +459,7 @@ func newFlagSet(name string) *flag.FlagSet {
 
 func writeUsage(writer io.Writer) {
 	_, _ = fmt.Fprintln(writer, "Usage: sway-session [--json] <command> [options]")
+	_, _ = fmt.Fprintln(writer, "       sway-session --version")
 	_, _ = fmt.Fprintln(writer)
 	_, _ = fmt.Fprintln(writer, "Persist explicitly registered Sway work contexts.")
 	_, _ = fmt.Fprintln(writer)

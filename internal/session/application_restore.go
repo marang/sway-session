@@ -330,7 +330,10 @@ func ObserveApplicationGroups(root *swayipc.TreeNode, registry Registry) (map[Co
 	}
 	index := buildApplicationContextIndex(&registry, true)
 	var matchErr error
-	if err := walkApplicationWindowsWithScratchpad(root, "", true, func(window WindowApplication, _ bool) {
+	// The restore engine temporarily moves live windows to staging. They
+	// remain present for Follow policy and duplicate-launch prevention, while
+	// the placement planner leaves marked or non-placeable anchors untouched.
+	if err := walkApplicationWindowsIncludingTransient(root, "", func(window WindowApplication, _ bool) {
 		if matchErr != nil {
 			return
 		}

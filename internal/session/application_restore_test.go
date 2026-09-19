@@ -74,6 +74,53 @@ func TestObserveApplicationGroupsCountsScratchpadAsPresenceWithoutRestoringIt(t 
 	}
 }
 
+func TestApplicationRestoreKeepsStagedApplicationPresent(t *testing.T) {
+	for _, marked := range []bool{false, true} {
+		t.Run(fmt.Sprintf("marked_%t", marked), func(t *testing.T) {
+			context := applicationContextWithID(testContextID, "org.example.App")
+			registry := Registry{Version: ContextsSchemaVersion, Contexts: []Context{context}}
+			window := appWindow(41, true, context.App.Identity.WaylandAppID, "", "", context.App.Identity.SandboxAppID)
+			if marked {
+				mark, _ := context.ID.Mark()
+				window.Marks = []string{mark}
+			}
+			tree := applicationTree(window)
+			start := time.Unix(2000, 0)
+			coordinator, err := NewApplicationRestoreCoordinator(strings.Repeat("a", 64), ApplicationSessionState{}, start,
+				ApplicationRestoreOptions{AdoptionGrace: time.Second, CloseGrace: time.Second, LaunchTimeout: 10 * time.Second, MaxConcurrent: 2})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, elapsed := range []time.Duration{0, time.Second, 3 * time.Second} {
+				if elapsed > 0 {
+					tree.Nodes[0].Nodes[0].Name = RestoreStagingWorkspace
+				}
+				groups, err := ObserveApplicationGroups(tree, registry)
+				if err != nil {
+					t.Fatal(err)
+				}
+				plan, err := coordinator.Plan(registry, groups, start.Add(elapsed))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(plan.DesiredOpen) != 0 || len(plan.Launch) != 0 {
+					t.Fatalf("own staging was treated as application absence: %+v", plan)
+				}
+				if elapsed == 0 {
+					continue
+				}
+				if len(groups[context.ID].Windows) != 1 {
+					t.Fatal("staged application disappeared from presence observation")
+				}
+				actions, err := PlanApplicationPlacementActions(groups, placementSnapshot("98", context.ID))
+				if err != nil || len(actions) != 0 {
+					t.Fatalf("ordinary placement interfered with staged app: %+v, %v", actions, err)
+				}
+			}
+		})
+	}
+}
+
 func TestObserveApplicationGroupsIgnoresArchivedApplication(t *testing.T) {
 	context := applicationContextWithID(testContextID, "org.example.App")
 	context.State = ContextArchived

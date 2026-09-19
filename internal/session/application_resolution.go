@@ -173,10 +173,6 @@ func walkApplicationWindows(node *swayipc.TreeNode, workspace string, visit func
 	return walkApplicationWindowsWithOptions(node, workspace, applicationWindowWalkOptions{}, visit)
 }
 
-func walkApplicationWindowsWithScratchpad(node *swayipc.TreeNode, workspace string, includeScratchpad bool, visit func(WindowApplication, bool)) error {
-	return walkApplicationWindowsWithOptions(node, workspace, applicationWindowWalkOptions{includeScratchpad: includeScratchpad}, visit)
-}
-
 func walkApplicationWindowsIncludingTransient(node *swayipc.TreeNode, workspace string, visit func(WindowApplication, bool)) error {
 	return walkApplicationWindowsWithOptions(node, workspace, applicationWindowWalkOptions{includeScratchpad: true, includeRestoreStaging: true}, visit)
 }

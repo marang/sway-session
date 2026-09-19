@@ -306,6 +306,27 @@ desired-open across starts. Launch intent is recorded before process start so
 daemon restart or ambiguous outcome cannot duplicate an attempt in one
 compositor session.
 
+An active, desired-open application in the saved exact layout may finish its
+startup after the settling deadline. The daemon retains that startup intent
+until the first uniquely identified unmarked anchor is adopted, then resumes
+the saved structural restore. Existing marked windows, ambiguous groups,
+changed identities or restore eligibility, and later replacement windows do
+not receive another startup restore opportunity. User interaction and lost
+event-stream continuity cancel the pending opportunity, including while the
+application is still missing. Fresh observations also retire it when the
+surviving workspace structure changes without an input event, including before
+the startup deadline. Successful daemon-owned initial placement refreshes the
+affected workspace observations before comparison resumes. Geometry is compared
+after startup settles and while the window set is unchanged. Initial client and
+decoration geometry can settle without user input, and mapping a new view
+legitimately resizes its siblings, so a simultaneous resize cannot be
+distinguished from that mapping by this check. Placement-only snapshots retain placement-only
+behavior, and a fresh degradation retires the pending structural intent before
+the debounced snapshot is written. A live application in the daemon's temporary
+restore workspace still counts as present for application lifecycle tracking;
+staging must not change `DesiredOpen` or trigger a duplicate launch. This does
+not restore application-internal state or pane directories.
+
 Sway 1.12 exposes sufficient XWayland transient metadata to exclude recognized
 dialogs but not equivalent native Wayland parent/type data. Per-window native
 Wayland identity remains tracked in LAB-93.

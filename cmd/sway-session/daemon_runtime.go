@@ -87,6 +87,7 @@ type sessionRuntime struct {
 	restoreCleanupPending      bool
 	restoreRecoveryPending     bool
 	restoreEligible            map[sessionstate.ContextID]struct{}
+	startupApplications        map[sessionstate.ContextID]startupApplication
 	restoreExcluded            map[string]struct{}
 	restoreSkipped             map[string]struct{}
 	restoreFailures            map[string]error
@@ -193,6 +194,7 @@ func newSessionRuntimeWithOptions(client swayRequester, options sessionRuntimeOp
 		registryCacheKnown:     true,
 		registryPresent:        registryPresent,
 		restoreEligible:        make(map[sessionstate.ContextID]struct{}),
+		startupApplications:    pendingStartupApplications(registry, previous),
 		restoreExcluded:        make(map[string]struct{}),
 		restoreSkipped:         make(map[string]struct{}),
 		restoreFailures:        make(map[string]error),
@@ -421,7 +423,7 @@ func (runtime *sessionRuntime) HandleEvent(event swayipc.Event, now time.Time) {
 	if event.Change == "move" && event.Container != nil && runtime.consumeExpectedMove(event.Container.ID) {
 		return
 	}
-	if runtime.restoreProgress != nil || runtime.lateRestorePending {
+	if runtime.restoreProgress != nil || runtime.lateRestorePending || len(runtime.startupApplications) != 0 {
 		runtime.cancelConflictingRestore()
 	}
 }
@@ -478,7 +480,7 @@ func focusedManagedContextID(node *Node) (sessionstate.ContextID, bool) {
 }
 
 func (runtime *sessionRuntime) restoreMayConflictWithUserIntent() bool {
-	return !runtime.startupComplete || runtime.restoreProgress != nil || runtime.lateRestorePending
+	return !runtime.startupComplete || runtime.restoreProgress != nil || runtime.lateRestorePending || len(runtime.startupApplications) != 0
 }
 
 func (runtime *sessionRuntime) requireCurrentEventStream() error {
@@ -500,6 +502,7 @@ func (runtime *sessionRuntime) cancelConflictingRestore() {
 	clear(runtime.pendingMappingFocus)
 	clear(runtime.mappingCandidates)
 	runtime.restoreCancelled = true
+	clear(runtime.startupApplications)
 	// Cancelling reconstruction must not discard ownership of staging effects.
 	// Cleanup proceeds separately, even through later focus or binding events.
 	runtime.restoreCleanupPending = runtime.restoreCleanup.Pending() || runtime.restoreRecoveryPending || runtime.restoreCleanupPending
@@ -694,6 +697,7 @@ func (runtime *sessionRuntime) Reconcile(root *Node, now time.Time) (needsRefres
 	// persistent registry exists so those changes still reach the debouncer.
 	// The missing-registry branch above schedules a separate discovery tick.
 	runtime.observeDeadline = now.Add(sessionObservationDelay)
+	runtime.observeStartupApplicationLayout(root)
 	applicationRefresh, registry, applicationDegraded, applicationErr := runtime.reconcileApplications(root, registry, now)
 	if applicationDegraded != nil {
 		degraded = append(degraded, applicationDegraded)
@@ -824,6 +828,15 @@ func (runtime *sessionRuntime) Reconcile(root *Node, now time.Time) (needsRefres
 		}
 	}
 	runtime.desired = stable
+	// A current degradation retires the original structural intent immediately,
+	// including the debounce interval before it replaces the durable snapshot.
+	for id := range runtime.startupApplications {
+		name, found := snapshotContextWorkspace(stable, id)
+		workspace, exists := workspaceByName(stable, name)
+		if !found || !exists || workspace.RestoreMode != sessionstate.WorkspaceRestoreLayout {
+			delete(runtime.startupApplications, id)
+		}
+	}
 	_, err = runtime.debouncer.Observe(stable, now)
 	return false, err
 }
@@ -836,6 +849,9 @@ func (runtime *sessionRuntime) reconcileApplications(root *Node, registry sessio
 	if err != nil {
 		return false, registry, nil, err
 	}
+	// Invalidate explicit policy changes before presence tracking can set
+	// DesiredOpen again for a newly user-opened application.
+	runtime.observeStartupApplications(registry, groups)
 	plan, err := runtime.applications.Plan(registry, groups, now)
 	if err != nil {
 		return false, registry, nil, err
@@ -887,6 +903,7 @@ func (runtime *sessionRuntime) reconcileApplications(root *Node, registry sessio
 		if err != nil {
 			return err
 		}
+		runtime.observeStartupApplications(current, currentGroups)
 		currentPlan, err := runtime.applications.Plan(current, currentGroups, now)
 		if err != nil {
 			return err
@@ -914,8 +931,12 @@ func (runtime *sessionRuntime) reconcileApplications(root *Node, registry sessio
 			}
 			_, alreadyEligible := runtime.restoreEligible[action.ContextID]
 			runtime.attributeMappingFocus(action.ContainerID, action.ContextID)
-			if action.Kind == sessionstate.PlacementAddMark && !runtime.startupComplete {
+			_, startupApplication := runtime.startupApplications[action.ContextID]
+			if action.Kind == sessionstate.PlacementAddMark && (!runtime.startupComplete || startupApplication) {
 				runtime.restoreEligible[action.ContextID] = struct{}{}
+				if runtime.startupComplete && !alreadyEligible {
+					runtime.rearmLateRestore(action.ContextID)
+				}
 			}
 			if err := runtime.applyPlacementAction(root, action); err != nil {
 				var unknown *swayipc.CommandOutcomeUnknownError
@@ -1260,6 +1281,9 @@ func (runtime *sessionRuntime) applyPlacementAction(root *Node, action sessionst
 	}
 	if err := runtime.runAttributedCommand(root, effect, command, move); err != nil {
 		return fmt.Errorf("apply %s for context %q: %w", action.Kind, action.ContextID, err)
+	}
+	if move {
+		runtime.rebaseStartupApplicationPlacement(root, action)
 	}
 	return nil
 }

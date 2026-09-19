@@ -346,6 +346,25 @@ documentation/integration assets; DEB runtime metadata lists only Sway.
 
 ## Desktop application check
 
+The delayed-application regression uses a real private Sway compositor and an
+Alacritty window with an ordinary desktop application identity. Launch
+scheduling and time are injected; no browser or agent session is involved:
+
+```sh
+SWAY_SESSION_HEADLESS_INTEGRATION=1 go test -race ./cmd/sway-session \
+  -run '^TestSessionRuntimeLateApplicationHeadless$' -count=1 -v
+```
+
+It covers arrival before and after the startup timeout in both saved child
+orders, real mapping and command-generated events, staging beyond the
+application close grace period, tabbed convergence, persisted capture,
+steady-state idempotence, and preservation of a user binding or an IPC layout
+change before or after the startup timeout. Unit regressions also cover
+observed resizing, changed policy/identity, close/move/disconnect, existing marks,
+ambiguous groups, mark retry, genuine mixed-workspace degradation, and retiring
+that degraded intent before its debounced snapshot is written. This is
+not a production reboot or application-internal session restore test.
+
 Use a disposable desktop entry and workspace 98 or higher. Never reuse or purge
 an unrelated registration.
 

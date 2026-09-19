@@ -104,6 +104,10 @@ type sessionRuntime struct {
 	applicationPlacementCursor *sessionstate.PlacementAction
 	placementCursor            *sessionstate.PlacementAction
 	expectedMoves              map[int64][]uint64
+	expectedFocus              []restoreFocusExpectation
+	pendingMappingFocus        map[int64]restoreMappingFocus
+	mappingCandidates          map[int64]restoreMappingCandidate
+	restoreCancelled           bool
 	nextMoveSequence           uint64
 	eventStreamReady           bool
 	eventStreamEpoch           uint64
@@ -325,6 +329,9 @@ func (runtime *sessionRuntime) HandleEvent(event swayipc.Event, now time.Time) {
 		return
 	}
 	if event.Type == swayipc.EventShutdown {
+		runtime.expectedFocus = nil
+		clear(runtime.pendingMappingFocus)
+		clear(runtime.mappingCandidates)
 		runtime.eventStreamReady = false
 		clear(runtime.observedTerminals)
 		clear(runtime.pendingTerminalClose)
@@ -340,6 +347,9 @@ func (runtime *sessionRuntime) HandleEvent(event swayipc.Event, now time.Time) {
 		// event was lost with the old connection must be rediscovered through
 		// the fresh tree instead of consuming later user intent.
 		clear(runtime.expectedMoves)
+		runtime.expectedFocus = nil
+		clear(runtime.pendingMappingFocus)
+		clear(runtime.mappingCandidates)
 		clear(runtime.observedTerminals)
 		clear(runtime.pendingTerminalClose)
 		runtime.terminalCloseDeadline = time.Time{}
@@ -358,6 +368,9 @@ func (runtime *sessionRuntime) HandleEvent(event swayipc.Event, now time.Time) {
 	}
 	if event.Type == swayipc.EventStream && event.Change == "disconnected" {
 		clear(runtime.expectedMoves)
+		runtime.expectedFocus = nil
+		clear(runtime.pendingMappingFocus)
+		clear(runtime.mappingCandidates)
 		clear(runtime.observedTerminals)
 		clear(runtime.pendingTerminalClose)
 		runtime.terminalCloseDeadline = time.Time{}
@@ -374,7 +387,12 @@ func (runtime *sessionRuntime) HandleEvent(event swayipc.Event, now time.Time) {
 	if event.Type == swayipc.EventTick {
 		if sequence, ok := moveBarrierSequence(event.Payload); ok {
 			runtime.expireExpectedMoves(sequence)
+			runtime.expireRestoreFocus(sequence)
 		}
+		return
+	}
+	if event.Type == swayipc.EventWindow && event.Change == "new" {
+		runtime.observeMappingFocus(event.Container)
 		return
 	}
 	interactiveFocus :=
@@ -384,6 +402,9 @@ func (runtime *sessionRuntime) HandleEvent(event swayipc.Event, now time.Time) {
 		if event.Type == swayipc.EventWindow && event.Change == "focus" {
 			runtime.queueTerminalFocus(event.Container, now)
 		}
+		if interactiveFocus && runtime.consumeRestoreFocus(event) {
+			return
+		}
 		runtime.cancelConflictingRestore()
 		return
 	}
@@ -391,6 +412,10 @@ func (runtime *sessionRuntime) HandleEvent(event swayipc.Event, now time.Time) {
 		return
 	}
 	if event.Change == "close" {
+		if event.Container != nil {
+			delete(runtime.mappingCandidates, event.Container.ID)
+			delete(runtime.pendingMappingFocus, event.Container.ID)
+		}
 		runtime.queueTerminalClose(event.Container, now)
 	}
 	if event.Change == "move" && event.Container != nil && runtime.consumeExpectedMove(event.Container.ID) {
@@ -471,6 +496,10 @@ func (runtime *sessionRuntime) requireCurrentEventStream() error {
 }
 
 func (runtime *sessionRuntime) cancelConflictingRestore() {
+	runtime.expectedFocus = nil
+	clear(runtime.pendingMappingFocus)
+	clear(runtime.mappingCandidates)
+	runtime.restoreCancelled = true
 	// Cancelling reconstruction must not discard ownership of staging effects.
 	// Cleanup proceeds separately, even through later focus or binding events.
 	runtime.restoreCleanupPending = runtime.restoreCleanup.Pending() || runtime.restoreRecoveryPending || runtime.restoreCleanupPending
@@ -494,6 +523,11 @@ func (runtime *sessionRuntime) consumeExpectedMove(containerID int64) bool {
 	sequences := runtime.expectedMoves[containerID]
 	if containerID <= 0 || len(sequences) == 0 {
 		return false
+	}
+	for index := range runtime.expectedFocus {
+		if runtime.expectedFocus[index].sequence == sequences[0] {
+			runtime.expectedFocus[index].afterMove = false
+		}
 	}
 	sequences = sequences[1:]
 	if len(sequences) == 0 {
@@ -563,6 +597,7 @@ func moveBarrierSequence(payload string) (uint64, bool) {
 }
 
 func (runtime *sessionRuntime) handleFailedMove(containerID int64, sequence uint64, err error) {
+	runtime.discardRestoreFocus(sequence)
 	if containerID <= 0 {
 		return
 	}
@@ -637,7 +672,7 @@ func (runtime *sessionRuntime) Reconcile(root *Node, now time.Time) (needsRefres
 			return false, fmt.Errorf("plan cancelled restore cleanup: %w", err)
 		}
 		if action != nil {
-			if err := runtime.applyRestoreAction(*action); err != nil {
+			if err := runtime.applyRestoreAction(root, *action); err != nil {
 				return false, fmt.Errorf("apply cancelled restore cleanup: %w", err)
 			}
 			return true, nil
@@ -670,15 +705,18 @@ func (runtime *sessionRuntime) Reconcile(root *Node, now time.Time) (needsRefres
 	if err != nil {
 		return false, err
 	}
-	if len(actions) != 0 {
-		last := actions[len(actions)-1]
-		runtime.placementCursor = &last
-	}
 	failedMoveContexts := make(map[sessionstate.ContextID]struct{})
 	if len(actions) != 0 {
 		placementRefresh := false
+		moved := false
 		failedContexts := make(map[sessionstate.ContextID]struct{})
 		for _, action := range actions {
+			if action.Kind == sessionstate.PlacementMoveWorkspace && moved {
+				// The next focus prediction needs a tree after the previous move.
+				return true, nil
+			}
+			cursor := action
+			runtime.placementCursor = &cursor
 			if _, failed := failedContexts[action.ContextID]; failed {
 				continue
 			}
@@ -687,13 +725,14 @@ func (runtime *sessionRuntime) Reconcile(root *Node, now time.Time) (needsRefres
 			// sending the mark command so an ambiguous response cannot make the
 			// subsequent marked observation look like a pre-existing window.
 			_, alreadyEligible := runtime.restoreEligible[action.ContextID]
+			runtime.attributeMappingFocus(action.ContainerID, action.ContextID)
 			if action.Kind == sessionstate.PlacementAddMark {
 				runtime.restoreEligible[action.ContextID] = struct{}{}
-				if runtime.startupComplete {
+				if runtime.startupComplete && !alreadyEligible {
 					runtime.rearmLateRestore(action.ContextID)
 				}
 			}
-			if err := runtime.applyPlacementAction(action); err != nil {
+			if err := runtime.applyPlacementAction(root, action); err != nil {
 				var unknown *swayipc.CommandOutcomeUnknownError
 				var invalid *swayipc.CommandResponseInvalidError
 				if errors.As(err, &unknown) || errors.As(err, &invalid) {
@@ -710,6 +749,7 @@ func (runtime *sessionRuntime) Reconcile(root *Node, now time.Time) (needsRefres
 				continue
 			}
 			placementRefresh = true
+			moved = moved || action.Kind == sessionstate.PlacementMoveWorkspace
 		}
 		if placementRefresh {
 			return true, nil
@@ -861,20 +901,23 @@ func (runtime *sessionRuntime) reconcileApplications(root *Node, registry sessio
 		if err != nil {
 			return err
 		}
-		if len(placement) != 0 {
-			last := placement[len(placement)-1]
-			runtime.applicationPlacementCursor = &last
-		}
+		moved := false
 		failedContexts := make(map[sessionstate.ContextID]struct{})
 		for _, action := range placement {
+			if action.Kind == sessionstate.PlacementMoveWorkspace && moved {
+				return nil
+			}
+			cursor := action
+			runtime.applicationPlacementCursor = &cursor
 			if _, failed := failedContexts[action.ContextID]; failed {
 				continue
 			}
 			_, alreadyEligible := runtime.restoreEligible[action.ContextID]
+			runtime.attributeMappingFocus(action.ContainerID, action.ContextID)
 			if action.Kind == sessionstate.PlacementAddMark && !runtime.startupComplete {
 				runtime.restoreEligible[action.ContextID] = struct{}{}
 			}
-			if err := runtime.applyPlacementAction(action); err != nil {
+			if err := runtime.applyPlacementAction(root, action); err != nil {
 				var unknown *swayipc.CommandOutcomeUnknownError
 				var invalid *swayipc.CommandResponseInvalidError
 				if errors.As(err, &unknown) || errors.As(err, &invalid) {
@@ -889,6 +932,7 @@ func (runtime *sessionRuntime) reconcileApplications(root *Node, registry sessio
 				continue
 			}
 			refresh = true
+			moved = moved || action.Kind == sessionstate.PlacementMoveWorkspace
 		}
 		var launchErrors []error
 		launchSlots := currentPlan.LaunchSlots
@@ -996,7 +1040,7 @@ func (runtime *sessionRuntime) restoreStartupLayout(root *Node) (bool, bool, err
 							Kind:        sessionstate.RestoreFocus,
 							ContainerID: node.ID,
 						}
-						if err := runtime.applyRestoreAction(action); err != nil {
+						if err := runtime.applyRestoreAction(root, action); err != nil {
 							var unknown *swayipc.CommandOutcomeUnknownError
 							var invalid *swayipc.CommandResponseInvalidError
 							if errors.As(err, &unknown) || errors.As(err, &invalid) {
@@ -1060,10 +1104,13 @@ func (runtime *sessionRuntime) restoreStartupLayout(root *Node) (bool, bool, err
 		}
 
 		action := *step.Action
-		if err := runtime.applyRestoreAction(action); err != nil {
+		if err := runtime.applyRestoreAction(root, action); err != nil {
 			var unknown *swayipc.CommandOutcomeUnknownError
 			var invalid *swayipc.CommandResponseInvalidError
 			if errors.As(err, &unknown) || errors.As(err, &invalid) {
+				return true, false, err
+			}
+			if runtime.restoreProgress == nil {
 				return true, false, err
 			}
 			if action.Structural {
@@ -1105,8 +1152,11 @@ func (runtime *sessionRuntime) beginRestoreRollback(cause error) (bool, bool, er
 }
 
 func (runtime *sessionRuntime) rearmLateRestore(id sessionstate.ContextID) {
-	runtime.lateRestorePending = true
+	if runtime.restoreCancelled {
+		return
+	}
 	if workspace, exists := snapshotContextWorkspace(runtime.desired, id); exists {
+		runtime.lateRestorePending = true
 		delete(runtime.restoreExcluded, workspace)
 	}
 }
@@ -1184,7 +1234,7 @@ func (runtime *sessionRuntime) loadRegistry() (sessionstate.Registry, bool, erro
 	return runtime.registry, true, nil
 }
 
-func (runtime *sessionRuntime) applyPlacementAction(action sessionstate.PlacementAction) error {
+func (runtime *sessionRuntime) applyPlacementAction(root *Node, action sessionstate.PlacementAction) error {
 	var command string
 	move := false
 	switch action.Kind {
@@ -1204,27 +1254,17 @@ func (runtime *sessionRuntime) applyPlacementAction(action sessionstate.Placemen
 	default:
 		return fmt.Errorf("unsupported placement action %q", action.Kind)
 	}
-	moveSequence := uint64(0)
-	if move {
-		moveSequence = runtime.expectMove(action.ContainerID)
+	effect := sessionstate.RestoreAction{Kind: sessionstate.RestoreMoveWorkspace, ContainerID: action.ContainerID, Target: action.Workspace}
+	if !move {
+		effect.Kind = sessionstate.RestoreAddTemporaryMark
 	}
-	if err := runtime.runSwayCommand(command); err != nil {
-		if move {
-			runtime.handleFailedMove(action.ContainerID, moveSequence, err)
-		}
+	if err := runtime.runAttributedCommand(root, effect, command, move); err != nil {
 		return fmt.Errorf("apply %s for context %q: %w", action.Kind, action.ContextID, err)
-	}
-	if move {
-		if err := runtime.sendMoveBarrier(moveSequence); err != nil {
-			unknown := &swayipc.CommandOutcomeUnknownError{Cause: fmt.Errorf("establish move attribution barrier: %w", err)}
-			runtime.handleFailedMove(action.ContainerID, moveSequence, unknown)
-			return fmt.Errorf("apply %s for context %q: %w", action.Kind, action.ContextID, unknown)
-		}
 	}
 	return nil
 }
 
-func (runtime *sessionRuntime) applyRestoreAction(action sessionstate.RestoreAction) error {
+func (runtime *sessionRuntime) applyRestoreAction(root *Node, action sessionstate.RestoreAction) error {
 	var command string
 	move := false
 	switch action.Kind {
@@ -1286,22 +1326,8 @@ func (runtime *sessionRuntime) applyRestoreAction(action sessionstate.RestoreAct
 	default:
 		return fmt.Errorf("unsupported restore action %q", action.Kind)
 	}
-	moveSequence := uint64(0)
-	if move {
-		moveSequence = runtime.expectMove(action.ContainerID)
-	}
 	runtime.restoreCleanup.Remember(action)
-	err := runtime.runSwayCommand(command)
-	if err != nil && move {
-		runtime.handleFailedMove(action.ContainerID, moveSequence, err)
-	}
-	if err == nil && move {
-		if barrierErr := runtime.sendMoveBarrier(moveSequence); barrierErr != nil {
-			err = &swayipc.CommandOutcomeUnknownError{Cause: fmt.Errorf("establish move attribution barrier: %w", barrierErr)}
-			runtime.handleFailedMove(action.ContainerID, moveSequence, err)
-		}
-	}
-	return err
+	return runtime.runAttributedCommand(root, action, command, move)
 }
 
 func (runtime *sessionRuntime) runSwayCommand(command string) error {

@@ -286,7 +286,7 @@ func TestSessionRuntimeCleanupRetainsRejectedMarkAfterStructuralCompletion(t *te
 	workspace.Nodes = []*Node{group}
 	// Deterministic mark for workspace 98's tiling root.
 	mark := "_sway_session_restore_29db0c6782dbd500_t"
-	if err := runtime.applyRestoreAction(sessionstate.RestoreAction{Kind: sessionstate.RestoreAddTemporaryMark, Workspace: "98", ContainerID: group.ID, Target: mark}); err != nil {
+	if err := runtime.applyRestoreAction(nil, sessionstate.RestoreAction{Kind: sessionstate.RestoreAddTemporaryMark, Workspace: "98", ContainerID: group.ID, Target: mark}); err != nil {
 		t.Fatal(err)
 	}
 	runtime.restoreProgress = &sessionstate.RestoreProgress{Workspace: "98", Phase: sessionstate.RestoreBuild}

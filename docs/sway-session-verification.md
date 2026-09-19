@@ -209,10 +209,10 @@ After a daemon restart, the saved layout, active identities, reserved staging
 workspace and related deterministic restore marks provide recovery evidence.
 No new database schema or recovery sidecar is introduced.
 
-This cleanup does not distinguish restore-generated focus events from user
-focus changes (LAB-142), nor does it repair Herdr agent working-directory
-restoration. It prevents cancellation from abandoning temporary staging
-effects; it does not complete structural reconstruction against user intent.
+Cleanup remains independent of focus attribution. It prevents cancellation
+from abandoning temporary staging effects; it does not complete structural
+reconstruction against user intent or repair Herdr agent working-directory
+restoration.
 
 Run the optional real-compositor regression with Sway and Alacritty installed:
 
@@ -226,6 +226,56 @@ state roots. Its windows use workspaces 98 and 99. The test drives actual Sway
 focus/move events and verifies cleanup, persistent-mark preservation, retained
 user placement and the absence of further structural reconstruction. Ordinary
 test runs skip it; a private compositor test is not evidence of a real reboot.
+
+### Restore-generated focus events
+
+The runtime predicts narrow focus transitions from the fresh tree and its
+focus stacks for staging/placement moves, cross-workspace moves to a mark,
+explicit focus, and fullscreen activation. A move-induced successor focus is
+accepted only after the corresponding expected move event. Workspace and
+window focus events must match in order; each allowance is consumed once and
+expires at that command's tick barrier. Stream generation changes, command
+failures, and cancellation invalidate allowances. Placement yields for a new
+tree before a second move, so it never predicts from an already changed focus
+stack. Missing focus-stack evidence does not allow arbitrary focus changes.
+
+Cold startup is tested with the daemon subscribed before terminals map.
+`window::new` reserves a bounded epoch/tick record; only validated placement
+of a saved active context authorizes its one automatic mapping-focus event.
+The exact adopted container is remembered because GET_TREE can observe and
+mark a window before its queued new event is processed. The mapping allowance
+precedes subsequent command effects and expires at its own barrier. Closing a
+window, losing the stream, or cancelling restoration invalidates these facts.
+An explicit cancellation also prevents later window adoption from restarting
+structural restoration in the same daemon lifetime. Already seen contexts do
+not gain a new startup allowance merely by reopening.
+
+Sway IPC provides no focus-event origin token. Exact matching between command
+and barrier is therefore a bounded inference: a concurrent user action with
+the identical transition cannot be distinguished by these fields alone.
+Bindings and unmatched focus events always cancel conflicting reconstruction.
+There is no time-based focus suppression window.
+
+Run the full event-driven regression using a private compositor:
+
+```sh
+SWAY_SESSION_HEADLESS_INTEGRATION=1 go test -race ./cmd/sway-session \
+  -run '^TestSessionRuntimeRestore(Focus|ColdStartFocus|Cleanup)Headless$' -count=1 -v
+```
+
+The focus test starts with two split workspaces, restores tabbed and stacked
+layouts, consumes real command-generated events between bounded runtime
+passes, and verifies original focus, leaf order, stable identity marks, and
+the absence of temporary staging state. It also verifies persistence and
+steady-state idempotence after restoration. The cleanup tests retain explicit
+user cancellation. The cold-start case uses the production per-event
+reconciliation order, including queued mapping-focus events after adoption,
+and checks both successful tabbed restoration and intervening user binding.
+Global fullscreen on a container group is covered by real workspace-only
+focus feedback. Unit regressions cover delayed, duplicate, out-of-order,
+expired and generation-mismatched events, command failures, nested focus
+stacks, and fullscreen transitions. These are isolated compositor checks, not
+evidence that a production reboot has passed.
 
 ### Terminal close intent
 

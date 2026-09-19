@@ -16,7 +16,7 @@ builds:
       - -trimpath
       - -buildvcs=false
     ldflags:
-      - -s -w -buildid=
+      - -s -w -buildid= -X main.version={{ .Version }}
     mod_timestamp: "{{ .CommitTimestamp }}"
     goos:
       - linux

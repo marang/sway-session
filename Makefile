@@ -2,6 +2,8 @@ BINARIES := sway-session
 PREFIX ?= $(HOME)/.local
 GO_BUILD_FLAGS := -trimpath -buildvcs=false
 GO_LDFLAGS := -s -w -buildid=
+VERSION ?= dev
+GO_LDFLAGS += -X main.version=$(VERSION)
 GO_FILES := $(shell find cmd internal -name '*.go' -type f)
 DOC_ROOT := $(PREFIX)/share/doc/sway-session
 

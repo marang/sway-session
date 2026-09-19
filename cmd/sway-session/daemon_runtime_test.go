@@ -451,7 +451,7 @@ func TestSessionRuntimeAmbiguousMoveOutcomeStopsRestoreAndExposesLaterUserMove(t
 			restoreExcluded: map[string]struct{}{},
 		}
 
-		err := runtime.applyPlacementAction(sessionstate.PlacementAction{
+		err := runtime.applyPlacementAction(nil, sessionstate.PlacementAction{
 			Kind:        sessionstate.PlacementMoveWorkspace,
 			ContextID:   testManagedContextID,
 			ContainerID: 41,
@@ -485,7 +485,7 @@ func TestSessionRuntimeNoOpMoveBarrierExpiresAttributionBeforeLaterUserMove(t *t
 		restoreExcluded: map[string]struct{}{},
 	}
 
-	if err := runtime.applyPlacementAction(sessionstate.PlacementAction{
+	if err := runtime.applyPlacementAction(nil, sessionstate.PlacementAction{
 		Kind:        sessionstate.PlacementMoveWorkspace,
 		ContextID:   testManagedContextID,
 		ContainerID: 41,
@@ -1809,7 +1809,7 @@ func TestSessionRuntimeRendersRestoreCommandsWithoutShellEvaluation(t *testing.T
 		t.Run(test.name, func(t *testing.T) {
 			requester := &recordingRequester{}
 			runtime := &sessionRuntime{client: requester}
-			if err := runtime.applyRestoreAction(test.action); err != nil {
+			if err := runtime.applyRestoreAction(nil, test.action); err != nil {
 				t.Fatalf("apply restore action: %v", err)
 			}
 			if len(requester.commands) != 1 || requester.commands[0] != test.want {

@@ -27,12 +27,17 @@ func TestSessionRuntimeRestoreCleanupHeadless(t *testing.T) {
 			t.Skipf("headless integration requires %s: %v", name, err)
 		}
 	}
-	for _, manualMove := range []bool{false, true} {
-		name := "focus_cancellation"
-		if manualMove {
-			name = "preserve_manual_workspace_move"
-		}
-		t.Run(name, func(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		manualMove bool
+		binding    bool
+	}{
+		{name: "focus_cancellation"},
+		{name: "binding_cancellation", binding: true},
+		{name: "preserve_manual_workspace_move", manualMove: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			manualMove := test.manualMove
 			headless := newRestoreCleanupHeadless(t)
 			ids := []sessionstate.ContextID{testManagedContextID, "6ba7b810-9dad-11d1-80b4-00c04fd430c8"}
 			registry := sessionRegistryIDs(ids...)
@@ -54,7 +59,7 @@ func TestSessionRuntimeRestoreCleanupHeadless(t *testing.T) {
 				owned = append(owned, headless.terminal(id))
 			}
 			// Keep focus off the source workspace while staging. The explicit
-			// focus change below supplies real cancellation intent through IPC.
+			// user focus or binding below supplies cancellation intent.
 			headless.command("workspace 99")
 			requester := &restoreCleanupRealRequester{Client: headless.client}
 			streamState := &swayipc.EventStreamState{}
@@ -104,15 +109,23 @@ func TestSessionRuntimeRestoreCleanupHeadless(t *testing.T) {
 				}
 				headless.command(fmt.Sprintf("[con_id=%d] move container to workspace 99", owned[0]))
 			}
+			if test.binding {
+				// Inject a typed binding while real daemon events remain queued.
+				// Other cases exercise unmatched focus through actual Sway IPC.
+				runtime.HandleEvent(swayipc.Event{Type: swayipc.EventBinding, Change: "run"}, time.Now())
+				if runtime.restoreProgress != nil || !runtime.startupComplete {
+					t.Fatal("explicit user binding did not cancel structural restoration")
+				}
+			}
 			headless.command("workspace 98")
 			events := headless.drain(runtime)
 			if !slices.ContainsFunc(events, func(event swayipc.Event) bool {
 				return event.Type == swayipc.EventWorkspace && event.Change == "focus" && event.Current != nil && event.Current.Name == "98"
 			}) {
-				t.Fatal("did not receive the real workspace focus cancellation event")
+				t.Fatal("did not receive the real user workspace focus event")
 			}
 			if runtime.restoreProgress != nil || !runtime.startupComplete {
-				t.Fatal("real user event did not cancel structural restoration")
+				t.Fatal("user cancellation did not survive queued real events")
 			}
 			commandsBeforeCleanup := len(requester.commands)
 			moveEvents := 0

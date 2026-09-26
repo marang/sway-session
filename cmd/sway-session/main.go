@@ -292,6 +292,8 @@ type terminalIdentityResult struct {
 type terminalInventoryResult struct {
 	ContextID     sessionstate.ContextID                  `json:"context_id"`
 	Label         string                                  `json:"label,omitempty"`
+	AutoName      string                                  `json:"-"`
+	PaneDirectory string                                  `json:"-"`
 	Identity      terminalIdentityResult                  `json:"identity"`
 	Adapter       sessionstate.TerminalAdapter            `json:"adapter"`
 	Manager       sessionstate.TerminalSessionManagerKind `json:"session_manager"`

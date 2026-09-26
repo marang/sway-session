@@ -41,6 +41,78 @@ func TestTerminalManageLoadsInventoryAndExplainsAnEmptyList(t *testing.T) {
 	}
 }
 
+func TestTerminalManageDerivesNamesFromHerdrPaneDirectories(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	created := time.Date(2026, time.September, 26, 22, 53, 0, 0, time.Local)
+	items := []terminalInventoryResult{
+		terminalManageTestItem("11111111-1111-4111-8111-111111111111", "Terminal", sessionstate.ContextActive),
+		terminalManageTestItem("22222222-2222-4222-8222-222222222222", "Terminal", sessionstate.ContextActive),
+		terminalManageTestItem("33333333-3333-4333-8333-333333333333", "Terminal", sessionstate.ContextActive),
+		terminalManageTestItem("44444444-4444-4444-8444-444444444444", "Custom title", sessionstate.ContextActive),
+	}
+	for index := range items[:3] {
+		items[index].Identity = terminalIdentityResult{}
+		items[index].Cwd = "/home/example"
+		at := created.Add(time.Duration(index) * time.Minute)
+		items[index].CreatedAt = &at
+	}
+	observer := &terminalManageDirectoryTestOperations{
+		terminalManageTestOperations: terminalManageTestOperations{snapshots: [][]terminalInventoryResult{items}},
+		observations: map[sessionstate.ContextID]sessionstate.HerdrDirectoryObservation{
+			items[0].ContextID: {Directory: "/work/alpha/project"},
+			items[1].ContextID: {Directory: "/work/beta/project"},
+			items[2].ContextID: {Ambiguous: true},
+		},
+	}
+	model := terminalManageRunInit(t, newTerminalManageModel(observer))
+	if len(observer.probed) != 3 {
+		t.Fatalf("probed %d terminals, want only the three unnamed contexts", len(observer.probed))
+	}
+	for _, item := range model.items {
+		switch item.ContextID {
+		case items[0].ContextID:
+			if got := terminalManageName(item); got != "Terminal · project · 26 Sep 22:53:00" {
+				t.Fatalf("first project name = %q", got)
+			}
+		case items[1].ContextID:
+			if got := terminalManageName(item); got != "Terminal · project · 26 Sep 22:54:00" {
+				t.Fatalf("second project name = %q", got)
+			}
+		case items[2].ContextID:
+			if got := terminalManageName(item); got != "Terminal · 26 Sep 22:55:00" {
+				t.Fatalf("ambiguous project name = %q", got)
+			}
+		case items[3].ContextID:
+			if got := terminalManageName(item); got != "Custom title" {
+				t.Fatalf("explicit name = %q", got)
+			}
+		}
+	}
+	model = terminalManageUpdate(t, model, tea.WindowSizeMsg{Width: 120, Height: 25})
+	model.selectedID = items[0].ContextID
+	model.restoreSelection()
+	view := model.View().Content
+	if !strings.Contains(view, "Pane path") || !strings.Contains(view, "Start path") {
+		t.Fatalf("detail view does not distinguish observed and start paths:\n%s", view)
+	}
+}
+
+func TestTerminalManageUnavailableHerdrKeepsCreatedName(t *testing.T) {
+	created := time.Date(2026, time.September, 26, 22, 53, 0, 0, time.Local)
+	item := terminalManageTestItem("11111111-1111-4111-8111-111111111111", "Terminal", sessionstate.ContextActive)
+	item.Identity = terminalIdentityResult{}
+	item.Cwd = "/work/start"
+	item.CreatedAt = &created
+	observer := &terminalManageDirectoryTestOperations{
+		terminalManageTestOperations: terminalManageTestOperations{snapshots: [][]terminalInventoryResult{{item}}},
+		err:                          errors.New("Herdr socket unavailable"),
+	}
+	model := terminalManageRunInit(t, newTerminalManageModel(observer))
+	if got := terminalManageName(model.items[0]); got != "Terminal · 26 Sep 22:53:00" {
+		t.Fatalf("unavailable Herdr fallback = %q", got)
+	}
+}
+
 func TestTerminalManageSeparatesSavedWindowAndRestoreState(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
 	first := terminalManageTestItem("11111111-1111-4111-8111-111111111111", "Daily work", sessionstate.ContextActive)
@@ -841,6 +913,18 @@ type terminalManageTestOperations struct {
 	stateChanges []terminalManageTestStateChange
 	renames      []terminalManageTestRename
 	purges       []sessionstate.ContextID
+}
+
+type terminalManageDirectoryTestOperations struct {
+	terminalManageTestOperations
+	observations map[sessionstate.ContextID]sessionstate.HerdrDirectoryObservation
+	probed       []sessionstate.ContextID
+	err          error
+}
+
+func (operations *terminalManageDirectoryTestOperations) ObservePaneDirectory(_ context.Context, item terminalInventoryResult) (sessionstate.HerdrDirectoryObservation, error) {
+	operations.probed = append(operations.probed, item.ContextID)
+	return operations.observations[item.ContextID], operations.err
 }
 
 type terminalManageTestStateChange struct {

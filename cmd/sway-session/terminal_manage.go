@@ -38,6 +38,13 @@ type terminalManageLoadedMsg struct {
 	err        error
 }
 
+type terminalManageDirectoryMsg struct {
+	generation  uint64
+	id          sessionstate.ContextID
+	observation sessionstate.HerdrDirectoryObservation
+	err         error
+}
+
 type terminalWindowPresence uint8
 
 const (
@@ -98,6 +105,9 @@ type terminalManageModel struct {
 	input      textinput.Model
 	loading    bool
 	loadID     uint64
+	probeCtx   context.Context
+	probeStop  context.CancelFunc
+	probeQueue []terminalInventoryResult
 	pending    bool
 	status     string
 	err        error
@@ -147,12 +157,34 @@ func (model terminalManageModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			model.windowErr = message.snapshot.windowError
 			model.rebuildVisible()
 			model.restoreSelection()
+			return model, model.startDirectoryProbes()
 		} else {
 			model.windows = terminalManageUnknownWindows(model.items)
 			model.windowErr = message.err
 			model.selection = terminalManageSelectIdentity
 		}
 		return model, nil
+	case terminalManageDirectoryMsg:
+		if message.generation != model.loadID {
+			return model, nil
+		}
+		for index := range model.items {
+			item := &model.items[index]
+			if item.ContextID != message.id {
+				continue
+			}
+			if message.err == nil && message.observation.Directory != "" {
+				item.PaneDirectory = message.observation.Directory
+			} else {
+				item.AutoName = terminalManageCreatedName(*item)
+			}
+			break
+		}
+		model.updateDirectoryNames()
+		model.items = sortTerminalManageItems(model.items)
+		model.rebuildVisible()
+		model.restoreSelection()
+		return model, model.nextDirectoryProbe()
 	case terminalManageActionMsg:
 		model.pending = false
 		model.err = message.err
@@ -687,9 +719,12 @@ func (model terminalManageModel) renderDetails(styles terminalManageStyles, widt
 		terminalManageDetail("Last focused", terminalManageTime(item.LastFocusedAt)),
 		terminalManageDetail("Created", terminalManageTime(item.CreatedAt)),
 		terminalManageDetail("Project", terminalManageProject(item)),
-		terminalManageDetail("Directory", item.Cwd),
+		terminalManageDetail("Start path", item.Cwd),
 		terminalManageDetail("Session", item.Session),
 		terminalManageDetail("Context", string(item.ContextID)),
+	}
+	if item.PaneDirectory != "" {
+		lines = append(lines[:7], append([]string{terminalManageDetail("Pane path", item.PaneDirectory)}, lines[7:]...)...)
 	}
 	for index := range lines {
 		lines[index] = ansi.Truncate(lines[index], max(width, 1), "…")
@@ -743,6 +778,12 @@ func terminalManageName(item terminalInventoryResult) string {
 	if item.Identity.Project != "" {
 		return item.Identity.Project
 	}
+	if item.AutoName != "" {
+		return item.AutoName
+	}
+	if home, err := os.UserHomeDir(); err == nil && item.CreatedAt != nil && filepath.Clean(item.Cwd) == filepath.Clean(home) {
+		return terminalManageCreatedName(item)
+	}
 	if base := filepath.Base(item.Cwd); base != "." && base != "/" && base != "" {
 		return "Terminal · " + base
 	}
@@ -750,6 +791,41 @@ func terminalManageName(item terminalInventoryResult) string {
 		return "Terminal · " + item.CreatedAt.Local().Format("02 Jan 15:04")
 	}
 	return "Terminal"
+}
+
+func terminalManageCreatedName(item terminalInventoryResult) string {
+	if item.CreatedAt == nil {
+		return "Terminal"
+	}
+	return "Terminal · " + item.CreatedAt.Local().Format("02 Jan 15:04:05")
+}
+
+func terminalManageDirectoryName(directory string) string {
+	return "Terminal · " + filepath.Base(directory)
+}
+
+func (model *terminalManageModel) updateDirectoryNames() {
+	counts := make(map[string]int)
+	for _, item := range model.items {
+		if item.PaneDirectory != "" && terminalManageUsesAutoName(item) {
+			counts[terminalManageDirectoryName(item.PaneDirectory)]++
+		}
+	}
+	for index := range model.items {
+		item := &model.items[index]
+		if item.PaneDirectory == "" || !terminalManageUsesAutoName(*item) {
+			continue
+		}
+		name := terminalManageDirectoryName(item.PaneDirectory)
+		if counts[name] > 1 && item.CreatedAt != nil {
+			name += " · " + item.CreatedAt.Local().Format("02 Jan 15:04:05")
+		}
+		item.AutoName = name
+	}
+}
+
+func terminalManageUsesAutoName(item terminalInventoryResult) bool {
+	return (strings.TrimSpace(item.Label) == "" || strings.TrimSpace(item.Label) == "Terminal") && item.Identity.Project == ""
 }
 
 func terminalManageProject(item terminalInventoryResult) string {
@@ -797,7 +873,7 @@ func (model *terminalManageModel) rebuildVisible() {
 	model.visible = model.visible[:0]
 	for index, item := range model.items {
 		haystack := strings.ToLower(strings.Join([]string{
-			terminalManageName(item), item.Label, item.Identity.Project, item.Cwd, item.Session, string(item.ContextID),
+			terminalManageName(item), item.Label, item.Identity.Project, item.Cwd, item.PaneDirectory, item.Session, string(item.ContextID),
 		}, "\n"))
 		if query == "" || strings.Contains(haystack, query) {
 			model.visible = append(model.visible, index)
@@ -869,11 +945,51 @@ func (model terminalManageModel) selected() (terminalInventoryResult, bool) {
 }
 
 func (model *terminalManageModel) beginLoad() tea.Cmd {
+	if model.probeStop != nil {
+		model.probeStop()
+		model.probeStop = nil
+	}
+	model.probeQueue = nil
 	model.loading = true
 	model.windows = terminalManageUnknownWindows(model.items)
 	model.windowErr = nil
 	model.loadID++
 	return model.loadCommand(model.loadID)
+}
+
+func (model *terminalManageModel) startDirectoryProbes() tea.Cmd {
+	if model.probeStop != nil {
+		model.probeStop()
+	}
+	model.probeQueue = nil
+	if _, ok := model.operations.(terminalManageDirectoryObserver); !ok {
+		return nil
+	}
+	for _, item := range model.items {
+		if item.State == sessionstate.ContextActive && terminalManageUsesAutoName(item) {
+			model.probeQueue = append(model.probeQueue, item)
+		}
+	}
+	model.probeCtx, model.probeStop = context.WithCancel(model.ctx)
+	return model.nextDirectoryProbe()
+}
+
+func (model *terminalManageModel) nextDirectoryProbe() tea.Cmd {
+	if len(model.probeQueue) == 0 {
+		if model.probeStop != nil {
+			model.probeStop()
+			model.probeStop = nil
+		}
+		return nil
+	}
+	item := model.probeQueue[0]
+	model.probeQueue = model.probeQueue[1:]
+	observer := model.operations.(terminalManageDirectoryObserver)
+	ctx, generation := model.probeCtx, model.loadID
+	return func() tea.Msg {
+		observation, err := observer.ObservePaneDirectory(ctx, item)
+		return terminalManageDirectoryMsg{generation: generation, id: item.ContextID, observation: observation, err: err}
+	}
 }
 
 func (model terminalManageModel) loadCommand(generation uint64) tea.Cmd {

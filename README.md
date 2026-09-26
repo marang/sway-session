@@ -231,6 +231,13 @@ stops returning at login, but its saved identity and Herdr session are retained.
 Archiving never closes a window or terminates its background agents. Codex and
 shell panes inside one terminal belong to the same context.
 
+For running unnamed terminals, the manager reads the Herdr session and uses a
+shared pane directory as the display name. Sessions with the same directory
+name also show their creation time. If panes point to different directories or
+Herdr cannot be reached, the manager falls back to the creation time. The
+detail view distinguishes the saved start path from the observed pane path.
+These display names do not change the saved context or Herdr session identity.
+
 Automatic close detection requires a working logind shutdown observer and delay
 inhibitor. Shutdown, logout through Sway, compositor disconnect, and uncertain
 observations preserve restore eligibility instead of guessing that you closed

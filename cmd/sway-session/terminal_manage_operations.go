@@ -19,6 +19,10 @@ type terminalManageOperations interface {
 	Migrate(context.Context) (string, error)
 }
 
+type terminalManageDirectoryObserver interface {
+	ObservePaneDirectory(context.Context, terminalInventoryResult) (sessionstate.HerdrDirectoryObservation, error)
+}
+
 type terminalManageSnapshot struct {
 	items       []terminalInventoryResult
 	windows     map[sessionstate.ContextID]terminalWindowPresence
@@ -28,6 +32,21 @@ type terminalManageSnapshot struct {
 type commandTerminalManageOperations struct {
 	configPath string
 	deps       dependencies
+}
+
+func (operations commandTerminalManageOperations) ObservePaneDirectory(ctx context.Context, item terminalInventoryResult) (sessionstate.HerdrDirectoryObservation, error) {
+	if operations.deps.herdrPaths == nil || operations.deps.homeDir == nil {
+		return sessionstate.HerdrDirectoryObservation{}, errors.New("herdr directory observation dependencies are unavailable")
+	}
+	paths, err := operations.deps.herdrPaths()
+	if err != nil {
+		return sessionstate.HerdrDirectoryObservation{}, err
+	}
+	home, err := operations.deps.homeDir()
+	if err != nil {
+		return sessionstate.HerdrDirectoryObservation{}, err
+	}
+	return sessionstate.ObserveHerdrPaneDirectory(ctx, paths, item.Session, home)
 }
 
 func (operations commandTerminalManageOperations) Load(ctx context.Context, socket string) (terminalManageSnapshot, error) {

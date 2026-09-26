@@ -113,6 +113,41 @@ func TestTerminalManageUnavailableHerdrKeepsCreatedName(t *testing.T) {
 	}
 }
 
+func TestTerminalManageRefreshDiscardsOldHerdrDirectoryResult(t *testing.T) {
+	item := terminalManageTestItem("11111111-1111-4111-8111-111111111111", "Terminal", sessionstate.ContextActive)
+	item.Identity = terminalIdentityResult{}
+	observer := &terminalManageDirectoryTestOperations{
+		terminalManageTestOperations: terminalManageTestOperations{snapshots: [][]terminalInventoryResult{{item}, {item}}},
+		observations: map[sessionstate.ContextID]sessionstate.HerdrDirectoryObservation{
+			item.ContextID: {Directory: "/work/current"},
+		},
+	}
+	model := newTerminalManageModel(observer)
+	model, oldProbe := terminalManageUpdateWithCommand(t, model, model.Init()())
+	if oldProbe == nil {
+		t.Fatal("initial load did not schedule a Herdr observation")
+	}
+	oldGeneration := model.loadID
+	model, reload := terminalManageUpdateWithCommand(t, model, terminalManageKey("r"))
+	if reload == nil || model.loadID == oldGeneration {
+		t.Fatal("refresh did not start a new inventory generation")
+	}
+	model, next := terminalManageUpdateWithCommand(t, model, terminalManageDirectoryMsg{
+		generation: oldGeneration,
+		id:         item.ContextID,
+		observation: sessionstate.HerdrDirectoryObservation{
+			Directory: "/work/stale",
+		},
+	})
+	if next != nil || model.items[0].PaneDirectory != "" {
+		t.Fatalf("stale observation changed the refreshed model: %+v", model.items[0])
+	}
+	model = terminalManageRunCommand(t, model, reload)
+	if got := model.items[0].PaneDirectory; got != "/work/current" {
+		t.Fatalf("new observation was lost after refresh: %q", got)
+	}
+}
+
 func TestTerminalManageSeparatesSavedWindowAndRestoreState(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
 	first := terminalManageTestItem("11111111-1111-4111-8111-111111111111", "Daily work", sessionstate.ContextActive)

@@ -23,7 +23,7 @@ const reportExchangeTimeout = 2 * time.Second
 
 type Handler func(context.Context, Report) error
 
-// Server serves the canonical v2 wire contract with peer, path, size, timeout,
+// Server serves v3 reports and source-less v2 clients with peer, path, size, timeout,
 // and stale-socket protections.
 type Server struct {
 	listener    *net.UnixListener
@@ -238,10 +238,11 @@ func (server *Server) handle(connection *net.UnixConn) {
 	ctx, cancel := context.WithTimeout(context.Background(), reportExchangeTimeout)
 	defer cancel()
 	if err := server.handler(ctx, report); err != nil {
-		server.reject(connection, err)
+		server.report(err)
+		server.writeResponse(connection, response{Version: report.Version, Error: "report rejected"})
 		return
 	}
-	server.writeResponse(connection, response{Version: ProtocolVersion, OK: true})
+	server.writeResponse(connection, response{Version: report.Version, OK: true})
 }
 
 func requireCurrentUser(connection *net.UnixConn) (*unix.Ucred, error) {

@@ -15,7 +15,8 @@ import (
 )
 
 const (
-	ProtocolVersion        = 2
+	ProtocolVersion        = 3
+	LegacyProtocolVersion  = 2
 	SocketFilename         = "agent-report.sock"
 	ContextIDEnvironment   = "SWAY_SESSION_CONTEXT_ID"
 	HerdrPaneEnvironment   = "HERDR_PANE_ID"
@@ -26,15 +27,16 @@ const (
 
 var ErrNotManagedSession = errors.New("agent session did not start in a managed Herdr context")
 
-// Report is the version-2 generic broker request. Context and pane identity
-// come from the managed terminal environment; provider input supplies only a
-// fixed Herdr agent kind and an opaque agent-session identifier.
+// Report is the generic broker request. Version 3 carries an optional native
+// event origin; version 2 is accepted only without that field. Context and pane
+// identity come exclusively from the managed terminal environment.
 type Report struct {
 	Version        int                    `json:"version"`
 	ContextID      sessionstate.ContextID `json:"context_id"`
 	PaneID         string                 `json:"pane_id"`
 	Agent          string                 `json:"agent"`
 	AgentSessionID string                 `json:"agent_session_id"`
+	EventOrigin    string                 `json:"event_origin,omitempty"`
 	PeerPID        int                    `json:"-"`
 }
 
@@ -45,8 +47,14 @@ type response struct {
 }
 
 func (report Report) Validate() error {
-	if report.Version != ProtocolVersion {
+	if report.Version != ProtocolVersion && report.Version != LegacyProtocolVersion {
 		return fmt.Errorf("unsupported agent report protocol version %d", report.Version)
+	}
+	if report.Version == LegacyProtocolVersion && report.EventOrigin != "" {
+		return errors.New("agent report protocol v2 cannot carry event_origin; upgrade the client and restart the sway-session daemon")
+	}
+	if err := sessionstate.ValidateAgentEventOrigin(report.EventOrigin); err != nil {
+		return err
 	}
 	if err := report.ContextID.Validate(); err != nil {
 		return fmt.Errorf("invalid context ID: %w", err)
@@ -73,7 +81,7 @@ func DefaultSocketPath() (string, error) {
 }
 
 // ParseAgentReport converts a provider-neutral hook payload into the fixed
-// v2 report contract. It deliberately accepts no paths, commands, sockets, or
+// v3 report contract. It deliberately accepts no paths, commands, sockets, or
 // context/pane identifiers from provider input.
 func ParseAgentReport(input io.Reader, getenv func(string) string) (Report, error) {
 	if input == nil || getenv == nil {
@@ -89,6 +97,7 @@ func ParseAgentReport(input io.Reader, getenv func(string) string) (Report, erro
 	var payload struct {
 		Agent          string `json:"agent"`
 		AgentSessionID string `json:"agent_session_id"`
+		EventOrigin    string `json:"event_origin,omitempty"`
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
@@ -109,7 +118,7 @@ func ParseAgentReport(input io.Reader, getenv func(string) string) (Report, erro
 	if err != nil {
 		return Report{}, fmt.Errorf("invalid %s: %w", ContextIDEnvironment, err)
 	}
-	report := Report{Version: ProtocolVersion, ContextID: contextID, PaneID: getenv(HerdrPaneEnvironment), Agent: payload.Agent, AgentSessionID: payload.AgentSessionID}
+	report := Report{Version: ProtocolVersion, ContextID: contextID, PaneID: getenv(HerdrPaneEnvironment), Agent: payload.Agent, AgentSessionID: payload.AgentSessionID, EventOrigin: payload.EventOrigin}
 	if err := report.Validate(); err != nil {
 		return Report{}, err
 	}

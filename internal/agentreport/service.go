@@ -13,7 +13,7 @@ type RegistryService struct {
 	StateRoot  string
 	HerdrPaths sessionstate.HerdrPaths
 	Now        func() time.Time
-	Report     func(context.Context, sessionstate.HerdrPaths, sessionstate.Launcher, string, string, string, int, time.Time) error
+	Report     func(context.Context, sessionstate.HerdrPaths, sessionstate.Launcher, string, string, string, string, int, time.Time) error
 }
 
 func (service RegistryService) Handle(ctx context.Context, report Report) error {
@@ -39,7 +39,7 @@ func (service RegistryService) Handle(ctx context.Context, report Report) error 
 		if candidate.Launcher.Kind != sessionstate.LauncherHerdr {
 			return errors.New("registered context does not use Herdr")
 		}
-		if err := reportHerdr(ctx, service.HerdrPaths, candidate.Launcher, report.PaneID, report.Agent, report.AgentSessionID, report.PeerPID, now()); err != nil {
+		if err := reportHerdr(ctx, service.HerdrPaths, candidate.Launcher, report.PaneID, report.Agent, report.AgentSessionID, report.EventOrigin, report.PeerPID, now()); err != nil {
 			return fmt.Errorf("record agent session association: %w", err)
 		}
 		return nil

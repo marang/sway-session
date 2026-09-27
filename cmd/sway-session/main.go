@@ -596,7 +596,7 @@ func executeCommand(ctx context.Context, name string, arguments []string, stdin 
 	case "report-agent-session":
 		codexHook := len(arguments) == 1 && arguments[0] == "--codex-hook"
 		if len(arguments) != 0 && !codexHook {
-			return commandResult{}, usageFailure(name, "report-agent-session accepts only --codex-hook; otherwise supply agent and agent_session_id as JSON on stdin")
+			return commandResult{}, usageFailure(name, "report-agent-session accepts only --codex-hook; otherwise supply agent, agent_session_id and optional event_origin as JSON on stdin")
 		}
 		if deps.reportAgentSession == nil {
 			return commandResult{}, failure("agent_report", "report agent session", "agent report dependency is unavailable")

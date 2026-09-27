@@ -10,6 +10,7 @@ import (
 	"regexp"
 
 	"github.com/marang/sway-session/internal/agentreport"
+	sessionstate "github.com/marang/sway-session/internal/session"
 )
 
 const maxCodexHookPayload = 16 * 1024
@@ -72,10 +73,18 @@ func codexHookReport(input io.Reader, getenv func(string) string) (io.Reader, er
 	if threadID := getenv("CODEX_THREAD_ID"); threadID != "" && threadID != sessionID {
 		return nil, errors.New("codex session_id does not match CODEX_THREAD_ID")
 	}
+	eventOrigin, err := codexHookString(payload, "source")
+	if err != nil {
+		return nil, err
+	}
+	if err := sessionstate.ValidateAgentEventOrigin(eventOrigin); err != nil {
+		return nil, err
+	}
 	encoded, err := json.Marshal(struct {
 		Agent          string `json:"agent"`
 		AgentSessionID string `json:"agent_session_id"`
-	}{Agent: "codex", AgentSessionID: sessionID})
+		EventOrigin    string `json:"event_origin,omitempty"`
+	}{Agent: "codex", AgentSessionID: sessionID, EventOrigin: eventOrigin})
 	if err != nil {
 		return nil, fmt.Errorf("encode Codex agent report: %w", err)
 	}

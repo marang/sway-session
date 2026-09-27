@@ -96,7 +96,8 @@ flowchart TB
 - internal/herdrinit owns fixed, idempotent role initialization behind the
   closed Herdr session-manager adapter. It is not an executable.
 - internal/sessionrequest accepts one protocol-v1 ensure-and-start operation.
-- internal/agentreport accepts one protocol-v2 agent-session association and
+- internal/agentreport accepts protocol-v3 agent-session associations with
+  optional native event origin and source-less protocol-v2 associations and
   owns the shared bounded transport and service.
 - internal/titleindicator owns only the versioned presentation mark wire
   contract.
@@ -360,11 +361,15 @@ requires private directories and safe regular files. Daemon and terminal
 lifecycle locks are held for their defined process/effect windows.
 
 session-start.sock accepts one versioned ensure-and-start request without pane
-roles or command strings. agent-report.sock accepts a protocol-v2 association
+roles or command strings. agent-report.sock accepts a protocol-v3 association
+with optional native event origin, or a source-less protocol-v2 association
 after peer credentials and pane-process ancestry checks. Neither returns raw
 registry contents. LAB-125 removes the legacy Codex report endpoint and CLI;
-provider events are translated by hook assets into the generic input shape.
-The agent-report v2 and session-start v1 contracts and stored state are unchanged.
+provider events are translated at the CLI hook-input boundary into the generic
+input shape. LAB-138 preserves the native event origin and confirms Herdr's
+live association through a bounded snapshot. Source-less report v2 clients
+retain their original wire shape and receive v2 replies; new v3 clients never
+downgrade to an older broker. Session-start v1 and stored state are unchanged.
 See [agent reporting](agent-reporting.md) for the input and compatibility contract.
 
 The included `agent-home-guard` AppArmor template is an optional agent

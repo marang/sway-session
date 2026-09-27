@@ -91,9 +91,8 @@ require_fixed PKGBUILD "makedepends=('go>=1.26.5')"
 require_fixed PKGBUILD 'CGO_ENABLED=0 go build'
 require_fixed PKGBUILD '-o sway-session ./cmd/sway-session'
 require_fixed PKGBUILD 'install -Dm755 sway-session "$pkgdir/usr/bin/sway-session"'
-require_fixed PKGBUILD 'if [[ $pkgver == 0.3.5 ]]; then'
-require_fixed PKGBUILD '_install_pinned_codex_hook'
-require_fixed PKGBUILD 'install -Dm755 contrib/codex/report-agent-session.sh "$pkgdir/usr/lib/sway-session/codex-report-agent-session"'
+reject_fixed PKGBUILD '_install_pinned_codex_hook'
+reject_fixed PKGBUILD 'codex-report-agent-session'
 require_fixed PKGBUILD '"$pkgdir/usr/share/doc/$pkgname/50-sway-session.conf"'
 reject_fixed PKGBUILD 'optdepends='
 reject_fixed PKGBUILD "'jq'"
@@ -175,27 +174,6 @@ reject_fixed contrib/codex/hooks-system.json 'codex-report-agent-session'
 reject_fixed contrib/codex/hooks.json 'report-codex-session'
 reject_fixed contrib/codex/hooks-system.json 'report-codex-session'
 reject_fixed .goreleaser.yaml 'codex-report.sock'
-
-# The checked-in Arch recipe still points at the immutable v0.3.5 archive.
-# Keep its adapter, while the next release must package only the direct CLI.
-bash -c '
-	set -eu
-	source "$1"
-	test_root=$(mktemp -d)
-	trap '\''rm -rf "$test_root"'\'' EXIT HUP INT TERM
-	cd "$test_root"
-	pkgdir=$test_root/pkg
-	mkdir -p contrib/codex
-	printf '\''#!/bin/sh\n'\'' >contrib/codex/report-agent-session.sh
-	chmod 755 contrib/codex/report-agent-session.sh
-	pkgver=0.3.5
-	_install_pinned_codex_hook
-	test -x "$pkgdir/usr/lib/sway-session/codex-report-agent-session"
-	rm -rf "$pkgdir" contrib/codex/report-agent-session.sh
-	pkgver=0.3.6
-	_install_pinned_codex_hook
-	test ! -e "$pkgdir/usr/lib/sway-session/codex-report-agent-session"
-' packaging-guard "$PWD/PKGBUILD"
 
 if command -v makepkg >/dev/null 2>&1; then
 	generated=$(mktemp)

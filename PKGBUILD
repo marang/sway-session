@@ -19,15 +19,6 @@ sha256sums=('7151eb1b86c56a3b1aacb0d0507a4d2a59968960b8b737bd2c8a658c54c9dd52')
 _go_build_flags=(-buildmode=pie -trimpath -buildvcs=false -mod=readonly -modcacherw)
 _go_ldflags=(-s -w -buildid= -X "main.version=$pkgver")
 
-_install_pinned_codex_hook() {
-  # This checked-in recipe still builds the immutable v0.3.5 source archive.
-  # That release's hook template calls the shell adapter. The next release
-  # embeds translation in the binary and does not ship the adapter.
-  if [[ $pkgver == 0.3.5 ]]; then
-    install -Dm755 contrib/codex/report-agent-session.sh "$pkgdir/usr/lib/sway-session/codex-report-agent-session"
-  fi
-}
-
 build() {
   cd "sway-session-$pkgver"
   export GOCACHE="$srcdir/go-build"
@@ -49,7 +40,6 @@ check() {
 package() {
   cd "sway-session-$pkgver"
   install -Dm755 sway-session "$pkgdir/usr/bin/sway-session"
-  _install_pinned_codex_hook
   install -Dm644 contrib/completions/bash/sway-session "$pkgdir/usr/share/bash-completion/completions/sway-session"
   install -Dm644 contrib/completions/zsh/_sway-session "$pkgdir/usr/share/zsh/site-functions/_sway-session"
   install -Dm644 contrib/completions/fish/sway-session.fish "$pkgdir/usr/share/fish/vendor_completions.d/sway-session.fish"

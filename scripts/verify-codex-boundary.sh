@@ -18,7 +18,6 @@ state_file=$5
 herdr_socket=$6
 profile=${AGENT_APPARMOR_PROFILE:-${CODEX_APPARMOR_PROFILE:-agent-home-guard}}
 session_binary=/usr/bin/sway-session
-hook_binary=/usr/lib/sway-session/codex-report-agent-session
 
 require_packaged_binary() {
   binary=$1
@@ -55,7 +54,6 @@ test -r "$history_file"
 test -r "$state_file"
 test -S "$herdr_socket"
 require_packaged_binary "$session_binary"
-require_packaged_binary "$hook_binary"
 
 # Positive path: the confined hook can reach only the narrow broker.
 printf '{"hook_event_name":"SessionStart","session_id":"%s"}\n' "$codex_session_id" |
@@ -64,7 +62,8 @@ printf '{"hook_event_name":"SessionStart","session_id":"%s"}\n' "$codex_session_
     SWAY_SESSION_CONTEXT_ID="$context_id" \
     HERDR_PANE_ID="$pane_id" \
     CODEX_THREAD_ID="$codex_session_id" \
-    "$hook_binary" "$session_binary"
+    HERDR_SOCKET_PATH="$herdr_socket" \
+    "$session_binary" report-agent-session --codex-hook
 
 # Negative file paths: neither read nor write may succeed in confinement.
 if aa-exec -p "$profile" -- sh -c 'exec 3<"$1"' sh "$history_file" 2>/dev/null; then

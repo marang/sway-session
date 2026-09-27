@@ -418,11 +418,12 @@ there is no executable, command, or destination-socket field. This does not
 install hooks automatically for other agents. See
 [the report contract](docs/agent-reporting.md) for integration requirements.
 
-Codex SessionStart events are translated at the hook boundary and sent through
-the same generic report command/socket. The legacy `report-codex-session`
+Codex SessionStart events can be sent directly to
+`sway-session report-agent-session --codex-hook`. The CLI translates the event
+and uses the same generic report command/socket. The legacy `report-codex-session`
 command and `codex-report.sock` endpoint have been removed (LAB-125).
 **Existing Codex installations must replace their old reporting hook** using
-the supplied template; see [upgrade steps](docs/agent-reporting.md#upgrade-from-the-legacy-codex-hook).
+the supplied template; see [upgrade steps](docs/agent-reporting.md#upgrade-the-codex-hook).
 There is no database migration or second agent manager.
 
 ### Optional agent security hardening (Codex example)

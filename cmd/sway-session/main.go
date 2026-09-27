@@ -51,7 +51,7 @@ var commandSpecs = map[string]commandSpec{
 	"broker":               {usage: "broker [--socket <path>]", summary: "Serve typed work-session start requests"},
 	"daemon":               {usage: "daemon [--socket <path>]", summary: "Observe and restore persistent Sway session state"},
 	"request-start":        {usage: "request-start --session <name> --workspace <number> [options]", summary: "Request a typed ensure-and-start operation"},
-	"report-agent-session": {usage: "report-agent-session", summary: "Report a managed agent session from typed JSON on stdin"},
+	"report-agent-session": {usage: "report-agent-session [--codex-hook]", summary: "Report a managed agent session from typed JSON or a Codex SessionStart hook on stdin"},
 	"app":                  {usage: "app <subcommand> [options]", summary: "Manage explicitly registered desktop applications"},
 	"terminal":             {usage: "terminal [--new | --context <uuid> | --project <name> | --ephemeral] [options]", summary: "Open a typed terminal"},
 	"doctor":               {usage: "doctor [--check | --fix <id> [--yes]] [options]", summary: "Check setup and preview safe configuration fixes"},
@@ -594,11 +594,22 @@ func executeCommand(ctx context.Context, name string, arguments []string, stdin 
 	case "request-start":
 		return executeRequestStart(ctx, arguments, deps)
 	case "report-agent-session":
-		if len(arguments) != 0 {
-			return commandResult{}, usageFailure(name, "report-agent-session accepts no arguments; supply agent and agent_session_id as JSON on stdin")
+		codexHook := len(arguments) == 1 && arguments[0] == "--codex-hook"
+		if len(arguments) != 0 && !codexHook {
+			return commandResult{}, usageFailure(name, "report-agent-session accepts only --codex-hook; otherwise supply agent and agent_session_id as JSON on stdin")
 		}
 		if deps.reportAgentSession == nil {
 			return commandResult{}, failure("agent_report", "report agent session", "agent report dependency is unavailable")
+		}
+		if codexHook {
+			var err error
+			stdin, err = codexHookReport(stdin, os.Getenv)
+			if errors.Is(err, agentreport.ErrNotManagedSession) {
+				return commandResult{Command: name, Contexts: []sessionstate.Context{}}, nil
+			}
+			if err != nil {
+				return commandResult{}, failure("agent_report", "report Codex session", err.Error())
+			}
 		}
 		err := deps.reportAgentSession(ctx, stdin, os.Getenv)
 		if errors.Is(err, agentreport.ErrNotManagedSession) {

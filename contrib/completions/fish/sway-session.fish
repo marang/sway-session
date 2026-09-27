@@ -204,6 +204,8 @@ function __sway_session_command_options
             printf '%s\n' --fix --socket --sway-config
         case request-start
             printf '%s\n' --session --cwd --label --provider --workspace
+        case report-agent-session
+            printf '%s\n' --codex-hook
         case app
             set -l app_command (__sway_session_app_subcommand)
             switch $app_command[1]
@@ -630,6 +632,7 @@ complete -c sway-session -n '__sway_session_is_command request-start; and __sway
 complete -c sway-session -n '__sway_session_is_command request-start; and __sway_session_options_open' -l label -x
 complete -c sway-session -n '__sway_session_is_command request-start; and __sway_session_options_open' -l provider -x
 complete -c sway-session -n '__sway_session_is_command request-start; and __sway_session_options_open' -l workspace -x
+complete -c sway-session -n '__sway_session_is_command report-agent-session; and __sway_session_options_open' -l codex-hook -d 'Read a Codex SessionStart hook event'
 
 complete -c sway-session -n '__sway_session_is_command terminal; and __sway_session_options_open; and not __sway_session_terminal_subcommand list; and not __sway_session_terminal_subcommand status; and not __sway_session_terminal_subcommand cleanup; and not __sway_session_terminal_subcommand manage; and not __sway_session_terminal_subcommand rename; and not __sway_session_terminal_subcommand reconfigure' -l project -x
 complete -c sway-session -n '__sway_session_is_command terminal; and __sway_session_options_open; and not __sway_session_terminal_subcommand list; and not __sway_session_terminal_subcommand status; and not __sway_session_terminal_subcommand cleanup; and not __sway_session_terminal_subcommand manage; and not __sway_session_terminal_subcommand rename; and not __sway_session_terminal_subcommand reconfigure' -l context -x -a '(__sway_session_contexts terminal-status)'

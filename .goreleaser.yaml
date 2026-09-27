@@ -45,7 +45,6 @@ archives:
       - contrib/sway-session/config.toml
       - contrib/codex/hooks.json
       - contrib/codex/hooks-system.json
-      - contrib/codex/report-agent-session.sh
       - contrib/apparmor/agent-home-guard
       - contrib/completions/bash/sway-session
       - contrib/completions/zsh/_sway-session
@@ -96,10 +95,6 @@ nfpms:
         dst: /usr/share/doc/sway-session/contrib/sway-session/config.toml
       - src: ./contrib/codex/hooks-system.json
         dst: /usr/share/doc/sway-session/contrib/codex/hooks.json
-      - src: ./contrib/codex/report-agent-session.sh
-        dst: /usr/lib/sway-session/codex-report-agent-session
-        file_info:
-          mode: 0755
       - src: ./contrib/apparmor/agent-home-guard
         dst: /usr/share/doc/sway-session/contrib/apparmor/agent-home-guard
       - src: ./scripts/verify-codex-boundary.sh

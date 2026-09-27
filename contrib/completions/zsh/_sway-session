@@ -273,7 +273,10 @@ _sway-session() {
 				_sway_session_add --check --fix --socket --sway-config --json -h --help
 			fi
 			;;
-		list|report-agent-session)
+		report-agent-session)
+			_sway_session_add --codex-hook --json -h --help
+			;;
+		list)
 			_sway_session_add --json -h --help
 			;;
 		archive|activate|purge)

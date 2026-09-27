@@ -79,8 +79,8 @@ explicitly changes that contract.
 
 LAB-125 removes the legacy Codex report command/socket and protocol-v1 report
 adapter. Agent reporting uses only protocol v2; session-start protocol v1 is
-unchanged. Provider event translation belongs in the supplied hook assets,
-not in a second broker or provider-specific daemon package.
+unchanged. Codex SessionStart translation belongs at the explicit CLI hook
+input mode in cmd/sway-session; the agentreport broker stays provider-neutral.
 
 internal/titleindicator/testdata/v1.json is the authoritative v1 mark-wire
 fixture. Both this repository and sway-title-animator must keep an identical

@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/usr/lib/sway-session/codex-report-agent-session /usr/bin/sway-session",
+            "command": "/usr/bin/sway-session report-agent-session --codex-hook",
             "timeout": 5
           }
         ]

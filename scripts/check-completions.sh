@@ -21,6 +21,10 @@ for completion in "$bash_completion" "$zsh_completion" "$fish_completion"; do
 		echo "$completion omits the fresh persistent terminal option: --new" >&2
 		exit 1
 	fi
+	if ! grep -F -- 'codex-hook' "$completion" >/dev/null; then
+		echo "$completion omits the direct Codex hook option" >&2
+		exit 1
+	fi
 done
 
 bash -n "$bash_completion"

@@ -430,7 +430,7 @@ pacman -Qlp sway-session-0.1.0-1-ARCH.pkg.tar.zst
 
 Inspect that the package contains /usr/bin/sway-session, completions, the
 license, README, plan, verification guide, standalone Sway template, Herdr and
-sway-session config templates, packaged Codex hook, AppArmor profile, and live
+sway-session config templates, direct Codex hook template, AppArmor profile, and live
 verifier—all below /usr/share/doc/sway-session where appropriate. It must
 contain no animator binary, animation/audio asset, parec metadata, optional
 dependency metadata, or old documentation root.

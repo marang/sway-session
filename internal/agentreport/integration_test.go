@@ -42,10 +42,10 @@ func TestReportAgentSessionReachesFixedHerdrAssociation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	requests := make(chan map[string]any, 2)
+	requests := make(chan map[string]any, 3)
 	herdrDone := make(chan error, 1)
 	go func() {
-		for index := range 2 {
+		for index := range 3 {
 			connection, err := listener.Accept()
 			if err != nil {
 				herdrDone <- err
@@ -67,6 +67,9 @@ func TestReportAgentSessionReachesFixedHerdrAssociation(t *testing.T) {
 			result := map[string]any{"type": "ok"}
 			if index == 0 {
 				result = map[string]any{"type": "pane_process_info", "process_info": map[string]any{"pane_id": "work:p1", "shell_pid": os.Getpid()}}
+			}
+			if index == 2 {
+				result = map[string]any{"type": "session_snapshot", "snapshot": map[string]any{"panes": []any{map[string]any{"pane_id": "work:p1", "agent_session": map[string]any{"source": "herdr:claude", "agent": "claude", "kind": "id", "value": "claude:thread-122"}}}}}
 			}
 			response, _ := json.Marshal(map[string]any{"id": request["id"], "result": result})
 			_, err = connection.Write(append(response, '\n'))
@@ -111,14 +114,14 @@ func TestReportAgentSessionReachesFixedHerdrAssociation(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	if err := ReportAgentSession(ctx, strings.NewReader(`{"agent":"claude","agent_session_id":"claude:thread-122"}`), func(name string) string { return environment[name] }); err != nil {
+	if err := ReportAgentSession(ctx, strings.NewReader(`{"agent":"claude","agent_session_id":"claude:thread-122","event_origin":"resume"}`), func(name string) string { return environment[name] }); err != nil {
 		t.Fatal(err)
 	}
 	if err := <-herdrDone; err != nil {
 		t.Fatal(err)
 	}
-	first, second := <-requests, <-requests
-	if first["method"] != "pane.process_info" || second["method"] != "pane.report_agent_session" {
+	first, second, third := <-requests, <-requests, <-requests
+	if first["method"] != "pane.process_info" || second["method"] != "pane.report_agent_session" || third["method"] != "session.snapshot" {
 		t.Fatalf("unexpected Herdr method sequence: %q then %q", first["method"], second["method"])
 	}
 	processParams, ok := first["params"].(map[string]any)
@@ -126,7 +129,7 @@ func TestReportAgentSessionReachesFixedHerdrAssociation(t *testing.T) {
 		t.Fatalf("unexpected pane verification params: %#v", first["params"])
 	}
 	params, ok := second["params"].(map[string]any)
-	if !ok || len(params) != 5 || params["pane_id"] != "work:p1" || params["source"] != "herdr:claude" || params["agent"] != "claude" || params["agent_session_id"] != "claude:thread-122" {
+	if !ok || len(params) != 6 || params["session_start_source"] != "resume" || params["pane_id"] != "work:p1" || params["source"] != "herdr:claude" || params["agent"] != "claude" || params["agent_session_id"] != "claude:thread-122" {
 		t.Fatalf("unexpected Herdr association params: %#v", second["params"])
 	}
 	if _, ok := params["seq"].(float64); !ok {

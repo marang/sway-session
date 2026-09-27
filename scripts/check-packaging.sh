@@ -53,6 +53,9 @@ test ! -e contrib/codex/report-agent-session.sh
 test -f contrib/apparmor/agent-home-guard
 test -f scripts/verify-codex-boundary.sh
 test -f docs/agent-reporting.md
+require_fixed docs/agent-reporting.md '`event_origin`'
+require_fixed docs/agent-reporting.md 'version-3 newline-delimited JSON'
+require_fixed docs/agent-reporting.md '`session_start_source`'
 require_fixed Makefile 'install -m644 docs/agent-reporting.md $(DOC_ROOT)/docs/agent-reporting.md'
 require_fixed PKGBUILD 'install -Dm644 docs/agent-reporting.md "$pkgdir/usr/share/doc/$pkgname/docs/agent-reporting.md"'
 require_fixed .goreleaser.yaml '      - docs/agent-reporting.md'

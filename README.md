@@ -420,7 +420,11 @@ install hooks automatically for other agents. See
 
 Codex SessionStart events can be sent directly to
 `sway-session report-agent-session --codex-hook`. The CLI translates the event
-and uses the same generic report command/socket. The legacy `report-codex-session`
+and preserves its native `source` as optional generic `event_origin`. The
+broker confirms the exact live Herdr association after reporting. The new CLI
+uses report protocol v3; install matching CLI/daemon versions and restart the
+sway-session daemon. Old source-less v2 clients remain supported by the new
+broker. The legacy `report-codex-session`
 command and `codex-report.sock` endpoint have been removed (LAB-125).
 **Existing Codex installations must replace their old reporting hook** using
 the supplied template; see [upgrade steps](docs/agent-reporting.md#upgrade-the-codex-hook).

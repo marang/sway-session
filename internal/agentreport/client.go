@@ -14,7 +14,7 @@ import (
 
 // ReportAgentSession is the provider-neutral hook boundary. It reads only the
 // fixed input schema and managed environment, and connects only to the fixed
-// v2 runtime socket.
+// runtime socket, without downgrading or discarding event origin.
 func ReportAgentSession(ctx context.Context, input io.Reader, getenv func(string) string) error {
 	report, err := ParseAgentReport(input, getenv)
 	if err != nil {
@@ -77,8 +77,8 @@ func send(ctx context.Context, socketPath string, report Report) error {
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		return errors.New("agent report response contains trailing data")
 	}
-	if result.Version != ProtocolVersion {
-		return fmt.Errorf("unsupported agent report response version %d", result.Version)
+	if result.Version != report.Version {
+		return fmt.Errorf("agent report protocol mismatch (client v%d, broker v%d); install matching sway-session CLI and daemon versions and restart the sway-session daemon; event origin was not downgraded", report.Version, result.Version)
 	}
 	if !result.OK {
 		return errors.New("report rejected")

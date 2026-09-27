@@ -34,7 +34,7 @@ type herdrAPIEndpoint struct {
 // the agent-report broker. A fixed read-only process query first proves that
 // the Unix peer which supplied the report actually descends from the selected
 // pane.
-func ReportHerdrAgentSession(ctx context.Context, paths HerdrPaths, launcher Launcher, paneID string, agent string, agentSessionID string, reporterPID int, now time.Time) error {
+func ReportHerdrAgentSession(ctx context.Context, paths HerdrPaths, launcher Launcher, paneID string, agent string, agentSessionID string, eventOrigin string, reporterPID int, now time.Time) error {
 	if launcher.Kind != LauncherHerdr || !validSessionName(launcher.Session) || launcher.Session == "default" {
 		return errors.New("invalid Herdr launcher")
 	}
@@ -45,6 +45,9 @@ func ReportHerdrAgentSession(ctx context.Context, paths HerdrPaths, launcher Lau
 		return fmt.Errorf("unsupported Herdr agent kind %q", agent)
 	}
 	if err := ValidateHerdrAgentSessionID(agentSessionID); err != nil {
+		return err
+	}
+	if err := ValidateAgentEventOrigin(eventOrigin); err != nil {
 		return err
 	}
 	if reporterPID <= 0 {
@@ -100,9 +103,10 @@ func ReportHerdrAgentSession(ctx context.Context, paths HerdrPaths, launcher Lau
 		Agent          string `json:"agent"`
 		Sequence       uint64 `json:"seq"`
 		AgentSessionID string `json:"agent_session_id"`
+		EventOrigin    string `json:"session_start_source,omitempty"`
 	}{
 		PaneID: paneID, Source: "herdr:" + agent, Agent: agent,
-		Sequence: uint64(sequence), AgentSessionID: agentSessionID,
+		Sequence: uint64(sequence), AgentSessionID: agentSessionID, EventOrigin: eventOrigin,
 	}
 	result, err := endpoint.request(ctx, requestID, "pane.report_agent_session", params)
 	if err != nil {
@@ -113,6 +117,68 @@ func ReportHerdrAgentSession(ctx context.Context, paths HerdrPaths, launcher Lau
 	}
 	if err := json.Unmarshal(result, &reportResponse); err != nil || reportResponse.Type != "ok" {
 		return errors.New("herdr session association response was not an ok result")
+	}
+	// Herdr acknowledges reports that its authority/sequence rules ignore. Only
+	// the public read-only snapshot can prove the requested association exists;
+	// pane.get in Herdr 0.9.1 omits agent_session.
+	result, err = endpoint.request(ctx, requestID+":snapshot", "session.snapshot", struct{}{})
+	if err != nil {
+		return fmt.Errorf("verify Herdr agent association via session.snapshot (a Herdr version exposing agent_session is required): %w", err)
+	}
+	return verifyHerdrAgentAssociation(result, paneID, agent, agentSessionID)
+}
+
+// ValidateAgentEventOrigin validates a provider-neutral event-origin token.
+// Empty means the reporting client did not supply an origin. Recognition and
+// replacement authority remain Herdr's responsibility.
+func ValidateAgentEventOrigin(origin string) error {
+	if origin == "" {
+		return nil
+	}
+	if len(origin) > 64 || origin[0] < 'a' || origin[0] > 'z' {
+		return errors.New("agent event origin must be at most 64 ASCII characters, start with a lowercase letter, and contain only lowercase letters, digits, underscores, or hyphens")
+	}
+	for _, ch := range []byte(origin) {
+		if !(ch >= 'a' && ch <= 'z' || ch >= '0' && ch <= '9' || ch == '_' || ch == '-') {
+			return errors.New("agent event origin must be at most 64 ASCII characters, start with a lowercase letter, and contain only lowercase letters, digits, underscores, or hyphens")
+		}
+	}
+	return nil
+}
+
+func verifyHerdrAgentAssociation(result json.RawMessage, paneID, agent, agentSessionID string) error {
+	var response struct {
+		Type     string `json:"type"`
+		Snapshot struct {
+			Panes []struct {
+				PaneID       string `json:"pane_id"`
+				AgentSession *struct {
+					Source string `json:"source"`
+					Agent  string `json:"agent"`
+					Kind   string `json:"kind"`
+					Value  string `json:"value"`
+				} `json:"agent_session"`
+			} `json:"panes"`
+		} `json:"snapshot"`
+	}
+	if err := json.Unmarshal(result, &response); err != nil || response.Type != "session_snapshot" || response.Snapshot.Panes == nil {
+		return errors.New("herdr session.snapshot did not expose the association schema; upgrade Herdr to a version exposing snapshot panes and agent_session")
+	}
+	matches := 0
+	associated := false
+	for _, pane := range response.Snapshot.Panes {
+		if pane.PaneID != paneID {
+			continue
+		}
+		matches++
+		association := pane.AgentSession
+		associated = association != nil && association.Source == "herdr:"+agent && association.Agent == agent && association.Kind == "id" && association.Value == agentSessionID
+	}
+	if matches != 1 {
+		return errors.New("herdr session.snapshot did not identify a unique selected pane")
+	}
+	if !associated {
+		return errors.New("herdr did not confirm the requested agent session association; the report may have been ignored by Herdr authority rules or this Herdr version may lack snapshot agent_session support")
 	}
 	return nil
 }
@@ -235,11 +301,11 @@ func (endpoint *herdrAPIEndpoint) request(ctx context.Context, requestID string,
 	}
 	reader := bufio.NewReader(io.LimitReader(connection, maxHerdrAPIResponse+1))
 	line, err := reader.ReadBytes('\n')
-	if err != nil {
-		return nil, fmt.Errorf("read Herdr response: %w", err)
-	}
 	if len(line) > maxHerdrAPIResponse {
 		return nil, fmt.Errorf("herdr response exceeds %d bytes", maxHerdrAPIResponse)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read Herdr response: %w", err)
 	}
 	decoder := json.NewDecoder(bytes.NewReader(line))
 	decoder.DisallowUnknownFields()

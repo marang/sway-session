@@ -26,10 +26,10 @@ func TestReportHerdrAgentSessionSendsOnlyFixedAssociation(t *testing.T) {
 	if err := os.Chmod(socketPath, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	requestChannel := make(chan map[string]any, 2)
+	requestChannel := make(chan map[string]any, 3)
 	serverError := make(chan error, 1)
 	go func() {
-		for index := range 2 {
+		for index := range 3 {
 			connection, err := listener.Accept()
 			if err != nil {
 				serverError <- err
@@ -52,8 +52,13 @@ func TestReportHerdrAgentSessionSendsOnlyFixedAssociation(t *testing.T) {
 			if index == 0 {
 				result["type"] = "pane_process_info"
 				result["process_info"] = map[string]any{"pane_id": "work:p1", "shell_pid": os.Getpid()}
-			} else {
+			} else if index == 1 {
 				result["type"] = "ok"
+			} else {
+				result = agentAssociationSnapshot(agentAssociationPane("herdr:codex", "codex", "id", "01a04a4b-7fb9-7a90-8ace-51f7ae68e0ee")).(map[string]any)
+			}
+			if index == 2 && request["method"] != "session.snapshot" {
+				t.Errorf("unexpected readback: %#v", request)
 			}
 			response, _ := json.Marshal(map[string]any{"id": request["id"], "result": result})
 			_, err = connection.Write(append(response, '\n'))
@@ -71,7 +76,7 @@ func TestReportHerdrAgentSessionSendsOnlyFixedAssociation(t *testing.T) {
 	launcher := Launcher{Kind: LauncherHerdr, Session: "lab-80", Cwd: t.TempDir()}
 	sessionID := "01a04a4b-7fb9-7a90-8ace-51f7ae68e0ee"
 	now := time.Unix(0, 123456789)
-	if err := ReportHerdrAgentSession(ctx, HerdrPaths{Root: root}, launcher, "work:p1", "codex", sessionID, os.Getpid(), now); err != nil {
+	if err := ReportHerdrAgentSession(ctx, HerdrPaths{Root: root}, launcher, "work:p1", "codex", sessionID, "", os.Getpid(), now); err != nil {
 		t.Fatal(err)
 	}
 	if err := <-serverError; err != nil {
@@ -118,10 +123,10 @@ func TestReportHerdrAgentSessionUsesValidatedAgentKind(t *testing.T) {
 	if err := os.Chmod(socketPath, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	requests := make(chan map[string]any, 2)
+	requests := make(chan map[string]any, 3)
 	done := make(chan error, 1)
 	go func() {
-		for index := range 2 {
+		for index := range 3 {
 			connection, err := listener.Accept()
 			if err != nil {
 				done <- err
@@ -143,6 +148,11 @@ func TestReportHerdrAgentSessionUsesValidatedAgentKind(t *testing.T) {
 			result := map[string]any{"type": "ok"}
 			if index == 0 {
 				result = map[string]any{"type": "pane_process_info", "process_info": map[string]any{"pane_id": "work:p1", "shell_pid": os.Getpid()}}
+			} else if index == 2 {
+				result = agentAssociationSnapshot(agentAssociationPane("herdr:claude", "claude", "id", "claude:thread-1")).(map[string]any)
+			}
+			if index == 2 && request["method"] != "session.snapshot" {
+				t.Errorf("unexpected readback: %#v", request)
 			}
 			response, _ := json.Marshal(map[string]any{"id": request["id"], "result": result})
 			_, err = connection.Write(append(response, '\n'))
@@ -155,7 +165,7 @@ func TestReportHerdrAgentSessionUsesValidatedAgentKind(t *testing.T) {
 		done <- nil
 	}()
 	launcher := Launcher{Kind: LauncherHerdr, Session: "lab-81", Cwd: t.TempDir()}
-	if err := ReportHerdrAgentSession(context.Background(), HerdrPaths{Root: root}, launcher, "work:p1", "claude", "claude:thread-1", os.Getpid(), time.Now()); err != nil {
+	if err := ReportHerdrAgentSession(context.Background(), HerdrPaths{Root: root}, launcher, "work:p1", "claude", "claude:thread-1", "", os.Getpid(), time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	if err := <-done; err != nil {
@@ -166,7 +176,7 @@ func TestReportHerdrAgentSessionUsesValidatedAgentKind(t *testing.T) {
 	if params["agent"] != "claude" || params["source"] != "herdr:claude" || params["agent_session_id"] != "claude:thread-1" {
 		t.Fatalf("unexpected generic params: %#v", params)
 	}
-	if err := ReportHerdrAgentSession(context.Background(), HerdrPaths{Root: root}, launcher, "work:p1", "future-agent", "safe", os.Getpid(), time.Now()); err == nil {
+	if err := ReportHerdrAgentSession(context.Background(), HerdrPaths{Root: root}, launcher, "work:p1", "future-agent", "safe", "", os.Getpid(), time.Now()); err == nil {
 		t.Fatal("unknown agent kind reached Herdr")
 	}
 }
@@ -181,7 +191,7 @@ func TestReportHerdrAgentSessionRejectsUnsafeEndpointBeforeConnect(t *testing.T)
 		t.Fatal(err)
 	}
 	launcher := Launcher{Kind: LauncherHerdr, Session: "lab-80", Cwd: t.TempDir()}
-	if err := ReportHerdrAgentSession(context.Background(), HerdrPaths{Root: root}, launcher, "work:p1", "codex", string(testContextID), os.Getpid(), time.Now()); err == nil {
+	if err := ReportHerdrAgentSession(context.Background(), HerdrPaths{Root: root}, launcher, "work:p1", "codex", string(testContextID), "", os.Getpid(), time.Now()); err == nil {
 		t.Fatal("expected a regular-file endpoint to be rejected")
 	}
 }

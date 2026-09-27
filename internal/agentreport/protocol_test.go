@@ -49,3 +49,28 @@ func TestParseAgentReportIgnoresUnmanagedSession(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestParseAgentReportAcceptsNativeEventOrigin(t *testing.T) {
+	environment := map[string]string{HerdrActiveEnvironment: "1", ContextIDEnvironment: testContextID, HerdrPaneEnvironment: "work:p1"}
+	_, err := ParseAgentReport(strings.NewReader(`{"agent":"codex","agent_session_id":"thread-b","event_origin":"resume"}`), func(key string) string { return environment[key] })
+	if err != nil {
+		t.Fatalf("event origin cannot reach broker: %v", err)
+	}
+}
+
+func TestAgentEventOriginValidationAndUnknownValues(t *testing.T) {
+	env := map[string]string{HerdrActiveEnvironment: "1", ContextIDEnvironment: testContextID, HerdrPaneEnvironment: "work:p1"}
+	for _, origin := range []string{"", "startup", "resume", "clear", "compact", "future_origin"} {
+		payload := `{"agent":"codex","agent_session_id":"thread-b","event_origin":"` + origin + `"}`
+		r, err := ParseAgentReport(strings.NewReader(payload), func(k string) string { return env[k] })
+		if err != nil || r.EventOrigin != origin || r.Version != 3 {
+			t.Fatalf("origin %q: report=%+v err=%v", origin, r, err)
+		}
+	}
+	for _, origin := range []string{" resume", "RESUME", "resume;exec", "évent", strings.Repeat("a", 65)} {
+		payload := `{"agent":"codex","agent_session_id":"thread-b","event_origin":"` + origin + `"}`
+		if _, err := ParseAgentReport(strings.NewReader(payload), func(k string) string { return env[k] }); err == nil {
+			t.Fatalf("invalid origin accepted: %q", origin)
+		}
+	}
+}

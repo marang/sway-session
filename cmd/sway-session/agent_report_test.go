@@ -74,6 +74,8 @@ func TestCodexHookValidationAndNoop(t *testing.T) {
 		{"thread mismatch", valid, map[string]string{"HERDR_ENV": "1", "CODEX_THREAD_ID": "223e4567-e89b-42d3-a456-426614174000"}, false},
 		{"multiple objects", valid + `{}`, map[string]string{"HERDR_ENV": "1"}, false},
 		{"non-object", `[]`, map[string]string{"HERDR_ENV": "1"}, false},
+		{"bad source type", `{"hook_event_name":"SessionStart","session_id":"` + sessionID + `","source":4}`, map[string]string{"HERDR_ENV": "1"}, false},
+		{"invalid source", `{"hook_event_name":"SessionStart","session_id":"` + sessionID + `","source":" resume"}`, map[string]string{"HERDR_ENV": "1"}, false},
 		{"bad type", `{"hook_event_name":5,"session_id":"` + sessionID + `"}`, map[string]string{"HERDR_ENV": "1"}, false},
 		{"oversize", valid + strings.Repeat(" ", 16*1024), map[string]string{"HERDR_ENV": "1"}, false},
 	} {
@@ -153,6 +155,31 @@ func TestReportAgentSessionFailuresAndUnmanaged(t *testing.T) {
 			code := runWith(append([]string{"report-agent-session"}, tc.args...), strings.NewReader(`{}`), io.Discard, &stderr, deps)
 			if code != tc.code || called != tc.called || (tc.code == exitSuccess && stderr.Len() != 0) {
 				t.Fatalf("code=%d called=%v stderr=%q", code, called, stderr.String())
+			}
+		})
+	}
+}
+
+func TestCodexHookPreservesNativeEventOrigin(t *testing.T) {
+	const sessionID = "01a04a4b-7fb9-7a90-8ace-51f7ae68e0ee"
+	for _, origin := range []string{"startup", "resume", "clear", "compact", "future_event"} {
+		t.Run(origin, func(t *testing.T) {
+			payload := `{"hook_event_name":"SessionStart","session_id":"` + sessionID + `","source":"` + origin + `"}`
+			input, err := codexHookReport(strings.NewReader(payload), func(key string) string {
+				if key == "HERDR_ENV" {
+					return "1"
+				}
+				return ""
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, err := io.ReadAll(input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Contains(data, []byte(`"event_origin":"`+origin+`"`)) {
+				t.Fatalf("native event origin lost: %s", data)
 			}
 		})
 	}

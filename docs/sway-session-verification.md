@@ -174,6 +174,32 @@ limits.
 One-shot restore proves launch or mapping. Saved workspace placement and layout
 require the daemon; never claim placement from a daemon-free mapping test.
 
+The LAB-177 layout matrix exercises capture of stacked, split, nested tabbed,
+and floating workspaces against a persisted placement-only snapshot containing
+an archived context. It checks SQLite reload, exact restore selection, safe
+mixed-tree degradation, archived registry retention, and repeated merge
+idempotence:
+
+```sh
+go test ./internal/session -run '^TestLayoutAcceptance' -count=1
+```
+
+The private-Sway delayed-application test also keeps archived and deliberately
+closed application records beside a desired-open application. Only the latter
+may launch; the inactive placements must disappear from the new layout while
+their registry records remain. A second private-Sway regression reconstructs
+vertical splits, nested tabs, and floating windows from newly mapped terminals,
+checks the live structure and durable capture, then verifies steady-state
+idempotence:
+
+```sh
+SWAY_SESSION_HEADLESS_INTEGRATION=1 go test -race ./cmd/sway-session \
+  -run '^TestSessionRuntime(LayoutShapes|LateApplication)Headless$' -count=1 -v
+```
+
+These checks do not substitute for observing the user's layout after a real
+reboot and again after a second reboot.
+
 Also exercise:
 
 - absent → mapped → absent during both terminal stability checks;

@@ -65,6 +65,35 @@ func TestSessionRuntimeLateApplicationHeadless(t *testing.T) {
 					DesiredOpen: true, RestorePolicy: sessionstate.ApplicationRestoreFollow,
 				},
 			})
+			// Stale placements for an archived application and an active but
+			// desired-closed application must neither launch those contexts nor
+			// survive a fresh capture of the restored workspace.
+			inactiveIDs := []sessionstate.ContextID{
+				"6ba7b811-9dad-11d1-80b4-00c04fd430c8",
+				"6ba7b812-9dad-11d1-80b4-00c04fd430c8",
+			}
+			archived := registry.Contexts[1]
+			archived.ID = inactiveIDs[0]
+			archived.Label = "archived application"
+			archived.State = sessionstate.ContextArchived
+			archived.Launcher.DesktopID = "Archived.desktop"
+			archived.Launcher.DesktopPath = filepath.Join(h.root, "data", "Archived.desktop")
+			archivedAt := time.Date(2026, time.September, 1, 12, 0, 0, 0, time.UTC)
+			archived.ArchivedAt = &archivedAt
+			archived.App = &sessionstate.Application{
+				Identity:    sessionstate.ApplicationIdentity{Protocol: sessionstate.WindowWayland, WaylandAppID: "org.example.Archived"},
+				DesiredOpen: true, RestorePolicy: sessionstate.ApplicationRestoreFollow,
+			}
+			closed := registry.Contexts[1]
+			closed.ID = inactiveIDs[1]
+			closed.Label = "closed application"
+			closed.Launcher.DesktopID = "Closed.desktop"
+			closed.Launcher.DesktopPath = filepath.Join(h.root, "data", "Closed.desktop")
+			closed.App = &sessionstate.Application{
+				Identity:    sessionstate.ApplicationIdentity{Protocol: sessionstate.WindowWayland, WaylandAppID: "org.example.Closed"},
+				DesiredOpen: false, RestorePolicy: sessionstate.ApplicationRestoreFollow,
+			}
+			registry.Contexts = append(registry.Contexts, archived, closed)
 			if err := sessionstate.RegistryStoreFor(h.state).Save(registry); err != nil {
 				t.Fatal(err)
 			}
@@ -75,6 +104,10 @@ func TestSessionRuntimeLateApplicationHeadless(t *testing.T) {
 				slices.Reverse(desired.Workspaces[0].Tiling.Children)
 			}
 			desired.Workspaces[0].Tiling.Layout = sessionstate.LayoutTabbed
+			desired.Workspaces = append(desired.Workspaces,
+				sessionstate.WorkspaceLayout{Name: "99", RestoreMode: sessionstate.WorkspaceRestorePlacementOnly, PlacementContexts: []sessionstate.ContextID{inactiveIDs[0]}},
+				sessionstate.WorkspaceLayout{Name: "100", RestoreMode: sessionstate.WorkspaceRestorePlacementOnly, PlacementContexts: []sessionstate.ContextID{inactiveIDs[1]}},
+			)
 			if err := sessionstate.LayoutStoreFor(h.state).Save(desired); err != nil {
 				t.Fatal(err)
 			}
@@ -348,7 +381,12 @@ func TestSessionRuntimeLateApplicationHeadless(t *testing.T) {
 				t.Fatal(err)
 			}
 			appIndex := slices.IndexFunc(finalRegistry.Contexts, func(context sessionstate.Context) bool { return context.ID == ids[1] })
-			if appIndex < 0 || finalRegistry.Contexts[appIndex].State != sessionstate.ContextActive || finalRegistry.Contexts[appIndex].App == nil || !finalRegistry.Contexts[appIndex].App.DesiredOpen || launcher.starts != 1 {
+			archivedIndex := slices.IndexFunc(finalRegistry.Contexts, func(context sessionstate.Context) bool { return context.ID == inactiveIDs[0] })
+			closedIndex := slices.IndexFunc(finalRegistry.Contexts, func(context sessionstate.Context) bool { return context.ID == inactiveIDs[1] })
+			if appIndex < 0 || finalRegistry.Contexts[appIndex].State != sessionstate.ContextActive || finalRegistry.Contexts[appIndex].App == nil || !finalRegistry.Contexts[appIndex].App.DesiredOpen ||
+				archivedIndex < 0 || finalRegistry.Contexts[archivedIndex].State != sessionstate.ContextArchived ||
+				closedIndex < 0 || finalRegistry.Contexts[closedIndex].App == nil || finalRegistry.Contexts[closedIndex].App.DesiredOpen ||
+				launcher.starts != 1 || len(launcher.contexts) != 1 || launcher.contexts[0].ID != ids[1] {
 				t.Fatalf("restore changed application lifecycle: registry=%+v launches=%d", finalRegistry, launcher.starts)
 			}
 			t.Logf("real new=%d mapping focus=%d own moves=%d own focus=%d; live and captured layout=%s", newEvents, mappingFocus, ownMoves, ownFocus, wantLayout)

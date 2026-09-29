@@ -1,0 +1,65 @@
+name: Herdr compatibility
+
+on:
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  latest-stable:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout without persisted credentials
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Download latest stable Herdr
+        run: |
+          mkdir -p "$RUNNER_TEMP/herdr-bin"
+          python3 - "$RUNNER_TEMP/herdr-bin/herdr" <<'PY'
+          import hashlib
+          import json
+          import re
+          import sys
+          import urllib.request
+
+          request = urllib.request.Request(
+              "https://api.github.com/repos/herdrdev/herdr/releases/latest",
+              headers={"Accept": "application/vnd.github+json"},
+          )
+          with urllib.request.urlopen(request, timeout=30) as response:
+              release = json.load(response)
+          assets = [asset for asset in release["assets"] if asset["name"] == "herdr-linux-x86_64"]
+          if len(assets) != 1:
+              raise SystemExit("latest Herdr release has no unique Linux x86_64 binary")
+          asset = assets[0]
+          url = asset["browser_download_url"]
+          digest = asset.get("digest", "")
+          if not url.startswith("https://github.com/herdrdev/herdr/releases/download/") or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+              raise SystemExit("Herdr release URL or SHA-256 digest is invalid")
+          with urllib.request.urlopen(url, timeout=90) as response:
+              binary = response.read()
+          if hashlib.sha256(binary).hexdigest() != digest.removeprefix("sha256:"):
+              raise SystemExit("Herdr release digest does not match")
+          with open(sys.argv[1], "wb") as output:
+              output.write(binary)
+          print("Verified Herdr", release["tag_name"], digest)
+          PY
+          chmod 700 "$RUNNER_TEMP/herdr-bin/herdr"
+          "$RUNNER_TEMP/herdr-bin/herdr" --version
+          echo "$RUNNER_TEMP/herdr-bin" >> "$GITHUB_PATH"
+
+      - name: Verify real Herdr initialization in disposable state
+        env:
+          SWAY_SESSION_HERDR_INTEGRATION: "1"
+        run: go test ./internal/herdrinit -run '^TestHerdrLiveInitialization$' -count=1 -v

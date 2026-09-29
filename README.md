@@ -222,6 +222,16 @@ terminal without an identity reuses one default terminal; --project reuses one
 stable named identity. --ephemeral creates no registry state. cleanup only
 previews archived candidates; deletion always uses an exact reviewed UUID.
 
+The fixed two-pane role initializer supports Herdr snapshot protocols 20 and
+22 (verified with Herdr 0.8.2, 0.9.1, and 0.9.2). It splits only a proven
+empty shell session, then starts the requested agent in its designated pane.
+Unknown snapshot protocols and ambiguous pane state leave the Herdr session
+unchanged.
+If initialization fails after context registration, `request-start` reports the
+registered context UUID and a bounded protocol-mismatch diagnostic when that
+is the cause. Retry the same named request or exact context after installing a
+compatible version; do not create another context for that session.
+
 In `terminal manage`, saved contexts and open windows are separate counts.
 Each entry shows its observed window presence (`open`, `closed`, or `unknown`)
 separately from whether automatic restore is enabled or the context is

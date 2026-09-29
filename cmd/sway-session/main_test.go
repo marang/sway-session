@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/marang/sway-session/internal/diagnostic"
 	sessionstate "github.com/marang/sway-session/internal/session"
 	"github.com/marang/sway-session/internal/sessionrequest"
 	"github.com/marang/sway-session/internal/statefile"
@@ -252,6 +253,32 @@ func TestRequestStartUsesOnlyTypedBrokerDependency(t *testing.T) {
 	}
 	if result.Command != "request-start" || result.Workspace != 7 || !result.Created || len(result.Contexts) != 1 || result.Contexts[0].ID != testContextID {
 		t.Fatalf("unexpected request-start result: %+v", result)
+	}
+}
+
+func TestRequestStartReportsProtocolMismatchWithRegisteredContextID(t *testing.T) {
+	deps := testDependencies(t)
+	deps.requestStart = func(context.Context, sessionrequest.Request) (sessionrequest.Response, error) {
+		return sessionrequest.Response{}, &sessionrequest.ProtocolMismatchDiagnostic{
+			ContextID: testContextID, Detail: `unsupported Herdr snapshot version "0.9.0" protocol 21`,
+		}
+	}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := runWith([]string{"--json", "request-start", "--session", "reboot-e2e", "--workspace", "98"}, strings.NewReader(""), &stdout, &stderr, deps)
+	if code != exitOperation || stdout.Len() != 0 {
+		t.Fatalf("unexpected result code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	var envelope struct {
+		Diagnostics []diagnostic.Diagnostic `json:"diagnostics"`
+	}
+	if err := json.Unmarshal(stderr.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if len(envelope.Diagnostics) != 1 || envelope.Diagnostics[0].Code != "herdr_protocol_mismatch" ||
+		envelope.Diagnostics[0].Details["context_id"] != string(testContextID) ||
+		!strings.Contains(envelope.Diagnostics[0].Hint, "protocol 21") {
+		t.Fatalf("unexpected diagnostics: %+v", envelope.Diagnostics)
 	}
 }
 

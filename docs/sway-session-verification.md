@@ -157,6 +157,20 @@ a test window on a single-digit workspace. Enable pane history in the
 disposable Herdr config and use a short enough root for Herdr Unix socket path
 limits.
 
+The fixed role initializer has a separate real-Herdr check that uses a private
+Herdr server and a harmless Codex fixture, without contacting the user's Herdr
+server or opening a Sway window:
+
+```sh
+SWAY_SESSION_HERDR_INTEGRATION=1 go test ./internal/herdrinit \
+  -run '^TestHerdrLiveInitialization$' -count=1 -v
+```
+
+The scheduled `Herdr compatibility` workflow runs this check against the latest
+stable Linux x86_64 release every week and can also be started manually. It
+detects a new incompatible Herdr wire contract; it does not update the user's
+installed Herdr package or promise compatibility before the check passes.
+
 1. Build the candidate sway-session binary.
 2. Start the daemon against the private Sway socket.
 3. Create a fresh persistent terminal with terminal --new and record only its

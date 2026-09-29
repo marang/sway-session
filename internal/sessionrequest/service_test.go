@@ -29,6 +29,13 @@ type fakeSessionInitializer struct {
 	err   error
 }
 
+type testProtocolMismatch struct{}
+
+func (testProtocolMismatch) Error() string { return "private state /home/owner" }
+func (testProtocolMismatch) SafeDiagnostic() string {
+	return "unsupported Herdr snapshot version \"0.9.0\" protocol 21"
+}
+
 func (initializer *fakeSessionInitializer) Initialize(_ context.Context, contextValue sessionstate.Context) error {
 	initializer.calls = append(initializer.calls, contextValue)
 	err := initializer.err
@@ -311,6 +318,44 @@ func TestServiceInitializationFailureKeepsExactContextAndRetryConverges(t *testi
 	}
 	if !reflect.DeepEqual(runner.calls, []sessionstate.ContextID{testContextID}) {
 		t.Fatalf("initialization retry restored another window: %v", runner.calls)
+	}
+}
+
+func TestServiceReturnsTypedProtocolMismatchAfterRegistration(t *testing.T) {
+	service, request, _, _ := testService(t)
+	request.Workspace = 98
+	service.Initializer = &fakeSessionInitializer{err: testProtocolMismatch{}}
+
+	partial, err := service.Handle(context.Background(), request)
+	var mismatch *ProtocolMismatchDiagnostic
+	if !errors.As(err, &mismatch) || mismatch.ContextID != testContextID ||
+		mismatch.Detail != `unsupported Herdr snapshot version "0.9.0" protocol 21` {
+		t.Fatalf("unexpected protocol mismatch: %v", err)
+	}
+	if partial.Context == nil || partial.Context.ID != testContextID || !partial.Created {
+		t.Fatalf("missing registered context: %+v", partial)
+	}
+	if strings.Contains(err.Error(), "/home/owner") {
+		t.Fatalf("private initializer detail leaked: %v", err)
+	}
+}
+
+func TestServiceDoesNotHideSplitFailureBehindProtocolMismatch(t *testing.T) {
+	service, request, _, _ := testService(t)
+	request.Workspace = 98
+	service.Initializer = &fakeSessionInitializer{err: errors.Join(
+		errors.New("split response lost after mutation"), testProtocolMismatch{},
+	)}
+
+	partial, err := service.Handle(context.Background(), request)
+	var mismatch *ProtocolMismatchDiagnostic
+	if err == nil || errors.As(err, &mismatch) ||
+		!strings.Contains(err.Error(), "split response lost after mutation") ||
+		!strings.Contains(err.Error(), "private state /home/owner") {
+		t.Fatalf("split and reconciliation failure were hidden: %v", err)
+	}
+	if partial.Context == nil || partial.Context.ID != testContextID {
+		t.Fatalf("registered context was lost: %+v", partial)
 	}
 }
 

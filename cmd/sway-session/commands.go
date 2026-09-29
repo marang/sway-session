@@ -59,6 +59,15 @@ func executeRequestStart(ctx context.Context, arguments []string, deps dependenc
 	}
 	response, err := deps.requestStart(ctx, request)
 	if err != nil {
+		var mismatch *sessionrequest.ProtocolMismatchDiagnostic
+		if errors.As(err, &mismatch) && mismatch != nil {
+			return commandResult{}, failures([]diagnostic.Diagnostic{{
+				Level: diagnostic.LevelError, Code: "herdr_protocol_mismatch",
+				Message: fmt.Sprintf("Herdr protocol mismatch for context %s", mismatch.ContextID),
+				Hint:    mismatch.Detail,
+				Details: map[string]any{"context_id": mismatch.ContextID},
+			}})
+		}
 		return commandResult{}, failure("session_request", "request session start", err.Error())
 	}
 	return commandResult{Command: "request-start", Contexts: []sessionstate.Context{*response.Context}, Workspace: response.Workspace, Created: response.Created}, nil

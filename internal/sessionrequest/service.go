@@ -215,7 +215,7 @@ func (service *Service) initializeResponse(ctx context.Context, response Respons
 		return response, prior
 	}
 	if err := service.Initializer.Initialize(ctx, *response.Context); err != nil {
-		return response, fmt.Errorf("initialize requested terminal session: %w", err)
+		return response, fmt.Errorf("initialize requested terminal session: %w", protocolMismatchAfterRegistration(response.Context.ID, err))
 	}
 	return response, nil
 }

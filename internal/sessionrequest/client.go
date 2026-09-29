@@ -14,7 +14,9 @@ import (
 	sessionstate "github.com/marang/sway-session/internal/session"
 )
 
-const exchangeTimeout = 15 * time.Second
+// The broker may wait up to 90 seconds for an interactive Herdr agent to be
+// ready. The client deadline must cover that bounded initialization.
+const exchangeTimeout = 100 * time.Second
 
 func Send(ctx context.Context, socketPath string, request Request) (Response, error) {
 	if err := request.Validate(); err != nil {
@@ -62,6 +64,9 @@ func Send(ctx context.Context, socketPath string, request Request) (Response, er
 		return Response{}, fmt.Errorf("unsupported session start response version %d", response.Version)
 	}
 	if !response.OK {
+		if diagnostic, recognized := decodeProtocolMismatch(response.Error); recognized {
+			return Response{}, diagnostic
+		}
 		return Response{}, errors.New("session start request rejected")
 	}
 	if response.Context == nil {

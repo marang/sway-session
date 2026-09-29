@@ -52,6 +52,45 @@ func TestServerAcceptsValidatedStartRequest(t *testing.T) {
 	}
 }
 
+func TestServerReturnsOnlyTypedProtocolMismatchAndContextID(t *testing.T) {
+	request := testRequest(t)
+	socketPath := filepath.Join(t.TempDir(), "runtime", SocketFilename)
+	server, err := StartServer(socketPath, func(context.Context, Request) (Response, error) {
+		return Response{}, &ProtocolMismatchDiagnostic{
+			ContextID: testContextID, Detail: `unsupported Herdr snapshot version "0.9.0" protocol 21`,
+		}
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	_, err = Send(context.Background(), socketPath, request)
+	var mismatch *ProtocolMismatchDiagnostic
+	if !errors.As(err, &mismatch) || mismatch.ContextID != testContextID ||
+		mismatch.Detail != `unsupported Herdr snapshot version "0.9.0" protocol 21` {
+		t.Fatalf("typed broker error lost: %v", err)
+	}
+}
+
+func TestServerAllowsBoundedInteractiveAgentStartup(t *testing.T) {
+	request := testRequest(t)
+	socketPath := filepath.Join(t.TempDir(), "runtime", SocketFilename)
+	server, err := StartServer(socketPath, func(ctx context.Context, got Request) (Response, error) {
+		deadline, ok := ctx.Deadline()
+		if !ok || time.Until(deadline) < 90*time.Second {
+			t.Errorf("agent startup deadline does not cover the 90-second initializer: %v", deadline)
+		}
+		return testResponse(got, true), nil
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	if _, err := Send(context.Background(), socketPath, request); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestServerAcceptsConnectOnlyLivenessProbeWithoutHandler(t *testing.T) {
 	socketPath := filepath.Join(t.TempDir(), "runtime", SocketFilename)
 	called := make(chan struct{}, 1)

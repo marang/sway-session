@@ -13,6 +13,63 @@ import (
 
 const emptySnapshot = `{"id":"snapshot","result":{"type":"session_snapshot","snapshot":{"version":"0.8.2","protocol":20,"workspaces":[{"workspace_id":"w1"}],"tabs":[{"workspace_id":"w1","tab_id":"w1:t1"}],"panes":[{"workspace_id":"w1","tab_id":"w1:t1","pane_id":"w1:p1","agent":null}],"layouts":[{"workspace_id":"w1","tab_id":"w1:t1","panes":[{"pane_id":"w1:p1"}],"splits":[]}],"agents":[]}}}`
 
+// This is the one-shell shape exposed by Herdr 0.9.1 / snapshot protocol 22.
+const emptySnapshot22 = `{"id":"snapshot","result":{"type":"session_snapshot","snapshot":{"version":"0.9.1","protocol":22,"workspaces":[{"workspace_id":"w1"}],"tabs":[{"workspace_id":"w1","tab_id":"w1:t1"}],"panes":[{"workspace_id":"w1","tab_id":"w1:t1","pane_id":"w1:p1","agent_status":"unknown"}],"layouts":[{"workspace_id":"w1","tab_id":"w1:t1","panes":[{"pane_id":"w1:p1"}],"splits":[]}],"agents":[]}}}`
+
+func TestProtocol22EmptySnapshotCanInitialize(t *testing.T) {
+	contextValue := testContext(t)
+	runner := &fakeRunner{outputs: [][]byte{
+		[]byte(emptySnapshot22),
+		readyShell(contextValue.Launcher.Cwd),
+		[]byte(`{"result":{"type":"pane_info","pane":{"pane_id":"w1:p2"}}}`),
+		[]byte(`{"result":{"type":"agent_info"}}`),
+	}}
+	result, err := Initialize(context.Background(), contextValue, []string{"codex", "shell"}, runner)
+	if err != nil || !result.Initialized {
+		t.Fatalf("protocol 22 empty session did not initialize: result=%+v err=%v", result, err)
+	}
+}
+
+func TestProtocol22RequiresUnambiguousEmptyPane(t *testing.T) {
+	for _, testCase := range []struct {
+		name     string
+		snapshot string
+	}{
+		{"agent associated", strings.Replace(emptySnapshot22, `"agent_status":"unknown"`, `"agent":"codex","agent_status":"unknown"`, 1)},
+		{"session associated", strings.Replace(emptySnapshot22, `"agent_status":"unknown"`, `"agent_status":"unknown","agent_session":{"kind":"id","value":"x"}`, 1)},
+		{"display agent associated", strings.Replace(emptySnapshot22, `"agent_status":"unknown"`, `"agent_status":"unknown","display_agent":"codex"`, 1)},
+		{"working status", strings.Replace(emptySnapshot22, `"agent_status":"unknown"`, `"agent_status":"working"`, 1)},
+		{"missing status", strings.Replace(emptySnapshot22, `,"agent_status":"unknown"`, "", 1)},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			runner := &fakeRunner{outputs: [][]byte{[]byte(testCase.snapshot)}}
+			result, err := Initialize(context.Background(), testContext(t), []string{"codex", "shell"}, runner)
+			if err != nil || result.Initialized || len(runner.calls) != 1 {
+				t.Fatalf("ambiguous pane must stay unchanged: result=%+v err=%v calls=%#v", result, err, runner.calls)
+			}
+		})
+	}
+}
+
+func TestProtocol22MalformedSplitResponseRollsBackOnlyCreatedPane(t *testing.T) {
+	contextValue := testContext(t)
+	split := strings.ReplaceAll(string(splitSnapshot("w1:p1", "w1:p2")), `"agent":null`, `"agent_status":"unknown"`)
+	split = strings.Replace(split, `"version":"0.8.2","protocol":20`, `"version":"0.9.1","protocol":22`, 1)
+	runner := &fakeRunner{outputs: [][]byte{
+		[]byte(emptySnapshot22),
+		readyShell(contextValue.Launcher.Cwd),
+		[]byte(`{"result":`),
+		[]byte(split),
+	}}
+	_, err := Initialize(context.Background(), contextValue, []string{"codex", "shell"}, runner)
+	if err == nil || !strings.Contains(err.Error(), "decode Herdr pane split") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(runner.calls) != 5 || !reflect.DeepEqual(runner.calls[4].arguments, []string{"pane", "close", "w1:p2"}) {
+		t.Fatalf("protocol 22 rollback did not target created pane: %#v", runner.calls)
+	}
+}
+
 type runnerCall struct {
 	session   string
 	cwd       string
@@ -204,16 +261,30 @@ func TestInitializeRejectsUnknownSnapshotWithoutMutation(t *testing.T) {
 }
 
 func TestInitializeRejectsUnknownSnapshotProtocolWithoutMutation(t *testing.T) {
-	snapshot := strings.Replace(emptySnapshot, `"protocol":20`, `"protocol":21`, 1)
-	runner := &fakeRunner{outputs: [][]byte{[]byte(snapshot)}}
-
-	_, err := Initialize(context.Background(), testContext(t), []string{"codex", "shell"}, runner)
-
-	if err == nil || !strings.Contains(err.Error(), "unsupported Herdr snapshot") {
-		t.Fatalf("unexpected error: %v", err)
+	for _, testCase := range []struct {
+		name     string
+		snapshot string
+	}{
+		{"unsupported 21", strings.Replace(emptySnapshot, `"protocol":20`, `"protocol":21`, 1)},
+		{"future 23", strings.Replace(emptySnapshot22, `"protocol":22`, `"protocol":23`, 1)},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			runner := &fakeRunner{outputs: [][]byte{[]byte(testCase.snapshot)}}
+			_, err := Initialize(context.Background(), testContext(t), []string{"codex", "shell"}, runner)
+			if err == nil || !strings.Contains(err.Error(), "unsupported Herdr snapshot") {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(runner.calls) != 1 {
+				t.Fatalf("unknown protocol caused mutation: %#v", runner.calls)
+			}
+		})
 	}
-	if len(runner.calls) != 1 {
-		t.Fatalf("unknown protocol caused mutation: %#v", runner.calls)
+}
+
+func TestProtocolMismatchDiagnosticRedactsUntrustedVersion(t *testing.T) {
+	detail := (&ProtocolMismatchError{Version: "0.9.1\n/private/path", Protocol: 23}).SafeDiagnostic()
+	if strings.Contains(detail, "/private") || strings.Contains(detail, "\n") || !strings.Contains(detail, "protocol 23") {
+		t.Fatalf("unsafe protocol detail: %q", detail)
 	}
 }
 

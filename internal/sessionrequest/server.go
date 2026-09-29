@@ -205,7 +205,7 @@ func (server *Server) serve() {
 
 func (server *Server) handle(connection *net.UnixConn) {
 	defer connection.Close()
-	if err := connection.SetDeadline(time.Now().Add(exchangeTimeout)); err != nil {
+	if err := connection.SetDeadline(time.Now().Add(15 * time.Second)); err != nil {
 		server.reject(connection, err)
 		return
 	}
@@ -245,6 +245,10 @@ func (server *Server) handle(connection *net.UnixConn) {
 		server.reject(connection, err)
 		return
 	}
+	if err := connection.SetDeadline(time.Now().Add(exchangeTimeout)); err != nil {
+		server.reject(connection, err)
+		return
+	}
 	ctx, cancel := context.WithTimeout(server.ctx, exchangeTimeout)
 	defer cancel()
 	response, err := server.handler(ctx, request)
@@ -280,7 +284,7 @@ func requireCurrentUser(connection *net.UnixConn) (*unix.Ucred, error) {
 
 func (server *Server) reject(connection net.Conn, cause error) {
 	server.report(cause)
-	server.writeResponse(connection, Response{Version: ProtocolVersion, Error: "request rejected"})
+	server.writeResponse(connection, Response{Version: ProtocolVersion, Error: encodeProtocolMismatch(cause)})
 }
 
 func (server *Server) writeResponse(connection net.Conn, response Response) {

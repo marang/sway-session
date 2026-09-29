@@ -16,12 +16,13 @@ import (
 )
 
 const (
-	RequiredRoles                  = 2
-	supportedHerdrSnapshotProtocol = 20
-	snapshotAttempts               = 24
-	snapshotRetryDelay             = 250 * time.Millisecond
-	shellReadinessAttempts         = 12
-	shellReadinessRetryDelay       = 100 * time.Millisecond
+	RequiredRoles            = 2
+	herdrSnapshotProtocol20  = 20
+	herdrSnapshotProtocol22  = 22
+	snapshotAttempts         = 24
+	snapshotRetryDelay       = 250 * time.Millisecond
+	shellReadinessAttempts   = 12
+	shellReadinessRetryDelay = 100 * time.Millisecond
 )
 
 type Runner interface {
@@ -217,10 +218,48 @@ func validRole(value string) bool {
 }
 
 type snapshotPane struct {
-	PaneID      string  `json:"pane_id"`
-	TabID       string  `json:"tab_id"`
-	WorkspaceID string  `json:"workspace_id"`
-	Agent       *string `json:"agent"`
+	PaneID       string          `json:"pane_id"`
+	TabID        string          `json:"tab_id"`
+	WorkspaceID  string          `json:"workspace_id"`
+	Agent        *string         `json:"agent"`
+	AgentStatus  *string         `json:"agent_status"`
+	AgentSession json.RawMessage `json:"agent_session"`
+	DisplayAgent *string         `json:"display_agent"`
+}
+
+// ProtocolMismatchError contains only the public Herdr wire version. It can be
+// returned through the narrow session-start diagnostic without exposing state.
+type ProtocolMismatchError struct {
+	Version  string
+	Protocol int
+}
+
+func (err *ProtocolMismatchError) Error() string { return err.SafeDiagnostic() }
+
+func (err *ProtocolMismatchError) SafeDiagnostic() string {
+	version := err.Version
+	if len(version) == 0 || len(version) > 32 {
+		version = "unrecognized"
+	} else {
+		for _, char := range version {
+			if !(char >= '0' && char <= '9' || char >= 'A' && char <= 'Z' || char >= 'a' && char <= 'z' || char == '.' || char == '-' || char == '+') {
+				version = "unrecognized"
+				break
+			}
+		}
+	}
+	return fmt.Sprintf("unsupported Herdr snapshot version %q protocol %d", version, err.Protocol)
+}
+
+func (pane snapshotPane) provenEmpty(protocol int) bool {
+	if pane.Agent != nil || pane.DisplayAgent != nil ||
+		(len(pane.AgentSession) != 0 && strings.TrimSpace(string(pane.AgentSession)) != "null") {
+		return false
+	}
+	if protocol == herdrSnapshotProtocol20 {
+		return true
+	}
+	return pane.AgentStatus != nil && *pane.AgentStatus == "unknown"
 }
 
 type snapshotLayout struct {
@@ -260,12 +299,11 @@ func decodeSessionSnapshot(output []byte) (sessionSnapshot, error) {
 	if response.Result.Type != "session_snapshot" {
 		return sessionSnapshot{}, fmt.Errorf("herdr snapshot returned unexpected result type %q", response.Result.Type)
 	}
-	if response.Result.Snapshot.Version == "" || response.Result.Snapshot.Protocol != supportedHerdrSnapshotProtocol {
-		return sessionSnapshot{}, fmt.Errorf(
-			"unsupported Herdr snapshot version %q protocol %d",
-			response.Result.Snapshot.Version,
-			response.Result.Snapshot.Protocol,
-		)
+	if response.Result.Snapshot.Version == "" ||
+		(response.Result.Snapshot.Protocol != herdrSnapshotProtocol20 && response.Result.Snapshot.Protocol != herdrSnapshotProtocol22) {
+		return sessionSnapshot{}, &ProtocolMismatchError{
+			Version: response.Result.Snapshot.Version, Protocol: response.Result.Snapshot.Protocol,
+		}
 	}
 	return response.Result.Snapshot, nil
 }
@@ -275,14 +313,14 @@ func parseEmptySession(output []byte) (string, bool, error) {
 	if err != nil {
 		return "", false, err
 	}
-	if len(snapshot.Workspaces) != 1 || len(snapshot.Tabs) != 1 || len(snapshot.Panes) != 1 || len(snapshot.Layouts) != 1 || len(snapshot.Layouts[0].Panes) != 1 || len(snapshot.Layouts[0].Splits) != 0 || len(snapshot.Agents) != 0 {
+	if len(snapshot.Workspaces) != 1 || len(snapshot.Tabs) != 1 || len(snapshot.Panes) != 1 || len(snapshot.Layouts) != 1 || len(snapshot.Layouts[0].Panes) != 1 || snapshot.Layouts[0].Splits == nil || len(snapshot.Layouts[0].Splits) != 0 || snapshot.Agents == nil || len(snapshot.Agents) != 0 {
 		return "", false, nil
 	}
 	workspaceID := snapshot.Workspaces[0].WorkspaceID
 	tabID := snapshot.Tabs[0].TabID
 	pane := snapshot.Panes[0]
 	layout := snapshot.Layouts[0]
-	if workspaceID == "" || tabID == "" || pane.PaneID == "" || pane.Agent != nil || snapshot.Tabs[0].WorkspaceID != workspaceID || pane.WorkspaceID != workspaceID || pane.TabID != tabID || layout.WorkspaceID != workspaceID || layout.TabID != tabID || layout.Panes[0].PaneID != pane.PaneID {
+	if workspaceID == "" || tabID == "" || pane.PaneID == "" || !pane.provenEmpty(snapshot.Protocol) || snapshot.Tabs[0].WorkspaceID != workspaceID || pane.WorkspaceID != workspaceID || pane.TabID != tabID || layout.WorkspaceID != workspaceID || layout.TabID != tabID || layout.Panes[0].PaneID != pane.PaneID {
 		return "", false, nil
 	}
 	return pane.PaneID, true, nil
@@ -316,7 +354,7 @@ func parseSingleSplitSession(output []byte, original string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if len(snapshot.Workspaces) != 1 || len(snapshot.Tabs) != 1 || len(snapshot.Panes) != 2 || len(snapshot.Layouts) != 1 || len(snapshot.Layouts[0].Panes) != 2 || len(snapshot.Layouts[0].Splits) != 1 || len(snapshot.Agents) != 0 {
+	if len(snapshot.Workspaces) != 1 || len(snapshot.Tabs) != 1 || len(snapshot.Panes) != 2 || len(snapshot.Layouts) != 1 || len(snapshot.Layouts[0].Panes) != 2 || len(snapshot.Layouts[0].Splits) != 1 || snapshot.Agents == nil || len(snapshot.Agents) != 0 {
 		return "", errors.New("session was not proven to contain exactly the requested split")
 	}
 	workspaceID := snapshot.Workspaces[0].WorkspaceID
@@ -328,7 +366,7 @@ func parseSingleSplitSession(output []byte, original string) (string, error) {
 	paneIDs := make(map[string]struct{}, 2)
 	created := ""
 	for _, pane := range snapshot.Panes {
-		if pane.PaneID == "" || pane.Agent != nil || pane.WorkspaceID != workspaceID || pane.TabID != tabID {
+		if pane.PaneID == "" || !pane.provenEmpty(snapshot.Protocol) || pane.WorkspaceID != workspaceID || pane.TabID != tabID {
 			return "", errors.New("split session contains an unexpected pane")
 		}
 		if _, duplicate := paneIDs[pane.PaneID]; duplicate {

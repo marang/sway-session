@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -101,6 +102,15 @@ func TestTerminalCleanupObservesArchivedSessionsWithoutMutation(t *testing.T) {
 	item := (*result.Terminals)[0]
 	if item.Activity.Reason != "manager_executable_unavailable" || item.State != sessionstate.ContextArchived {
 		t.Fatalf("preview missing unavailable activity: %+v", item)
+	}
+	var output bytes.Buffer
+	if err := writeResult(&output, false, result); err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"window=", "herdr=unknown", "agent=unknown", "observed=", "age=", "reason=manager_executable_unavailable"} {
+		if !strings.Contains(output.String(), field) {
+			t.Fatalf("cleanup preview omitted %q: %s", field, output.String())
+		}
 	}
 	root, _ := deps.stateRoot()
 	registry, err := sessionstate.ReadRegistrySnapshotContext(t.Context(), root)

@@ -366,10 +366,12 @@ func writeResult(writer io.Writer, structured bool, result commandResult) error 
 				identity += ":" + terminal.Identity.Project
 			}
 			observed := "not observed"
+			age := "unknown"
 			if terminal.Activity.ObservedAt != nil {
 				observed = terminal.Activity.ObservedAt.UTC().Format(time.RFC3339)
+				age = max(time.Since(*terminal.Activity.ObservedAt), 0).Round(time.Second).String()
 			}
-			if _, err := fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\twindow=%s\therdr=%s\tagent=%s\tobserved=%s\treason=%s\n", terminal.ContextID, identity, terminal.Adapter, terminal.State, terminal.Cwd, terminal.WindowPresence, terminal.Activity.SessionState, terminal.Activity.AgentState, observed, terminal.Activity.Reason); err != nil {
+			if _, err := fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\twindow=%s\therdr=%s\tagent=%s\tobserved=%s\tage=%s\treason=%s\n", terminal.ContextID, identity, terminal.Adapter, terminal.State, terminal.Cwd, terminal.WindowPresence, terminal.Activity.SessionState, terminal.Activity.AgentState, observed, age, terminal.Activity.Reason); err != nil {
 				return err
 			}
 		}

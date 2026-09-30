@@ -53,27 +53,27 @@ func observationList(t *testing.T, root string, running bool, names ...string) [
 	return data
 }
 
-func TestParseHerdrLiveAgentObservation(t *testing.T) {
+func TestParseHerdrLivePanesRejectsUnsupportedSnapshots(t *testing.T) {
 	for _, test := range []struct {
-		name, data, want string
-		invalid          bool
+		name, data string
+		invalid    bool
 	}{
-		{"shell", `{"type":"session_snapshot","snapshot":{"panes":[{"pane_id":"p1","agent_status":"unknown"}]}}`, "none", false},
-		{"null", `{"type":"session_snapshot","snapshot":{"panes":[{"pane_id":"p1","agent":null,"agent_status":"idle"}]}}`, "none", false},
-		{"stale association", `{"type":"session_snapshot","snapshot":{"panes":[{"pane_id":"p1","agent_status":"unknown","display_agent":"codex","agent_session":{"agent":"codex","value":"secret"}}],"agents":[{"name":"stored-name"}]}}`, "none", false},
-		{"detected idle", `{"type":"session_snapshot","snapshot":{"panes":[{"pane_id":"p1","agent":"codex","agent_status":"idle"}]}}`, "detected", false},
-		{"detected unknown", `{"type":"session_snapshot","snapshot":{"panes":[{"pane_id":"p1","agent":"custom-agent","agent_status":"unknown"}]}}`, "detected", false},
-		{"empty panes", `{"type":"session_snapshot","snapshot":{"panes":[]}}`, "none", false},
-		{"missing panes", `{"type":"session_snapshot","snapshot":{}}`, "unknown", true},
-		{"null panes", `{"type":"session_snapshot","snapshot":{"panes":null}}`, "unknown", true},
-		{"missing status", `{"type":"session_snapshot","snapshot":{"panes":[{"pane_id":"p1"}]}}`, "unknown", true},
-		{"null status", `{"type":"session_snapshot","snapshot":{"panes":[{"pane_id":"p1","agent_status":null}]}}`, "unknown", true},
-		{"invalid status", `{"type":"session_snapshot","snapshot":{"panes":[{"pane_id":"p1","agent_status":"running"}]}}`, "unknown", true},
-		{"empty label", `{"type":"session_snapshot","snapshot":{"panes":[{"pane_id":"p1","agent":"","agent_status":"working"}]}}`, "unknown", true},
-		{"invalid label type", `{"type":"session_snapshot","snapshot":{"panes":[{"pane_id":"p1","agent":true,"agent_status":"working"}]}}`, "unknown", true},
-		{"missing identity", `{"type":"session_snapshot","snapshot":{"panes":[{"agent_status":"idle"}]}}`, "unknown", true},
-		{"duplicate identity", `{"type":"session_snapshot","snapshot":{"panes":[{"pane_id":"p1","agent_status":"idle"},{"pane_id":"p1","agent_status":"idle"}]}}`, "unknown", true},
-		{"wrong result", `{"type":"ok","snapshot":{"panes":[]}}`, "unknown", true},
+		{"shell", `{"type":"session_snapshot","snapshot":{"panes":[{"pane_id":"p1","agent_status":"unknown"}]}}`, false},
+		{"null", `{"type":"session_snapshot","snapshot":{"panes":[{"pane_id":"p1","agent":null,"agent_status":"idle"}]}}`, false},
+		{"stale association", `{"type":"session_snapshot","snapshot":{"panes":[{"pane_id":"p1","agent_status":"unknown","display_agent":"codex","agent_session":{"agent":"codex","value":"secret"}}],"agents":[{"name":"stored-name"}]}}`, false},
+		{"valid live label", `{"type":"session_snapshot","snapshot":{"panes":[{"pane_id":"p1","agent":"codex","agent_status":"idle"}]}}`, false},
+		{"custom live label", `{"type":"session_snapshot","snapshot":{"panes":[{"pane_id":"p1","agent":"custom-agent","agent_status":"unknown"}]}}`, false},
+		{"empty panes", `{"type":"session_snapshot","snapshot":{"panes":[]}}`, false},
+		{"missing panes", `{"type":"session_snapshot","snapshot":{}}`, true},
+		{"null panes", `{"type":"session_snapshot","snapshot":{"panes":null}}`, true},
+		{"missing status", `{"type":"session_snapshot","snapshot":{"panes":[{"pane_id":"p1"}]}}`, true},
+		{"null status", `{"type":"session_snapshot","snapshot":{"panes":[{"pane_id":"p1","agent_status":null}]}}`, true},
+		{"invalid status", `{"type":"session_snapshot","snapshot":{"panes":[{"pane_id":"p1","agent_status":"running"}]}}`, true},
+		{"empty label", `{"type":"session_snapshot","snapshot":{"panes":[{"pane_id":"p1","agent":"","agent_status":"working"}]}}`, true},
+		{"invalid label type", `{"type":"session_snapshot","snapshot":{"panes":[{"pane_id":"p1","agent":true,"agent_status":"working"}]}}`, true},
+		{"missing identity", `{"type":"session_snapshot","snapshot":{"panes":[{"agent_status":"idle"}]}}`, true},
+		{"duplicate identity", `{"type":"session_snapshot","snapshot":{"panes":[{"pane_id":"p1","agent_status":"idle"},{"pane_id":"p1","agent_status":"idle"}]}}`, true},
+		{"wrong result", `{"type":"ok","snapshot":{"panes":[]}}`, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			_, err := parseHerdrLivePanes([]byte(test.data))

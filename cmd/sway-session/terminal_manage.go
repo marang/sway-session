@@ -38,7 +38,14 @@ type terminalManageLoadedMsg struct {
 	err        error
 }
 
+type terminalManageActivityMsg struct {
+	probeID      uint64
+	generation   uint64
+	observations map[sessionstate.ContextID]sessionstate.TerminalSessionObservation
+}
+
 type terminalManageDirectoryMsg struct {
+	probeID     uint64
 	generation  uint64
 	id          sessionstate.ContextID
 	observation sessionstate.HerdrDirectoryObservation
@@ -65,10 +72,11 @@ func (presence terminalWindowPresence) String() string {
 }
 
 type terminalManageActionMsg struct {
-	id              sessionstate.ContextID
-	action          string
-	selectionPolicy terminalManageSelectionPolicy
-	err             error
+	id               sessionstate.ContextID
+	action           string
+	selectionPolicy  terminalManageSelectionPolicy
+	err              error
+	refreshOnFailure bool
 }
 
 type terminalManageSelectionPolicy uint8
@@ -89,32 +97,35 @@ type terminalManagePulseMsg struct{}
 const terminalManagePulseInterval = 180 * time.Millisecond
 
 type terminalManageModel struct {
-	ctx        context.Context
-	operations terminalManageOperations
-	socket     string
-	items      []terminalInventoryResult
-	windows    map[sessionstate.ContextID]terminalWindowPresence
-	visible    []int
-	selectedID sessionstate.ContextID
-	cursor     int
-	filter     string
-	selection  terminalManageSelectionPolicy
-	width      int
-	height     int
-	mode       terminalManageMode
-	input      textinput.Model
-	loading    bool
-	loadID     uint64
-	probeCtx   context.Context
-	probeStop  context.CancelFunc
-	probeQueue []terminalInventoryResult
-	pending    bool
-	status     string
-	err        error
-	windowErr  error
-	noColor    bool
-	animate    bool
-	pulsePhase int
+	ctx             context.Context
+	operations      terminalManageOperations
+	socket          string
+	items           []terminalInventoryResult
+	windows         map[sessionstate.ContextID]terminalWindowPresence
+	visible         []int
+	selectedID      sessionstate.ContextID
+	cursor          int
+	filter          string
+	selection       terminalManageSelectionPolicy
+	width           int
+	height          int
+	mode            terminalManageMode
+	input           textinput.Model
+	loading         bool
+	loadID          uint64
+	probeCtx        context.Context
+	probeStop       context.CancelFunc
+	probeQueue      []terminalInventoryResult
+	pending         bool
+	status          string
+	err             error
+	windowErr       error
+	noColor         bool
+	animate         bool
+	pulsePhase      int
+	activityPending bool
+	activityID      uint64
+	actionErr       error
 }
 
 func newTerminalManageModel(operations terminalManageOperations) terminalManageModel {
@@ -151,21 +162,49 @@ func (model terminalManageModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		model.loading = false
 		model.pending = false
 		model.err = message.err
+		if model.err == nil {
+			model.err = model.actionErr
+		}
+		model.actionErr = nil
 		if message.err == nil {
 			model.items = sortTerminalManageItems(message.snapshot.items)
 			model.windows = message.snapshot.windows
 			model.windowErr = message.snapshot.windowError
 			model.rebuildVisible()
 			model.restoreSelection()
-			return model, model.startDirectoryProbes()
+			return model, model.startActivityProbe()
 		} else {
 			model.windows = terminalManageUnknownWindows(model.items)
 			model.windowErr = message.err
 			model.selection = terminalManageSelectIdentity
 		}
 		return model, nil
+	case terminalManageActivityMsg:
+		if message.generation != model.loadID || message.probeID != model.activityID || !model.activityPending {
+			return model, nil
+		}
+		model.stopProbes()
+		for index := range model.items {
+			item := &model.items[index]
+			observation, ok := message.observations[item.ContextID]
+			if !ok {
+				observation = sessionstate.UnknownTerminalSessionObservation("observation_unavailable")
+			}
+			item.Activity = observation
+			if terminalManageUsesAutoName(*item) {
+				item.PaneDirectory = observation.Directory.Directory
+				if item.PaneDirectory == "" {
+					item.AutoName = terminalManageCreatedName(*item)
+				}
+			}
+		}
+		model.updateDirectoryNames()
+		model.items = sortTerminalManageItems(model.items)
+		model.rebuildVisible()
+		model.restoreSelection()
+		return model, nil
 	case terminalManageDirectoryMsg:
-		if message.generation != model.loadID {
+		if message.generation != model.loadID || message.probeID != model.activityID || model.probeCtx == nil || model.probeCtx.Err() != nil {
 			return model, nil
 		}
 		for index := range model.items {
@@ -189,7 +228,11 @@ func (model terminalManageModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		model.pending = false
 		model.err = message.err
 		if message.err != nil {
-			return model, nil
+			if message.refreshOnFailure {
+				model.actionErr = message.err
+				return model, model.beginLoad()
+			}
+			return model, model.startActivityProbe()
 		}
 		model.selectedID = message.id
 		model.selection = message.selectionPolicy
@@ -199,7 +242,7 @@ func (model terminalManageModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		model.pending = false
 		model.err = message.err
 		if message.err != nil {
-			return model, nil
+			return model, model.startActivityProbe()
 		}
 		model.status = message.action
 		return model, model.beginLoad()
@@ -231,16 +274,19 @@ func (model terminalManageModel) handleKey(message tea.KeyPressMsg) (tea.Model, 
 		return model, nil
 	}
 	if key == "ctrl+c" {
+		model.stopProbes()
 		return model, tea.Quit
 	}
 	if model.width > 0 && (model.width < 48 || model.height < 16) {
 		if key == "q" {
+			model.stopProbes()
 			return model, tea.Quit
 		}
 		return model, nil
 	}
 	if model.loading {
 		if key == "q" {
+			model.stopProbes()
 			return model, tea.Quit
 		}
 		return model, nil
@@ -295,6 +341,7 @@ func (model terminalManageModel) handleKey(message tea.KeyPressMsg) (tea.Model, 
 			}
 			model.mode = terminalManageListMode
 			model.input.Blur()
+			model.stopProbes()
 			model.pending = true
 			model.err = nil
 			return model, model.renameCommand(item.ContextID, label)
@@ -314,6 +361,7 @@ func (model terminalManageModel) handleKey(message tea.KeyPressMsg) (tea.Model, 
 				return model, nil
 			}
 			model.mode = terminalManageListMode
+			model.stopProbes()
 			model.pending = true
 			model.err = nil
 			return model, model.purgeCommand(item.ContextID)
@@ -322,6 +370,7 @@ func (model terminalManageModel) handleKey(message tea.KeyPressMsg) (tea.Model, 
 		}
 	case terminalManageHelpMode:
 		if key == "q" {
+			model.stopProbes()
 			return model, tea.Quit
 		}
 		if key == "esc" || key == "?" {
@@ -332,6 +381,7 @@ func (model terminalManageModel) handleKey(message tea.KeyPressMsg) (tea.Model, 
 
 	switch key {
 	case "q":
+		model.stopProbes()
 		return model, tea.Quit
 	case "?":
 		model.mode = terminalManageHelpMode
@@ -369,6 +419,7 @@ func (model terminalManageModel) handleKey(message tea.KeyPressMsg) (tea.Model, 
 		model.err = nil
 		return model, model.beginLoad()
 	case "m":
+		model.stopProbes()
 		model.pending = true
 		model.err = nil
 		return model, model.migrateCommand()
@@ -381,6 +432,7 @@ func (model terminalManageModel) handleKey(message tea.KeyPressMsg) (tea.Model, 
 			model.err = errors.New("activate this terminal before opening it")
 			return model, nil
 		}
+		model.stopProbes()
 		model.pending = true
 		model.err = nil
 		return model, model.openCommand(item.ContextID)
@@ -395,6 +447,7 @@ func (model terminalManageModel) handleKey(message tea.KeyPressMsg) (tea.Model, 
 			state = sessionstate.ContextActive
 			action = "Activated " + terminalManageName(item)
 		}
+		model.stopProbes()
 		model.pending = true
 		model.err = nil
 		return model, model.stateCommand(item.ContextID, state, action)
@@ -491,7 +544,9 @@ func (model terminalManageModel) render() string {
 		if item, ok := model.selected(); ok {
 			output.WriteString("\n" + styles.danger.Render("Delete "+terminalManageName(item)+" permanently?"))
 			output.WriteString("\nThis removes the sway-session entry and its Herdr state.")
-			output.WriteString("\n" + styles.muted.Render(item.Cwd))
+			output.WriteString("\n" + ansi.Truncate(item.Cwd, width, "…"))
+			output.WriteString("\n" + ansi.Truncate(styles.muted.Render("Herdr "+terminalManageSessionEvidence(item.Activity.SessionState)+" · Agent "+terminalManageAgentEvidence(item.Activity.AgentState)), width, "…"))
+			output.WriteString("\n" + ansi.Truncate("Evidence: "+terminalManageEvidenceTime(item.Activity), width, "…"))
 			output.WriteString("\n[y] Delete permanently   [n/Esc] Cancel")
 		}
 	case terminalManageHelpMode:
@@ -653,7 +708,7 @@ func (model terminalManageModel) listWindow() (int, int) {
 			reserved := 10
 			switch model.mode {
 			case terminalManagePurgeMode:
-				reserved += 3
+				reserved += 5
 			case terminalManageHelpMode:
 				reserved += 2
 			case terminalManageFilterMode, terminalManageRenameMode:
@@ -667,7 +722,7 @@ func (model terminalManageModel) listWindow() (int, int) {
 			reserved := 19
 			switch model.mode {
 			case terminalManagePurgeMode:
-				reserved += 3
+				reserved += 5
 			case terminalManageHelpMode:
 				reserved += 2
 			case terminalManageFilterMode, terminalManageRenameMode:
@@ -716,6 +771,9 @@ func (model terminalManageModel) renderDetails(styles terminalManageStyles, widt
 		styles.accent.Render(terminalManageName(item)),
 		terminalManageDetail("Window", model.windowPresence(item.ContextID).String()),
 		terminalManageDetail("Restore", terminalManageRestore(item)),
+		terminalManageDetail("Herdr", terminalManageSessionEvidence(item.Activity.SessionState)),
+		terminalManageDetail("Agent", terminalManageAgentEvidence(item.Activity.AgentState)),
+		terminalManageDetail("Evidence", terminalManageEvidenceTime(item.Activity)),
 		terminalManageDetail("Last focused", terminalManageTime(item.LastFocusedAt)),
 		terminalManageDetail("Created", terminalManageTime(item.CreatedAt)),
 		terminalManageDetail("Project", terminalManageProject(item)),
@@ -723,8 +781,11 @@ func (model terminalManageModel) renderDetails(styles terminalManageStyles, widt
 		terminalManageDetail("Session", item.Session),
 		terminalManageDetail("Context", string(item.ContextID)),
 	}
+	if !model.wideLayout() && model.height > 0 && model.height <= 26 {
+		lines = append(lines[:7], lines[9:11]...)
+	}
 	if item.PaneDirectory != "" {
-		lines = append(lines[:7], append([]string{terminalManageDetail("Pane path", item.PaneDirectory)}, lines[7:]...)...)
+		lines = append(lines, terminalManageDetail("Pane path", item.PaneDirectory))
 	}
 	for index := range lines {
 		lines[index] = ansi.Truncate(lines[index], max(width, 1), "…")
@@ -945,16 +1006,84 @@ func (model terminalManageModel) selected() (terminalInventoryResult, bool) {
 }
 
 func (model *terminalManageModel) beginLoad() tea.Cmd {
-	if model.probeStop != nil {
-		model.probeStop()
-		model.probeStop = nil
-	}
-	model.probeQueue = nil
+	model.stopProbes()
 	model.loading = true
 	model.windows = terminalManageUnknownWindows(model.items)
 	model.windowErr = nil
 	model.loadID++
 	return model.loadCommand(model.loadID)
+}
+
+// Activity evidence is independent of window presence, restore policy and purge proof.
+func terminalManageSessionEvidence(state string) string {
+	switch state {
+	case "running", "stopped", "missing", "pending":
+		return state
+	default:
+		return "unknown"
+	}
+}
+
+func terminalManageAgentEvidence(state string) string {
+	switch state {
+	case "detected", "none", "pending":
+		return state
+	default:
+		return "unknown"
+	}
+}
+
+func terminalManageEvidenceTime(observation sessionstate.TerminalSessionObservation) string {
+	value := "unknown age"
+	if observation.ObservedAt != nil {
+		age := max(time.Since(*observation.ObservedAt), 0).Round(time.Second)
+		value = observation.ObservedAt.Local().Format("15:04:05") + " · " + age.String() + " old"
+	}
+	if observation.Reason != "" {
+		// Accept only bounded generic codes; never display backend error text.
+		code := observation.Reason
+		if len(code) > 48 || strings.Trim(code, "abcdefghijklmnopqrstuvwxyz0123456789_") != "" {
+			code = "observation_unavailable"
+		}
+		value += " · " + code
+	}
+	return value
+}
+
+func (model *terminalManageModel) stopProbes() {
+	if model.probeStop != nil {
+		model.probeStop()
+		model.probeStop = nil
+	}
+	model.probeQueue = nil
+	model.activityPending = false
+}
+
+func (model *terminalManageModel) startActivityProbe() tea.Cmd {
+	model.stopProbes()
+	observer, ok := model.operations.(interface {
+		ObserveActivity(context.Context, []terminalInventoryResult) map[sessionstate.ContextID]sessionstate.TerminalSessionObservation
+	})
+	for index := range model.items {
+		model.items[index].Activity = sessionstate.UnknownTerminalSessionObservation("observer_unavailable")
+		if ok {
+			model.items[index].Activity = sessionstate.TerminalSessionObservation{SessionState: "pending", AgentState: "pending"}
+		}
+	}
+	if !ok {
+		return model.startDirectoryProbes()
+	}
+	if len(model.items) == 0 {
+		return nil
+	}
+	model.probeCtx, model.probeStop = context.WithTimeout(model.ctx, 3*time.Second)
+	model.activityPending = true
+	model.activityID++
+	ctx, generation, probeID := model.probeCtx, model.loadID, model.activityID
+	items := append([]terminalInventoryResult(nil), model.items...)
+	return func() tea.Msg {
+		return terminalManageActivityMsg{generation: generation, probeID: probeID, observations: observer.ObserveActivity(ctx, items)}
+	}
 }
 
 func (model *terminalManageModel) startDirectoryProbes() tea.Cmd {
@@ -971,6 +1100,7 @@ func (model *terminalManageModel) startDirectoryProbes() tea.Cmd {
 		}
 	}
 	model.probeCtx, model.probeStop = context.WithCancel(model.ctx)
+	model.activityID++
 	return model.nextDirectoryProbe()
 }
 
@@ -985,10 +1115,10 @@ func (model *terminalManageModel) nextDirectoryProbe() tea.Cmd {
 	item := model.probeQueue[0]
 	model.probeQueue = model.probeQueue[1:]
 	observer := model.operations.(terminalManageDirectoryObserver)
-	ctx, generation := model.probeCtx, model.loadID
+	ctx, generation, probeID := model.probeCtx, model.loadID, model.activityID
 	return func() tea.Msg {
 		observation, err := observer.ObservePaneDirectory(ctx, item)
-		return terminalManageDirectoryMsg{generation: generation, id: item.ContextID, observation: observation, err: err}
+		return terminalManageDirectoryMsg{generation: generation, probeID: probeID, id: item.ContextID, observation: observation, err: err}
 	}
 }
 
@@ -1030,7 +1160,7 @@ func (model terminalManageModel) purgeCommand(id sessionstate.ContextID) tea.Cmd
 		if message == "" {
 			message = "Terminal permanently deleted"
 		}
-		return terminalManageActionMsg{id: id, action: message, selectionPolicy: terminalManageSelectCursorPosition, err: err}
+		return terminalManageActionMsg{id: id, action: message, selectionPolicy: terminalManageSelectCursorPosition, err: err, refreshOnFailure: true}
 	}
 }
 
@@ -1092,7 +1222,9 @@ func runTerminalManager(ctx context.Context, stdin io.Reader, stdout io.Writer, 
 		options = append(options, tea.WithColorProfile(colorprofile.ASCII))
 	}
 	model := newTerminalManageModel(operations)
-	model.ctx = ctx
+	runCtx, stop := context.WithCancel(ctx)
+	defer stop()
+	model.ctx = runCtx
 	model.socket = socket
 	model.noColor = noColor
 	model.animate = !noColor

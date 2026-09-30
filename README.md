@@ -241,6 +241,28 @@ stops returning at login, but its saved identity and Herdr session are retained.
 Archiving never closes a window or terminates its background agents. Codex and
 shell panes inside one terminal belong to the same context.
 
+The manager also observes Herdr sessions independently of windows. `Herdr`
+shows `running`, `stopped`, `missing`, or `unknown`; `Agent` shows `detected`,
+`none`, or `unknown`. Detection is Herdr's live process observation, not a
+saved agent/session association and not proof that an agent is actively working.
+Unsupported or inaccessible observations remain unknown. Saved contexts remain
+inspectable when Herdr is missing or unavailable.
+
+Activity loads in the background after the inventory, with a pending state,
+observation time, and failure reason. Entry, `r`, and actions refresh it;
+there is no periodic activity polling. Each refresh shares one session-list
+query and uses up to four concurrent read-only snapshots within a three-second
+budget. The selected details and deletion preview show observation age.
+Deletion still rechecks the exact target; displayed activity never authorizes
+termination or deletion by itself.
+
+`terminal list`, `terminal status`, and `terminal cleanup` include the same
+evidence in JSON: `window_presence`, `window_observed_at`, `window_reason`, and
+`activity` (`session_state`, `agent_state`, `observed_at`, `reason`). Failed
+observations use fixed reason codes rather than external command output.
+The text inventory appends window, Herdr, agent, and observation fields after
+the existing saved metadata columns. Cleanup remains a preview.
+
 For running unnamed terminals, the manager reads the Herdr session and uses a
 shared pane directory as the display name. Sessions with the same directory
 name also show their creation time. If panes point to different directories or

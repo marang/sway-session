@@ -23,6 +23,8 @@ type herdrTerminalSessionManager struct {
 	validateHistory func(sessionstate.HerdrPaths) error
 	resolveProgram  func(string) (string, error)
 	initialize      func(context.Context, sessionstate.Context, []string, herdrinit.Runner) (herdrinit.Result, error)
+	runner          sessionstate.HerdrCommandRunner
+	home            func() (string, error)
 }
 
 func terminalSessionManager(kind sessionstate.TerminalSessionManagerKind, deps dependencies) (sessionstate.TerminalSessionManager, error) {
@@ -33,10 +35,41 @@ func terminalSessionManager(kind sessionstate.TerminalSessionManagerKind, deps d
 			validateHistory: deps.validateHistory,
 			resolveProgram:  deps.resolveProgram,
 			initialize:      deps.initializeHerdr,
+			runner:          deps.herdrRunner,
+			home:            deps.homeDir,
 		}, nil
 	default:
 		return nil, fmt.Errorf("unsupported terminal session manager %q; supported values: herdr", kind)
 	}
+}
+
+func (manager herdrTerminalSessionManager) ObserveSessions(ctx context.Context, names []string) map[string]sessionstate.TerminalSessionObservation {
+	unknown := func(reason string) map[string]sessionstate.TerminalSessionObservation {
+		result := make(map[string]sessionstate.TerminalSessionObservation, len(names))
+		now := time.Now().UTC()
+		for _, name := range names {
+			value := sessionstate.UnknownTerminalSessionObservation(reason)
+			value.ObservedAt = &now
+			result[name] = value
+		}
+		return result
+	}
+	if manager.paths == nil || manager.resolveProgram == nil || manager.runner == nil || manager.home == nil {
+		return unknown("manager_unavailable")
+	}
+	paths, err := manager.paths()
+	if err != nil {
+		return unknown("manager_paths_unavailable")
+	}
+	executable, err := manager.resolveProgram("herdr")
+	if err != nil {
+		return unknown("manager_executable_unavailable")
+	}
+	home, err := manager.home()
+	if err != nil {
+		return unknown("home_unavailable")
+	}
+	return (sessionstate.HerdrManager{Executable: executable, Root: paths.Root, Runner: manager.runner}).ObserveSessions(ctx, names, home)
 }
 
 func terminalSessionManagerForContext(contextValue sessionstate.Context, deps dependencies) (sessionstate.TerminalSessionManager, error) {

@@ -23,6 +23,38 @@ type terminalManageDirectoryObserver interface {
 	ObservePaneDirectory(context.Context, terminalInventoryResult) (sessionstate.HerdrDirectoryObservation, error)
 }
 
+type terminalManageActivityObserver interface {
+	ObserveActivity(context.Context, []terminalInventoryResult) map[sessionstate.ContextID]sessionstate.TerminalSessionObservation
+}
+
+func (operations commandTerminalManageOperations) ObserveActivity(ctx context.Context, items []terminalInventoryResult) map[sessionstate.ContextID]sessionstate.TerminalSessionObservation {
+	result := make(map[sessionstate.ContextID]sessionstate.TerminalSessionObservation, len(items))
+	if len(items) == 0 {
+		return result
+	}
+	manager, err := terminalSessionManager(sessionstate.TerminalSessionManagerHerdr, operations.deps)
+	observer, ok := manager.(sessionstate.TerminalSessionObserver)
+	if err != nil || !ok {
+		for _, item := range items {
+			result[item.ContextID] = sessionstate.UnknownTerminalSessionObservation("manager_unsupported")
+		}
+		return result
+	}
+	names := make([]string, 0, len(items))
+	for _, item := range items {
+		names = append(names, item.Session)
+	}
+	observed := observer.ObserveSessions(ctx, names)
+	for _, item := range items {
+		value, found := observed[item.Session]
+		if !found {
+			value = sessionstate.UnknownTerminalSessionObservation("observation_unavailable")
+		}
+		result[item.ContextID] = value
+	}
+	return result
+}
+
 type terminalManageSnapshot struct {
 	items       []terminalInventoryResult
 	windows     map[sessionstate.ContextID]terminalWindowPresence
@@ -55,36 +87,40 @@ func (operations commandTerminalManageOperations) Load(ctx context.Context, sock
 		return terminalManageSnapshot{}, terminalManageFailure(commandFailure)
 	}
 	items := terminalInventory(inventory.Registry.Contexts, inventory.Activity)
+	return operations.observeWindows(ctx, socket, inventory.Registry, items), nil
+}
+
+func (operations commandTerminalManageOperations) observeWindows(ctx context.Context, socket string, registry sessionstate.Registry, items []terminalInventoryResult) terminalManageSnapshot {
 	result := terminalManageSnapshot{
 		items:   items,
 		windows: terminalManageUnknownWindows(items),
 	}
 	if len(items) == 0 {
-		return result, nil
+		return result
 	}
 	if operations.deps.newSwayClient == nil {
 		result.windowError = errors.New("sway window observation dependency is unavailable")
-		return result, nil
+		return result
 	}
 	client := operations.deps.newSwayClient(socket)
 	if client == nil {
 		result.windowError = errors.New("sway window observation client is unavailable")
-		return result, nil
+		return result
 	}
 	defer client.Close()
 	tree, err := requestTree(ctx, client)
 	if err != nil {
 		result.windowError = err
-		return result, nil
+		return result
 	}
 	if tree.ID <= 0 || tree.Type != "root" {
 		result.windowError = errors.New("sway tree response has no valid root")
-		return result, nil
+		return result
 	}
-	windows, issues, err := sessionstate.ObserveManagedWindowsIsolated(tree, inventory.Registry)
+	windows, issues, err := sessionstate.ObserveManagedWindowsIsolated(tree, registry)
 	if err != nil {
 		result.windowError = fmt.Errorf("observe managed windows: %w", err)
-		return result, nil
+		return result
 	}
 	for _, item := range items {
 		result.windows[item.ContextID] = terminalWindowClosed
@@ -108,7 +144,7 @@ func (operations commandTerminalManageOperations) Load(ctx context.Context, sock
 		}
 		result.windowError = fmt.Errorf("%d terminal window %s ambiguous", terminalIssues, identity)
 	}
-	return result, nil
+	return result
 }
 
 func (operations commandTerminalManageOperations) Open(ctx context.Context, id sessionstate.ContextID, socket string) error {

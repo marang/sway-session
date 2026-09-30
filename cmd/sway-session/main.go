@@ -290,19 +290,23 @@ type terminalIdentityResult struct {
 }
 
 type terminalInventoryResult struct {
-	ContextID     sessionstate.ContextID                  `json:"context_id"`
-	Label         string                                  `json:"label,omitempty"`
-	AutoName      string                                  `json:"-"`
-	PaneDirectory string                                  `json:"-"`
-	Identity      terminalIdentityResult                  `json:"identity"`
-	Adapter       sessionstate.TerminalAdapter            `json:"adapter"`
-	Manager       sessionstate.TerminalSessionManagerKind `json:"session_manager"`
-	State         sessionstate.ContextState               `json:"state"`
-	Session       string                                  `json:"session"`
-	Cwd           string                                  `json:"cwd"`
-	CreatedAt     *time.Time                              `json:"created_at,omitempty"`
-	LastFocusedAt *time.Time                              `json:"last_focused_at,omitempty"`
-	ArchivedAt    *time.Time                              `json:"archived_at,omitempty"`
+	WindowPresence   string                                  `json:"window_presence"`
+	WindowObservedAt *time.Time                              `json:"window_observed_at,omitempty"`
+	WindowReason     string                                  `json:"window_reason,omitempty"`
+	Activity         sessionstate.TerminalSessionObservation `json:"activity"`
+	ContextID        sessionstate.ContextID                  `json:"context_id"`
+	Label            string                                  `json:"label,omitempty"`
+	AutoName         string                                  `json:"-"`
+	PaneDirectory    string                                  `json:"-"`
+	Identity         terminalIdentityResult                  `json:"identity"`
+	Adapter          sessionstate.TerminalAdapter            `json:"adapter"`
+	Manager          sessionstate.TerminalSessionManagerKind `json:"session_manager"`
+	State            sessionstate.ContextState               `json:"state"`
+	Session          string                                  `json:"session"`
+	Cwd              string                                  `json:"cwd"`
+	CreatedAt        *time.Time                              `json:"created_at,omitempty"`
+	LastFocusedAt    *time.Time                              `json:"last_focused_at,omitempty"`
+	ArchivedAt       *time.Time                              `json:"archived_at,omitempty"`
 }
 
 type commandFailure struct {
@@ -361,7 +365,13 @@ func writeResult(writer io.Writer, structured bool, result commandResult) error 
 			if terminal.Identity.Project != "" {
 				identity += ":" + terminal.Identity.Project
 			}
-			if _, err := fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\n", terminal.ContextID, identity, terminal.Adapter, terminal.State, terminal.Cwd); err != nil {
+			observed := "not observed"
+			age := "unknown"
+			if terminal.Activity.ObservedAt != nil {
+				observed = terminal.Activity.ObservedAt.UTC().Format(time.RFC3339)
+				age = max(time.Since(*terminal.Activity.ObservedAt), 0).Round(time.Second).String()
+			}
+			if _, err := fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\twindow=%s\therdr=%s\tagent=%s\tobserved=%s\tage=%s\treason=%s\n", terminal.ContextID, identity, terminal.Adapter, terminal.State, terminal.Cwd, terminal.WindowPresence, terminal.Activity.SessionState, terminal.Activity.AgentState, observed, age, terminal.Activity.Reason); err != nil {
 				return err
 			}
 		}
@@ -537,13 +547,13 @@ func writeCommandUsageForArguments(writer io.Writer, name string, spec commandSp
 	switch arguments[0] {
 	case "list":
 		usage = "terminal list"
-		summary = "List typed terminal contexts without changing state"
+		summary = "List saved terminals with observed windows, Herdr sessions, and agents"
 	case "status":
 		usage = "terminal status [context] [--project NAME]"
-		summary = "Show one typed terminal context without changing state"
+		summary = "Show one saved terminal with observed windows, Herdr session, and agents"
 	case "cleanup":
 		usage = "terminal cleanup [--archived-before YYYY-MM-DD]"
-		summary = "Preview archived typed terminal cleanup candidates"
+		summary = "Preview archived terminals with observed Herdr and agent activity"
 	case "manage":
 		usage = "terminal manage [--socket PATH]"
 		summary = "Interactively open, rename, archive, activate, or purge persistent terminals"

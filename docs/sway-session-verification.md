@@ -227,6 +227,35 @@ Also exercise:
 - application preflight rotation beyond its two-candidate pass bound; and
 - layout re-observation after every mutation and after bounded yield.
 
+### Terminal activity observations
+
+Run the focused observer, inventory and manager tests before the full gate:
+
+~~~sh
+go test ./internal/session -run 'Herdr.*Observation|ObserveHerdrSessions'
+go test ./cmd/sway-session -run 'TerminalInventory|TerminalCleanup|TerminalManageActivity'
+~~~
+
+These checks separate window presence from manager state and live agent
+evidence, exercise unknown/unavailable results, and ensure one bulk discovery
+per refresh. Manager tests cover cancellation, superseded generations,
+archived/filtered entries, deletion-preview freshness and narrow layouts.
+No stored association is sufficient proof of a running agent. An isolated
+Herdr check must preserve HOME, redirect all XDG roots and Herdr config, and
+stop only the disposable named server it created. It needs no real agent
+credentials or user session state.
+
+~~~sh
+SWAY_SESSION_HERDR_OBSERVATION_INTEGRATION=1 go test ./internal/session \
+  -run '^TestObserveHerdrSessionsLiveIsolated$' -v -count=1
+~~~
+
+LAB-131 acceptance on 2026-09-30 passed with Herdr 0.9.2: running shell,
+pane-directory hint, missing session, and stopped session. HOME was preserved;
+all XDG roots and the named server were disposable. Agent process matching,
+stale associations, cancellation and concurrency bounds are covered by the
+API fixture tests; this smoke does not launch a real Codex agent.
+
 ### Cancelled layout restore cleanup
 
 The runtime regression tests exercise a successful staging move, cancellation,

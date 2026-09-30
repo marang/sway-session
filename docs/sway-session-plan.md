@@ -193,6 +193,15 @@ must preserve selection and must not retain an old presence claim as current
 after an observation failure. Background Herdr/agent liveness is a separate
 concern and is not inferred from the presence of a terminal window.
 
+Terminal inventory observations are ephemeral and do not change SQLite state.
+The typed session-manager observer shares bulk discovery across all listed
+contexts, then queries running sessions through bounded owner-validated sockets.
+The manager loads saved inventory first and receives activity asynchronously;
+generation checks discard results superseded by refresh or mutation, and closing
+the manager cancels its probes. Live agent detection is independent of saved
+agent associations. Unknown evidence is explicit and cannot authorize purge;
+the existing fresh exact-target deletion checks remain authoritative.
+
 A live, unambiguous close event for a previously observed active terminal stages
 an in-memory close candidate. After a short grace period, the daemon confirms
 absence from a fresh tree under the terminal lifecycle lock, then archives the

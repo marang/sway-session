@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/marang/sway-session/internal/agentreport"
+	"github.com/marang/sway-session/internal/buildmetadata"
 	sessionstate "github.com/marang/sway-session/internal/session"
 	"github.com/marang/sway-session/internal/sessionrequest"
 	"github.com/marang/sway-session/internal/statefile"
@@ -46,6 +47,8 @@ var runtimeProbes = struct {
 	readFile   func(string, int) ([]byte, error)
 	readlink   func(string) (string, error)
 	lstat      func(string) (os.FileInfo, error)
+	readBuild  func(context.Context, *os.File) (buildmetadata.Metadata, error)
+	openBinary func(string) (*os.File, os.FileInfo, error)
 	run        func(context.Context, string, ...string) ([]byte, error)
 }{
 	getenv:     os.Getenv,
@@ -53,10 +56,12 @@ var runtimeProbes = struct {
 	newSway: func(socket string) swayRequester {
 		return swayipc.NewClient(socket)
 	},
-	readFile: readFileBounded,
-	readlink: os.Readlink,
-	lstat:    os.Lstat,
-	run:      runReadOnlyProbe,
+	readFile:   readFileBounded,
+	readlink:   os.Readlink,
+	lstat:      os.Lstat,
+	openBinary: openBoundedBinary,
+	readBuild:  buildmetadata.ReadExecutable,
+	run:        runReadOnlyProbe,
 }
 
 type swayRequester interface {
@@ -329,9 +334,12 @@ func inspectRuntimePaths(observation privateDirectoryObservation) Check {
 }
 
 type daemonObservation struct {
-	check Check
-	pid   int
-	valid bool
+	check            Check
+	pid              int
+	valid            bool
+	startTime        uint64
+	lockStat         unix.Stat_t
+	runtimeDirectory *os.File
 }
 
 func inspectDaemonLock(runtime privateDirectoryObservation) daemonObservation {
@@ -356,63 +364,97 @@ func inspectDaemonLock(runtime privateDirectoryObservation) daemonObservation {
 	if err != nil {
 		return daemonObservation{check: Check{ID: "daemon.lock", Title: "Daemon lock", Status: Unavailable, Detail: "The daemon lock file exists, but no held advisory lock could be proven.", Hint: "Start or restart the daemon if persistent-session service is expected.", Evidence: []string{"path=" + path}}}
 	}
-	if !sameUID(pid) || !daemonCommand(pid) {
+	startTime, stampErr := daemonStartTime(pid)
+	if stampErr != nil || !sameUID(pid) || !daemonCommand(pid) {
 		return daemonObservation{check: Check{ID: "daemon.lock", Title: "Daemon lock", Status: Unavailable, Detail: "A process holds the lock, but it is not proven to be this user's sway-session daemon.", Hint: "Inspect the same-user lock holder before restarting the daemon.", Evidence: []string{"path=" + path, fmt.Sprintf("pid=%d", pid)}}}
 	}
-	return daemonObservation{pid: pid, valid: true, check: Check{ID: "daemon.lock", Title: "Daemon lock", Status: OK, Detail: "A same-user sway-session daemon holds the advisory lock.", Evidence: []string{"path=" + path, fmt.Sprintf("pid=%d", pid), "held"}}}
+	observation := daemonObservation{pid: pid, valid: true, startTime: startTime, lockStat: lockStat, runtimeDirectory: runtime.directory,
+		check: Check{ID: "daemon.lock", Title: "Daemon lock", Status: OK, Detail: "A same-user sway-session daemon holds the advisory lock.", Evidence: []string{"path=" + path, fmt.Sprintf("pid=%d", pid), "held"}}}
+	if !daemonIdentityUnchanged(observation) {
+		return daemonObservation{check: unavailableCheck("daemon.lock", "Daemon lock", "The lock holder or process identity changed during observation; run doctor again.")}
+	}
+	return observation
 }
 
-func inspectDaemonBinary(ctx context.Context, options Options, observation daemonObservation) Check {
+func inspectDaemonBinary(ctx context.Context, options Options, observation daemonObservation) (check Check) {
+	cliBuild := buildmetadata.Current()
+	if options.CLIBuild != nil {
+		cliBuild = *options.CLIBuild
+	}
+	daemonEvidence := []string{"Daemon build: unknown (no verified live executable)."}
+	// Always identify the executing CLI, even when no daemon is running.
+	defer func() {
+		check.Evidence = append(check.Evidence, buildEvidence("Executing CLI", cliBuild)...)
+		check.Evidence = append(check.Evidence, daemonEvidence...)
+	}()
 	if !observation.valid {
 		return unavailableCheck("daemon.binary", "Daemon binary", "A live sway-session daemon binary cannot be proven without a verified held daemon lock.")
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	probeContext, cancel := context.WithTimeout(ctx, runtimeProbeTimeout)
+	defer cancel()
+	if !daemonIdentityUnchanged(observation) {
+		return unavailableCheck("daemon.binary", "Daemon binary", "The daemon lock holder or process identity changed; run doctor again.")
+	}
+	runningExecutable := filepath.Join("/proc", strconv.Itoa(observation.pid), "exe")
+	runningFile, running, err := runtimeProbes.openBinary(runningExecutable)
+	if err != nil {
+		daemonEvidence = []string{"Daemon build: unknown (live executable unreadable or not a bounded regular file)."}
+		return unavailableCheck("daemon.binary", "Daemon binary", "The verified daemon's executable cannot be read as a bounded regular file.")
+	}
+	defer runningFile.Close()
+	// Reject PID reuse, exec, or lock changes both before and after observations.
+	defer func() {
+		if !daemonExecutableUnchanged(observation, running) {
+			daemonEvidence = []string{"Daemon build: unknown (process, executable, or held lock changed during observation)."}
+			check = unavailableCheck("daemon.binary", "Daemon binary", "The daemon identity changed during binary inspection; run doctor again.")
+		}
+	}()
+	if !daemonExecutableUnchanged(observation, running) {
+		return unavailableCheck("daemon.binary", "Daemon binary", "The daemon identity changed while pinning its executable; run doctor again.")
+	}
+	metadata, metadataErr := runtimeProbes.readBuild(probeContext, runningFile)
+	if metadataErr != nil {
+		daemonEvidence = []string{"Daemon build: unknown (executable build metadata unreadable or unsupported; older binaries may lack metadata)."}
+	} else {
+		daemonEvidence = buildEvidence("Daemon", metadata)
+	}
+	// The comparison path can have been replaced since the CLI started. Its
+	// metadata must never stand in for either executing process's build.
 	candidate := options.Executable
 	if candidate == "" {
-		var err error
 		candidate, err = runtimeProbes.executable()
 		if err != nil {
-			return unavailableCheck("daemon.binary", "Daemon binary", "The current sway-session executable cannot be identified.")
+			return unavailableCheck("daemon.binary", "Daemon binary", "The current sway-session executable comparison path cannot be identified.")
 		}
 	}
 	if !cleanAbsolute(candidate) {
 		return Check{ID: "daemon.binary", Title: "Daemon binary", Status: Error, Detail: "The current sway-session executable is not a clean absolute path.", Hint: "Run doctor through a clean absolute sway-session executable path.", Evidence: []string{"path=" + candidate}}
 	}
-	currentFile, current, err := openBoundedBinary(candidate)
+	currentFile, current, err := runtimeProbes.openBinary(candidate)
 	if err != nil {
 		return Check{ID: "daemon.binary", Title: "Daemon binary", Status: Error, Detail: "The current sway-session executable is not a bounded regular file.", Hint: "Reinstall sway-session at the reported executable path, then run doctor again.", Evidence: []string{"path=" + candidate}}
 	}
 	defer currentFile.Close()
-	runningExecutable := filepath.Join("/proc", strconv.Itoa(observation.pid), "exe")
-	runningPath, err := runtimeProbes.readlink(filepath.Join("/proc", strconv.Itoa(observation.pid), "exe"))
-	if err != nil {
-		return unavailableCheck("daemon.binary", "Daemon binary", "The running daemon executable cannot be inspected.")
-	}
-	deleted := strings.HasSuffix(runningPath, " (deleted)")
-	runningFile, running, err := openBoundedBinary(runningExecutable)
-	if err != nil {
-		return Check{ID: "daemon.binary", Title: "Daemon binary", Status: Unavailable, Detail: "The running daemon executable cannot be inspected as a bounded regular file.", Hint: "Confirm that the reported daemon PID is still alive, then run doctor again.", Evidence: []string{fmt.Sprintf("pid=%d", observation.pid)}}
-	}
-	defer runningFile.Close()
+	evidence := []string{"path=" + candidate, fmt.Sprintf("pid=%d", observation.pid)}
 	if sameInode(current, running) {
-		return Check{ID: "daemon.binary", Title: "Daemon binary", Status: OK, Detail: "The running daemon uses the current sway-session binary.", Evidence: []string{"path=" + candidate, fmt.Sprintf("pid=%d", observation.pid), "inode match"}}
+		return Check{ID: "daemon.binary", Title: "Daemon binary", Status: OK, Detail: "The running daemon uses the current sway-session binary.", Evidence: append(evidence, "inode match")}
 	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	comparisonContext, cancel := context.WithTimeout(ctx, runtimeProbeTimeout)
-	defer cancel()
-	match, err := sameDigest(comparisonContext, currentFile, current, runningFile, running)
+	match, err := sameDigest(probeContext, currentFile, current, runningFile, running)
 	if err != nil {
-		return Check{ID: "daemon.binary", Title: "Daemon binary", Status: Unavailable, Detail: "The daemon differs by inode and a bounded binary comparison is unavailable.", Hint: "Run doctor again; restart the daemon if the comparison remains unavailable.", Evidence: []string{"path=" + candidate, fmt.Sprintf("pid=%d", observation.pid)}}
+		return Check{ID: "daemon.binary", Title: "Daemon binary", Status: Unavailable, Detail: "The daemon differs by inode and a bounded binary comparison is unavailable.", Hint: "Run doctor again; restart the daemon if the comparison remains unavailable.", Evidence: evidence}
 	}
 	if match {
-		return Check{ID: "daemon.binary", Title: "Daemon binary", Status: OK, Detail: "The running daemon differs by inode but matches the current binary content.", Evidence: []string{"path=" + candidate, fmt.Sprintf("pid=%d", observation.pid), "digest match"}}
+		return Check{ID: "daemon.binary", Title: "Daemon binary", Status: OK, Detail: "The running daemon differs by inode but matches the current binary content.", Evidence: append(evidence, "digest match")}
 	}
-	detail := "The running daemon binary does not match the current sway-session binary."
-	if deleted {
-		detail = "The running daemon uses a deleted binary that does not match the current sway-session binary."
+	detail := "The running daemon binary does not match the current sway-session binary; a restart is needed."
+	if runningPath, err := runtimeProbes.readlink(runningExecutable); err == nil && strings.HasSuffix(runningPath, " (deleted)") {
+		detail = "The running daemon uses a deleted binary that does not match the current sway-session binary; a restart is needed."
 	}
-	return Check{ID: "daemon.binary", Title: "Daemon binary", Status: Warning, Detail: detail, Hint: "Restart the daemon after upgrading sway-session.", Evidence: []string{"path=" + candidate, fmt.Sprintf("pid=%d", observation.pid)}}
+	return Check{ID: "daemon.binary", Title: "Daemon binary", Status: Warning, Detail: detail,
+		Hint: fmt.Sprintf("After confirming PID %d still holds the daemon lock, stop it with kill -TERM %d, wait for it to exit and release the lock, then start the installed sway-session daemon from this Sway session (preserving any --socket selection) and run doctor again. Reloading Sway does not restart the daemon.", observation.pid, observation.pid), Evidence: evidence}
 }
 
 func inspectOptionalSockets(ctx context.Context, runtime privateDirectoryObservation, daemon daemonObservation) []Check {

@@ -16,7 +16,7 @@ builds:
       - -trimpath
       - -buildvcs=false
     ldflags:
-      - -s -w -buildid= -X main.version={{ .Version }}
+      - -s -w -buildid= -X main.version={{ .Version }} -X main.commit={{ .FullCommit }} -X main.modified=false -X github.com/marang/sway-session/internal/buildmetadata.Stamp=sway-session-build-v1|{{ .Version }}|{{ .FullCommit }}|false|end-sway-session-build-v1
     mod_timestamp: "{{ .CommitTimestamp }}"
     goos:
       - linux

@@ -12,6 +12,12 @@ Sway workspace and layout without owning application-private state.
 The project is Linux-only and talks directly to the bounded Sway/i3 IPC socket.
 It is independent of sway-title-animator: neither program requires the other.
 
+Identify the executing build with `sway-session --version` or
+`sway-session version`. Both print the product version and commit without
+accessing configuration or session state. `sway-session --json version` exposes
+`build.product_version`, `build.commit`, and `build.modified` inside the existing
+schema-v1 envelope; its top-level `version` remains the envelope schema.
+
 ## What it owns
 
 ~~~mermaid
@@ -128,6 +134,12 @@ deployment.
 Reports containing an `error` exit with status 3; warnings and unavailable
 checks alone exit 0. Invalid arguments exit 2. Interactive quit exits 0.
 `--json` and non-TTY invocation always report without opening the TUI.
+
+The `daemon.binary` check displays the executing CLI build and the verified
+running daemon build separately. It reads the live executable, including a
+deleted binary, and retains inode/content comparison even when versions match.
+Older builds may report unknown metadata with an explanation. A mismatch
+includes a stop/start procedure; Doctor never restarts the daemon automatically.
 
 The Sway integration check reports four separate findings in its details:
 daemon startup, restore startup, the default persistent-terminal shortcut and

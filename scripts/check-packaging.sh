@@ -192,3 +192,36 @@ fi
 if command -v goreleaser >/dev/null 2>&1; then
 	goreleaser check
 fi
+
+# Build identity must survive stripped/trimpath artifacts in every recipe.
+require_fixed Makefile 'main.commit=$(COMMIT)'
+require_fixed Makefile 'main.modified=$(MODIFIED)'
+require_fixed Makefile 'buildmetadata.Stamp=sway-session-build-v1|$(VERSION)|$(COMMIT)|$(MODIFIED)|end-sway-session-build-v1'
+require_fixed .goreleaser.yaml 'main.commit={{ .FullCommit }}'
+require_fixed .goreleaser.yaml 'buildmetadata.Stamp=sway-session-build-v1|{{ .Version }}|{{ .FullCommit }}|false|end-sway-session-build-v1'
+require_fixed PKGBUILD 'main.commit=$_commit'
+require_fixed PKGBUILD 'buildmetadata.Stamp=sway-session-build-v1|$pkgver|$_commit|false|end-sway-session-build-v1'
+recipe_commit=$(sed -n 's/^_commit=//p' PKGBUILD)
+printf '%s\n' "$recipe_commit" | grep -Eq '^[0-9a-f]{40}$'
+require_fixed .github/workflows/aur.yml "if grep -q '^_commit=' PKGBUILD; then"
+require_fixed .github/workflows/aur.yml 'grep -Fx "_commit=${commit}" PKGBUILD'
+
+# Execute the actual workflow replacement block against both a different
+# pinned commit and an older recipe with no metadata. Never invoke makepkg.
+identity_fixture=$(mktemp -d)
+(
+	trap 'rm -rf "$identity_fixture"' EXIT HUP INT TERM
+	awk '/^          if grep -q '\''\^_commit=/ {copy=1} copy {sub(/^          /, ""); print} copy && /^fi$/ {exit}' .github/workflows/aur.yml >"$identity_fixture/stamp.sh"
+	test -s "$identity_fixture/stamp.sh"
+	sed 's/^_commit=.*/_commit=1111111111111111111111111111111111111111/' PKGBUILD >"$identity_fixture/PKGBUILD"
+	cd "$identity_fixture"
+	commit=2222222222222222222222222222222222222222
+	export commit
+	sh -eu ./stamp.sh >/dev/null
+	grep -Fx "_commit=$commit" PKGBUILD >/dev/null
+	test "$(grep -c '^_commit=' PKGBUILD)" -eq 1
+	sed '/^_commit=/d' PKGBUILD >old-recipe
+	cp old-recipe PKGBUILD
+	sh -eu ./stamp.sh >/dev/null
+	cmp old-recipe PKGBUILD
+)

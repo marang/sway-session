@@ -6,6 +6,7 @@
 pkgname=sway-session
 pkgver=0.4.3
 pkgrel=1
+_commit=68df4605aeed98c42eb3c49e2c3f5878794e2607
 pkgdesc="Persistent work sessions for Sway"
 arch=('x86_64' 'aarch64')
 url="https://github.com/marang/sway-session"
@@ -17,7 +18,7 @@ source=("sway-session-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
 sha256sums=('e24f9fe6a6d5b24dfe2b4ef0b1bee1c9284d28e72e443a01c57a7d71ee0b4976')
 
 _go_build_flags=(-buildmode=pie -trimpath -buildvcs=false -mod=readonly -modcacherw)
-_go_ldflags=(-s -w -buildid= -X "main.version=$pkgver")
+_go_ldflags=(-s -w -buildid= -X "main.version=$pkgver" -X "main.commit=$_commit" -X "main.modified=false" -X "github.com/marang/sway-session/internal/buildmetadata.Stamp=sway-session-build-v1|$pkgver|$_commit|false|end-sway-session-build-v1")
 
 build() {
   cd "sway-session-$pkgver"

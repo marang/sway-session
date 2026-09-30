@@ -84,6 +84,16 @@ jobs:
           ver="$RELEASE_VERSION"
           sed -i "s/^pkgver=.*/pkgver=${ver}/" PKGBUILD
           sed -i "s/^pkgrel=.*/pkgrel=1/" PKGBUILD
+          commit=$(git -c safe.directory="$GITHUB_WORKSPACE" rev-parse 'HEAD^{commit}')
+          if ! printf '%s\n' "$commit" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo 'Refusing an invalid release commit.' >&2
+            exit 1
+          fi
+          # Older immutable tags predate build metadata; keep their reruns usable.
+          if grep -q '^_commit=' PKGBUILD; then
+            sed -i "s/^_commit=.*/_commit=${commit}/" PKGBUILD
+            grep -Fx "_commit=${commit}" PKGBUILD
+          fi
 
           tarball="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/v${ver}.tar.gz"
           sum=$(curl -fsSL "$tarball" | sha256sum | cut -d' ' -f1)

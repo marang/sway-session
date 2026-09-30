@@ -527,6 +527,10 @@ func (model terminalManageModel) render() string {
 			output.WriteString("\n" + lipgloss.JoinHorizontal(lipgloss.Top, list, "   ", detail))
 		} else if model.mode == terminalManagePurgeMode || hasFeedback || width < 72 || (model.height > 0 && model.height < 22) {
 			output.WriteString("\n" + list)
+			if item, ok := model.selected(); ok && model.mode != terminalManagePurgeMode {
+				output.WriteString("\n" + ansi.Truncate("Herdr "+terminalManageSessionEvidence(item.Activity.SessionState)+" · Agent "+terminalManageAgentEvidence(item.Activity.AgentState), width, "…"))
+				output.WriteString("\n" + ansi.Truncate("Evidence: "+terminalManageEvidenceTime(item.Activity), width, "…"))
+			}
 		} else {
 			output.WriteString("\n" + list + "\n\n" + model.renderDetails(styles, width))
 		}
@@ -1061,9 +1065,7 @@ func (model *terminalManageModel) stopProbes() {
 
 func (model *terminalManageModel) startActivityProbe() tea.Cmd {
 	model.stopProbes()
-	observer, ok := model.operations.(interface {
-		ObserveActivity(context.Context, []terminalInventoryResult) map[sessionstate.ContextID]sessionstate.TerminalSessionObservation
-	})
+	observer, ok := model.operations.(terminalManageActivityObserver)
 	for index := range model.items {
 		model.items[index].Activity = sessionstate.UnknownTerminalSessionObservation("observer_unavailable")
 		if ok {

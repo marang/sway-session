@@ -245,14 +245,19 @@ The manager also observes Herdr sessions independently of windows. `Herdr`
 shows `running`, `stopped`, `missing`, or `unknown`; `Agent` shows `detected`,
 `none`, or `unknown`. Detection is Herdr's live process observation, not a
 saved agent/session association and not proof that an agent is actively working.
+For a running session, `none` means only idle shells were observed; unrecognized
+foreground jobs remain `unknown`. Background jobs outside the observed
+foreground process groups are not inspected.
 Unsupported or inaccessible observations remain unknown. Saved contexts remain
 inspectable when Herdr is missing or unavailable.
 
 Activity loads in the background after the inventory, with a pending state,
 observation time, and failure reason. Entry, `r`, and actions refresh it;
 there is no periodic activity polling. Each refresh shares one session-list
-query and uses up to four concurrent read-only snapshots within a three-second
-budget. The selected details and deletion preview show observation age.
+query and uses up to four concurrent read-only session probes within a
+three-second budget. Each probe reads a snapshot and foreground-process data,
+with a 750 ms session deadline. The selected details and deletion preview show
+observation age.
 Deletion still rechecks the exact target; displayed activity never authorizes
 termination or deletion by itself.
 

@@ -203,6 +203,9 @@ func TestTerminalManageActivityNarrowLayoutKeepsKeyboardFooter(t *testing.T) {
 			if !strings.Contains(view, want) || len(strings.Split(view, "\n")) > size.Height {
 				t.Fatalf("clipped controls at %dx%d:\n%s", size.Width, size.Height, view)
 			}
+			if !strings.Contains(view, "Herdr") || !strings.Contains(view, "Agent") || !strings.Contains(view, "Evidence") {
+				t.Fatalf("activity hidden at %dx%d:\n%s", size.Width, size.Height, view)
+			}
 			for _, line := range strings.Split(view, "\n") {
 				if ansi.StringWidth(line) > size.Width {
 					t.Fatal("line exceeds viewport")

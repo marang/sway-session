@@ -245,6 +245,17 @@ Herdr check must preserve HOME, redirect all XDG roots and Herdr config, and
 stop only the disposable named server it created. It needs no real agent
 credentials or user session state.
 
+~~~sh
+SWAY_SESSION_HERDR_OBSERVATION_INTEGRATION=1 go test ./internal/session \
+  -run '^TestObserveHerdrSessionsLiveIsolated$' -v -count=1
+~~~
+
+LAB-131 acceptance on 2026-09-30 passed with Herdr 0.9.2: running shell,
+pane-directory hint, missing session, and stopped session. HOME was preserved;
+all XDG roots and the named server were disposable. Agent process matching,
+stale associations, cancellation and concurrency bounds are covered by the
+API fixture tests; this smoke does not launch a real Codex agent.
+
 ### Cancelled layout restore cleanup
 
 The runtime regression tests exercise a successful staging move, cancellation,

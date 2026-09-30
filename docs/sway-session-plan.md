@@ -157,6 +157,21 @@ sockets and locks remain below $XDG_RUNTIME_DIR/sway-session.
 
 SQLite schema 1 stores schema-5 contexts, layout schema 1, terminal
 creation/focus activity, compositor identity, and application launch attempts.
+Context rows may include optional `lifecycle: {reason, at}` metadata for the
+latest explicit archive, explicit activation, or confirmed terminal-close
+transition. This is a bounded explanation attached to authoritative state, not
+an event history or a separate restore policy. Missing metadata stays unknown;
+no legacy backfill is inferred from an archive timestamp. The additive field
+keeps document/schema versions and paths stable. Older binaries with strict
+context decoding do not understand newly written lifecycle metadata and fail
+closed; do not mix old and new writers or assume downgrade compatibility.
+
+A shared pure next-login policy evaluator supplies terminal automatic selection,
+desktop desired-open eligibility, layout membership, manager explanations, and
+the read-only `restore --preview` interface. Runtime observation uncertainty is
+reported separately; the preview never runs the stateful application planner
+or triggers lifecycle effects.
+
 The database uses WAL and full synchronous commits. Database and sidecar files
 must be regular, single-link, current-owner files with mode 0600.
 

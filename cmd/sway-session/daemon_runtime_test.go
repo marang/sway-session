@@ -638,7 +638,14 @@ func TestSessionRuntimeRejectedMoveCannotReplaceLastGoodWorkspace(t *testing.T) 
 func TestSessionRuntimeRejectedMoveDoesNotBlockIndependentCapture(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "state")
 	secondID := sessionstate.ContextID("22222222-2222-4222-8222-222222222222")
-	if err := sessionstate.RegistryStoreFor(root).Save(sessionRegistryIDs(testManagedContextID, secondID)); err != nil {
+	registry := sessionRegistryIDs(testManagedContextID, secondID)
+	if _, err := sessionstate.SetContextStateAt(&registry, string(testManagedContextID), sessionstate.ContextArchived, time.Unix(100, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sessionstate.SetContextStateAt(&registry, string(testManagedContextID), sessionstate.ContextActive, time.Unix(101, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if err := sessionstate.RegistryStoreFor(root).Save(registry); err != nil {
 		t.Fatal(err)
 	}
 	previous := sessionstate.LayoutSnapshot{
@@ -676,6 +683,14 @@ func TestSessionRuntimeRejectedMoveDoesNotBlockIndependentCapture(t *testing.T) 
 	targets := snapshotWorkspaceTargets(persisted)
 	if targets[testManagedContextID] != "98: saved" || targets[secondID] != "96: current" {
 		t.Fatalf("capture isolation targets = %+v, snapshot=%+v", targets, persisted)
+	}
+
+	loaded, err := sessionstate.ReadRegistrySnapshot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Contexts[0].State != sessionstate.ContextActive || loaded.Contexts[0].Lifecycle == nil || loaded.Contexts[0].Lifecycle.Reason != sessionstate.LifecycleReasonExplicitActivate {
+		t.Fatalf("capture-only exclusion changed durable policy: %+v", loaded.Contexts[0])
 	}
 }
 

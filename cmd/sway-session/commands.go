@@ -337,9 +337,16 @@ func executePurge(ctx context.Context, arguments []string, stdin io.Reader, stde
 func executeRestore(ctx context.Context, arguments []string, deps dependencies) (commandResult, *commandFailure) {
 	set := newFlagSet("restore")
 	socketFlag := set.String("socket", "", "Sway IPC socket")
+	preview := set.Bool("preview", false, "preview next-login policy without restoring")
 	requireActive := set.Bool("require-active", false, "reject an explicitly selected archived context")
 	if err := set.Parse(arguments); err != nil || set.NArg() > 1 {
 		return commandResult{}, usageFailure("restore", "restore accepts at most one context")
+	}
+	if *preview {
+		if set.NArg() != 0 || *requireActive {
+			return commandResult{}, usageFailure("restore", "--preview reports next-login policy for all contexts; it cannot be combined with a context or --require-active")
+		}
+		return executeRestorePreview(ctx, *socketFlag, deps)
 	}
 	socket := *socketFlag
 	if socket == "" {
@@ -721,7 +728,7 @@ func restoreTargets(registry sessionstate.Registry, selector string, requireActi
 	}
 	targets := make([]sessionstate.Context, 0, len(registry.Contexts))
 	for _, context := range registry.Contexts {
-		if context.State == sessionstate.ContextActive && context.Launcher.Kind == sessionstate.LauncherHerdr {
+		if sessionstate.EvaluateRestorePolicy(context).Eligible && context.Launcher.Kind == sessionstate.LauncherHerdr {
 			targets = append(targets, context)
 		}
 	}

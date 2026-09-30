@@ -132,6 +132,8 @@ func RebindApplicationContext(ctx context.Context, root string, client SwayReque
 		}
 		applied = replacement
 		applied.State = previous.State
+		applied.ArchivedAt = previous.ArchivedAt
+		applied.Lifecycle = previous.Lifecycle
 		if applied.App == nil {
 			return errors.New("rebind replacement is not a desktop application context")
 		}

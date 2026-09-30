@@ -299,7 +299,8 @@ func TestRebindPreservesLifecycleChangedAfterApprovalWasReviewed(t *testing.T) {
 	}
 	if _, err := UpdateRegistry(root, func(registry *Registry) error {
 		registry.Contexts[0].App.RestorePolicy = ApplicationRestorePinned
-		return registry.Validate()
+		_, err := SetContextStateAt(registry, string(expected.ID), ContextArchived, time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC))
+		return err
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -314,7 +315,7 @@ func TestRebindPreservesLifecycleChangedAfterApprovalWasReviewed(t *testing.T) {
 	if err := RegistryStoreFor(root).LoadInto(&registry); err != nil {
 		t.Fatal(err)
 	}
-	if registry.Contexts[0].Launcher.FlatpakID != "org.example.New" || registry.Contexts[0].App.RestorePolicy != ApplicationRestorePinned {
+	if registry.Contexts[0].Launcher.FlatpakID != "org.example.New" || registry.Contexts[0].App.RestorePolicy != ApplicationRestorePinned || registry.Contexts[0].Lifecycle == nil || registry.Contexts[0].Lifecycle.Reason != LifecycleReasonExplicitArchive || registry.Contexts[0].ArchivedAt == nil {
 		t.Fatalf("rebind did not merge reviewed identity with current lifecycle: %+v", registry.Contexts[0])
 	}
 }

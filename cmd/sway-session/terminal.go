@@ -550,6 +550,8 @@ func terminalInventory(contexts []sessionstate.Context, activityState ...session
 			CreatedAt:      activity.CreatedAt,
 			LastFocusedAt:  activity.LastFocusedAt,
 			ArchivedAt:     context.ArchivedAt,
+			RestorePolicy:  sessionstate.EvaluateRestorePolicy(context),
+			Lifecycle:      context.Lifecycle,
 		})
 	}
 	sort.Slice(items, func(left int, right int) bool { return items[left].ContextID < items[right].ContextID })

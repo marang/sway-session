@@ -43,6 +43,10 @@ func TestObservedTerminalCloseArchivesAfterGraceAndFreshAbsence(t *testing.T) {
 	if len(registry.Contexts) != 1 || registry.Contexts[0].State != sessionstate.ContextArchived {
 		t.Fatalf("closed terminal remains enabled for automatic restore: %+v", registry.Contexts)
 	}
+	transition := registry.Contexts[0].Lifecycle
+	if transition == nil || transition.Reason != sessionstate.LifecycleReasonObservedTerminalClose || !transition.At.Equal(now.Add(time.Second+terminalCloseGrace)) {
+		t.Fatalf("close reason/time not committed with policy: %+v", transition)
+	}
 }
 
 func TestObservedTerminalCloseFailsSafeWithoutGuard(t *testing.T) {
@@ -408,6 +412,9 @@ func assertTerminalCloseState(t *testing.T, root string, want sessionstate.Conte
 	}
 	if len(registry.Contexts) != 1 || registry.Contexts[0].State != want {
 		t.Fatalf("terminal lifecycle state = %+v, want %s", registry.Contexts, want)
+	}
+	if want == sessionstate.ContextActive && registry.Contexts[0].Lifecycle != nil {
+		t.Fatalf("preserved policy acquired fabricated transition: %+v", registry.Contexts[0].Lifecycle)
 	}
 }
 

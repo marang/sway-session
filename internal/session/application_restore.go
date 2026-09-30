@@ -275,6 +275,30 @@ func cloneApplicationSessionState(state ApplicationSessionState) ApplicationSess
 	return state
 }
 
+// RetryRejectedAttempt prepares removal of one launch guard after the caller
+// has fresh evidence that its Start was definitively rejected. The timestamp
+// binds that evidence to this exact attempt. The caller must persist and adopt
+// the candidate before invoking the normal planner again.
+func (coordinator *ApplicationRestoreCoordinator) RetryRejectedAttempt(id ContextID, startedAt time.Time) (ApplicationSessionState, bool, error) {
+	if coordinator == nil {
+		return ApplicationSessionState{}, false, errors.New("application restore coordinator is nil")
+	}
+	if err := id.Validate(); err != nil {
+		return ApplicationSessionState{}, false, err
+	}
+	if startedAt.IsZero() {
+		return ApplicationSessionState{}, false, errors.New("rejected launch attempt time is required")
+	}
+	candidate := cloneApplicationSessionState(coordinator.state)
+	for index, attempt := range candidate.Attempts {
+		if attempt.ContextID == id && attempt.StartedAt.Equal(startedAt) {
+			candidate.Attempts = append(candidate.Attempts[:index], candidate.Attempts[index+1:]...)
+			return candidate, true, candidate.Validate()
+		}
+	}
+	return candidate, false, nil
+}
+
 func (coordinator *ApplicationRestoreCoordinator) State() ApplicationSessionState {
 	if coordinator == nil {
 		return ApplicationSessionState{}

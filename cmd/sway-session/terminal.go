@@ -403,6 +403,9 @@ func executeTerminalList(ctx context.Context, arguments []string, deps dependenc
 		return commandResult{}, commandFailure
 	}
 	items := terminalInventory(snapshot.Registry.Contexts, snapshot.Activity)
+	if failure := decorateTerminalRestoreHistory(ctx, deps, items); failure != nil {
+		return commandResult{}, failure
+	}
 	observeTerminalInventory(ctx, deps, snapshot.Registry, items)
 	return commandResult{Command: "terminal list", Terminals: &items}, nil
 }
@@ -461,6 +464,9 @@ func executeTerminalStatus(ctx context.Context, arguments []string, deps depende
 	if len(items) != 1 {
 		return commandResult{}, failure("terminal_context", "selected context is not a Herdr terminal", string(selected.ID))
 	}
+	if failure := decorateTerminalRestoreHistory(ctx, deps, items); failure != nil {
+		return commandResult{}, failure
+	}
 	observeTerminalInventory(ctx, deps, snapshot.Registry, items)
 	return commandResult{Command: "terminal status", Terminals: &items}, nil
 }
@@ -495,6 +501,9 @@ func executeTerminalCleanup(ctx context.Context, arguments []string, deps depend
 		candidates = append(candidates, context)
 	}
 	items := terminalInventory(candidates, snapshot.Activity)
+	if failure := decorateTerminalRestoreHistory(ctx, deps, items); failure != nil {
+		return commandResult{}, failure
+	}
 	observeTerminalInventory(ctx, deps, snapshot.Registry, items)
 	return commandResult{
 		Command: "terminal cleanup", Terminals: &items, Preview: true, Actions: []string{"preview"},

@@ -43,6 +43,7 @@ type commandSpec struct {
 
 var commandSpecs = map[string]commandSpec{
 	"register":             {usage: "register --session <name> [options]", summary: "Register a persistent work context"},
+	"restore-report":       {usage: "restore-report [--retry <context-uuid>] [--socket <path>]", summary: "Explain recorded restore outcomes or retry one failed context"},
 	"restore":              {usage: "restore [--socket <path>] [context]", summary: "Restore active or selected contexts; --preview explains next-login policy"},
 	"list":                 {usage: "list", summary: "List registered contexts"},
 	"archive":              {usage: "archive <context>", summary: "Exclude a context from automatic restore"},
@@ -58,7 +59,7 @@ var commandSpecs = map[string]commandSpec{
 	"completion":           {usage: "completion contexts <command>", summary: "Emit read-only shell completion candidates"},
 }
 
-var commandOrder = []string{"terminal", "doctor", "register", "restore", "list", "archive", "activate", "purge", "app", "daemon", "broker", "request-start", "report-agent-session", "completion"}
+var commandOrder = []string{"terminal", "doctor", "register", "restore", "restore-report", "list", "archive", "activate", "purge", "app", "daemon", "broker", "request-start", "report-agent-session", "completion"}
 
 type swayRequester interface {
 	RequestContext(context.Context, swayipc.MessageType, []byte) (swayipc.Message, error)
@@ -66,37 +67,39 @@ type swayRequester interface {
 }
 
 type dependencies struct {
-	stateRoot          func() (string, error)
-	workingDir         func() (string, error)
-	homeDir            func() (string, error)
-	newContextID       func() (sessionstate.ContextID, error)
-	loadSessionConfig  func(string) (sessionstate.SessionConfig, string, error)
-	herdrPaths         func() (sessionstate.HerdrPaths, error)
-	validateHistory    func(sessionstate.HerdrPaths) error
-	resolveProgram     func(string) (string, error)
-	resolveSystem      func(string) (string, error)
-	desktopCatalog     func() (sessionstate.DesktopCatalog, error)
-	operationStore     func() (sessionstate.ApplicationOperationStore, error)
-	presentApproval    func(string, []sessionstate.ApprovalChoice) error
-	verifyFlatpak      func(sessionstate.Launcher) error
-	newSwayClient      func(string) swayRequester
-	processStarter     sessionstate.ProcessStarter
-	herdrRunner        sessionstate.HerdrCommandRunner
-	initializeHerdr    func(context.Context, sessionstate.Context, []string, herdrinit.Runner) (herdrinit.Result, error)
-	findPendingProcess func(string, sessionstate.ProcessSpec) ([]int, error)
-	now                func() time.Time
-	sleep              func(time.Duration)
-	settleTimeout      time.Duration
-	stabilityDelay     time.Duration
-	stdinTerminal      func() bool
-	reportAgentSession func(context.Context, io.Reader, func(string) string) error
-	requestStart       func(context.Context, sessionrequest.Request) (sessionrequest.Response, error)
-	runBroker          func(context.Context, string, func(error)) error
-	runDaemon          func(context.Context, string, func(error)) error
-	runTerminalManage  terminalManageRunner
-	newDoctor          func(doctor.Options) doctorOperations
-	runDoctor          doctorRunner
-	doctorInteractive  func(io.Reader, io.Writer) bool
+	restoreReporter           *cliRestoreReporter
+	requireRestoreEligibility bool
+	stateRoot                 func() (string, error)
+	workingDir                func() (string, error)
+	homeDir                   func() (string, error)
+	newContextID              func() (sessionstate.ContextID, error)
+	loadSessionConfig         func(string) (sessionstate.SessionConfig, string, error)
+	herdrPaths                func() (sessionstate.HerdrPaths, error)
+	validateHistory           func(sessionstate.HerdrPaths) error
+	resolveProgram            func(string) (string, error)
+	resolveSystem             func(string) (string, error)
+	desktopCatalog            func() (sessionstate.DesktopCatalog, error)
+	operationStore            func() (sessionstate.ApplicationOperationStore, error)
+	presentApproval           func(string, []sessionstate.ApprovalChoice) error
+	verifyFlatpak             func(sessionstate.Launcher) error
+	newSwayClient             func(string) swayRequester
+	processStarter            sessionstate.ProcessStarter
+	herdrRunner               sessionstate.HerdrCommandRunner
+	initializeHerdr           func(context.Context, sessionstate.Context, []string, herdrinit.Runner) (herdrinit.Result, error)
+	findPendingProcess        func(string, sessionstate.ProcessSpec) ([]int, error)
+	now                       func() time.Time
+	sleep                     func(time.Duration)
+	settleTimeout             time.Duration
+	stabilityDelay            time.Duration
+	stdinTerminal             func() bool
+	reportAgentSession        func(context.Context, io.Reader, func(string) string) error
+	requestStart              func(context.Context, sessionrequest.Request) (sessionrequest.Response, error)
+	runBroker                 func(context.Context, string, func(error)) error
+	runDaemon                 func(context.Context, string, func(error)) error
+	runTerminalManage         terminalManageRunner
+	newDoctor                 func(doctor.Options) doctorOperations
+	runDoctor                 doctorRunner
+	doctorInteractive         func(io.Reader, io.Writer) bool
 }
 
 func defaultDependencies(stdin io.Reader) dependencies {
@@ -256,21 +259,22 @@ func runWithContext(ctx context.Context, arguments []string, stdin io.Reader, st
 }
 
 type commandResult struct {
-	Version              int                        `json:"version"`
-	Command              string                     `json:"command"`
-	Contexts             []sessionstate.Context     `json:"contexts"`
-	CompletionCandidates []completionCandidate      `json:"completion_candidates,omitempty"`
-	Message              string                     `json:"message,omitempty"`
-	Workspace            int                        `json:"workspace,omitempty"`
-	Created              bool                       `json:"created,omitempty"`
-	Actions              []string                   `json:"actions,omitempty"`
-	Terminal             *terminalCommandResult     `json:"terminal,omitempty"`
-	Terminals            *[]terminalInventoryResult `json:"terminals,omitempty"`
-	RestorePreview       *restorePreviewResult      `json:"restore_preview,omitempty"`
-	Preview              bool                       `json:"preview,omitempty"`
-	Doctor               *doctor.Report             `json:"doctor,omitempty"`
-	DoctorPlan           *doctor.Plan               `json:"doctor_plan,omitempty"`
-	DoctorFix            *doctor.FixResult          `json:"doctor_fix,omitempty"`
+	Version              int                         `json:"version"`
+	Command              string                      `json:"command"`
+	Contexts             []sessionstate.Context      `json:"contexts"`
+	CompletionCandidates []completionCandidate       `json:"completion_candidates,omitempty"`
+	Message              string                      `json:"message,omitempty"`
+	Workspace            int                         `json:"workspace,omitempty"`
+	Created              bool                        `json:"created,omitempty"`
+	Actions              []string                    `json:"actions,omitempty"`
+	Terminal             *terminalCommandResult      `json:"terminal,omitempty"`
+	Terminals            *[]terminalInventoryResult  `json:"terminals,omitempty"`
+	RestoreReport        *restoreReportCommandResult `json:"restore_report,omitempty"`
+	RestorePreview       *restorePreviewResult       `json:"restore_preview,omitempty"`
+	Preview              bool                        `json:"preview,omitempty"`
+	Doctor               *doctor.Report              `json:"doctor,omitempty"`
+	DoctorPlan           *doctor.Plan                `json:"doctor_plan,omitempty"`
+	DoctorFix            *doctor.FixResult           `json:"doctor_fix,omitempty"`
 }
 
 type terminalCommandResult struct {
@@ -307,6 +311,7 @@ type terminalInventoryResult struct {
 	Cwd              string                                  `json:"cwd"`
 	CreatedAt        *time.Time                              `json:"created_at,omitempty"`
 	LastFocusedAt    *time.Time                              `json:"last_focused_at,omitempty"`
+	RestoreOutcome   *sessionstate.RestoreOutcome            `json:"restore_outcome,omitempty"`
 	RestorePolicy    sessionstate.RestorePolicyDecision      `json:"restore_policy"`
 	Lifecycle        *sessionstate.LifecycleTransition       `json:"lifecycle,omitempty"`
 	ArchivedAt       *time.Time                              `json:"archived_at,omitempty"`
@@ -350,6 +355,9 @@ func writeResult(writer io.Writer, structured bool, result commandResult) error 
 			result.Contexts = []sessionstate.Context{}
 		}
 		return json.NewEncoder(writer).Encode(result)
+	}
+	if result.RestoreReport != nil {
+		return writeRestoreReport(writer, *result.RestoreReport)
 	}
 	if result.RestorePreview != nil {
 		return writeRestorePreview(writer, *result.RestorePreview)
@@ -513,6 +521,9 @@ func writeCommandUsage(writer io.Writer, name string, spec commandSpec) {
 	if slices.Contains([]string{"archive", "activate", "purge", "restore"}, name) {
 		_, _ = fmt.Fprintln(writer, "A context is an unambiguous exact UUID or label.")
 	}
+	if name == "restore-report" {
+		_, _ = fmt.Fprintln(writer, "Without --retry this is read-only; missing history is normal. --retry requires one currently eligible failed or interrupted context and preserves existing restore safeguards.")
+	}
 	if name == "restore" {
 		_, _ = fmt.Fprintln(writer, "Preview: sway-session [--json] restore --preview [--socket PATH]")
 		_, _ = fmt.Fprintln(writer, "Preview reads next-login eligibility for all terminals and apps; no launch, focus, lifecycle change, or daemon work is requested.")
@@ -606,6 +617,8 @@ func executeCommand(ctx context.Context, name string, arguments []string, stdin 
 		return executePurge(ctx, arguments, stdin, stderr, structured, deps)
 	case "restore":
 		return executeRestore(ctx, arguments, deps)
+	case "restore-report":
+		return executeRestoreReport(ctx, arguments, deps)
 	case "app":
 		return executeApp(ctx, arguments, deps)
 	case "broker":
@@ -689,5 +702,6 @@ func diagnosticForContext(code string, context sessionstate.Context, err error, 
 	return diagnostic.Diagnostic{
 		Level: diagnostic.LevelError,
 		Code:  code, Message: fmt.Sprintf("context %s: %v", name, err), Hint: strings.TrimSpace(hint),
+		Details: map[string]any{"context_id": string(context.ID)},
 	}
 }

@@ -196,6 +196,9 @@ sway-session terminal manage
 sway-session --json terminal list
 sway-session restore --preview
 sway-session --json restore --preview
+sway-session restore-report
+sway-session --json restore-report
+sway-session restore-report --retry CONTEXT_UUID
 sway-session --json terminal status --project LAB-119
 sway-session terminal rename --label "Release work" CONTEXT_UUID
 sway-session terminal cleanup --archived-before 2026-09-01
@@ -209,6 +212,7 @@ example:
 sway-session help terminal
 sway-session help register
 sway-session help restore
+sway-session help restore-report
 sway-session help app
 sway-session help daemon
 sway-session help request-start
@@ -261,6 +265,37 @@ layout recovery, or application-internal session recovery. Preview never
 launches, focuses, archives, activates, initializes Herdr, or queues daemon work.
 It cannot be combined with an explicit context or `--require-active`; explicit
 restore continues to use its existing selection and activation rules.
+
+`sway-session restore-report` explains recorded restore attempts, including
+requested work, accepted launches, observed windows, placement and layout proof,
+stable reason codes, and UTC timestamps. It lists the latest automatic run and
+the latest explicit attempt per context, with readable labels and exact IDs.
+A bounded run ID and timestamp retain the most recent automatic interruption
+when a newer automatic run replaces its per-context records.
+No recorded history is a normal result. The command without `--retry` is
+read-only and does not create state.
+
+An accepted process launch is not a completed restore. A mapped window can
+still be waiting for placement or layout. The daemon records progress from fresh
+compositor observations; missing evidence stays pending until a timeout or an
+observable failure. Reports never infer an authentication prompt from a delay.
+They describe past observations, so a recorded mapped window need not still be
+open when the report is read. Deleted contexts remain identifiable by their ID.
+The report stores operational metadata only, not pane content, environment,
+authentication details, or arbitrary launcher error output.
+
+In `terminal manage`, **Last restore** and its details show the most recent
+recorded attempt for the selected context; the summary counts recorded results.
+Press **t** to retry an eligible failed or interrupted entry, or use
+`restore-report --retry CONTEXT_UUID`. Retry rechecks current policy, identity,
+and windows through the existing restore path. It reuses an already mapped
+terminal without starting another adapter or reinitializing an occupied Herdr
+agent pane. Archived entries must be explicitly activated first. Retry does
+not replay a historical layout as a new source of desired state.
+For desktop applications, a new request can reset a launch guard only when the
+current daemon retains definitive rejection evidence for that exact attempt.
+A missing window, timeout, or ambiguous accepted launch is not permission to
+start another process; this safeguard also survives daemon restart.
 
 The manager also observes Herdr sessions independently of windows. `Herdr`
 shows `running`, `stopped`, `missing`, or `unknown`; `Agent` shows `detected`,

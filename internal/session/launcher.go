@@ -21,6 +21,18 @@ type ProcessStarter interface {
 
 type ExecProcessStarter struct{}
 
+// ProcessLaunchOutcomeUnknownError means a process was accepted, but the
+// starter could not complete its bookkeeping. Retrying may duplicate it.
+type ProcessLaunchOutcomeUnknownError struct {
+	Err error
+}
+
+func (err *ProcessLaunchOutcomeUnknownError) Error() string {
+	return fmt.Sprintf("launched process bookkeeping failed: %v", err.Err)
+}
+
+func (err *ProcessLaunchOutcomeUnknownError) Unwrap() error { return err.Err }
+
 type ProcessSpec struct {
 	Name        string
 	Arguments   []string
@@ -39,7 +51,7 @@ func (ExecProcessStarter) Start(spec ProcessSpec) error {
 		return err
 	}
 	if err := command.Process.Release(); err != nil {
-		return fmt.Errorf("release launched process: %w", err)
+		return &ProcessLaunchOutcomeUnknownError{Err: err}
 	}
 	return nil
 }

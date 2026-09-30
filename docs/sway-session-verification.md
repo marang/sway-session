@@ -550,3 +550,23 @@ Inspect manager rendering at 48x16, 80x24, and a wider terminal. Selection,
 filtering, and open/archive controls must remain usable; selected next-login
 reason and last-change evidence must survive compact rendering. These automated
 checks do not establish an actual machine reboot result.
+
+
+## Recorded restore outcomes and retry (LAB-132)
+
+Use disposable state to check that accepted launches remain distinct from mapped
+windows, and mapping remains distinct from placement and full layout proof.
+Exercise partial success across bounded launch waves, concurrent/replaced
+attempts, interruption and restart, missing contexts, identity changes, and
+report replacement. Verify stable reason codes and UTC timestamps without raw
+process output. A report with no history must succeed without creating files.
+
+Retry must use the selected exact context ID, re-read current policy and window
+state, refuse archived contexts until explicitly activated, and reuse a mapped
+window without launching an adapter or reinitializing a live agent. Exercise
+manager focus, filtering, refresh and retry at 48x16, 80x24 and a wider viewport.
+
+Run private-compositor layout checks with disposable state and workspace 98 or
+higher. Verify outcome proofs from fresh trees after restore commands, rather
+than command acknowledgements. This does not establish a machine reboot result
+or application-internal session recovery.

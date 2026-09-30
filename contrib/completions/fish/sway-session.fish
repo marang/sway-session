@@ -110,6 +110,8 @@ function __sway_session_marker_value_open
             set value_options --socket
             test "$command[1]" = restore
             and set bool_options --require-active --preview
+        case restore-report
+            set value_options --socket --retry
         case doctor
             set value_options --fix --socket --sway-config
             set bool_options --check --yes
@@ -603,7 +605,7 @@ complete -c sway-session -n '__sway_session_global_options_open; and not __sway_
 complete -c sway-session -n '__sway_session_global_options_open' -s h -d 'Show help'
 complete -c sway-session -n '__sway_session_global_options_open' -l help -d 'Show help'
 complete -c sway-session -n '__sway_session_global_options_open' -l config -r -F
-complete -c sway-session -n '__sway_session_no_command' -a 'register restore list archive activate purge app daemon broker request-start report-agent-session completion terminal doctor'
+complete -c sway-session -n '__sway_session_no_command' -a 'register restore restore-report list archive activate purge app daemon broker request-start report-agent-session completion terminal doctor'
 complete -c sway-session -n '__sway_session_no_command' -l version -d 'Show build version'
 complete -c sway-session -n '__sway_session_marker_value_open' -a '(__sway_session_command_options)'
 
@@ -674,3 +676,6 @@ complete -c sway-session -n '__sway_session_app_context_pending forget; and __sw
 complete -c sway-session -n '__sway_session_app_context_pending forget' -a '(__sway_session_contexts app-forget)'
 
 complete -c sway-session -n '__sway_session_top_context_pending restore; and __sway_session_options_open' -l preview -d "Preview next-login restore policy without changes"
+
+complete -c sway-session -n '__sway_session_is_command restore-report; and __sway_session_options_open' -l retry -x -a '(__sway_session_contexts restore-active)' -d "Retry an eligible failed or interrupted restore"
+complete -c sway-session -n '__sway_session_is_command restore-report; and __sway_session_options_open' -l socket -r -F

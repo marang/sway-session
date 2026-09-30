@@ -334,7 +334,7 @@ func executePurge(ctx context.Context, arguments []string, stdin io.Reader, stde
 	return commandResult{Command: "purge", Contexts: []sessionstate.Context{target}, Actions: []string{"purged"}}, nil
 }
 
-func executeRestore(ctx context.Context, arguments []string, deps dependencies) (commandResult, *commandFailure) {
+func executeRestore(ctx context.Context, arguments []string, deps dependencies) (resultValue commandResult, failureValue *commandFailure) {
 	set := newFlagSet("restore")
 	socketFlag := set.String("socket", "", "Sway IPC socket")
 	preview := set.Bool("preview", false, "preview next-login policy without restoring")
@@ -363,9 +363,19 @@ func executeRestore(ctx context.Context, arguments []string, deps dependencies) 
 	if set.NArg() == 1 {
 		selector = set.Arg(0)
 	}
+	reporter, reportErr := beginCLIRestoreReport(ctx, root, selector, *requireActive, deps)
+	if reportErr != nil {
+		return commandResult{}, classifyStateError("begin restore report", reportErr)
+	}
+	deps.restoreReporter = reporter
+	defer func() {
+		if reportErr := reporter.finish(resultValue, failureValue, ctx.Err()); reportErr != nil {
+			failureValue = appendRestoreHistoryFailure(failureValue, reportErr)
+		}
+	}()
 	result := commandResult{Command: "restore", Contexts: []sessionstate.Context{}}
 	if selector != "" {
-		queued, handled, err := queueDesktopRestore(ctx, root, selector)
+		queued, handled, err := queueDesktopRestoreWithPolicy(ctx, root, selector, deps.requireRestoreEligibility)
 		if err != nil {
 			return commandResult{}, classifyStateError("queue desktop application restore", err)
 		}
@@ -387,6 +397,13 @@ func executeRestore(ctx context.Context, arguments []string, deps dependencies) 
 				targets, err := restoreTargets(registry, selector, *requireActive)
 				if err != nil {
 					return err
+				}
+				if deps.requireRestoreEligibility {
+					for _, target := range targets {
+						if !sessionstate.EvaluateRestorePolicy(target).Eligible {
+							return errors.New("context is no longer eligible for restore")
+						}
+					}
 				}
 				if initialTargets == nil {
 					initialTargets = make(map[sessionstate.ContextID]struct{}, len(targets))
@@ -542,8 +559,15 @@ func restoreTerminalWave(
 				continue
 			}
 			if err := deps.processStarter.Start(spec); err != nil {
-				operationDiagnostics = append(operationDiagnostics, diagnosticForContext("launch", target, err, ""))
-				continue
+				var accepted *sessionstate.ProcessLaunchOutcomeUnknownError
+				if !errors.As(err, &accepted) {
+					operationDiagnostics = append(operationDiagnostics, diagnosticForContext("launch", target, err, ""))
+					continue
+				}
+				operationDiagnostics = append(operationDiagnostics, diagnosticForContext("launch_outcome_unknown", target, err, "The process was accepted; observe its window before retrying."))
+			}
+			if reportErr := deps.restoreReporter.launchAccepted(ctx, target.ID); reportErr != nil {
+				operationDiagnostics = append(operationDiagnostics, diagnosticForContext("restore_history", target, reportErr, "The launch was accepted; inspect the current window before retrying."))
 			}
 		}
 		batch[id] = target
@@ -680,7 +704,7 @@ func removeUnstableRestoreResults(
 
 var errNotDesktopApplication = errors.New("selected context is not a desktop application")
 
-func queueDesktopRestore(ctx context.Context, root string, selector string) (sessionstate.Context, bool, error) {
+func queueDesktopRestoreWithPolicy(ctx context.Context, root string, selector string, requireEligible bool) (sessionstate.Context, bool, error) {
 	var queued sessionstate.Context
 	_, err := sessionstate.UpdateRegistryContext(ctx, root, func(registry *sessionstate.Registry) error {
 		index, err := sessionstate.ResolveContext(*registry, selector)
@@ -692,6 +716,9 @@ func queueDesktopRestore(ctx context.Context, root string, selector string) (ses
 		}
 		if registry.Contexts[index].State != sessionstate.ContextActive {
 			return fmt.Errorf("desktop application context %q is archived; activate it before restore", registry.Contexts[index].ID)
+		}
+		if requireEligible && !sessionstate.EvaluateRestorePolicy(registry.Contexts[index]).Eligible {
+			return errors.New("application is no longer eligible for restore")
 		}
 		registry.Contexts[index].App.DesiredOpen = true
 		queued = registry.Contexts[index]

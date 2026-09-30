@@ -431,6 +431,29 @@ func (model terminalManageModel) handleKey(message tea.KeyPressMsg) (tea.Model, 
 	case "r":
 		model.err = nil
 		return model, model.beginLoad()
+	case "t":
+		item, ok := model.selected()
+		if !ok || !terminalManageRestoreFailed(item) {
+			return model, nil
+		}
+		if item.State != sessionstate.ContextActive || !item.RestorePolicy.Eligible {
+			model.err = errors.New("activate this terminal before retrying restore")
+			return model, nil
+		}
+		retry, ok := model.operations.(terminalManageRestoreRetryOperations)
+		if !ok {
+			model.err = errors.New("restore retry is unavailable")
+			return model, nil
+		}
+		model.stopProbes()
+		model.pending = true
+		model.err = nil
+		// Capture the exact identity before any asynchronous list/filter update.
+		ctx, id, socket := model.ctx, item.ContextID, model.socket
+		return model, func() tea.Msg {
+			err := retry.RetryRestore(ctx, id, socket)
+			return terminalManageActionMsg{id: id, action: "Restore retry requested", selectionPolicy: terminalManageSelectIdentity, err: err, refreshOnFailure: true}
+		}
 	case "m":
 		model.stopProbes()
 		model.pending = true
@@ -511,14 +534,18 @@ func (model terminalManageModel) render() string {
 	if unknown != 0 {
 		counts += fmt.Sprintf(" · %d unknown", unknown)
 	}
+	filterInHeader := model.tightLayout() && width < 72 && model.mode != terminalManageFilterMode && model.filter != ""
 	if width >= 72 {
 		output.WriteString(styles.muted.Render("  " + counts + " · Snapshot [r] refresh"))
 	} else {
 		output.WriteString("\n" + styles.muted.Render(counts))
 		output.WriteString("\n" + styles.muted.Render("Snapshot · [r] refresh"))
+		if filterInHeader {
+			output.WriteString(styles.muted.Render(" · Filter: " + model.filter))
+		}
 	}
 	output.WriteByte('\n')
-	if model.mode != terminalManageFilterMode && model.filter != "" {
+	if model.mode != terminalManageFilterMode && model.filter != "" && !filterInHeader {
 		output.WriteString(styles.muted.Render("Filter: " + model.filter + "  [/] Edit or clear"))
 		output.WriteByte('\n')
 	}
@@ -526,6 +553,8 @@ func (model terminalManageModel) render() string {
 		output.WriteString("\nLoading terminal sessions…\n")
 	} else if model.err != nil && len(model.items) == 0 {
 		output.WriteString("\nUnable to load managed terminals.\nFix the state error below, then press r to retry.\n")
+	} else if model.mode == terminalManageHelpMode && model.restoreSummary() != "" {
+		output.WriteString("\n" + terminalManageWrap(model.restoreSummary(), width))
 	} else if len(model.items) == 0 {
 		output.WriteString("\nNo managed terminals yet.\nOpen one with sway-session terminal --new.\n")
 	} else if len(model.visible) == 0 {
@@ -540,17 +569,28 @@ func (model terminalManageModel) render() string {
 			detail := model.renderDetails(styles, width-listWidth-3)
 			output.WriteString("\n" + lipgloss.JoinHorizontal(lipgloss.Top, list, "   ", detail))
 		} else if model.mode == terminalManagePurgeMode || model.mode == terminalManageHelpMode || hasFeedback || width < 72 || (model.height > 0 && model.height < 22) {
-			output.WriteString("\n" + list)
+			if model.tightLayout() {
+				output.WriteString(list)
+			} else {
+				output.WriteString("\n" + list)
+			}
 			if item, ok := model.selected(); ok && model.mode != terminalManagePurgeMode && model.mode != terminalManageHelpMode {
+				output.WriteString("\nContext " + string(item.ContextID))
 				output.WriteString("\n" + ansi.Truncate(terminalManageDetail("Next login", terminalManageNextLogin(item)), width, "…"))
 				output.WriteString("\n" + ansi.Truncate(terminalManageDetail("Last change", terminalManageLastChange(item, width)), width, "…"))
+				output.WriteString("\n" + ansi.Truncate(terminalManageDetail("Last restore", terminalManageRestoreResult(item)), width, "…"))
+				if item.RestoreOutcome != nil {
+					output.WriteString("\n" + ansi.Truncate(terminalManageDetail("Restore info", terminalManageRestoreInfo(item, width)), width, "…"))
+				}
 				output.WriteString("\n" + ansi.Truncate("Herdr "+terminalManageSessionEvidence(item.Activity.SessionState)+" · Agent "+terminalManageAgentEvidence(item.Activity.AgentState), width, "…"))
 				output.WriteString("\n" + ansi.Truncate("Evidence: "+terminalManageEvidenceTime(item.Activity), width, "…"))
 			}
 		} else {
 			output.WriteString("\n" + list + "\n\n" + model.renderDetails(styles, width))
 		}
-		output.WriteByte('\n')
+		if !model.tightLayout() {
+			output.WriteByte('\n')
+		}
 	}
 
 	switch model.mode {
@@ -581,6 +621,9 @@ func (model terminalManageModel) render() string {
 			output.WriteString("\n[Esc/?] Close help   [q] Quit   [↑/↓ or j/k] Select")
 			output.WriteString("\n[Enter/o] Open   [e] Rename   [a] Archive/activate   [/] Filter")
 			output.WriteString("\n[d] Delete permanently   [m] Migrate old state   [r] Refresh")
+			if model.restoreRetryAvailable() {
+				output.WriteString("\n[t] Retry failed restore for the selected terminal")
+			}
 		}
 	default:
 		if model.pending {
@@ -615,17 +658,26 @@ func (model terminalManageModel) renderFooter(styles terminalManageStyles, width
 		}
 		return global
 	}
+	if model.restoreRetryAvailable() && (width < 72 || model.tightLayout()) {
+		return "[↑/↓ j/k] Select  [/] Filter  [t] Retry\n" +
+			"[Enter] Open [e] Rename [a] Archive [d] Delete\n" +
+			"[m] Migrate  [r] Refresh  [?] Help  [q] Quit"
+	}
+	retryHint := ""
+	if model.restoreRetryAvailable() {
+		retryHint = "  [t] Retry failed restore"
+	}
 	if model.tightLayout() {
 		return "[↑/↓ j/k] Select  [/] Filter  [Enter] Open\n" +
 			"[e] Rename  [a] Archive/activate  [d] Delete\n" +
 			"[m] Migrate  [r] Refresh  [?] Help  [q] Quit"
 	}
 	if width >= 96 {
-		return styles.muted.Render("Navigate") + " [↑/↓ or j/k] Select  [/] Filter\n" +
+		return styles.muted.Render("Navigate") + " [↑/↓ or j/k] Select  [/] Filter" + retryHint + "\n" +
 			styles.muted.Render("Selected") + " [Enter/o] Open  [e] Rename  [a] Archive/activate  [d] Delete\n" + global
 	}
 	if width >= 72 {
-		return styles.muted.Render("Navigate") + " [↑/↓ or j/k] Select  [/] Filter\n" +
+		return styles.muted.Render("Navigate") + " [↑/↓ or j/k] Select  [/] Filter" + retryHint + "\n" +
 			styles.muted.Render("Selected") + " [Enter] Open  [e] Rename  [a] Archive/activate  [d] Delete\n" +
 			styles.muted.Render("System") + "   [m] Migrate  [r] Refresh  [?] Help  [q] Quit"
 	}
@@ -809,26 +861,36 @@ func (model terminalManageModel) renderDetails(styles terminalManageStyles, widt
 	}
 	lines := []string{
 		styles.accent.Render(terminalManageName(item)),
+		"Context " + string(item.ContextID),
 		terminalManageDetail("Window", model.windowPresence(item.ContextID).String()),
 		terminalManageDetail("Restore", terminalManageRestore(item)),
 		terminalManageDetail("Next login", terminalManageNextLogin(item)),
 		terminalManageDetail("Last change", terminalManageLastChange(item, width)),
+		terminalManageDetail("Last restore", terminalManageRestoreResult(item)),
 		terminalManageDetail("Herdr", terminalManageSessionEvidence(item.Activity.SessionState)),
 		terminalManageDetail("Agent", terminalManageAgentEvidence(item.Activity.AgentState)),
 		terminalManageDetail("Evidence", terminalManageEvidenceTime(item.Activity)),
-		terminalManageDetail("Last focused", terminalManageTime(item.LastFocusedAt)),
-		terminalManageDetail("Created", terminalManageTime(item.CreatedAt)),
-		terminalManageDetail("Project", terminalManageProject(item)),
-		terminalManageDetail("Start path", item.Cwd),
-		terminalManageDetail("Session", item.Session),
-		terminalManageDetail("Context", string(item.ContextID)),
 	}
-	compact := model.height > 0 && ((!model.wideLayout() && model.height <= 26) || model.height <= 22)
-	if compact {
-		lines = append(lines[:9], lines[11:13]...)
+	compact := model.height > 0 && model.height <= 28
+	if !compact || item.RestoreOutcome == nil {
+		lines = append(lines, terminalManageDetail("Last focused", terminalManageTime(item.LastFocusedAt)))
 	}
-	if item.PaneDirectory != "" && (!compact || model.wideLayout()) {
+	if item.RestoreOutcome != nil {
+		lines = append(lines, terminalManageDetail("Restore info", terminalManageRestoreInfo(item, width)))
+	}
+	if !compact {
+		lines = append(lines, terminalManageDetail("Created", terminalManageTime(item.CreatedAt)),
+			terminalManageDetail("Project", terminalManageProject(item)),
+			terminalManageDetail("Session", item.Session))
+	}
+	if !compact || model.wideLayout() && (item.RestoreOutcome == nil || model.height > 24) {
+		lines = append(lines, terminalManageDetail("Start path", item.Cwd))
+	}
+	if item.PaneDirectory != "" && (!compact || model.wideLayout() && (item.RestoreOutcome == nil || model.height > 24)) {
 		lines = append(lines, terminalManageDetail("Pane path", item.PaneDirectory))
+	}
+	if item.RestoreOutcome != nil && model.wideLayout() {
+		lines = append(lines, terminalManageDetail("Source", terminalManageRestoreSource(item)), "Attempt "+item.RestoreOutcome.AttemptID)
 	}
 	for index := range lines {
 		lines[index] = ansi.Truncate(lines[index], max(width, 1), "…")
@@ -845,6 +907,163 @@ func terminalManageRestore(item terminalInventoryResult) string {
 		return "archived"
 	}
 	return "enabled"
+}
+
+func terminalManageRestoreFailed(item terminalInventoryResult) bool {
+	return item.RestoreOutcome != nil && (string(item.RestoreOutcome.Status) == "failed" || string(item.RestoreOutcome.Status) == "interrupted")
+}
+
+func (model terminalManageModel) restoreRetryAvailable() bool {
+	_, supported := model.operations.(terminalManageRestoreRetryOperations)
+	item, selected := model.selected()
+	return supported && selected && !model.pending && !model.loading && item.State == sessionstate.ContextActive && item.RestorePolicy.Eligible && terminalManageRestoreFailed(item)
+}
+
+func terminalManageRestoreStage(item terminalInventoryResult) string {
+	if item.RestoreOutcome == nil {
+		return "not started"
+	}
+	outcome := item.RestoreOutcome
+	// Keep the last observed proof visible even when the terminal status is
+	// failed or interrupted; Stage() includes those terminal statuses instead.
+	switch {
+	case outcome.LayoutApplied:
+		return "layout applied"
+	case outcome.PlacementApplied:
+		return "placement applied"
+	case outcome.WindowMapped:
+		return "window mapped"
+	case outcome.LaunchAccepted:
+		return "launch accepted"
+	default:
+		return "not started"
+	}
+}
+
+func terminalManageRestoreStatus(item terminalInventoryResult) string {
+	if item.RestoreOutcome == nil {
+		return "no record"
+	}
+	switch status := string(item.RestoreOutcome.Status); status {
+	case "pending", "completed", "failed", "interrupted", "skipped":
+		return status
+	default:
+		return "unknown"
+	}
+}
+
+func terminalManageRestoreResult(item terminalInventoryResult) string {
+	if item.RestoreOutcome == nil {
+		return "No record"
+	}
+	return terminalManageRestoreStatus(item) + " · " + terminalManageRestoreStage(item)
+}
+
+func terminalManageRestoreInfo(item terminalInventoryResult, width int) string {
+	if item.RestoreOutcome == nil {
+		return "No record"
+	}
+	reason := terminalManageRestoreReason(string(item.RestoreOutcome.Reason))
+	if item.RestoreOutcome.UpdatedAt.IsZero() {
+		return reason + " · unknown time"
+	}
+	format := "02 Jan 2006 15:04"
+	if width < 72 {
+		format = "02 Jan 15:04"
+	}
+	return reason + " · " + item.RestoreOutcome.UpdatedAt.Local().Format(format)
+}
+
+func terminalManageRestoreReason(reason string) string {
+	switch reason {
+	case "":
+		return "No reason recorded"
+	case "launch_failed":
+		return "Launch failed"
+	case "restore_requested":
+		return "Restore requested"
+	case "launch_accepted":
+		return "Launch accepted"
+	case "window_mapped":
+		return "Window mapped"
+	case "placement_applied":
+		return "Placement applied"
+	case "layout_applied":
+		return "Layout applied"
+	case "window_timeout", "mapping_timeout", "window_mapping_timeout":
+		return "Window timeout"
+	case "placement_failed":
+		return "Placement failed"
+	case "layout_failed":
+		return "Layout failed"
+	case "placement_timeout":
+		return "Placement timeout"
+	case "layout_timeout":
+		return "Layout timeout"
+	case "interrupted", "owner_interrupted":
+		return "Interrupted"
+	case "daemon_restarted":
+		return "Daemon restarted"
+	case "archived", "policy_archived":
+		return "Archived"
+	case "policy_not_desired":
+		return "Not desired open"
+	case "context_missing":
+		return "Context missing"
+	case "identity_changed":
+		return "Identity changed"
+	case "user_cancelled":
+		return "User cancelled"
+	case "awaiting_daemon":
+		return "Awaiting daemon"
+	case "ambiguous_window":
+		return "Ambiguous window"
+	case "observation_unavailable":
+		return "No observation"
+	case "history_unavailable":
+		return "No history"
+	case "restore_deferred":
+		return "Restore deferred"
+	case "already_open", "already_present":
+		return "Window already open"
+	case "agent_occupied", "occupied":
+		return "Agent already present"
+	case "completed", "restored", "restore_complete":
+		return "Restore completed"
+	default:
+		return "Unknown reason"
+	}
+}
+
+func terminalManageRestoreSource(item terminalInventoryResult) string {
+	if item.RestoreOutcome != nil {
+		switch string(item.RestoreOutcome.Source) {
+		case "automatic":
+			return "Automatic"
+		case "explicit":
+			return "Explicit"
+		}
+	}
+	return "Unknown"
+}
+
+func (model terminalManageModel) restoreSummary() string {
+	counts := make(map[string]int)
+	recorded := false
+	for _, item := range model.items {
+		counts[terminalManageRestoreStatus(item)]++
+		recorded = recorded || item.RestoreOutcome != nil
+	}
+	if !recorded {
+		return ""
+	}
+	parts := make([]string, 0, len(counts))
+	for _, status := range []string{"failed", "interrupted", "pending", "completed", "skipped", "unknown", "no record"} {
+		if count := counts[status]; count > 0 {
+			parts = append(parts, fmt.Sprintf("%d %s", count, status))
+		}
+	}
+	return "Restore history: " + strings.Join(parts, " · ")
 }
 
 func terminalManageNextLogin(item terminalInventoryResult) string {

@@ -19,6 +19,14 @@ type terminalManageOperations interface {
 	Migrate(context.Context) (string, error)
 }
 
+type terminalManageRestoreRetryOperations interface {
+	RetryRestore(context.Context, sessionstate.ContextID, string) error
+}
+
+func (operations commandTerminalManageOperations) RetryRestore(ctx context.Context, id sessionstate.ContextID, socket string) error {
+	return executeRestoreRetry(ctx, id, socket, operations.deps)
+}
+
 type terminalManageDirectoryObserver interface {
 	ObservePaneDirectory(context.Context, terminalInventoryResult) (sessionstate.HerdrDirectoryObservation, error)
 }
@@ -87,6 +95,9 @@ func (operations commandTerminalManageOperations) Load(ctx context.Context, sock
 		return terminalManageSnapshot{}, terminalManageFailure(commandFailure)
 	}
 	items := terminalInventory(inventory.Registry.Contexts, inventory.Activity)
+	if commandFailure := decorateTerminalRestoreHistory(ctx, operations.deps, items); commandFailure != nil {
+		return terminalManageSnapshot{}, terminalManageFailure(commandFailure)
+	}
 	return operations.observeWindows(ctx, socket, inventory.Registry, items), nil
 }
 

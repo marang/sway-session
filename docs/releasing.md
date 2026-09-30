@@ -4,10 +4,27 @@ This document is for maintainers. The first standalone release is v0.1.0.
 Although the repository preserves the complete source history, do not push or
 recreate sway-title-animator tags in the sway-session remote.
 
-`sway-session --version` prints the embedded build version. GoReleaser embeds
-the release version, and Arch builds embed `pkgver`. Local `make build` builds
-report `dev` unless an explicit version is supplied with `make build VERSION=...`.
-Check the packaged binary's version when inspecting release artifacts.
+`sway-session --version` and `sway-session version` print the executing build's
+product version and commit on one line. Add `--json` for the normal schema-v1
+envelope: `version` is the envelope schema, while `build.product_version`,
+`build.commit`, and `build.modified` identify the product. These commands do not
+read configuration, session state, or runtime sockets.
+
+GoReleaser embeds the release version and full commit. Arch embeds `pkgver`
+and the recipe's pinned `_commit`; the AUR workflow replaces that commit with
+the verified release tag commit before building. Local `make build` defaults to
+`dev`, records HEAD when available, and marks a dirty checkout as modified.
+Source archives can supply immutable inputs explicitly:
+
+~~~sh
+make build VERSION=1.2.3 COMMIT=<full-40-character-commit> MODIFIED=false
+~~~
+
+The shared build stamp survives stripping, `-trimpath`, and PIE. Read-only
+Doctor checks inspect the pinned daemon executable without running it. Older
+unstamped executables may have unknown metadata; byte comparison remains
+available independently of metadata. No database or broker schema changes are
+required for build identification.
 
 ## Preconditions
 

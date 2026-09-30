@@ -3,7 +3,10 @@ PREFIX ?= $(HOME)/.local
 GO_BUILD_FLAGS := -trimpath -buildvcs=false
 GO_LDFLAGS := -s -w -buildid=
 VERSION ?= dev
-GO_LDFLAGS += -X main.version=$(VERSION)
+COMMIT ?= $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
+MODIFIED ?= $(shell if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then test -z "$$(git status --porcelain --untracked-files=normal)" && echo false || echo true; else echo false; fi)
+GO_LDFLAGS += -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.modified=$(MODIFIED)
+GO_LDFLAGS += -X github.com/marang/sway-session/internal/buildmetadata.Stamp=sway-session-build-v1|$(VERSION)|$(COMMIT)|$(MODIFIED)|end-sway-session-build-v1
 GO_FILES := $(shell find cmd internal -name '*.go' -type f)
 DOC_ROOT := $(PREFIX)/share/doc/sway-session
 

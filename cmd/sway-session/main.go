@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/marang/sway-session/internal/agentreport"
+	"github.com/marang/sway-session/internal/buildmetadata"
 	"github.com/marang/sway-session/internal/diagnostic"
 	"github.com/marang/sway-session/internal/doctor"
 	"github.com/marang/sway-session/internal/herdrinit"
@@ -35,6 +36,8 @@ const (
 
 // version is set by release and package builds through -ldflags.
 var version = "dev"
+var commit = "unknown"
+var modified = "unknown"
 
 type commandSpec struct {
 	usage   string
@@ -42,6 +45,7 @@ type commandSpec struct {
 }
 
 var commandSpecs = map[string]commandSpec{
+	"version":              {usage: "version", summary: "Identify the executing build without accessing session state"},
 	"register":             {usage: "register --session <name> [options]", summary: "Register a persistent work context"},
 	"restore-report":       {usage: "restore-report [--retry <context-uuid>] [--socket <path>]", summary: "Explain recorded restore outcomes or retry one failed context"},
 	"restore":              {usage: "restore [--socket <path>] [context]", summary: "Restore active or selected contexts; --preview explains next-login policy"},
@@ -59,7 +63,7 @@ var commandSpecs = map[string]commandSpec{
 	"completion":           {usage: "completion contexts <command>", summary: "Emit read-only shell completion candidates"},
 }
 
-var commandOrder = []string{"terminal", "doctor", "register", "restore", "restore-report", "list", "archive", "activate", "purge", "app", "daemon", "broker", "request-start", "report-agent-session", "completion"}
+var commandOrder = []string{"terminal", "doctor", "register", "restore", "restore-report", "list", "archive", "activate", "purge", "app", "daemon", "broker", "request-start", "report-agent-session", "completion", "version"}
 
 type swayRequester interface {
 	RequestContext(context.Context, swayipc.MessageType, []byte) (swayipc.Message, error)
@@ -191,13 +195,6 @@ func runWith(arguments []string, stdin io.Reader, stdout io.Writer, stderr io.Wr
 }
 
 func runWithContext(ctx context.Context, arguments []string, stdin io.Reader, stdout io.Writer, stderr io.Writer, deps dependencies) int {
-	if len(arguments) == 1 && arguments[0] == "--version" {
-		if _, err := fmt.Fprintf(stdout, "sway-session %s\n", version); err != nil {
-			writeFailure(stderr, false, failure("output", "write version", err.Error()))
-			return exitOperation
-		}
-		return exitSuccess
-	}
 	arguments, structured, help, configPath, optionFailure := globalOptions(arguments)
 	if optionFailure != nil {
 		writeFailure(stderr, structured, optionFailure)
@@ -226,6 +223,9 @@ func runWithContext(ctx context.Context, arguments []string, stdin io.Reader, st
 	}
 
 	name := arguments[0]
+	if name == "--version" {
+		name = "version"
+	}
 	spec, exists := commandSpecs[name]
 	if !exists {
 		writeFailure(stderr, structured, failure("unknown_command", fmt.Sprintf("unknown command %q", name), "Run sway-session --help to see available commands."))
@@ -260,6 +260,7 @@ func runWithContext(ctx context.Context, arguments []string, stdin io.Reader, st
 
 type commandResult struct {
 	Version              int                         `json:"version"`
+	Build                *buildmetadata.Metadata     `json:"build,omitempty"`
 	Command              string                      `json:"command"`
 	Contexts             []sessionstate.Context      `json:"contexts"`
 	CompletionCandidates []completionCandidate       `json:"completion_candidates,omitempty"`
@@ -355,6 +356,15 @@ func writeResult(writer io.Writer, structured bool, result commandResult) error 
 			result.Contexts = []sessionstate.Context{}
 		}
 		return json.NewEncoder(writer).Encode(result)
+	}
+	if result.Build != nil {
+		value := result.Build
+		dirty := ""
+		if value.Modified {
+			dirty = " modified"
+		}
+		_, err := fmt.Fprintf(writer, "sway-session %s (commit %s%s)\n", value.Version, value.Commit, dirty)
+		return err
 	}
 	if result.RestoreReport != nil {
 		return writeRestoreReport(writer, *result.RestoreReport)
@@ -601,6 +611,12 @@ func executeCommand(ctx context.Context, name string, arguments []string, stdin 
 		return commandResult{}, usageFailure(name, "--config is only valid with the terminal or doctor command")
 	}
 	switch name {
+	case "version":
+		if len(arguments) != 0 {
+			return commandResult{}, usageFailure("version", "version accepts no arguments")
+		}
+		value := buildmetadata.Executing(version, commit, modified)
+		return commandResult{Command: "version", Build: &value}, nil
 	case "terminal":
 		return executeTerminal(ctx, arguments, stdin, stdout, structured, configPath, deps)
 	case "doctor":

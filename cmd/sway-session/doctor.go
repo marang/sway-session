@@ -11,6 +11,7 @@ import (
 	"unicode"
 
 	"github.com/charmbracelet/x/ansi"
+	"github.com/marang/sway-session/internal/buildmetadata"
 	"github.com/marang/sway-session/internal/doctor"
 	"golang.org/x/term"
 )
@@ -63,7 +64,8 @@ func executeDoctor(ctx context.Context, arguments []string, stdin io.Reader, std
 	if err != nil {
 		return commandResult{}, failure("doctor", "identify current executable", err.Error())
 	}
-	operations := deps.newDoctor(doctor.Options{ConfigPath: configPath, SwayConfigPath: *swayConfig, Socket: *socket, Executable: executable})
+	metadata := buildmetadata.Executing(version, commit, modified)
+	operations := deps.newDoctor(doctor.Options{CLIBuild: &metadata, ConfigPath: configPath, SwayConfigPath: *swayConfig, Socket: *socket, Executable: executable})
 	if operations == nil {
 		return commandResult{}, failure("doctor", "inspect setup", "Doctor dependency is unavailable.")
 	}
@@ -147,6 +149,13 @@ func writeDoctorResult(writer io.Writer, result commandResult) error {
 		for _, check := range result.Doctor.Checks {
 			if _, err := fmt.Fprintf(writer, "[%s] %s — %s\n", check.Status, doctorText(check.ID), doctorText(check.Detail)); err != nil {
 				return err
+			}
+			if check.ID == "daemon.binary" {
+				for _, evidence := range check.Evidence {
+					if _, err := fmt.Fprintf(writer, "  %s\n", doctorText(evidence)); err != nil {
+						return err
+					}
+				}
 			}
 			if check.Hint != "" {
 				if _, err := fmt.Fprintf(writer, "  %s\n", doctorText(check.Hint)); err != nil {

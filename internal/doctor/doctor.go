@@ -2,7 +2,11 @@
 // configuration repairs. Inspection never creates runtime or session state.
 package doctor
 
-import "context"
+import (
+	"context"
+
+	"github.com/marang/sway-session/internal/buildmetadata"
+)
 
 type Status string
 
@@ -43,6 +47,9 @@ type Options struct {
 	SwayConfigPath string
 	Socket         string
 	Executable     string
+	// CLIBuild identifies the executing CLI, including its legacy linker overrides.
+	// It is independent of Executable, which selects the binary comparison path.
+	CLIBuild *buildmetadata.Metadata
 }
 
 type Service struct {

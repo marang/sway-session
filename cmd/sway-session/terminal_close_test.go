@@ -209,9 +209,19 @@ func TestObservedTerminalCloseArchivesEveryCandidateBeyondOneBatch(t *testing.T)
 		runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "close", Container: leaf}, now)
 	}
 	flushAt := now.Add(terminalCloseGrace)
-	for pass := 0; pass < 16 && len(runtime.pendingTerminalClose) != 0; pass++ {
+	// Writes have a real elapsed-time budget. Race instrumentation can exhaust
+	// it before a full batch commits, so a fixed number of synthetic timer
+	// ticks is not a completion guarantee. Check bounded passes and eventual
+	// durable completion independently.
+	deadline := time.Now().Add(30 * time.Second)
+	for len(runtime.pendingTerminalClose) != 0 && time.Now().Before(deadline) {
+		before := len(runtime.pendingTerminalClose)
 		if err := runtime.Flush(flushAt); err != nil {
 			t.Fatal(err)
+		}
+		processed := before - len(runtime.pendingTerminalClose)
+		if processed < 0 || processed > maxTerminalCloseBatch {
+			t.Fatalf("close pass processed %d candidates, batch limit is %d", processed, maxTerminalCloseBatch)
 		}
 		flushAt = runtime.terminalCloseDeadline
 		if flushAt.IsZero() && len(runtime.pendingTerminalClose) != 0 {

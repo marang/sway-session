@@ -72,62 +72,80 @@ type sessionRuntimeOptions struct {
 }
 
 type sessionRuntime struct {
-	ctx                        context.Context
-	client                     swayRequester
-	root                       string
-	persisted                  sessionstate.LayoutSnapshot
-	desired                    sessionstate.LayoutSnapshot
-	debouncer                  *sessionstate.SnapshotDebouncer
-	registry                   sessionstate.Registry
-	registryRevision           int64
-	registryCacheKnown         bool
-	registryPresent            bool
-	restoreProgress            *sessionstate.RestoreProgress
-	restoreCleanup             sessionstate.RestoreCleanup
-	restoreCleanupPending      bool
-	restoreRecoveryPending     bool
-	restoreEligible            map[sessionstate.ContextID]struct{}
-	startupApplications        map[sessionstate.ContextID]startupApplication
-	restoreExcluded            map[string]struct{}
-	restoreSkipped             map[string]struct{}
-	restoreFailures            map[string]error
-	lateRestorePending         bool
-	originalFocusID            int64
-	originalFocusSet           bool
-	originalFocusDone          bool
-	startupComplete            bool
-	startupDeadline            time.Time
-	observeDeadline            time.Time
-	shutdown                   bool
-	applications               *sessionstate.ApplicationRestoreCoordinator
-	applicationLauncher        applicationContextLauncher
-	applicationCursor          sessionstate.ContextID
-	applicationPlacementCursor *sessionstate.PlacementAction
-	placementCursor            *sessionstate.PlacementAction
-	expectedMoves              map[int64][]uint64
-	expectedFocus              []restoreFocusExpectation
-	pendingMappingFocus        map[int64]restoreMappingFocus
-	mappingCandidates          map[int64]restoreMappingCandidate
-	restoreCancelled           bool
-	nextMoveSequence           uint64
-	eventStreamReady           bool
-	eventStreamEpoch           uint64
-	eventStreamState           eventStreamGuard
-	terminalCloseGuard         TerminalCloseGuard
-	indicatorCatalog           func() (sessionstate.DesktopCatalog, error)
-	indicatorOperations        func() ([]sessionstate.ApplicationOperation, error)
-	indicatorCursor            *sessionstate.ApplicationIndicatorAction
-	pendingTerminalFocus       map[sessionstate.ContextID]time.Time
-	terminalFocusDeadline      time.Time
-	terminalFocusRetry         time.Duration
-	terminalFocusReported      time.Time
-	observedTerminals          map[int64]terminalCloseObservation
-	pendingTerminalClose       map[int64]terminalCloseCandidate
-	terminalCloseDeadline      time.Time
-	terminalCloseRetry         time.Duration
-	terminalCloseRetryDeadline time.Time
-	terminalCloseBatchCursor   int64
-	terminalCloseContinuation  time.Time
+	ctx                          context.Context
+	client                       swayRequester
+	root                         string
+	persisted                    sessionstate.LayoutSnapshot
+	desired                      sessionstate.LayoutSnapshot
+	debouncer                    *sessionstate.SnapshotDebouncer
+	registry                     sessionstate.Registry
+	registryRevision             int64
+	registryCacheKnown           bool
+	registryPresent              bool
+	restoreRunID                 string
+	restoreReportSeeded          bool
+	restoreReportCursor          string
+	restoreReportObserved        []sessionstate.RestoreOutcome
+	restoreReportEffects         []restoreReportEffect
+	restoreReportErr             error
+	restoreReportInPass          bool
+	restoreReportBudget          time.Duration
+	restoreReportRearmed         map[sessionstate.ContextID]string
+	restoreReportSeedStarted     time.Time
+	restoreReportSeedContexts    []sessionstate.Context
+	restoreReportSeedSnapshot    sessionstate.LayoutSnapshot
+	restoreReportSeedCursor      int
+	restoreReportSeedRecords     []sessionstate.RestoreOutcome
+	restoreReportSeedIndex       map[sessionstate.ContextID]int
+	restoreReportUnseededEffects map[sessionstate.ContextID][]restoreReportEffect
+	restoreReportLaunchRearmed   map[sessionstate.ContextID]string
+	rejectedApplicationStarts    map[sessionstate.ContextID]rejectedApplicationStart
+	restoreProgress              *sessionstate.RestoreProgress
+	restoreCleanup               sessionstate.RestoreCleanup
+	restoreCleanupPending        bool
+	restoreRecoveryPending       bool
+	restoreEligible              map[sessionstate.ContextID]struct{}
+	startupApplications          map[sessionstate.ContextID]startupApplication
+	restoreExcluded              map[string]struct{}
+	restoreSkipped               map[string]struct{}
+	restoreFailures              map[string]error
+	lateRestorePending           bool
+	originalFocusID              int64
+	originalFocusSet             bool
+	originalFocusDone            bool
+	startupComplete              bool
+	startupDeadline              time.Time
+	observeDeadline              time.Time
+	shutdown                     bool
+	applications                 *sessionstate.ApplicationRestoreCoordinator
+	applicationLauncher          applicationContextLauncher
+	applicationCursor            sessionstate.ContextID
+	applicationPlacementCursor   *sessionstate.PlacementAction
+	placementCursor              *sessionstate.PlacementAction
+	expectedMoves                map[int64][]uint64
+	expectedFocus                []restoreFocusExpectation
+	pendingMappingFocus          map[int64]restoreMappingFocus
+	mappingCandidates            map[int64]restoreMappingCandidate
+	restoreCancelled             bool
+	nextMoveSequence             uint64
+	eventStreamReady             bool
+	eventStreamEpoch             uint64
+	eventStreamState             eventStreamGuard
+	terminalCloseGuard           TerminalCloseGuard
+	indicatorCatalog             func() (sessionstate.DesktopCatalog, error)
+	indicatorOperations          func() ([]sessionstate.ApplicationOperation, error)
+	indicatorCursor              *sessionstate.ApplicationIndicatorAction
+	pendingTerminalFocus         map[sessionstate.ContextID]time.Time
+	terminalFocusDeadline        time.Time
+	terminalFocusRetry           time.Duration
+	terminalFocusReported        time.Time
+	observedTerminals            map[int64]terminalCloseObservation
+	pendingTerminalClose         map[int64]terminalCloseCandidate
+	terminalCloseDeadline        time.Time
+	terminalCloseRetry           time.Duration
+	terminalCloseRetryDeadline   time.Time
+	terminalCloseBatchCursor     int64
+	terminalCloseContinuation    time.Time
 }
 
 func (runtime *sessionRuntime) context() context.Context {
@@ -146,6 +164,7 @@ func newSessionRuntime(client swayRequester) (*sessionRuntime, error) {
 }
 
 func newSessionRuntimeWithOptions(client swayRequester, options sessionRuntimeOptions) (*sessionRuntime, error) {
+	runtimeStartedAt := time.Now().UTC()
 	ctx := options.Context
 	if ctx == nil {
 		ctx = context.Background()
@@ -178,11 +197,23 @@ func newSessionRuntimeWithOptions(client swayRequester, options sessionRuntimeOp
 	if registryErr != nil {
 		return nil, fmt.Errorf("load persistent context registry: %w", registryErr)
 	}
+	runID, err := sessionstate.NewContextID()
+	if err != nil {
+		return nil, fmt.Errorf("create restore run ID: %w", err)
+	}
+	// Recover using the process-start cutoff; concurrent CLI requests may
+	// already exist. Storage preserves current/ownerless explicit requests.
+	// Report failures remain diagnostics.
+	reportCtx, reportCancel := context.WithTimeout(ctx, restoreReportWriteTimeout)
+	reportErr := sessionstate.RestoreReportStoreFor(root).RecoverPendingContext(reportCtx, runtimeStartedAt)
+	reportCancel()
 	debouncer, err := sessionstate.NewSnapshotDebouncer(previous, sessionSnapshotDebounce)
 	if err != nil {
 		return nil, fmt.Errorf("initialize Sway layout debounce: %w", err)
 	}
 	runtime := &sessionRuntime{
+		restoreRunID:           string(runID),
+		restoreReportErr:       reportErr,
 		ctx:                    ctx,
 		client:                 client,
 		root:                   root,
@@ -498,6 +529,7 @@ func (runtime *sessionRuntime) requireCurrentEventStream() error {
 }
 
 func (runtime *sessionRuntime) cancelConflictingRestore() {
+	runtime.restoreReportErr = errors.Join(runtime.restoreReportErr, runtime.interruptRestoreReport("user_cancelled"))
 	runtime.expectedFocus = nil
 	clear(runtime.pendingMappingFocus)
 	clear(runtime.mappingCandidates)
@@ -635,6 +667,11 @@ func (runtime *sessionRuntime) sendMoveBarrier(sequence uint64) error {
 func (runtime *sessionRuntime) Reconcile(root *Node, now time.Time) (needsRefresh bool, resultErr error) {
 	var degraded []error
 	defer func() {
+		if runtime != nil && !runtime.shutdown {
+			degraded = append(degraded, runtime.flushRestoreReportEffects(now), runtime.restoreReportErr)
+			runtime.restoreReportErr = nil
+			runtime.restoreReportInPass = false
+		}
 		if len(degraded) != 0 {
 			degraded = append(degraded, resultErr)
 			resultErr = errors.Join(degraded...)
@@ -662,6 +699,19 @@ func (runtime *sessionRuntime) Reconcile(root *Node, now time.Time) (needsRefres
 		return false, err
 	}
 	runtime.registryPresent = true
+	runtime.restoreReportInPass = true
+	runtime.restoreReportBudget = restoreReportWriteTimeout
+	// Drain older token-bound effects first so observation writes cannot starve
+	// failure evidence from a previous pass. Remaining work keeps its cursor.
+	if reportErr := runtime.flushRestoreReportEffects(now); reportErr != nil {
+		degraded = append(degraded, reportErr)
+	}
+	if reportErr := runtime.seedRestoreReport(registry, now); reportErr != nil {
+		degraded = append(degraded, reportErr)
+	}
+	if reportErr := runtime.observeRestoreReport(root, registry, now); reportErr != nil {
+		degraded = append(degraded, reportErr)
+	}
 	runtime.observeDeadline = now.Add(sessionObservationDelay)
 	if runtime.restoreRecoveryPending {
 		if err := runtime.restoreCleanup.Recover(root, registry, runtime.persisted); err != nil {
@@ -971,11 +1021,13 @@ func (runtime *sessionRuntime) reconcileApplications(root *Node, registry sessio
 			preflights++
 			runtime.applicationCursor = context.ID
 			if runtime.applicationLauncher == nil {
+				runtime.recordRestoreReportEffect(restoreReportEffect{id: context.ID, identityDigest: sessionstate.RestoreContextDigest(context), reason: "launch_failed"})
 				launchErrors = append(launchErrors, fmt.Errorf("launch desktop application %q: launcher is unavailable", context.ID))
 				continue
 			}
 			prepared, err := runtime.applicationLauncher.Prepare(runtime.context(), context)
 			if err != nil {
+				runtime.recordRestoreReportEffect(restoreReportEffect{id: context.ID, identityDigest: sessionstate.RestoreContextDigest(context), reason: "launch_failed"})
 				launchErrors = append(launchErrors, fmt.Errorf("prepare desktop application launch %q: %w", context.ID, err))
 				continue
 			}
@@ -1000,7 +1052,21 @@ func (runtime *sessionRuntime) reconcileApplications(root *Node, registry sessio
 			}
 			launchSlots--
 			if err := prepared.Start(); err != nil {
+				var unknown *sessionstate.ProcessLaunchOutcomeUnknownError
+				if errors.As(err, &unknown) {
+					delete(runtime.rejectedApplicationStarts, context.ID)
+					runtime.recordRestoreReportEffect(restoreReportEffect{id: context.ID, identityDigest: sessionstate.RestoreContextDigest(context), reason: "launch_failed", accepted: true, uncertain: true})
+				} else {
+					if runtime.rejectedApplicationStarts == nil {
+						runtime.rejectedApplicationStarts = make(map[sessionstate.ContextID]rejectedApplicationStart)
+					}
+					runtime.rejectedApplicationStarts[context.ID] = rejectedApplicationStart{startedAt: now.UTC(), identityDigest: sessionstate.RestoreContextDigest(context)}
+					runtime.recordRestoreReportEffect(restoreReportEffect{id: context.ID, identityDigest: sessionstate.RestoreContextDigest(context), reason: "launch_failed"})
+				}
 				launchErrors = append(launchErrors, fmt.Errorf("launch desktop application %q: %w", context.ID, err))
+			} else {
+				delete(runtime.rejectedApplicationStarts, context.ID)
+				runtime.recordRestoreReportEffect(restoreReportEffect{id: context.ID, identityDigest: sessionstate.RestoreContextDigest(context), accepted: true})
 			}
 		}
 		degradedErrors = append(degradedErrors, launchErrors...)
@@ -1045,6 +1111,7 @@ func (runtime *sessionRuntime) restoreStartupLayout(root *Node) (bool, bool, err
 			}
 			var degradationErrors []error
 			for _, degradation := range selection.Degradations {
+				runtime.recordRestoreReportEffect(restoreReportEffect{workspace: degradation.Workspace, reason: "layout_failed"})
 				runtime.restoreExcluded[degradation.Workspace] = struct{}{}
 				degradationErr := restoreDegradationError{degradation: degradation}
 				// An excluded workspace reflects a deliberate safety decision based
@@ -1165,6 +1232,7 @@ func (runtime *sessionRuntime) beginRestoreRollback(cause error) (bool, bool, er
 		return false, false, cause
 	}
 	workspace := runtime.restoreProgress.Workspace
+	runtime.recordRestoreReportEffect(restoreReportEffect{workspace: workspace, reason: "layout_failed"})
 	runtime.restoreFailures[workspace] = cause
 	runtime.restoreProgress.Phase = sessionstate.RestoreRollbackOut
 	// Rollback starts its own no-progress detection. Reusing the last failed
@@ -1258,7 +1326,12 @@ func (runtime *sessionRuntime) loadRegistry() (sessionstate.Registry, bool, erro
 	return runtime.registry, true, nil
 }
 
-func (runtime *sessionRuntime) applyPlacementAction(root *Node, action sessionstate.PlacementAction) error {
+func (runtime *sessionRuntime) applyPlacementAction(root *Node, action sessionstate.PlacementAction) (resultErr error) {
+	defer func() {
+		if resultErr != nil {
+			runtime.recordRestoreReportEffect(restoreReportEffect{id: action.ContextID, reason: "placement_failed", uncertain: restoreReportCommandUncertain(resultErr)})
+		}
+	}()
 	var command string
 	move := false
 	switch action.Kind {
@@ -1291,7 +1364,12 @@ func (runtime *sessionRuntime) applyPlacementAction(root *Node, action sessionst
 	return nil
 }
 
-func (runtime *sessionRuntime) applyRestoreAction(root *Node, action sessionstate.RestoreAction) error {
+func (runtime *sessionRuntime) applyRestoreAction(root *Node, action sessionstate.RestoreAction) (resultErr error) {
+	defer func() {
+		if resultErr != nil {
+			runtime.recordRestoreReportEffect(restoreReportEffect{workspace: action.Workspace, reason: "layout_failed", uncertain: restoreReportCommandUncertain(resultErr)})
+		}
+	}()
 	var command string
 	move := false
 	switch action.Kind {
@@ -1583,10 +1661,11 @@ func (runtime *sessionRuntime) scheduleTerminalFocusRetry(now time.Time) {
 	runtime.terminalFocusDeadline = now.Add(delay)
 }
 
-func (runtime *sessionRuntime) Shutdown() {
+func (runtime *sessionRuntime) Shutdown() error {
 	if runtime == nil {
-		return
+		return nil
 	}
+	reportErr := runtime.interruptRestoreReport("interrupted")
 	runtime.shutdown = true
 	runtime.startupDeadline = time.Time{}
 	runtime.observeDeadline = time.Time{}
@@ -1603,6 +1682,7 @@ func (runtime *sessionRuntime) Shutdown() {
 	runtime.terminalCloseContinuation = time.Time{}
 	runtime.restoreProgress = nil
 	runtime.debouncer.Cancel()
+	return reportErr
 }
 
 func reconcilePersistentSession(client swayRequester, runtime *sessionRuntime, report func(error)) {

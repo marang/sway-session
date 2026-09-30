@@ -118,7 +118,11 @@ func runSessionDaemon(ctx context.Context, swaySocket string, reportError func(e
 	if err != nil {
 		return err
 	}
-	defer runtime.Shutdown()
+	defer func() {
+		if err := runtime.Shutdown(); err != nil && reportError != nil {
+			reportError(fmt.Errorf("stop restore reporting: %w", err))
+		}
+	}()
 
 	sessionBroker, err := startSessionRequestBroker(swaySocket, reportError)
 	if err != nil && reportError != nil {

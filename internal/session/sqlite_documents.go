@@ -144,7 +144,7 @@ func loadRegistrySnapshotDatabase(ctx context.Context, database *stateDatabase) 
 	if loadErr != nil {
 		return registry, revision, loadErr
 	}
-	if err := tx.Commit(); err != nil {
+	if err := commitStateRead(ctx, tx); err != nil {
 		return emptyRegistry(), 0, fmt.Errorf("finish registry snapshot: %w", err)
 	}
 	return registry, revision, nil

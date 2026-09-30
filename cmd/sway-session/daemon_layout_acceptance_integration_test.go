@@ -163,6 +163,18 @@ func TestSessionRuntimeLayoutShapesHeadless(t *testing.T) {
 					t.Fatalf("lost a managed window %d", id)
 				}
 			}
+			report, err := sessionstate.RestoreReportStoreFor(h.state).LoadContext(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(report.Outcomes) != len(ids) {
+				t.Fatalf("restore outcomes missing: %+v", report)
+			}
+			for _, outcome := range report.Outcomes {
+				if outcome.Status != "completed" || !outcome.WindowMapped || !outcome.PlacementApplied || !outcome.LayoutApplied {
+					t.Fatalf("fresh compositor convergence was not recorded: %+v", outcome)
+				}
+			}
 		})
 	}
 }

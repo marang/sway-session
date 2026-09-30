@@ -172,6 +172,24 @@ the read-only `restore --preview` interface. Runtime observation uncertainty is
 reported separately; the preview never runs the stateful application planner
 or triggers lifecycle effects.
 
+Optional restore-report tables retain structured diagnostic evidence: the
+latest automatic run and the latest explicit attempt for each context, plus a
+single run ID/timestamp for the most recent automatic interruption. Attempt
+tokens prevent late updates from overwriting a newer request; window,
+placement, and layout proofs are independent of launch acceptance. Reports are
+never read as lifecycle authority or desired layout. A fresh explicit attempt
+may rearm the existing daemon layout algorithm only after current policy and
+identity checks and an exact match with the currently saved layout; a historical
+record cannot supply a layout to replay. Application launch retries clear a
+coordinator guard only after a newer explicit request, fresh policy/identity
+and absence checks, and this daemon's definitive rejection of the matching
+launch attempt. Accepted or ambiguous launches retain their guards across
+restart. A candidate guard removal is persisted before coordinator adoption.
+History writes are short
+transactions around observations and effects, not transactions containing those
+effects. Missing optional tables mean no history, and read-only access does not
+create them. Existing database and context schema versions remain unchanged.
+
 The database uses WAL and full synchronous commits. Database and sidecar files
 must be regular, single-link, current-owner files with mode 0600.
 

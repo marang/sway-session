@@ -334,7 +334,7 @@ func (runtime *sessionRuntime) flushTerminalClose(now time.Time) error {
 					return errTerminalCloseDiscarded
 				}
 			}
-			changed := false
+			archiveIDs := make([]sessionstate.ContextID, 0, len(batch))
 			for _, containerID := range batch {
 				candidate, exists := runtime.pendingTerminalClose[containerID]
 				if !exists {
@@ -345,16 +345,13 @@ func (runtime *sessionRuntime) flushTerminalClose(now time.Time) error {
 					discarded[containerID] = struct{}{}
 					continue
 				}
-				if _, archiveErr := sessionstate.SetContextStateWithReasonAt(registry, string(candidate.contextID), sessionstate.ContextArchived, sessionstate.LifecycleReasonObservedTerminalClose, now); archiveErr != nil {
-					return fmt.Errorf("archive closed terminal %s: %w", candidate.contextID, archiveErr)
-				}
+				archiveIDs = append(archiveIDs, candidate.contextID)
 				archived[containerID] = struct{}{}
-				changed = true
 			}
-			if !changed {
+			if len(archiveIDs) == 0 {
 				return errTerminalCloseDiscarded
 			}
-			return nil
+			return sessionstate.ArchiveObservedTerminalContextsAt(registry, archiveIDs, now)
 		})
 		if updateErr != nil {
 			return updateErr

@@ -214,13 +214,18 @@ func (manager HerdrManager) observeLiveSession(ctx context.Context, name, home s
 		} else if state == "unknown" && observation.AgentState != "detected" {
 			observation.AgentState = "unknown"
 		}
+		if state == "unknown" {
+			observation.Reason = "agent_activity_unavailable"
+		}
 		if err != nil {
 			observation.Reason = "process_info_failed"
 			var timeout net.Error
 			if rpcCtx.Err() != nil || errors.As(err, &timeout) && timeout.Timeout() {
 				observation.Reason = "snapshot_timeout"
 			}
-			break
+			if herdrObservationCanceled(rpcCtx) {
+				break
+			}
 		}
 	}
 	observation.Directory, err = parseHerdrPaneDirectory(data, home)

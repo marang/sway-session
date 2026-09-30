@@ -122,6 +122,10 @@ func TestObserveHerdrSessionsRejectsIncompleteListAndRedactsFailures(t *testing.
 }
 
 func serveObservation(t *testing.T, root, name, result string, delay time.Duration, requests *atomic.Int32, concurrency ...*atomic.Int32) {
+	serveObservationWithProcessInfo(t, root, name, result, `{"type":"pane_process_info","process_info":{"pane_id":"p1","shell_pid":100,"foreground_process_group_id":200,"foreground_processes":[{"pid":200,"name":"codex","argv":["/usr/bin/codex"]}]}}`, delay, requests, concurrency...)
+}
+
+func serveObservationWithProcessInfo(t *testing.T, root, name, result, processInfo string, delay time.Duration, requests *atomic.Int32, concurrency ...*atomic.Int32) {
 	t.Helper()
 	dir := filepath.Join(root, "sessions", name)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -190,9 +194,27 @@ func serveObservation(t *testing.T, root, name, result string, delay time.Durati
 			t.Error("expected process query")
 			return
 		}
-		_, _ = fmt.Fprintf(processConn, "{\"id\":%q,\"result\":{\"type\":\"pane_process_info\",\"process_info\":{\"pane_id\":\"p1\",\"shell_pid\":100,\"foreground_process_group_id\":200,\"foreground_processes\":[{\"pid\":200,\"name\":\"codex\",\"argv\":[\"/usr/bin/codex\"]}]}}}\n", request.ID)
+		_, _ = fmt.Fprintf(processConn, "{\"id\":%q,\"result\":%s}\n", request.ID, processInfo)
 
 	}()
+}
+
+func TestObserveHerdrSessionsStaleAssociationAndUnsupportedProcessEvidence(t *testing.T) {
+	for _, test := range []struct{ name, process, agent, reason string }{
+		{"stale association with idle shell", `{"type":"pane_process_info","process_info":{"pane_id":"p1","shell_pid":100,"foreground_process_group_id":100,"foreground_processes":[{"pid":100,"name":"sh"}]}}`, "none", ""},
+		{"unsupported process API", `{"type":"unsupported"}`, "unknown", "agent_activity_unavailable"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := observationTestRoot(t)
+			var requests atomic.Int32
+			serveObservationWithProcessInfo(t, root, "live", `{"type":"session_snapshot","snapshot":{"panes":[{"pane_id":"p1","agent":"codex","agent_status":"working","cwd":"/work/project","agent_session":{"agent":"codex","value":"old-session"}}]}}`, test.process, 0, &requests)
+			runner := &observationRunner{output: observationList(t, root, true, "live")}
+			got := (HerdrManager{Root: root, Executable: "/fake/herdr", Runner: runner}).ObserveSessions(t.Context(), []string{"live"}, "/home/example")["live"]
+			if got.SessionState != "running" || got.AgentState != test.agent || got.Reason != test.reason {
+				t.Fatalf("stale metadata overrode live evidence: %+v", got)
+			}
+		})
+	}
 }
 
 func TestObserveHerdrSessionsLiveSnapshotAlsoSuppliesDirectory(t *testing.T) {
@@ -206,6 +228,75 @@ func TestObserveHerdrSessionsLiveSnapshotAlsoSuppliesDirectory(t *testing.T) {
 	}
 	if requests.Load() != 1 || runner.calls.Load() != 1 {
 		t.Fatal("duplicated snapshot or discovery")
+	}
+}
+
+func TestObserveHerdrSessionsContinuesAfterPaneDisappears(t *testing.T) {
+	root := observationTestRoot(t)
+	directory := filepath.Join(root, "sessions", "live")
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(directory, "herdr.sock")
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	finished := make(chan struct{})
+	t.Cleanup(func() { _ = listener.Close(); <-finished })
+	var queries atomic.Int32
+	go func() {
+		defer close(finished)
+		for index := range 3 {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			_ = conn.SetDeadline(time.Now().Add(time.Second))
+			line, err := bufio.NewReader(conn).ReadBytes('\n')
+			if err != nil {
+				_ = conn.Close()
+				return
+			}
+			var request struct {
+				ID     string `json:"id"`
+				Method string `json:"method"`
+				Params struct {
+					PaneID string `json:"pane_id"`
+				} `json:"params"`
+			}
+			if json.Unmarshal(line, &request) != nil {
+				_ = conn.Close()
+				return
+			}
+			if index == 0 {
+				if request.Method != "session.snapshot" {
+					t.Error("expected snapshot")
+				}
+				_, _ = fmt.Fprintf(conn, "{\"id\":%q,\"result\":{\"type\":\"session_snapshot\",\"snapshot\":{\"panes\":[{\"pane_id\":\"p1\",\"agent_status\":\"unknown\"},{\"pane_id\":\"p2\",\"agent_status\":\"working\",\"agent\":\"codex\"}]}}}\n", request.ID)
+			} else {
+				queries.Add(1)
+				if request.Method != "pane.process_info" {
+					t.Error("expected process evidence")
+				}
+				if index == 2 {
+					if request.Params.PaneID != "p2" {
+						t.Error("healthy pane not queried")
+					}
+					_, _ = fmt.Fprintf(conn, "{\"id\":%q,\"result\":{\"type\":\"pane_process_info\",\"process_info\":{\"pane_id\":\"p2\",\"shell_pid\":100,\"foreground_process_group_id\":200,\"foreground_processes\":[{\"pid\":200,\"name\":\"codex\",\"argv\":[\"/usr/bin/codex\"]}]}}}\n", request.ID)
+				}
+				// The first pane disappears between snapshot and process lookup.
+			}
+			_ = conn.Close()
+		}
+	}()
+	runner := &observationRunner{output: observationList(t, root, true, "live")}
+	got := (HerdrManager{Root: root, Executable: "/fake/herdr", Runner: runner}).ObserveSessions(t.Context(), []string{"live"}, "/home/example")["live"]
+	if got.AgentState != "detected" || got.Reason != "process_info_failed" || queries.Load() != 2 {
+		t.Fatalf("healthy pane lost after local failure: %+v queries=%d", got, queries.Load())
 	}
 }
 

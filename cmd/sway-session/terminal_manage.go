@@ -126,6 +126,8 @@ type terminalManageModel struct {
 	activityPending bool
 	activityID      uint64
 	actionErr       error
+	purgeItem       *terminalInventoryResult
+	renameID        sessionstate.ContextID
 }
 
 func newTerminalManageModel(operations terminalManageOperations) terminalManageModel {
@@ -176,6 +178,12 @@ func (model terminalManageModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			model.windows = terminalManageUnknownWindows(model.items)
 			model.windowErr = message.err
+			now := time.Now().UTC()
+			for index := range model.items {
+				observation := sessionstate.UnknownTerminalSessionObservation("inventory_refresh_failed")
+				observation.ObservedAt = &now
+				model.items[index].Activity = observation
+			}
 			model.selection = terminalManageSelectIdentity
 		}
 		return model, nil
@@ -321,14 +329,15 @@ func (model terminalManageModel) handleKey(message tea.KeyPressMsg) (tea.Model, 
 		switch key {
 		case "esc":
 			model.mode = terminalManageListMode
+			model.renameID = ""
 			model.input.Blur()
 			return model, nil
 		case "ctrl+a":
 			model.input.Reset()
 			return model, nil
 		case "enter":
-			item, ok := model.selected()
-			if !ok {
+			id := model.renameID
+			if id == "" {
 				return model, nil
 			}
 			label := strings.TrimSpace(model.input.Value())
@@ -340,11 +349,12 @@ func (model terminalManageModel) handleKey(message tea.KeyPressMsg) (tea.Model, 
 				return model, nil
 			}
 			model.mode = terminalManageListMode
+			model.renameID = ""
 			model.input.Blur()
 			model.stopProbes()
 			model.pending = true
 			model.err = nil
-			return model, model.renameCommand(item.ContextID, label)
+			return model, model.renameCommand(id, label)
 		}
 		var command tea.Cmd
 		model.input, command = model.input.Update(message)
@@ -353,14 +363,16 @@ func (model terminalManageModel) handleKey(message tea.KeyPressMsg) (tea.Model, 
 		switch key {
 		case "esc", "n":
 			model.mode = terminalManageListMode
+			model.purgeItem = nil
 			return model, nil
 		case "y":
-			item, ok := model.selected()
+			item, ok := model.purgeTarget()
 			if !ok {
 				model.mode = terminalManageListMode
 				return model, nil
 			}
 			model.mode = terminalManageListMode
+			model.purgeItem = nil
 			model.stopProbes()
 			model.pending = true
 			model.err = nil
@@ -410,6 +422,7 @@ func (model terminalManageModel) handleKey(message tea.KeyPressMsg) (tea.Model, 
 			return model, nil
 		}
 		model.mode = terminalManageRenameMode
+		model.renameID = item.ContextID
 		model.input.Placeholder = "human-readable title"
 		model.input.SetValue(item.Label)
 		model.input.CursorEnd()
@@ -452,7 +465,8 @@ func (model terminalManageModel) handleKey(message tea.KeyPressMsg) (tea.Model, 
 		model.err = nil
 		return model, model.stateCommand(item.ContextID, state, action)
 	case "d":
-		if _, ok := model.selected(); ok {
+		if item, ok := model.selected(); ok {
+			model.purgeItem = &item
 			model.mode = terminalManagePurgeMode
 			model.err = nil
 		}
@@ -545,7 +559,7 @@ func (model terminalManageModel) render() string {
 		output.WriteString("\nRename  " + model.inputView())
 		output.WriteString("\n[Enter] Save title   [Esc] Cancel   [Ctrl+A] Clear")
 	case terminalManagePurgeMode:
-		if item, ok := model.selected(); ok {
+		if item, ok := model.purgeTarget(); ok {
 			output.WriteString("\n" + styles.danger.Render("Delete "+terminalManageName(item)+" permanently?"))
 			output.WriteString("\nThis removes the sway-session entry and its Herdr state.")
 			output.WriteString("\n" + ansi.Truncate(item.Cwd, width, "…"))
@@ -1007,6 +1021,21 @@ func (model terminalManageModel) selected() (terminalInventoryResult, bool) {
 		return terminalInventoryResult{}, false
 	}
 	return model.items[index], true
+}
+
+// A changing display name/filter must never replace the confirmed identity.
+func (model terminalManageModel) purgeTarget() (terminalInventoryResult, bool) {
+	if model.purgeItem == nil {
+		return terminalInventoryResult{}, false
+	}
+	item := *model.purgeItem
+	for _, current := range model.items {
+		if current.ContextID == item.ContextID {
+			item.Activity = current.Activity
+			break
+		}
+	}
+	return item, true
 }
 
 func (model *terminalManageModel) beginLoad() tea.Cmd {

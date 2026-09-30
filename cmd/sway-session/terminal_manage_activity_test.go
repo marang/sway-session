@@ -101,6 +101,26 @@ func TestTerminalManageActivityRefreshCancelsAndDiscardsGeneration(t *testing.T)
 	}
 }
 
+func TestTerminalManageActivityFailedReloadEndsPendingEvidence(t *testing.T) {
+	model, _, _ := terminalManageActivityFixture(t)
+	model, old := terminalManageUpdateWithCommand(t, model, model.Init()())
+	oldContext := model.probeCtx
+	model, _ = terminalManageUpdateWithCommand(t, model, terminalManageKey("r"))
+	model, probe := terminalManageUpdateWithCommand(t, model, terminalManageLoadedMsg{generation: model.loadID, err: errors.New("inventory unavailable")})
+	if probe != nil || model.activityPending || oldContext.Err() == nil {
+		t.Fatal("failed reload left a probe active")
+	}
+	model = terminalManageRunCommand(t, model, old)
+	observation := model.items[0].Activity
+	if observation.SessionState != "unknown" || observation.AgentState != "unknown" || observation.ObservedAt == nil || observation.Reason != "inventory_refresh_failed" {
+		t.Fatalf("failed refresh retained pending or stale evidence: %+v", observation)
+	}
+	model = terminalManageUpdate(t, model, terminalManageKey("d"))
+	if view := model.render(); strings.Contains(view, "pending") || !strings.Contains(view, "inventory_refresh_failed") {
+		t.Fatalf("preview concealed failed observation:\n%s", view)
+	}
+}
+
 func TestTerminalManageActivityCancellationOnActionsAndQuit(t *testing.T) {
 	for _, key := range []string{"q", "ctrl+c", "o", "a", "m"} {
 		t.Run(key, func(t *testing.T) {
@@ -195,6 +215,10 @@ func TestTerminalManageActivityNarrowLayoutKeepsKeyboardFooter(t *testing.T) {
 		model = terminalManageUpdate(t, model, size)
 		for _, mode := range []terminalManageMode{terminalManageListMode, terminalManagePurgeMode} {
 			model.mode = mode
+			if mode == terminalManagePurgeMode {
+				item, _ := model.selected()
+				model.purgeItem = &item
+			}
 			view := model.render()
 			want := "[q] Quit"
 			if mode == terminalManagePurgeMode {
@@ -212,6 +236,70 @@ func TestTerminalManageActivityNarrowLayoutKeepsKeyboardFooter(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+func TestTerminalManageActivityCannotChangeConfirmedPurgeTarget(t *testing.T) {
+	model, ops, first := terminalManageActivityFixture(t)
+	first.Label, first.Identity.Project, first.Cwd = "", "", "/work/base"
+	first.AutoName, first.PaneDirectory = "Terminal · matching", "/work/matching"
+	first.State = sessionstate.ContextArchived
+	second := terminalManageTestItem("22222222-2222-4222-8222-222222222222", "matching second", sessionstate.ContextArchived)
+	ops.snapshots = [][]terminalInventoryResult{{first, second}}
+	ops.observe = func(context.Context, []terminalInventoryResult) map[sessionstate.ContextID]sessionstate.TerminalSessionObservation {
+		return map[sessionstate.ContextID]sessionstate.TerminalSessionObservation{
+			first.ContextID:  {SessionState: "running", AgentState: "detected", Directory: sessionstate.HerdrDirectoryObservation{Directory: "/work/renamed"}},
+			second.ContextID: {SessionState: "stopped", AgentState: "none"},
+		}
+	}
+	model, probe := terminalManageUpdateWithCommand(t, model, model.Init()())
+	model.filter = "matching"
+	model.rebuildVisible()
+	model.selectedID = first.ContextID
+	model.restoreSelection()
+	model = terminalManageUpdate(t, model, terminalManageKey("d"))
+	model = terminalManageRunCommand(t, model, probe)
+	selected, _ := model.selected()
+	if selected.ContextID != second.ContextID {
+		t.Fatal("fixture did not move visible selection")
+	}
+	target, ok := model.purgeTarget()
+	if !ok || target.ContextID != first.ContextID || target.Activity.AgentState != "detected" {
+		t.Fatal("dialog lost pinned target or latest activity")
+	}
+	if !strings.Contains(model.render(), "Delete Terminal · matching permanently?") {
+		t.Fatalf("dialog changed confirmed name:\n%s", model.render())
+	}
+	model = terminalManageSend(t, model, terminalManageKey("y"))
+	if len(ops.purges) != 1 || ops.purges[0] != first.ContextID {
+		t.Fatalf("purge target changed: %v", ops.purges)
+	}
+}
+
+func TestTerminalManageActivityCannotChangeRenameTarget(t *testing.T) {
+	model, ops, first := terminalManageActivityFixture(t)
+	first.Label, first.Identity.Project, first.Cwd = "", "", "/work/base"
+	first.AutoName, first.PaneDirectory = "Terminal · matching", "/work/matching"
+	second := terminalManageTestItem("22222222-2222-4222-8222-222222222222", "matching second", sessionstate.ContextActive)
+	ops.snapshots = [][]terminalInventoryResult{{first, second}}
+	ops.observe = func(context.Context, []terminalInventoryResult) map[sessionstate.ContextID]sessionstate.TerminalSessionObservation {
+		return map[sessionstate.ContextID]sessionstate.TerminalSessionObservation{first.ContextID: {SessionState: "running", AgentState: "none", Directory: sessionstate.HerdrDirectoryObservation{Directory: "/work/renamed"}}}
+	}
+	model, probe := terminalManageUpdateWithCommand(t, model, model.Init()())
+	model.filter = "matching"
+	model.rebuildVisible()
+	model.selectedID = first.ContextID
+	model.restoreSelection()
+	model = terminalManageUpdate(t, model, terminalManageKey("e"))
+	model.input.SetValue("new title")
+	model = terminalManageRunCommand(t, model, probe)
+	selected, _ := model.selected()
+	if selected.ContextID != second.ContextID {
+		t.Fatal("fixture did not change visible selection")
+	}
+	model = terminalManageSend(t, model, terminalManageKey("enter"))
+	if len(ops.renames) != 1 || ops.renames[0].id != first.ContextID {
+		t.Fatalf("rename target changed: %v", ops.renames)
 	}
 }
 

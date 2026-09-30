@@ -319,7 +319,7 @@ func snapshotContextIDs(snapshot LayoutSnapshot) map[ContextID]struct{} {
 func activeContextIDs(registry Registry) map[ContextID]struct{} {
 	active := make(map[ContextID]struct{})
 	for _, context := range registry.Contexts {
-		if context.State != ContextActive || context.App != nil && !context.App.DesiredOpen {
+		if !EvaluateRestorePolicy(context).Eligible {
 			continue
 		}
 		active[context.ID] = struct{}{}

@@ -90,30 +90,57 @@ func SetContextState(registry *Registry, selector string, state ContextState) (C
 	return SetContextStateAt(registry, selector, state, time.Now())
 }
 
-// SetContextStateAt changes lifecycle state while recording an injected archive
-// time. Activation ignores now and clears any previous archive timestamp.
+// SetContextStateAt records an explicit archive or activation at now. Same-state
+// calls preserve existing timestamps and unknown legacy transition history.
+// A zero-time activation clears lifecycle metadata rather than inventing a time.
 func SetContextStateAt(registry *Registry, selector string, state ContextState, now time.Time) (Context, error) {
+	reason := LifecycleReasonExplicitArchive
+	if state == ContextActive {
+		reason = LifecycleReasonExplicitActivate
+	}
+	return setContextStateWithReasonAt(registry, selector, state, reason, now, true)
+}
+
+// SetContextStateWithReasonAt records the latest state transition with a bounded
+// reason and a non-zero time normalized to UTC. Activation clears ArchivedAt;
+// archive records the same time in ArchivedAt. Same-state calls are no-ops.
+// Invalid reasons and failed registry validation never mutate the registry.
+func SetContextStateWithReasonAt(registry *Registry, selector string, state ContextState, reason LifecycleReason, now time.Time) (Context, error) {
+	return setContextStateWithReasonAt(registry, selector, state, reason, now, false)
+}
+
+func setContextStateWithReasonAt(registry *Registry, selector string, state ContextState, reason LifecycleReason, now time.Time, allowUnknownActivation bool) (Context, error) {
 	if registry == nil {
 		return Context{}, errors.New("context registry is nil")
 	}
 	if state != ContextActive && state != ContextArchived {
 		return Context{}, fmt.Errorf("unsupported context state %q", state)
 	}
+	if err := validateLifecycleReason(state, reason); err != nil {
+		return Context{}, err
+	}
 	index, err := ResolveContext(*registry, selector)
 	if err != nil {
 		return Context{}, err
+	}
+	if reason == LifecycleReasonObservedTerminalClose && registry.Contexts[index].Launcher.Kind != LauncherHerdr {
+		return Context{}, errors.New("observed_terminal_close requires a terminal context")
 	}
 	if registry.Contexts[index].State == state {
 		return registry.Contexts[index], nil
 	}
 	previous := registry.Contexts[index]
+	if now.IsZero() && !(allowUnknownActivation && state == ContextActive) {
+		return Context{}, errors.New("lifecycle transition time must be non-zero")
+	}
+	transitionAt := now.UTC()
 	registry.Contexts[index].State = state
+	registry.Contexts[index].Lifecycle = &LifecycleTransition{Reason: reason, At: transitionAt}
+	if now.IsZero() {
+		registry.Contexts[index].Lifecycle = nil
+	}
 	if state == ContextArchived {
-		if now.IsZero() {
-			registry.Contexts[index] = previous
-			return Context{}, errors.New("archive time must be non-zero")
-		}
-		archivedAt := now.UTC()
+		archivedAt := transitionAt
 		registry.Contexts[index].ArchivedAt = &archivedAt
 	} else {
 		registry.Contexts[index].ArchivedAt = nil

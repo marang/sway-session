@@ -63,7 +63,7 @@ _sway_session_context_pending() {
 			--socket|--desktop-id|--label)
 				skip_next=1
 				;;
-			--json|-h|--help|--yes|--require-active)
+			--json|-h|--help|--yes|--require-active|--preview)
 				;;
 			--*)
 				;;
@@ -76,7 +76,7 @@ _sway_session_context_pending() {
 }
 
 _sway_session_restore_scope() {
-	local skip_next=0 word
+	local skip_next=0 word scope=restore
 	for word in "$@"; do
 		if ((skip_next)); then
 			skip_next=0
@@ -84,10 +84,12 @@ _sway_session_restore_scope() {
 		fi
 		case $word in
 			--socket) skip_next=1 ;;
-			--require-active) printf '%s\n' restore-active; return 0 ;;
+			--preview) return 0 ;;
+			--) break ;;
+			--require-active) scope=restore-active ;;
 		esac
 	done
-	printf '%s\n' restore
+	printf '%s\n' "$scope"
 }
 
 _sway_session_marker_is_value() {
@@ -213,7 +215,7 @@ _sway_session() {
 			restore)
 				if _sway_session_context_pending restore "${arguments[@]:1}"; then
 					context_scope=$(_sway_session_restore_scope "${arguments[@]:1}")
-					_sway_session_contexts "$context_scope" "$cur"
+					[[ -n $context_scope ]] && _sway_session_contexts "$context_scope" "$cur"
 				fi
 				;;
 			purge)
@@ -274,10 +276,10 @@ _sway_session() {
 				--socket) _sway_session_files; return 0 ;;
 			esac
 			if _sway_session_context_pending restore "${arguments[@]:1}"; then
-				_sway_session_static '--socket --require-active --json -h --help'
+				_sway_session_static '--socket --require-active --preview --json -h --help'
 				if [[ $cur != -* ]]; then
 					context_scope=$(_sway_session_restore_scope "${arguments[@]:1}")
-					_sway_session_contexts "$context_scope" "$cur"
+					[[ -n $context_scope ]] && _sway_session_contexts "$context_scope" "$cur"
 				fi
 			else
 				_sway_session_static '--json -h --help'

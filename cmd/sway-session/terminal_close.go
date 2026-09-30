@@ -345,7 +345,7 @@ func (runtime *sessionRuntime) flushTerminalClose(now time.Time) error {
 					discarded[containerID] = struct{}{}
 					continue
 				}
-				if _, archiveErr := sessionstate.SetContextStateAt(registry, string(candidate.contextID), sessionstate.ContextArchived, now); archiveErr != nil {
+				if _, archiveErr := sessionstate.SetContextStateWithReasonAt(registry, string(candidate.contextID), sessionstate.ContextArchived, sessionstate.LifecycleReasonObservedTerminalClose, now); archiveErr != nil {
 					return fmt.Errorf("archive closed terminal %s: %w", candidate.contextID, archiveErr)
 				}
 				archived[containerID] = struct{}{}

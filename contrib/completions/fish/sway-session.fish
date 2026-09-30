@@ -109,7 +109,7 @@ function __sway_session_marker_value_open
         case restore daemon broker
             set value_options --socket
             test "$command[1]" = restore
-            and set bool_options --require-active
+            and set bool_options --require-active --preview
         case doctor
             set value_options --fix --socket --sway-config
             set bool_options --check --yes
@@ -197,7 +197,7 @@ function __sway_session_command_options
         case register
             printf '%s\n' --session --cwd --label --provider --id
         case restore
-            printf '%s\n' --socket --require-active
+            printf '%s\n' --socket --require-active --preview
         case daemon broker
             printf '%s\n' --socket
         case doctor
@@ -459,7 +459,7 @@ function __sway_session_top_context_pending --argument-names wanted
                 contains -- "$wanted" archive activate
                 and return 1
                 set options_ended 1
-            case --yes --require-active
+            case --yes --require-active --preview
             case --'*'
             case '*'
                 return 1
@@ -472,6 +472,7 @@ function __sway_session_restore_contexts
     set -l tokens (commandline -opc)
     set -l skip_next 0
     set -l global_options_open 1
+    set -l scope restore
     for token in $tokens
         if test $skip_next -eq 1
             if test $global_options_open -eq 1
@@ -494,12 +495,13 @@ function __sway_session_restore_contexts
             case --
                 set global_options_open 0
                 break
-            case --require-active
-                __sway_session_contexts restore-active
+            case --preview
                 return
+            case --require-active
+                set scope restore-active
         end
     end
-    __sway_session_contexts restore
+    __sway_session_contexts $scope
 end
 
 function __sway_session_app_context_pending --argument-names wanted
@@ -670,3 +672,5 @@ complete -c sway-session -n '__sway_session_app_context_pending reapprove; and _
 complete -c sway-session -n '__sway_session_app_context_pending forget; and __sway_session_options_open' -l socket -r -F
 complete -c sway-session -n '__sway_session_app_context_pending forget; and __sway_session_options_open' -l yes
 complete -c sway-session -n '__sway_session_app_context_pending forget' -a '(__sway_session_contexts app-forget)'
+
+complete -c sway-session -n '__sway_session_top_context_pending restore; and __sway_session_options_open' -l preview -d "Preview next-login restore policy without changes"

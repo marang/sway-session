@@ -532,16 +532,18 @@ func (model terminalManageModel) render() string {
 		output.WriteString("\nNo terminals match this filter.\n")
 	} else {
 		listWidth := width
-		if wideLayout {
+		if wideLayout && model.mode != terminalManagePurgeMode && model.mode != terminalManageHelpMode {
 			listWidth = width/2 - 2
 		}
 		list := model.renderList(styles, listWidth)
-		if wideLayout {
+		if wideLayout && model.mode != terminalManagePurgeMode && model.mode != terminalManageHelpMode {
 			detail := model.renderDetails(styles, width-listWidth-3)
 			output.WriteString("\n" + lipgloss.JoinHorizontal(lipgloss.Top, list, "   ", detail))
-		} else if model.mode == terminalManagePurgeMode || hasFeedback || width < 72 || (model.height > 0 && model.height < 22) {
+		} else if model.mode == terminalManagePurgeMode || model.mode == terminalManageHelpMode || hasFeedback || width < 72 || (model.height > 0 && model.height < 22) {
 			output.WriteString("\n" + list)
-			if item, ok := model.selected(); ok && model.mode != terminalManagePurgeMode {
+			if item, ok := model.selected(); ok && model.mode != terminalManagePurgeMode && model.mode != terminalManageHelpMode {
+				output.WriteString("\n" + ansi.Truncate(terminalManageDetail("Next login", terminalManageNextLogin(item)), width, "…"))
+				output.WriteString("\n" + ansi.Truncate(terminalManageDetail("Last change", terminalManageLastChange(item, width)), width, "…"))
 				output.WriteString("\n" + ansi.Truncate("Herdr "+terminalManageSessionEvidence(item.Activity.SessionState)+" · Agent "+terminalManageAgentEvidence(item.Activity.AgentState), width, "…"))
 				output.WriteString("\n" + ansi.Truncate("Evidence: "+terminalManageEvidenceTime(item.Activity), width, "…"))
 			}
@@ -557,7 +559,11 @@ func (model terminalManageModel) render() string {
 		output.WriteString("\n[Enter] Apply filter   [Esc] Clear filter")
 	case terminalManageRenameMode:
 		output.WriteString("\nRename  " + model.inputView())
-		output.WriteString("\n[Enter] Save title   [Esc] Cancel   [Ctrl+A] Clear")
+		if width < 56 {
+			output.WriteString("\n[Enter] Save  [Esc] Cancel  [Ctrl+A] Clear")
+		} else {
+			output.WriteString("\n[Enter] Save title   [Esc] Cancel   [Ctrl+A] Clear")
+		}
 	case terminalManagePurgeMode:
 		if item, ok := model.purgeTarget(); ok {
 			output.WriteString("\n" + styles.danger.Render("Delete "+terminalManageName(item)+" permanently?"))
@@ -569,9 +575,13 @@ func (model terminalManageModel) render() string {
 		}
 	case terminalManageHelpMode:
 		output.WriteString("\n" + styles.accent.Render("Keyboard help"))
-		output.WriteString("\n[Esc/?] Close help   [q] Quit   [↑/↓ or j/k] Select")
-		output.WriteString("\n[Enter/o] Open   [e] Rename   [a] Archive/activate   [/] Filter")
-		output.WriteString("\n[d] Delete permanently   [m] Migrate old state   [r] Refresh")
+		if width < 72 {
+			output.WriteString("\n[Esc/?] Close help\n" + model.renderFooter(styles, width))
+		} else {
+			output.WriteString("\n[Esc/?] Close help   [q] Quit   [↑/↓ or j/k] Select")
+			output.WriteString("\n[Enter/o] Open   [e] Rename   [a] Archive/activate   [/] Filter")
+			output.WriteString("\n[d] Delete permanently   [m] Migrate old state   [r] Refresh")
+		}
 	default:
 		if model.pending {
 			output.WriteString("\nWorking…")
@@ -604,6 +614,11 @@ func (model terminalManageModel) renderFooter(styles terminalManageStyles, width
 				"         [?] Help  [q] Quit"
 		}
 		return global
+	}
+	if model.tightLayout() {
+		return "[↑/↓ j/k] Select  [/] Filter  [Enter] Open\n" +
+			"[e] Rename  [a] Archive/activate  [d] Delete\n" +
+			"[m] Migrate  [r] Refresh  [?] Help  [q] Quit"
 	}
 	if width >= 96 {
 		return styles.muted.Render("Navigate") + " [↑/↓ or j/k] Select  [/] Filter\n" +
@@ -678,7 +693,7 @@ func newTerminalManageStyles(noColor bool, pulsePhase int) terminalManageStyles 
 func (model terminalManageModel) renderList(styles terminalManageStyles, width int) string {
 	start, end := model.listWindow()
 	lines := make([]string, 0, end-start+2)
-	if start > 0 {
+	if start > 0 && !model.tightLayout() {
 		lines = append(lines, styles.muted.Render(fmt.Sprintf("  ↑ %d more", start)))
 	}
 	for row := start; row < end; row++ {
@@ -709,7 +724,7 @@ func (model terminalManageModel) renderList(styles terminalManageStyles, width i
 		}
 		lines = append(lines, line)
 	}
-	if end < len(model.visible) {
+	if end < len(model.visible) && !model.tightLayout() {
 		lines = append(lines, styles.muted.Render(fmt.Sprintf("  ↓ %d more", len(model.visible)-end)))
 	}
 	return strings.Join(lines, "\n")
@@ -750,6 +765,9 @@ func (model terminalManageModel) listWindow() (int, int) {
 				reserved++
 			}
 			rows = max(height-reserved, 1)
+			if len(model.visible) > rows && !model.tightLayout() {
+				rows = max(rows-2, 1)
+			}
 		}
 	}
 	rows = min(rows, len(model.visible))
@@ -762,6 +780,10 @@ func (model terminalManageModel) listWindow() (int, int) {
 
 func (model terminalManageModel) wideLayout() bool {
 	return model.width >= 100 && (model.height == 0 || model.height >= 22)
+}
+
+func (model terminalManageModel) tightLayout() bool {
+	return model.height > 0 && model.height <= 18
 }
 
 func terminalManageFit(content string, width int, height int) string {
@@ -789,6 +811,8 @@ func (model terminalManageModel) renderDetails(styles terminalManageStyles, widt
 		styles.accent.Render(terminalManageName(item)),
 		terminalManageDetail("Window", model.windowPresence(item.ContextID).String()),
 		terminalManageDetail("Restore", terminalManageRestore(item)),
+		terminalManageDetail("Next login", terminalManageNextLogin(item)),
+		terminalManageDetail("Last change", terminalManageLastChange(item, width)),
 		terminalManageDetail("Herdr", terminalManageSessionEvidence(item.Activity.SessionState)),
 		terminalManageDetail("Agent", terminalManageAgentEvidence(item.Activity.AgentState)),
 		terminalManageDetail("Evidence", terminalManageEvidenceTime(item.Activity)),
@@ -799,10 +823,11 @@ func (model terminalManageModel) renderDetails(styles terminalManageStyles, widt
 		terminalManageDetail("Session", item.Session),
 		terminalManageDetail("Context", string(item.ContextID)),
 	}
-	if !model.wideLayout() && model.height > 0 && model.height <= 26 {
-		lines = append(lines[:7], lines[9:11]...)
+	compact := model.height > 0 && ((!model.wideLayout() && model.height <= 26) || model.height <= 22)
+	if compact {
+		lines = append(lines[:9], lines[11:13]...)
 	}
-	if item.PaneDirectory != "" {
+	if item.PaneDirectory != "" && (!compact || model.wideLayout()) {
 		lines = append(lines, terminalManageDetail("Pane path", item.PaneDirectory))
 	}
 	for index := range lines {
@@ -820,6 +845,52 @@ func terminalManageRestore(item terminalInventoryResult) string {
 		return "archived"
 	}
 	return "enabled"
+}
+
+func terminalManageNextLogin(item terminalInventoryResult) string {
+	reason := "Unknown policy"
+	switch item.RestorePolicy.Reason {
+	case "active_terminal":
+		reason = "Active terminal"
+	case "archived":
+		reason = "Archived"
+	case "desired_open_follow":
+		reason = "Desired open (follow)"
+	case "desired_open_pinned":
+		reason = "Desired open (pinned)"
+	case "desired_closed":
+		reason = "Desired closed"
+	default:
+		return "Unknown · " + reason
+	}
+	eligible := "No"
+	if item.RestorePolicy.Eligible {
+		eligible = "Yes"
+	}
+	return eligible + " · " + reason
+}
+
+func terminalManageLastChange(item terminalInventoryResult, width int) string {
+	if item.Lifecycle == nil {
+		return "Unknown (legacy)"
+	}
+	reason := "Unknown reason"
+	switch string(item.Lifecycle.Reason) {
+	case "explicit_archive":
+		reason = "Explicit archive"
+	case "explicit_activate":
+		reason = "Explicit activate"
+	case "observed_terminal_close":
+		reason = "Close observed"
+	}
+	if item.Lifecycle.At.IsZero() {
+		return reason + " · unknown time"
+	}
+	format := "02 Jan 2006 15:04"
+	if width < 72 {
+		format = "02 Jan 15:04"
+	}
+	return reason + " · " + item.Lifecycle.At.Local().Format(format)
 }
 
 func terminalManageUnknownWindows(items []terminalInventoryResult) map[sessionstate.ContextID]terminalWindowPresence {

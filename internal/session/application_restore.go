@@ -191,7 +191,7 @@ func (coordinator *ApplicationRestoreCoordinator) Plan(
 	attempted := make(map[ContextID]ApplicationLaunchAttempt, len(coordinator.state.Attempts))
 	desiredApplications := make(map[ContextID]struct{})
 	for _, context := range registry.Contexts {
-		if context.App != nil && context.State == ContextActive && context.App.DesiredOpen {
+		if context.App != nil && EvaluateRestorePolicy(context).Eligible {
 			desiredApplications[context.ID] = struct{}{}
 		}
 	}
@@ -214,7 +214,7 @@ func (coordinator *ApplicationRestoreCoordinator) Plan(
 	contexts := append([]Context(nil), registry.Contexts...)
 	sort.Slice(contexts, func(left, right int) bool { return contexts[left].ID < contexts[right].ID })
 	for _, context := range contexts {
-		if context.App == nil || context.State != ContextActive || !context.App.DesiredOpen || len(groups[context.ID].Windows) != 0 {
+		if context.App == nil || !EvaluateRestorePolicy(context).Eligible || len(groups[context.ID].Windows) != 0 {
 			continue
 		}
 		// Presence adopted in this compositor proves that this application

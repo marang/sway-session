@@ -29,7 +29,7 @@ _sway_session_context_pending() {
 		fi
 		case $word in
 			--socket|--desktop-id|--label) skip_next=1 ;;
-			--json|-h|--help|--yes|--require-active) ;;
+			--json|-h|--help|--yes|--require-active|--preview) ;;
 			--*) ;;
 			*) return 1 ;;
 		esac
@@ -38,7 +38,7 @@ _sway_session_context_pending() {
 }
 
 _sway_session_restore_scope() {
-	local skip_next=0 word
+	local skip_next=0 word scope=restore
 	for word in "$@"; do
 		if (( skip_next )); then
 			skip_next=0
@@ -46,10 +46,12 @@ _sway_session_restore_scope() {
 		fi
 		case $word in
 			--socket) skip_next=1 ;;
-			--require-active) print -r -- restore-active; return 0 ;;
+			--preview) return 0 ;;
+			--) break ;;
+			--require-active) scope=restore-active ;;
 		esac
 	done
-	print -r -- restore
+	print -r -- "$scope"
 }
 
 _sway_session_add() {
@@ -187,7 +189,7 @@ _sway-session() {
 			restore)
 				if _sway_session_context_pending restore "${arguments[@]:1}"; then
 					context_scope=$(_sway_session_restore_scope "${arguments[@]:1}")
-					_sway_session_contexts "$context_scope" "$cur"
+					[[ -n $context_scope ]] && _sway_session_contexts "$context_scope" "$cur"
 				fi
 				;;
 			purge)
@@ -249,10 +251,10 @@ _sway-session() {
 			if [[ ${arguments[-1]-} == --socket ]]; then
 				_files
 			elif _sway_session_context_pending restore "${arguments[@]:1}"; then
-				_sway_session_add --socket --require-active --json -h --help
+				_sway_session_add --socket --require-active --preview --json -h --help
 				if [[ $cur != -* ]]; then
 					context_scope=$(_sway_session_restore_scope "${arguments[@]:1}")
-					_sway_session_contexts "$context_scope" "$cur"
+					[[ -n $context_scope ]] && _sway_session_contexts "$context_scope" "$cur"
 				fi
 			else
 				_sway_session_add --json -h --help

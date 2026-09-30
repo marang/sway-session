@@ -43,7 +43,7 @@ type commandSpec struct {
 
 var commandSpecs = map[string]commandSpec{
 	"register":             {usage: "register --session <name> [options]", summary: "Register a persistent work context"},
-	"restore":              {usage: "restore [--socket <path>] [context]", summary: "Restore active or selected contexts"},
+	"restore":              {usage: "restore [--socket <path>] [context]", summary: "Restore active or selected contexts; --preview explains next-login policy"},
 	"list":                 {usage: "list", summary: "List registered contexts"},
 	"archive":              {usage: "archive <context>", summary: "Exclude a context from automatic restore"},
 	"activate":             {usage: "activate <context>", summary: "Return an archived context to automatic restore"},
@@ -266,6 +266,7 @@ type commandResult struct {
 	Actions              []string                   `json:"actions,omitempty"`
 	Terminal             *terminalCommandResult     `json:"terminal,omitempty"`
 	Terminals            *[]terminalInventoryResult `json:"terminals,omitempty"`
+	RestorePreview       *restorePreviewResult      `json:"restore_preview,omitempty"`
 	Preview              bool                       `json:"preview,omitempty"`
 	Doctor               *doctor.Report             `json:"doctor,omitempty"`
 	DoctorPlan           *doctor.Plan               `json:"doctor_plan,omitempty"`
@@ -306,6 +307,8 @@ type terminalInventoryResult struct {
 	Cwd              string                                  `json:"cwd"`
 	CreatedAt        *time.Time                              `json:"created_at,omitempty"`
 	LastFocusedAt    *time.Time                              `json:"last_focused_at,omitempty"`
+	RestorePolicy    sessionstate.RestorePolicyDecision      `json:"restore_policy"`
+	Lifecycle        *sessionstate.LifecycleTransition       `json:"lifecycle,omitempty"`
 	ArchivedAt       *time.Time                              `json:"archived_at,omitempty"`
 }
 
@@ -347,6 +350,9 @@ func writeResult(writer io.Writer, structured bool, result commandResult) error 
 			result.Contexts = []sessionstate.Context{}
 		}
 		return json.NewEncoder(writer).Encode(result)
+	}
+	if result.RestorePreview != nil {
+		return writeRestorePreview(writer, *result.RestorePreview)
 	}
 	if result.Doctor != nil || result.DoctorPlan != nil || result.DoctorFix != nil {
 		return writeDoctorResult(writer, result)
@@ -506,6 +512,11 @@ func writeCommandUsage(writer io.Writer, name string, spec commandSpec) {
 	_, _ = fmt.Fprintf(writer, "Usage: sway-session [--json] %s\n\n%s.\n", spec.usage, spec.summary)
 	if slices.Contains([]string{"archive", "activate", "purge", "restore"}, name) {
 		_, _ = fmt.Fprintln(writer, "A context is an unambiguous exact UUID or label.")
+	}
+	if name == "restore" {
+		_, _ = fmt.Fprintln(writer, "Preview: sway-session [--json] restore --preview [--socket PATH]")
+		_, _ = fmt.Fprintln(writer, "Preview reads next-login eligibility for all terminals and apps; no launch, focus, lifecycle change, or daemon work is requested.")
+		_, _ = fmt.Fprintln(writer, "--preview cannot be combined with a context or --require-active; explicit restore selection keeps its existing semantics.")
 	}
 	if name == "purge" {
 		_, _ = fmt.Fprintln(writer, "Desktop and Flatpak registrations must use sway-session app forget --yes <context> so live marks and launcher approval are removed transactionally.")

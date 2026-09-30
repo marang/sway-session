@@ -167,7 +167,6 @@ func serveObservationWithProcessInfo(t *testing.T, root, name, result, processIn
 		requests.Add(1)
 		if len(concurrency) == 2 {
 			active := concurrency[0].Add(1)
-			defer concurrency[0].Add(-1)
 			for peak := concurrency[1].Load(); active > peak; peak = concurrency[1].Load() {
 				if concurrency[1].CompareAndSwap(peak, active) {
 					break
@@ -175,6 +174,11 @@ func serveObservationWithProcessInfo(t *testing.T, root, name, result, processIn
 			}
 		}
 		time.Sleep(delay)
+		if len(concurrency) == 2 {
+			// Count withheld responses, not post-response handler cleanup. A
+			// client can start its next probe as soon as this reply is delivered.
+			concurrency[0].Add(-1)
+		}
 		_, _ = fmt.Fprintf(conn, "{\"id\":%q,\"result\":%s}\n", request.ID, result)
 		_ = conn.Close()
 		if delay > 0 {

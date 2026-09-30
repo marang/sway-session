@@ -194,6 +194,8 @@ sway-session terminal --project LAB-119 --cwd "$PWD"
 sway-session terminal --ephemeral --cwd "$PWD"
 sway-session terminal manage
 sway-session --json terminal list
+sway-session restore --preview
+sway-session --json restore --preview
 sway-session --json terminal status --project LAB-119
 sway-session terminal rename --label "Release work" CONTEXT_UUID
 sway-session terminal cleanup --archived-before 2026-09-01
@@ -240,6 +242,25 @@ desktop automatically archives its context after a short grace period: it
 stops returning at login, but its saved identity and Herdr session are retained.
 Archiving never closes a window or terminates its background agents. Codex and
 shell panes inside one terminal belong to the same context.
+
+The selected manager entry shows **Next login** with its policy reason and
+**Last change** with the latest recorded archive/activation reason and time.
+An observed terminal close is labeled as an observation, not proof of a manual
+close: a terminal crash can emit the same event. Existing entries without
+transition metadata show `Unknown (legacy)`; opening or refreshing the manager
+does not manufacture history or change restore eligibility.
+
+`sway-session restore --preview` reads next-login policy for all terminals and
+desktop applications. Human and global `--json` output distinguish `eligible`,
+`skipped`, and `uncertain`, showing a shared observation timestamp, stable
+context identity, readable label, policy reason, and current window evidence.
+Follow/pinned applications are eligible only when active and desired open.
+Unavailable compositor evidence or ambiguous windows remain explicit; saved
+policy is still shown. Eligibility is not a guarantee of successful launching,
+layout recovery, or application-internal session recovery. Preview never
+launches, focuses, archives, activates, initializes Herdr, or queues daemon work.
+It cannot be combined with an explicit context or `--require-active`; explicit
+restore continues to use its existing selection and activation rules.
 
 The manager also observes Herdr sessions independently of windows. `Herdr`
 shows `running`, `stopped`, `missing`, or `unknown`; `Agent` shows `detected`,

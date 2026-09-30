@@ -108,8 +108,10 @@ type Context struct {
 	Provider   string       `json:"provider,omitempty"`
 	State      ContextState `json:"state"`
 	ArchivedAt *time.Time   `json:"archived_at,omitempty"`
-	Launcher   Launcher     `json:"launcher"`
-	App        *Application `json:"app,omitempty"`
+	// Lifecycle records only the latest policy transition; nil means unknown.
+	Lifecycle *LifecycleTransition `json:"lifecycle,omitempty"`
+	Launcher  Launcher             `json:"launcher"`
+	App       *Application         `json:"app,omitempty"`
 }
 
 // Launcher is a validated tagged union. Fields for launcher kinds other than
@@ -389,6 +391,9 @@ func (context *Context) validate() error {
 		if context.ArchivedAt.IsZero() || context.ArchivedAt.Location() != time.UTC {
 			return errors.New("archived_at must be a non-zero canonical UTC timestamp")
 		}
+	}
+	if err := context.validateLifecycle(); err != nil {
+		return err
 	}
 	if err := context.Launcher.validate(); err != nil {
 		return err

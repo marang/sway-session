@@ -770,6 +770,9 @@ func (runtime *sessionRuntime) Reconcile(root *Node, now time.Time) (needsRefres
 				// PreserveMissingPlacements keeps its last-good target without
 				// blocking unrelated contexts from being captured.
 				captureRegistry.Contexts[index].State = sessionstate.ContextArchived
+				// This is capture-only exclusion, not a durable policy transition.
+				// Do not pair an active transition reason with the synthetic state.
+				captureRegistry.Contexts[index].Lifecycle = nil
 			}
 		}
 	}

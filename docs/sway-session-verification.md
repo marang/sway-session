@@ -532,3 +532,21 @@ Only then create immutable tag v0.1.0. The AUR workflow computes the actual
 GitHub source archive checksum, refuses SKIP, verifies and builds the package,
 publishes exact metadata, and opens the metadata-sync PR. Do not move a release
 tag or invent a checksum.
+
+
+## Next-login policy and transition evidence (LAB-130)
+
+Use disposable registry state to compare `restore --preview` policy against
+terminal automatic target selection and application coordinator launch selection.
+Cover active and archived terminals, Follow/pinned apps with desired-open true
+and false, unavailable compositor evidence, duplicate identities, and legacy
+records without lifecycle metadata. Preview must use read-only database access,
+issue only GetTree, and leave saved state unchanged; empty state must remain
+absent. Explicit archive/activate and grace-confirmed close persist the latest
+reason and UTC timestamp with the authoritative state update. Shutdown,
+disconnect, and unconfirmed absence must not invent a transition.
+
+Inspect manager rendering at 48x16, 80x24, and a wider terminal. Selection,
+filtering, and open/archive controls must remain usable; selected next-login
+reason and last-change evidence must survive compact rendering. These automated
+checks do not establish an actual machine reboot result.

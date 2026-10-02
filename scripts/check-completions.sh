@@ -840,7 +840,10 @@ for expected in --retry --cancel --after --socket
 end
 for option in --retry --cancel --after
     set candidates (state_values "sway-session state operations $option ")
-    test (count $candidates) -eq 0; or exit 1
+    if test (count $candidates) -ne 0
+        printf 'fish operation completion proposed values for %s: %s\n' "$option" "$candidates" >&2
+        exit 1
+    end
 end
 set candidates (state_values 'sway-session state backup --')
 contains -- --output $candidates; or exit 1

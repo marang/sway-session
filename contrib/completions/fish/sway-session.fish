@@ -75,7 +75,7 @@ function __sway_session_options_open
             return 1
         end
         switch $token
-            case --config --socket --sway-config --fix --desktop-id --session --cwd --label --provider --id --workspace --output --from
+            case --config --socket --sway-config --fix --desktop-id --session --cwd --label --provider --id --workspace --output --from --retry --cancel --after
                 set skip_next 1
             case --
                 set global_options_open 0
@@ -711,7 +711,7 @@ complete -c sway-session -n '__sway_session_is_state_subcommand backup; and __sw
 complete -c sway-session -n '__sway_session_is_state_subcommand recover; and __sway_session_options_open' -l from -r -F -d 'Read a metadata backup from an absolute file path'
 complete -c sway-session -n '__sway_session_is_state_subcommand recover; and __sway_session_options_open' -l yes -d 'Apply recovery instead of previewing it'
 
-complete -c sway-session -n '__sway_session_is_state_subcommand operations; and __sway_session_options_open' -l retry -r -d 'Retry one exact durable operation UUID'
-complete -c sway-session -n '__sway_session_is_state_subcommand operations; and __sway_session_options_open' -l cancel -r -d 'Request rollback of one application operation UUID'
-complete -c sway-session -n '__sway_session_is_state_subcommand operations; and __sway_session_options_open' -l after -r -d 'List the next page after an operation UUID'
+complete -c sway-session -n '__sway_session_is_state_subcommand operations; and __sway_session_options_open' -l retry -x -d 'Retry one exact durable operation UUID'
+complete -c sway-session -n '__sway_session_is_state_subcommand operations; and __sway_session_options_open' -l cancel -x -d 'Request rollback of one application operation UUID'
+complete -c sway-session -n '__sway_session_is_state_subcommand operations; and __sway_session_options_open' -l after -x -d 'List the next page after an operation UUID'
 complete -c sway-session -n '__sway_session_is_state_subcommand operations; and __sway_session_options_open' -l socket -r -F -d 'Sway IPC socket for retry or rollback'

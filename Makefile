@@ -10,7 +10,7 @@ GO_LDFLAGS += -X github.com/marang/sway-session/internal/buildmetadata.Stamp=swa
 GO_FILES := $(shell find cmd internal -name '*.go' -type f)
 DOC_ROOT := $(PREFIX)/share/doc/sway-session
 
-.PHONY: build install clean fmt fmt-check test race vet lint apparmor-check completion-check packaging-check standalone-check diff-check verify
+.PHONY: build install clean fmt fmt-check test race vet lint apparmor-check completion-check packaging-check standalone-check diff-check verify lifecycle-check
 
 fmt:
 	gofmt -w $(GO_FILES)
@@ -52,6 +52,9 @@ build:
 diff-check:
 	git diff --check
 	git diff --cached --check
+
+lifecycle-check:
+	sh scripts/verify-lifecycle.sh
 
 verify: fmt-check test race vet lint apparmor-check completion-check packaging-check standalone-check build diff-check
 

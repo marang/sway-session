@@ -126,7 +126,23 @@ func TestTerminalEnvironmentProbeHelper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(os.Getenv("SWAY_SESSION_ENV_PROBE_PATH"), data, 0o600); err != nil {
+	path := os.Getenv("SWAY_SESSION_ENV_PROBE_PATH")
+	// CreateTemp keeps the probe owner-only; rename publishes only complete JSON.
+	file, err := os.CreateTemp(filepath.Dir(path), ".environment-*.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = file.Close()
+		_ = os.Remove(file.Name())
+	})
+	if _, err := file.Write(data); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(file.Name(), path); err != nil {
 		t.Fatal(err)
 	}
 }

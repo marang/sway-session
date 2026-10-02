@@ -111,7 +111,10 @@ func runSessionDaemon(ctx context.Context, swaySocket string, reportError func(e
 		CompositorID:        compositorID,
 		StartedAt:           time.Now(),
 		ApplicationLauncher: daemonApplicationLauncher{stateRoot: stateRoot},
-		LifecycleOperations: lifecycleCoreAdapter{root: stateRoot, client: control},
+		LifecycleOperations: lifecycleCoreAdapter{
+			root: stateRoot, client: control,
+			deleter: nativePurgeDeleter(sessionstate.ResolveTrustedExecutable, sessionstate.ExecCommandRunner{}),
+		},
 		ApplicationRestore: sessionstate.ApplicationRestoreOptions{
 			AdoptionGrace: applicationAdoptionGrace,
 			CloseGrace:    applicationCloseGrace,

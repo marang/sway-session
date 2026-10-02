@@ -416,7 +416,21 @@ func (manager HerdrManager) run(ctx context.Context, arguments ...string) error 
 type ExecCommandRunner struct{}
 
 func (ExecCommandRunner) CombinedOutput(ctx context.Context, name string, arguments ...string) ([]byte, error) {
+	return execHerdrCommand(ctx, "", name, arguments...)
+}
+
+func execHerdrCommand(ctx context.Context, configHome, name string, arguments ...string) ([]byte, error) {
 	command := exec.CommandContext(ctx, name, arguments...)
+	if configHome != "" {
+		environment := command.Environ()
+		filtered := make([]string, 0, len(environment)+1)
+		for _, value := range environment {
+			if !strings.HasPrefix(value, "XDG_CONFIG_HOME=") {
+				filtered = append(filtered, value)
+			}
+		}
+		command.Env = append(filtered, "XDG_CONFIG_HOME="+configHome)
+	}
 	output := &boundedCombinedOutput{limit: maxHerdrOutputSize + 1}
 	command.Stdout = output
 	command.Stderr = output

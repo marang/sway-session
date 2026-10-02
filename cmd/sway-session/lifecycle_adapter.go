@@ -11,12 +11,13 @@ import (
 // Pass the original transport through: the core pins a fresh connection for
 // each application operation, independently of normal daemon reconnection.
 type lifecycleCoreAdapter struct {
-	root   string
-	client sessionstate.SwayRequestClient
+	root    string
+	client  sessionstate.SwayRequestClient
+	deleter sessionstate.LifecycleSessionDeleter
 }
 
 func (adapter lifecycleCoreAdapter) Reconcile(ctx context.Context, now time.Time, after string, limit int) (sessionstate.LifecycleReconcileResult, error) {
-	return sessionstate.ReconcileLifecycleOperationsContext(ctx, adapter.root, adapter.client, now, after, limit)
+	return sessionstate.ReconcileLifecycleOperationsWithPurgeContext(ctx, adapter.root, adapter.client, adapter.deleter, now, after, limit)
 }
 
 func (adapter lifecycleCoreAdapter) BlockedContextIDs(ctx context.Context) ([]sessionstate.ContextID, error) {
@@ -33,6 +34,11 @@ func (adapter lifecycleCoreAdapter) BlockedContextIDs(ctx context.Context) ([]se
 
 func runLifecycleOperationAction(ctx context.Context, root, id string, cancel bool, socket string, now time.Time, deps dependencies) (sessionstate.LifecycleOutcome, error) {
 	outcome := sessionstate.LifecycleOutcome{OperationID: id, Status: "pending"}
+	access, err := sessionstate.AcquireStateAccess(ctx, root, true)
+	if err != nil {
+		return outcome, err
+	}
+	defer access.Close()
 	operation, err := sessionstate.LoadLifecycleOperationContext(ctx, root, id)
 	if err != nil {
 		return outcome, err
@@ -48,6 +54,12 @@ func runLifecycleOperationAction(ctx context.Context, root, id string, cancel bo
 	}
 	if cancel {
 		outcome.Status = "rollback"
+	}
+	if operation.Kind == sessionstate.LifecyclePurge {
+		outcome, err = sessionstate.ReconcileLifecycleOperationWithPurgeContext(ctx, root, id, nil, nativePurgeDeleter(deps.resolveProgram, deps.herdrRunner), now)
+		outcome.Kind = operation.Kind
+		outcome.Phase = operation.Phase
+		return outcome, err
 	}
 	var problem *commandFailure
 	socket, problem = applicationSocket(socket)

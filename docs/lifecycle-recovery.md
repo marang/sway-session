@@ -1,7 +1,8 @@
 # Durable lifecycle operations
 
 Application registration and rebind coordinate SQLite state with effects in
-Sway. Those systems cannot participate in one transaction. Each operation therefore records its exact intent before the
+Sway; terminal purge coordinates it with Herdr. Those systems cannot participate
+in one transaction. Each operation therefore records its exact intent before the
 first external effect, observes the effect after ambiguous acknowledgements,
 and commits completion separately.
 
@@ -16,6 +17,7 @@ Database transactions contain no Sway, Herdr, process, or launcher calls.
 | Register, forward | Exact selected windows and context marks | Add only missing marks to their captured targets | Insert the complete approved batch and remove its operation together |
 | Rebind, forward | Original and replacement windows, mark ownership | Remove the original mark, then add it to the approved replacement, observing between effects | Replace the unchanged original context and remove its operation together |
 | Register or rebind, rollback | Exact targets and any acknowledged or ambiguous marks | Restore the original mark arrangement without touching another identity | Keep the original registry state and remove the operation |
+| Purge, forward | Recorded Herdr directory identity and native session listing | Stop a running named session or delete a stopped one, with fresh checks before each command | Remove the operation only after confirming absence; its context and activity were removed atomically with intent |
 | Any operation, retryable failure | Fresh state after the retry deadline | Reconsider the next action; never replay an unobserved command blindly | Retain intent until completion |
 | Any operation, conflict | Reused identity, changed context, ambiguous ownership, or incompatible evidence | Report the operation and a supported operator action | Retain the reservation; do not guess |
 
@@ -23,6 +25,11 @@ Application operations reserve their context identities and approved launchers.
 Other lifecycle changes cannot silently overtake an unresolved operation.
 Launcher cleanup retains files referenced by pending operations as well as by
 registered contexts. Unrelated contexts remain independently usable.
+
+Purge reserves the original context ID, launcher and typed terminal identity
+(when present). Recreating or restoring that identity cannot overtake pending
+cleanup. The operation records the original Herdr root, so a changed environment
+does not redirect retries to a different root.
 
 ## Identity and interruption
 
@@ -89,16 +96,51 @@ safely cancel application operations before a planned downgrade. A current
 binary also refuses incompatible operation versions rather than treating them
 as completed work.
 
-## Deferred terminal purge recovery
+## Terminal purge recovery and its boundary
 
-Terminal purge keeps its existing behavior and does not use this journal yet.
-[LAB-208](https://linear.app/riotbox/issue/LAB-208) owns durable purge recovery;
-its parent LAB-116 remains open. The user chose this split so application
-recovery can ship independently.
+Purge uses Herdr's native `session list`, `session stop` and `session delete`
+commands. sway-session does not remove or quarantine Herdr files itself. The
+operation begins under the lifecycle lock, compares the confirmed context with
+the current registry and atomically saves intent while removing the context and
+its activity. Database transactions remain separate from subprocess calls.
 
-Herdr 0.9.2 does not expose a session-lifetime lock or conditional deletion
-capability. During live handoff it removes public sockets while live pane
-processes are transferred. Socket absence therefore cannot authorize deletion.
-A native Herdr capability must exclude concurrent startup and handoff, verify
-the exact session generation, and make cleanup retryable before sway-session
-can safely implement this extension. No experimental purge adapter is included.
+Foreground purge and operation retry/cancel commands hold the shared state
+access gate across all their steps. Database recovery therefore cannot replace
+their journal between intent, effects and final observation. The daemon already
+holds this gate for its lifetime.
+
+Each pass verifies that the Herdr root is owner-only and its child directories
+belong to the user and deny write access to others. Native Herdr's `0755` children are accepted
+inside that private root; symlinks and nested session mounts are refused.
+Device/inode evidence, plus directory birth time where the filesystem
+supports it, distinguishes an observed replacement from the authorized target.
+Without birth time, device/inode evidence is weaker because inodes can be reused.
+A replacement blocks the operation as a conflict; retry retains the original
+evidence and never adopts the replacement. Socket absence alone does not prove
+that a session can be deleted.
+
+Only a bounded amount of work runs per pass. A refused stop or uncertain command
+result leaves intent intact and starts retry backoff. A new pass observes the
+session again rather than blindly replaying the last command. If deletion
+succeeded but its acknowledgement or the final database commit was lost,
+confirmed absence permits completion without another delete command. The daemon
+resumes pending operations; `state operations --retry OPERATION_UUID` also works
+without a Sway connection. Repeating `purge --yes CONTEXT_UUID` finds the same
+pending intent even though the context has left the registry.
+
+Purge cannot be cancelled or rolled back once its intent is recorded. An
+interrupted native command may already have removed session data. Restoring the
+old context would falsely suggest that its session is still recoverable. Pending
+and conflicted purges remain listed with their retry command, without a rollback
+suggestion. Applications still support the compensating cancellation above.
+
+Herdr 0.9.2 exposes deletion by name, without a caller-supplied generation or a
+lock spanning observation and deletion. The repeated checks detect replacements
+that become visible between passes or before commands; they do not make native
+deletion atomic with these checks. An independent start, server handoff or
+delete/recreate can still race the final check and native command. This is the
+explicitly accepted compatibility boundary for [LAB-208](https://linear.app/riotbox/issue/LAB-208),
+not a guarantee of exclusion. A stronger guarantee would require an upstream
+Herdr API change. No plugin or upstream modification is required by this
+implementation. See the [Herdr investigation](research/herdr-plugin-session-deletion.md)
+for the inspected interfaces and isolated identity evidence.

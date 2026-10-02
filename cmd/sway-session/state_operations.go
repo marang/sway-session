@@ -147,7 +147,7 @@ func writeStateOperations(writer io.Writer, result commandResult) error {
 			return err
 		}
 		if outcome.Status != "completed" {
-			return writeLifecycleOperationHint(writer, outcome.OperationID)
+			return writeLifecycleOperationHint(writer, outcome.OperationID, outcome.Kind)
 		}
 		return nil
 	}
@@ -159,7 +159,7 @@ func writeStateOperations(writer io.Writer, result commandResult) error {
 		if _, err := fmt.Fprintf(writer, "%s\t%s\tphase=%s\tstatus=%s\treason=%s\tattempts=%d\tnext=%s\n", operation.OperationID, operation.Kind, operation.Phase, operation.Status, operation.Reason, operation.Attempts, operation.NextAttempt.UTC().Format(time.RFC3339)); err != nil {
 			return err
 		}
-		if err := writeLifecycleOperationHint(writer, operation.OperationID); err != nil {
+		if err := writeLifecycleOperationHint(writer, operation.OperationID, operation.Kind); err != nil {
 			return err
 		}
 	}
@@ -170,9 +170,16 @@ func writeStateOperations(writer io.Writer, result commandResult) error {
 	return nil
 }
 
-func writeLifecycleOperationHint(writer io.Writer, id string) error {
+func writeLifecycleOperationHint(writer io.Writer, id string, kind sessionstate.LifecycleOperationKind) error {
 	if _, err := fmt.Fprintf(writer, "Retry: sway-session state operations --retry %s\n", id); err != nil {
 		return err
+	}
+	if kind == sessionstate.LifecyclePurge {
+		_, err := fmt.Fprintln(writer, "Purge is irreversible; automatic restore remains disabled while cleanup is pending.")
+		return err
+	}
+	if kind != sessionstate.LifecycleRegister && kind != sessionstate.LifecycleRebind {
+		return nil
 	}
 	_, err := fmt.Fprintf(writer, "Request rollback: sway-session state operations --cancel %s\n", id)
 	return err

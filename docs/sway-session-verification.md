@@ -600,3 +600,30 @@ Run private-compositor layout checks with disposable state and workspace 98 or
 higher. Verify outcome proofs from fresh trees after restore commands, rather
 than command acknowledgements. This does not establish a machine reboot result
 or application-internal session recovery.
+
+## Durable terminal purge (LAB-208)
+
+The deterministic suite uses independent helper processes to interrupt durable
+intent, native stop/delete effects and final journal retirement. It also covers
+lost acknowledgements, repeated recovery, concurrent retries, SQLite write
+contention, immutable directory evidence, unsafe paths, identity reservations,
+backup/recovery and forward-only purge cancellation. CLI/daemon adapter tests
+cover pending output, retry backoff, absence completion and a changed Herdr
+configuration after intent was recorded.
+
+An isolated native check on 2026-10-02 used installed Herdr 0.9.2, private XDG
+directories and `/bin/sh` without login configuration or agent resume:
+
+| Scenario | Observed result |
+| --- | --- |
+| Purge an existing running named session | Native stop and delete completed; session directory, registry entry and pending operation were absent |
+| Make Herdr unavailable after registration, then retry with another `XDG_CONFIG_HOME` | Initial purge retained a pending operation; retry deleted the original recorded target and left the new root untouched |
+| Replace the stopped session directory after recording pending intent | Retry reported a conflict and preserved the replacement directory |
+
+The first native run exposed Herdr's default `0755` child directory modes inside
+its private root. The corrected guard accepts those native modes and refuses
+group/other write permissions; a regression covers both cases. All disposable
+server processes were stopped and reaped. No live user sessions or compositor
+workspaces were used. These checks exercise the native integration; they do not
+prove atomic exclusion of concurrent Herdr startup or handoff. That residual
+name-based deletion boundary is documented in [lifecycle recovery](lifecycle-recovery.md).

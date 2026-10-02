@@ -761,8 +761,13 @@ func TestRestoreReportProgressiveSeedRetainsUnpublishedLaunchEffects(t *testing.
 				launcher.startErr = errors.New("rejected")
 			}
 			runtime.applicationLauncher = launcher
-			if err := runtime.seedRestoreReport(registry, now); err != nil {
-				t.Fatal(err)
+			// A diagnostic I/O budget can yield without advancing the cursor,
+			// especially under race instrumentation. Resume until one bounded
+			// batch is published; the app must remain unseeded before launch.
+			for pass := 0; pass < 16 && runtime.restoreReportSeedCursor == 0; pass++ {
+				if err := runtime.seedRestoreReport(registry, now); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if runtime.restoreReportSeedCursor != restoreReportBatch {
 				t.Fatalf("unbounded first seed: %d", runtime.restoreReportSeedCursor)
@@ -780,8 +785,13 @@ func TestRestoreReportProgressiveSeedRetainsUnpublishedLaunchEffects(t *testing.
 			if len(runtime.restoreReportUnseededEffects[item.ID]) == 0 {
 				t.Fatal("unpublished launch evidence discarded")
 			}
-			if err := runtime.seedRestoreReport(registry, now.Add(time.Second)); err != nil {
-				t.Fatal(err)
+			for pass := 0; pass < 16 && runtime.restoreReportSeedCursor < len(registry.Contexts); pass++ {
+				if err := runtime.seedRestoreReport(registry, now.Add(time.Second)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if runtime.restoreReportSeedCursor != len(registry.Contexts) {
+				t.Fatal("resumed seed did not publish the app outcome")
 			}
 			record := restoreReportOutcome(t, runtime, "automatic", item.ID)
 			if rejected {

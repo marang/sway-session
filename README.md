@@ -400,10 +400,12 @@ sway-session purge --yes CONTEXT_UUID
 
 Archive retains the named Herdr session but removes the context from automatic
 restore. purge first previews the canonical UUID; the destructive --yes form
-accepts only that UUID, stops and deletes the exact Herdr session, and removes
-its registry entry.
+accepts only that UUID. It records a durable deletion intent and removes the
+context from automatic restore before stopping and deleting the named Herdr
+session. A busy session or failed command leaves a visible pending operation;
+only confirmed absence is reported as completed.
 
-Interrupted application registration and rebind are tracked by
+Interrupted application registration, rebind and terminal purge are tracked by
 operation ID. Use `sway-session state operations` to inspect pending work and
 its recovery options. See [durable lifecycle recovery](docs/lifecycle-recovery.md).
 

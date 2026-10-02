@@ -28,6 +28,10 @@ type LifecycleReconcileResult struct {
 // ReconcileLifecycleOperationsContext visits a bounded page, including entries
 // in backoff, so one unavailable target cannot starve later operations.
 func ReconcileLifecycleOperationsContext(ctx context.Context, root string, client SwayRequestClient, now time.Time, afterID string, limit int) (LifecycleReconcileResult, error) {
+	return ReconcileLifecycleOperationsWithPurgeContext(ctx, root, client, nil, now, afterID, limit)
+}
+
+func ReconcileLifecycleOperationsWithPurgeContext(ctx context.Context, root string, client SwayRequestClient, deleter LifecycleSessionDeleter, now time.Time, afterID string, limit int) (LifecycleReconcileResult, error) {
 	var result LifecycleReconcileResult
 	var failures []error
 	if ctx == nil {
@@ -47,7 +51,7 @@ func ReconcileLifecycleOperationsContext(ctx context.Context, root string, clien
 		if err := ctx.Err(); err != nil {
 			return result, errors.Join(append(failures, err)...)
 		}
-		outcome, err := ReconcileLifecycleOperationContext(ctx, root, operation.ID, client, now)
+		outcome, err := ReconcileLifecycleOperationWithPurgeContext(ctx, root, operation.ID, client, deleter, now)
 		result.Processed++
 		result.NextID = operation.ID
 		result.Effects = result.Effects || outcome.Effects
@@ -63,6 +67,10 @@ func ReconcileLifecycleOperationsContext(ctx context.Context, root string, clien
 // The process-shared lifecycle lock spans observation, effects, and their
 // durable result. Cancelling and retrying the same operation use this lock too.
 func ReconcileLifecycleOperationContext(ctx context.Context, root, id string, client SwayRequestClient, now time.Time) (LifecycleOutcome, error) {
+	return ReconcileLifecycleOperationWithPurgeContext(ctx, root, id, client, nil, now)
+}
+
+func ReconcileLifecycleOperationWithPurgeContext(ctx context.Context, root, id string, client SwayRequestClient, deleter LifecycleSessionDeleter, now time.Time) (LifecycleOutcome, error) {
 	outcome := LifecycleOutcome{OperationID: id, Status: "pending"}
 	entered := false
 	err := WithTerminalLifecycleLockContext(ctx, root, func() error {
@@ -83,7 +91,11 @@ func ReconcileLifecycleOperationContext(ctx context.Context, root, id string, cl
 			}
 			var complete bool
 			var stepErr error
-			complete, outcome.Effects, stepErr = reconcileLifecycleApplication(ctx, handle, client)
+			if operation.Kind == LifecyclePurge {
+				complete, outcome.Effects, stepErr = reconcileLifecyclePurge(ctx, handle, deleter)
+			} else {
+				complete, outcome.Effects, stepErr = reconcileLifecycleApplication(ctx, handle, client)
+			}
 			if stepErr == nil {
 				if complete {
 					outcome.Status = "completed"
@@ -116,7 +128,9 @@ func ReconcileLifecycleOperationContext(ctx context.Context, root, id string, cl
 				operation.NextAttempt = now.Add(delay).UTC()
 			}
 			outcome.Reason = operation.Reason
-			if err := handle.UpdateContext(ctx, operation); err != nil {
+			updateCtx, cancel := mutationCompensationContext(ctx)
+			defer cancel()
+			if err := handle.UpdateContext(updateCtx, operation); err != nil {
 				return errors.Join(stepErr, err)
 			}
 			return stepErr
@@ -141,6 +155,9 @@ func changeLifecycleOperation(ctx context.Context, root, id string, now time.Tim
 	return WithTerminalLifecycleLockContext(ctx, root, func() error {
 		return WithLifecycleOperationContext(ctx, root, id, func(handle *LifecycleOperationHandle) error {
 			operation := handle.Operation
+			if cancel && operation.Kind == LifecyclePurge {
+				return errors.New("durable terminal purge cannot be cancelled; retry retains the original directory identity")
+			}
 			if cancel {
 				operation.Phase = LifecycleRollback
 			}

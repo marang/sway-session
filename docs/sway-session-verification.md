@@ -30,6 +30,87 @@ CI additionally runs GoReleaser configuration validation. A release candidate
 must also run a clean GoReleaser snapshot and inspect every archive, DEB, and
 RPM so only sway-session and the documented integration assets are present.
 
+## Executable lifecycle scenario matrix (LAB-134)
+
+Run the deterministic matrix with the declared toolchain:
+
+```sh
+GOTOOLCHAIN=go1.26.5 make lifecycle-check
+```
+
+The development-only [runner](../scripts/verify-lifecycle.sh) reuses existing
+runtime, storage, transport and shutdownwatch suites under the race detector.
+It runs each package with bounded deadlines and does not need Sway or Herdr.
+`make verify` remains the full required gate; this focused runner complements it.
+
+To include actual private-compositor/process checks:
+
+```sh
+GOTOOLCHAIN=go1.26.5 sh scripts/verify-lifecycle.sh --headless
+```
+
+The explicit headless mode requires `go`, `sway`, `alacritty` and `sleep`; a
+missing tool fails the runner rather than silently satisfying live acceptance.
+These are development tools, not new runtime package dependencies. Each live
+fixture starts its own compositor and uses disposable XDG/config/state roots,
+an environment allowlist and workspaces 98 or higher. Cleanup signals only
+fixture-owned processes. No production daemon, Herdr server, provider session
+or workstation compositor is stopped.
+
+Test names below are the evidence sources, not claims of VM reboot coverage.
+Most runtime tests are in `cmd/sway-session`; storage tests are in
+`internal/session`, and inhibitor tests are in `internal/shutdownwatch`.
+
+| Scenario | Required observable invariant | Automated evidence |
+| --- | --- | --- |
+| Create, map and reuse | Stable context is mapped once; an occupied agent is not restarted | `TestTerminalCommandCreatesThenReusesOneAgentAddressableDefault`, `TestTerminalCommandProjectRecoversMissingWindowWithoutRestartingOccupiedAgent`, `TestRestoreLaunchesMissingContextWithTypedArgumentsAndWaitsForMapping` (injected process boundary) |
+| Healthy close and reopen | Fresh absence after grace archives; explicit activation and a new map reuse the context | Private-Sway `TestTerminalLifecycleHealthyCloseReopenHeadless`; ordinary-close assertions in `TestObservedTerminalCloseArchivesAfterGraceAndFreshAbsence` |
+| New window during grace | Fresh presence cancels pending archival, including ambiguous duplicate identity | Private-Sway terminal lifecycle cases; `TestObservedTerminalCloseDropsReopenedTerminal`, `TestObservedTerminalCloseDropsAmbiguousReopenedIdentity` |
+| Daemon replacement and restart | Existing container IDs, adapter PIDs, foreground process start identities and eligibility survive; second daemon reports lock conflict; repeated restore reuses mapped windows | Private-Sway `TestDaemonExecutableReplacementPreservesWorkHeadless` |
+| Already missing at startup | Absence alone does not archive an active context | Private-Sway terminal lifecycle and executable-replacement cases; `TestSessionRuntimeStartupAndShutdownGuardsKeepPreviousLayout` checks layout preservation |
+| Disconnect and shutdown | Old close evidence is invalidated; partial observations do not authorize mutations | `TestObservedTerminalCloseDropsOnStreamDisconnectAndShutdown`, `TestSessionRuntimeStopsMutatingWhenStreamDisconnectsDuringReconcile`; `internal/swayipc` event-stream transport cases |
+| Preparation and inhibitor lifetime | Unsafe state is visible before inhibitor release; interrupted acquisition cannot re-enable the guard | `TestPreparationSignalsDisableBeforeReleasingInhibitor`, `TestPreparationInterruptsInFlightRearmAndReleasesNewInhibitor`, `TestSignalDuringStartupCannotEnableMonitor` (injected logind) |
+| Follow absence during unsafe lifecycle | Saved desired-open intent survives uncertain/shutdown absence; a new healthy close remains authoritative | `TestFollowApplicationShutdownPreservesDesiredOpen`, `TestFollowApplicationUncertainLifecycleRequiresNewHealthyPresence`; private-Sway `TestFollowApplicationShutdownHeadless` |
+| App appears during Prepare | Fresh presence prevents a duplicate start and attempt; an absent control still launches | `TestApplicationLaunchMapsDuringPreparation`, `TestApplicationLaunchMapsWhileWaitingForRegistryLock`; private-Sway `TestSessionRuntimeApplicationLaunchHeadless` |
+| Multi-pass restore and own focus | Own move/focus feedback does not cancel remaining work; restored structure and focus converge across workspaces | Deterministic `TestSessionRuntimeLifecycleFeedbackSequence` cases and `TestSessionRuntimeOwnStagingFocusContinuesReconstruction`; private-Sway `TestSessionRuntimeRestoreFocusHeadless` |
+| User cancellation and staged cleanup | Return only owned staged windows, remove temporary marks, retain later user placement and retry after reconnect | Deterministic feedback scenarios; `TestSessionRuntimeCleanupPreservesUserMovedWindow`, `TestSessionRuntimeCleanupWaitsForFreshConnection`; private-Sway `TestSessionRuntimeRestoreCleanupHeadless` |
+| Committed snapshot restart | Fresh store/runtime observation uses committed eligibility and layouts; archived contexts remain ineligible | `TestLayoutAcceptanceSelectsRestoreFromReloadedExactSnapshot`, `TestLayoutAcceptanceMixedArchivedWindowKeepsPlacementOnlyAfterReload`, `TestRestorePolicyMatchesActiveLayoutMembership`; executable-replacement scenario |
+| Interrupted external effects | Process death or lost acknowledgement leaves durable intent that a later exact retry completes without guessing | `TestLifecycleCrashApplicationEffectsSurviveProcessDeath`, `TestLifecycleCrashLostMarkAcknowledgementsAreObserved`, `TestLifecycleCrashConcurrentProcessRetries`, `TestTerminalPurgeProcessDeathRecovery`, `TestTerminalPurgeRetriesNilUnavailableBusyAndLostAck`; private-Sway `TestLifecycleHeadlessApplicationRecovery` |
+| Fixture publication and child cleanup | Readers only see complete owner-only JSON; launcher children are reaped | Terminal environment tests use temp-file/rename publication; focused `TestExecProcessStarter*` evidence belongs to LAB-139 |
+
+The deterministic cleanup compositor applies staging/move/mark effects to its
+observed tree and queues move, implicit focus and tick-barrier events for
+`HandleEvent`. It is not a general Sway emulator: complete structural
+reconstruction, nested/floating shapes and real command-generated events are
+also checked by the existing private-Sway focus/layout harnesses. A requester
+that only records commands is not cited as feedback-loop evidence.
+
+The executable replacement scenario builds two differently stamped copies of
+the current source and atomically replaces their pathname. It verifies the old
+running inode through `/proc/PID/exe`, then requires a fresh automatic restore
+run after explicit restart. It is not a historical-release compatibility test.
+Alacritty runs `sleep` as a synthetic foreground agent; PID plus process start
+time and non-zombie state verify continuity. This is process-survival evidence,
+not Herdr pane history or Codex/Claude conversation-resume evidence. The
+executable scenario uses a deliberately absent private system bus; healthy
+close and inhibitor ordering have their separate injected-guard tests.
+
+Sway cannot reliably distinguish an ordinary client crash from an intentional
+window close when both produce the same healthy close/absence sequence. The
+healthy-close assertions document that limitation; shutdown/disconnect/unsafe
+guard cases test separate conservative behavior. Do not infer user intent from
+startup absence or claim injected shutdown signals prove a real reboot.
+
+Actual VM reboot and real logind ordering are **not run** for LAB-134 because no
+disposable VM was supplied. The existing opt-in
+[guest reboot procedure](follow-application-vm-check.md) records guest boot IDs,
+pre-daemon eligible state, healthy-close controls and real inhibitor evidence.
+A private compositor, forced reset or simulated logind event does not satisfy
+that evidence class. Uncovered saga behavior remains scoped to LAB-116;
+per-compositor adopted-app startup opportunities across daemon restart remain
+the focused LAB-211 follow-up. This test issue does not change production
+behavior or claim those outstanding fixes are delivered.
+
 ## Doctor checks
 
 Run the focused shared-service, CLI, and TUI tests before the full gate:

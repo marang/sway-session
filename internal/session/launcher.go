@@ -50,9 +50,9 @@ func (ExecProcessStarter) Start(spec ProcessSpec) error {
 	if err := command.Start(); err != nil {
 		return err
 	}
-	if err := command.Process.Release(); err != nil {
-		return &ProcessLaunchOutcomeUnknownError{Err: err}
-	}
+	// Reap this owned child without waiting for application exit in Start.
+	// Later exit status does not change the accepted launch result.
+	go func() { _ = command.Wait() }()
 	return nil
 }
 

@@ -207,6 +207,26 @@ GOTOOLCHAIN=go1.26.5 go test ./internal/session \
 
 These tests use disposable SQLite roots and require no compositor.
 
+Registry snapshot commits also retain `context.Canceled` or
+`context.DeadlineExceeded` when `database/sql` claims its automatic rollback
+before `Commit`. A SQLite driver wrapper triggers cancellation after the final
+rows close and waits for that ordering; it does not fabricate a commit error.
+The existing read-commit test checks that a closed transaction with a live
+context still reports `sql.ErrTxDone`. The terminal-close deadline test verifies
+that an expired observation retains the active context and pending candidate,
+then archives it only after a fresh observation on retry. The 257-context test
+checks eventual completion across bounded batches:
+
+```sh
+GOTOOLCHAIN=go1.26.5 go test -race ./internal/session \
+  -run '^(TestStoredRegistrySnapshotCancellationAfterRowsClose|TestReadCommitCancellationRetainsItsCauseAfterRollback)$' -count=10
+GOTOOLCHAIN=go1.26.5 go test -race ./cmd/sway-session \
+  -run '^(TestObservedTerminalCloseDeadlineRetainsCandidateAndArchivesOnRetry|TestObservedTerminalCloseArchivesEveryCandidateBeyondOneBatch)$' -count=10
+```
+
+These checks use disposable state and a fake compositor. They do not establish
+physical reboot or live compositor behavior.
+
 Create a fresh schema-1 database:
 
 ~~~sh

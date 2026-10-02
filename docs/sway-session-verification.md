@@ -103,7 +103,7 @@ startup absence or claim injected shutdown signals prove a real reboot.
 
 Actual VM reboot and real logind ordering are **not run** for LAB-134 because no
 disposable VM was supplied. The existing opt-in
-[guest reboot procedure](follow-application-vm-check.md) records guest boot IDs,
+[guest reboot procedure](https://github.com/marang/sway-session/blob/03e9cfdf47fa40965eb73b391285ec80eb66feb1/docs/follow-application-vm-check.md) records guest boot IDs,
 pre-daemon eligible state, healthy-close controls and real inhibitor evidence.
 A private compositor, forced reset or simulated logind event does not satisfy
 that evidence class. Uncovered saga behavior remains scoped to LAB-116;
@@ -511,7 +511,7 @@ uncertain observation cannot trigger an extra launch or focus change.
 The opt-in private compositor test uses a real disposable application window
 and injected lifecycle guards. This checks the runtime/Sway boundary but is not
 evidence of actual logind ordering or a reboot. For that separate acceptance
-check, use the [disposable VM procedure](follow-application-vm-check.md). Never
+check, use the [disposable VM procedure](https://github.com/marang/sway-session/blob/03e9cfdf47fa40965eb73b391285ec80eb66feb1/docs/follow-application-vm-check.md). Never
 reboot the workstation or reuse production state to run it.
 
 For the manager, archive consecutive items at the middle and end of the active

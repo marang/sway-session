@@ -67,10 +67,13 @@ install: build
 	install -d $(DOC_ROOT)/contrib/apparmor
 	install -d $(DOC_ROOT)/scripts
 	install -d $(DOC_ROOT)/docs/adr
+	install -d $(DOC_ROOT)/docs/research
 	install -d $(DOC_ROOT)/docs/assets
 	install -m644 docs/assets/*.jpeg $(DOC_ROOT)/docs/assets/
 	install -m644 docs/branding.md $(DOC_ROOT)/docs/branding.md
 	install -m644 docs/agent-reporting.md $(DOC_ROOT)/docs/agent-reporting.md
+	install -m644 docs/lifecycle-recovery.md $(DOC_ROOT)/docs/lifecycle-recovery.md
+	install -m644 docs/research/herdr-plugin-session-deletion.md $(DOC_ROOT)/docs/research/herdr-plugin-session-deletion.md
 	install -m644 README.md $(DOC_ROOT)/README.md
 	install -m644 LICENSE $(DOC_ROOT)/LICENSE
 	install -m644 docs/sway-session-plan.md $(DOC_ROOT)/docs/sway-session-plan.md

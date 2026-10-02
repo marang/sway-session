@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -31,8 +32,13 @@ func TestStateAccessSpansApplicationCompensation(t *testing.T) {
 				sandbox := "org.example.Rebound"
 				window.SandboxAppID = &sandbox
 			}
-			client := &mutationSwayClient{tree: applicationTree(window), reject: operation == "forget"}
-			if operation != "forget" {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			client := &mutationSwayClient{tree: applicationTree(window)}
+			if operation == "forget" {
+				client.honorContext = true
+				client.cancelAfterCommand = cancel
+			} else {
 				client.unknownAfterApply = true
 				client.observeFailuresAfterCommand = 2
 			}
@@ -43,22 +49,14 @@ func TestStateAccessSpansApplicationCompensation(t *testing.T) {
 					return
 				}
 				compensated = true
-				// Durable compensation serializes observation and effects under the
-				// registry lock; the legacy forget path retains its outer state guard.
+				// Compensation keeps registry observation and Sway effects serialized.
 				lockErr := unix.Flock(int(directory.Fd()), unix.LOCK_EX|unix.LOCK_NB)
-				if operation == "forget" {
-					if lockErr != nil {
-						t.Fatalf("forget compensation still holds registry lock: %v", lockErr)
-					}
+				if lockErr == nil {
 					_ = unix.Flock(int(directory.Fd()), unix.LOCK_UN)
-				} else {
-					if lockErr == nil {
-						_ = unix.Flock(int(directory.Fd()), unix.LOCK_UN)
-						t.Fatal("durable compensation released its registry lock")
-					}
-					if !errors.Is(lockErr, unix.EWOULDBLOCK) {
-						t.Fatalf("probe registry lock: %v", lockErr)
-					}
+					t.Fatal("compensation released its registry lock")
+				}
+				if !errors.Is(lockErr, unix.EWOULDBLOCK) {
+					t.Fatalf("probe registry lock: %v", lockErr)
 				}
 			}
 			var err error
@@ -70,7 +68,7 @@ func TestStateAccessSpansApplicationCompensation(t *testing.T) {
 				replacement.ID = registered.ID
 				_, _, err = RebindApplicationContext(t.Context(), root, client, registered, replacement, 42)
 			case "forget":
-				_, err = ForgetApplicationContext(t.Context(), root, client, string(registered.ID))
+				_, err = ForgetApplicationContext(ctx, root, client, string(registered.ID))
 			}
 			if err == nil || !compensated {
 				t.Fatalf("did not exercise failed mutation and compensation: compensated=%v err=%v", compensated, err)

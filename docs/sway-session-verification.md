@@ -627,3 +627,18 @@ server processes were stopped and reaped. No live user sessions or compositor
 workspaces were used. These checks exercise the native integration; they do not
 prove atomic exclusion of concurrent Herdr startup or handoff. That residual
 name-based deletion boundary is documented in [lifecycle recovery](lifecycle-recovery.md).
+
+## Application forget compensation (LAB-209)
+
+`TestAppForgetCancellationSerializesCompensationWithRebindFocused` exercises both
+CLI entrypoints with real state locks and a fake compositor. It cancels forget
+after the original unmark, starts rebind during compensation, and checks the
+replacement's sole mark ownership, registry identity and retired reservation.
+The previous implementation fails with `mark_ownership_changed`.
+
+Core tests additionally cover cancellation with an unchanged, replaced or closed
+window, foreign or moved marks, compositor replacement, and both committed and
+uncommitted uncertain database outcomes. The recovery-gate test proves state
+recovery remains excluded through compensation and the locks are then released.
+These are deterministic concurrency and fault-injection checks; they do not
+claim a real machine reboot or application-session recovery.

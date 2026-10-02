@@ -624,7 +624,8 @@ func TestAppPinArchiveActivateAndForgetLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	mark, _ := registered.ID.Mark()
-	window := &swayipc.TreeNode{ID: 44, Type: "con", Marks: []string{mark}}
+	appID := "org.example.App"
+	window := &swayipc.TreeNode{ID: 44, Type: "con", AppID: &appID, Marks: []string{mark}}
 	client := &appCommandClient{tree: applicationCommandTree(window)}
 	deps.newSwayClient = func(string) swayRequester { return client }
 	for _, arguments := range [][]string{{"app", "pin", "Example"}, {"app", "archive", "Example"}, {"app", "activate", "Example"}, {"app", "unpin", "Example"}} {

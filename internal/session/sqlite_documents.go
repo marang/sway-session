@@ -111,7 +111,7 @@ func (store RegistryStore) LoadIfChangedContext(
 	present := presentInteger == 1
 	changed := revision != knownRevision || present != knownPresent
 	if !changed || !present {
-		if err := tx.Commit(); err != nil {
+		if err := commitStateRead(ctx, tx); err != nil {
 			return emptyRegistry(), 0, false, false, fmt.Errorf("finish registry revision snapshot: %w", err)
 		}
 		return emptyRegistry(), revision, present, changed, nil
@@ -123,7 +123,7 @@ func (store RegistryStore) LoadIfChangedContext(
 	if loadedRevision != revision {
 		return emptyRegistry(), 0, false, false, errors.New("registry revision changed inside one read snapshot")
 	}
-	if err := tx.Commit(); err != nil {
+	if err := commitStateRead(ctx, tx); err != nil {
 		return emptyRegistry(), 0, false, false, fmt.Errorf("finish changed registry snapshot: %w", err)
 	}
 	return registry, revision, true, true, nil
@@ -310,6 +310,10 @@ func loadStoredRegistryRows(ctx context.Context, database *stateDatabase) (map[s
 		return nil, false, 0, fmt.Errorf("begin stored registry snapshot: %w", err)
 	}
 	defer tx.Rollback()
+	return loadStoredRegistryRowsTransaction(ctx, tx)
+}
+
+func loadStoredRegistryRowsTransaction(ctx context.Context, tx *sql.Tx) (map[string]storedContextRow, bool, int64, error) {
 	var revision int64
 	if err := tx.QueryRowContext(ctx, "SELECT registry_revision FROM state_meta WHERE id = 1").Scan(&revision); err != nil {
 		return nil, false, 0, fmt.Errorf("load stored registry revision: %w", err)
@@ -342,7 +346,7 @@ func loadStoredRegistryRows(ctx context.Context, database *stateDatabase) (map[s
 	if err := existingRows.Close(); err != nil {
 		return nil, false, 0, fmt.Errorf("close stored context keys: %w", err)
 	}
-	if err := tx.Commit(); err != nil {
+	if err := commitStateRead(ctx, tx); err != nil {
 		return nil, false, 0, fmt.Errorf("finish stored registry snapshot: %w", err)
 	}
 	return existing, indicators == 1, revision, nil

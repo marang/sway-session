@@ -11,12 +11,13 @@ import (
 // Pass the original transport through: the core pins a fresh connection for
 // each application operation, independently of normal daemon reconnection.
 type lifecycleCoreAdapter struct {
-	root   string
-	client sessionstate.SwayRequestClient
+	root    string
+	client  sessionstate.SwayRequestClient
+	deleter sessionstate.LifecycleSessionDeleter
 }
 
 func (adapter lifecycleCoreAdapter) Reconcile(ctx context.Context, now time.Time, after string, limit int) (sessionstate.LifecycleReconcileResult, error) {
-	return sessionstate.ReconcileLifecycleOperationsContext(ctx, adapter.root, adapter.client, now, after, limit)
+	return sessionstate.ReconcileLifecycleOperationsWithPurgeContext(ctx, adapter.root, adapter.client, adapter.deleter, now, after, limit)
 }
 
 func (adapter lifecycleCoreAdapter) BlockedContextIDs(ctx context.Context) ([]sessionstate.ContextID, error) {
@@ -48,6 +49,9 @@ func runLifecycleOperationAction(ctx context.Context, root, id string, cancel bo
 	}
 	if cancel {
 		outcome.Status = "rollback"
+	}
+	if operation.Kind == sessionstate.LifecyclePurge {
+		return sessionstate.ReconcileLifecycleOperationWithPurgeContext(ctx, root, id, nil, nativePurgeDeleter(deps.resolveProgram, deps.herdrRunner), now)
 	}
 	var problem *commandFailure
 	socket, problem = applicationSocket(socket)

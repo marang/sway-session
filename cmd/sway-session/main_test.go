@@ -481,7 +481,7 @@ func TestUnknownArchiveCommitRejectsAConcurrentArchiveGeneration(t *testing.T) {
 	}
 }
 
-func TestPurgeStopsDeletesAndThenRemovesRegistryEntry(t *testing.T) {
+func TestPurgeRecordsIntentBeforeStoppingAndDeleting(t *testing.T) {
 	deps := testDependencies(t)
 	registered := registerTestContext(t, deps)
 	paths, _ := deps.herdrPaths()
@@ -489,9 +489,15 @@ func TestPurgeStopsDeletesAndThenRemovesRegistryEntry(t *testing.T) {
 	if err := os.MkdirAll(sessionPath, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	runner := &recordingHerdrRunner{responses: []string{
-		herdrList(paths.Root, true), `{}`, herdrList(paths.Root, false), `{}`, `{"sessions":[]}`,
-	}, deletePath: sessionPath}
+	root, _ := deps.stateRoot()
+	runner := &purgeLifecycleRunner{root: paths.Root, running: true, beforeEffect: func() {
+		if len(loadTestRegistry(t, deps).Contexts) != 0 {
+			t.Fatal("external purge started before disabling restore")
+		}
+		if _, found, err := sessionstate.FindPendingTerminalPurgeContext(t.Context(), root, registered.ID); err != nil || !found {
+			t.Fatalf("external purge started without durable intent: %v", err)
+		}
+	}}
 	deps.herdrRunner = runner
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -504,7 +510,6 @@ func TestPurgeStopsDeletesAndThenRemovesRegistryEntry(t *testing.T) {
 	if len(loadTestRegistry(t, deps).Contexts) != 0 {
 		t.Fatal("purged context remains in registry")
 	}
-	root, _ := deps.stateRoot()
 	activity, err := sessionstate.ReadTerminalActivitySnapshot(root)
 	if err != nil {
 		t.Fatal(err)
@@ -512,15 +517,11 @@ func TestPurgeStopsDeletesAndThenRemovesRegistryEntry(t *testing.T) {
 	if _, exists := sessionstate.FindTerminalActivity(activity, registered.ID); exists {
 		t.Fatalf("purged context retained terminal activity: %+v", activity)
 	}
-	wantCalls := [][]string{
-		{"session", "list", "--json"},
-		{"session", "stop", "lab-80", "--json"},
-		{"session", "list", "--json"},
-		{"session", "delete", "lab-80", "--json"},
-		{"session", "list", "--json"},
+	if !reflect.DeepEqual(runner.effects, []string{"stop", "delete"}) {
+		t.Fatalf("unexpected Herdr effects: %v", runner.effects)
 	}
-	if !reflect.DeepEqual(runner.calls, wantCalls) {
-		t.Fatalf("unexpected Herdr calls: got=%v want=%v", runner.calls, wantCalls)
+	if _, found, err := sessionstate.FindPendingTerminalPurgeContext(t.Context(), root, registered.ID); err != nil || found {
+		t.Fatalf("completed purge retained intent: %v", err)
 	}
 }
 
@@ -532,39 +533,37 @@ func TestPurgeRefusesWhenActiveAgentPreventsSessionStop(t *testing.T) {
 	if err := os.MkdirAll(sessionPath, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	runner := &recordingHerdrRunner{
-		responses: []string{herdrList(paths.Root, true), ""},
-		errors:    []error{nil, errors.New("active agent refused shutdown")},
-	}
+	runner := &purgeLifecycleRunner{root: paths.Root, running: true, busy: true}
 	deps.herdrRunner = runner
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 
 	code := runWith([]string{"--json", "purge", "--yes", string(registered.ID)}, strings.NewReader(""), &stdout, &stderr, deps)
 
-	if code != exitOperation || stdout.Len() != 0 || !strings.Contains(stderr.String(), `"code":"herdr"`) ||
+	if code != exitOperation || !strings.Contains(stdout.String(), `"purge_pending"`) || !strings.Contains(stderr.String(), `"code":"lifecycle_operation_retry"`) ||
 		!strings.Contains(stderr.String(), "active agent refused shutdown") {
 		t.Fatalf("active-agent purge code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
-	if !reflect.DeepEqual(runner.calls, [][]string{
-		{"session", "list", "--json"}, {"session", "stop", "lab-80", "--json"},
-	}) {
-		t.Fatalf("purge continued after refused stop: %v", runner.calls)
+	if !reflect.DeepEqual(runner.effects, []string{"stop"}) {
+		t.Fatalf("purge continued after refused stop: %v", runner.effects)
 	}
 	if _, err := os.Stat(sessionPath); err != nil {
 		t.Fatalf("refused purge removed Herdr session state: %v", err)
 	}
 	registry := loadTestRegistry(t, deps)
-	if len(registry.Contexts) != 1 || registry.Contexts[0].ID != registered.ID {
-		t.Fatalf("refused purge changed registry: %+v", registry)
+	if len(registry.Contexts) != 0 {
+		t.Fatalf("pending purge retained restore eligibility: %+v", registry)
 	}
 	root, _ := deps.stateRoot()
+	if operation, found, err := sessionstate.FindPendingTerminalPurgeContext(t.Context(), root, registered.ID); err != nil || !found || operation.Attempts != 1 {
+		t.Fatalf("refused purge lost durable retry: %+v %v", operation, err)
+	}
 	activity, err := sessionstate.ReadTerminalActivitySnapshot(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, exists := sessionstate.FindTerminalActivity(activity, registered.ID); !exists {
-		t.Fatalf("refused purge removed terminal activity: %+v", activity)
+	if _, exists := sessionstate.FindTerminalActivity(activity, registered.ID); exists {
+		t.Fatalf("pending purge left orphan activity: %+v", activity)
 	}
 }
 
@@ -1283,15 +1282,19 @@ func testDependencies(t *testing.T) dependencies {
 	base := t.TempDir()
 	root := filepath.Join(base, "state", "sway-session")
 	project := filepath.Join(base, "project")
-	herdrRoot, err := os.MkdirTemp("", "herdr-test-")
+	herdrBase, err := os.MkdirTemp("", "herdr-test-")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		if err := os.RemoveAll(herdrRoot); err != nil {
+		if err := os.RemoveAll(herdrBase); err != nil {
 			t.Errorf("remove Herdr test root: %v", err)
 		}
 	})
+	herdrRoot := filepath.Join(herdrBase, "herdr")
+	if err := os.Mkdir(herdrRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(project, 0o700); err != nil {
 		t.Fatal(err)
 	}

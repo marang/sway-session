@@ -64,7 +64,9 @@ func (err lifecycleOperationDiagnostic) Error() string {
 
 func (err lifecycleOperationDiagnostic) Diagnostic() diagnostic.Diagnostic {
 	hint := "Inspect sway-session state operations. Retry this exact operation with sway-session state operations --retry " + err.outcome.OperationID + "."
-	hint += " Request rollback with sway-session state operations --cancel " + err.outcome.OperationID + "; identity checks still apply."
+	if err.outcome.Kind != sessionstate.LifecyclePurge {
+		hint += " Request rollback with sway-session state operations --cancel " + err.outcome.OperationID + "; identity checks still apply."
+	}
 	return diagnostic.Diagnostic{
 		Level: diagnostic.LevelError, Code: "lifecycle_operation_" + err.outcome.Status,
 		Message: err.Error(), Hint: hint,

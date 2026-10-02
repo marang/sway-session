@@ -213,11 +213,27 @@ func executePurge(ctx context.Context, arguments []string, stdin io.Reader, stde
 	if err := sessionstate.RegistryStoreFor(root).LoadIntoContext(ctx, &registry); err != nil {
 		return commandResult{}, classifyStateError("load context registry", err)
 	}
-	index, err := sessionstate.ResolveContext(registry, set.Arg(0))
-	if err != nil {
-		return commandResult{}, classifyStateError("select context to purge", err)
+	// A begun purge has already removed its context from the registry. Its
+	// exact UUID still selects the durable intent, never a new label match.
+	var operation sessionstate.LifecycleOperation
+	var pending bool
+	var err error
+	if id := sessionstate.ContextID(set.Arg(0)); id.Validate() == nil {
+		operation, pending, err = sessionstate.FindPendingTerminalPurgeContext(ctx, root, id)
+		if err != nil {
+			return commandResult{}, classifyStateError("find pending purge", err)
+		}
 	}
-	target := registry.Contexts[index]
+	var target sessionstate.Context
+	if pending {
+		target = operation.Before[0]
+	} else {
+		index, err := sessionstate.ResolveContext(registry, set.Arg(0))
+		if err != nil {
+			return commandResult{}, classifyStateError("select context to purge", err)
+		}
+		target = registry.Contexts[index]
+	}
 	if target.Launcher.Kind != sessionstate.LauncherHerdr {
 		return commandResult{}, failure(
 			"context_kind",
@@ -254,84 +270,24 @@ func executePurge(ctx context.Context, arguments []string, stdin io.Reader, stde
 			return commandResult{}, failure("confirmation", "purge confirmation did not match the full context ID", "No state was deleted.")
 		}
 	}
-	paths, err := deps.herdrPaths()
+	now := deps.now().UTC()
+	if pending {
+		err = sessionstate.RetryLifecycleOperationContext(ctx, root, operation.ID, now)
+	} else {
+		paths, pathErr := deps.herdrPaths()
+		if pathErr != nil {
+			return commandResult{}, failure("herdr_path", "resolve Herdr paths", pathErr.Error())
+		}
+		err = sessionstate.WithTerminalLifecycleLockContext(ctx, root, func() error {
+			var beginErr error
+			operation, beginErr = sessionstate.StartTerminalPurgeContext(ctx, root, target, paths.Root, now)
+			return beginErr
+		})
+	}
 	if err != nil {
-		return commandResult{}, failure("herdr_path", "resolve Herdr paths", err.Error())
+		return commandResult{}, classifyStateError("record purge intent", err)
 	}
-	selector := string(target.ID)
-	externalReconciled := false
-	purgeCode := ""
-	mutate := func(registry *sessionstate.Registry) error {
-		purgeCode = ""
-		index, err := sessionstate.ResolveContext(*registry, selector)
-		if err != nil {
-			return err
-		}
-		current := registry.Contexts[index]
-		if !reflect.DeepEqual(current.Launcher, target.Launcher) {
-			return errors.New("context launcher changed while purge confirmation was pending")
-		}
-		rootExists, err := sessionstate.HerdrStateRootExists(paths.Root)
-		if err != nil {
-			purgeCode = "herdr_permissions"
-			return fmt.Errorf("refuse purge from an unsafe Herdr state root: %w", err)
-		}
-		if rootExists {
-			sessionExists, err := sessionstate.HerdrNamedSessionExists(paths.Root, current.Launcher.Session)
-			if err != nil {
-				purgeCode = "herdr_state"
-				return err
-			}
-			if sessionExists {
-				herdrExecutable, err := deps.resolveProgram("herdr")
-				if err != nil {
-					purgeCode = "missing_executable"
-					return fmt.Errorf("find Herdr executable for purge: %w", err)
-				}
-				manager := sessionstate.HerdrManager{
-					Executable: herdrExecutable, Root: paths.Root, Runner: deps.herdrRunner,
-				}
-				if err := manager.DeleteSession(ctx, current.Launcher.Session); err != nil {
-					purgeCode = "herdr"
-					return err
-				}
-			}
-		}
-		externalReconciled = true
-		_, err = sessionstate.RemoveContext(registry, selector)
-		if err != nil {
-			return err
-		}
-		return nil
-	}
-	err = sessionstate.WithTerminalLifecycleLockContext(ctx, root, func() error {
-		var purgeErr error
-		for attempt := 0; attempt < 2; attempt++ {
-			externalReconciled = false
-			_, purgeErr = sessionstate.UpdateRegistryContext(ctx, root, mutate)
-			if purgeErr == nil {
-				break
-			}
-			if registryMissingContext(ctx, root, target.ID, purgeErr) {
-				purgeErr = nil
-				break
-			}
-			if !externalReconciled {
-				break
-			}
-		}
-		if purgeErr != nil {
-			return purgeErr
-		}
-		return nil
-	})
-	if err != nil {
-		if purgeCode != "" {
-			return commandResult{}, failure(purgeCode, "purge context", err.Error())
-		}
-		return commandResult{}, classifyStateError("purge context", err)
-	}
-	return commandResult{Command: "purge", Contexts: []sessionstate.Context{target}, Actions: []string{"purged"}}, nil
+	return finishPurgeCommand(ctx, root, target, operation.ID, now, deps)
 }
 
 func executeRestore(ctx context.Context, arguments []string, deps dependencies) (resultValue commandResult, failureValue *commandFailure) {

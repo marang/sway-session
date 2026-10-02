@@ -118,6 +118,7 @@ func TestSessionRuntimeLateApplicationHeadless(t *testing.T) {
 			now := start
 			runtime, err := newSessionRuntimeWithOptions(requester, sessionRuntimeOptions{
 				Context: h.ctx, Root: h.state, StartedAt: start, EventStreamState: stream,
+				Now:                 func() time.Time { return now },
 				CompositorID:        strings.Repeat("a", 64),
 				ApplicationLauncher: launcher,
 				ApplicationRestore: sessionstate.ApplicationRestoreOptions{

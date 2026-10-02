@@ -360,6 +360,7 @@ func TestRestoreReportApplicationLaunchAcceptanceAndFailure(t *testing.T) {
 				t.Fatal(err)
 			}
 			runtime.applications = coordinator
+			enableApplicationLaunchFixture(runtime, now)
 			launcher := &recordingApplicationLauncher{}
 			cause := errors.New("private launch error")
 			if failure {
@@ -637,6 +638,7 @@ func restoreReportApplicationCoordinator(t *testing.T, runtime *sessionRuntime, 
 		t.Fatal(err)
 	}
 	runtime.applications = coordinator
+	enableApplicationLaunchFixture(runtime, now)
 }
 
 func TestRestoreReportExplicitApplicationRetryOnlyAfterDefinitiveRejection(t *testing.T) {

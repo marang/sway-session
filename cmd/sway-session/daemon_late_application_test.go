@@ -40,6 +40,7 @@ func applicationStartupScenario(t *testing.T, settle bool) (*sessionRuntime, *re
 	if err != nil {
 		t.Fatal(err)
 	}
+	enableApplicationLaunchFixture(runtime, start.Add(time.Second))
 	terminal := managedDaemonLeaf(t, 41, terminalID)
 	terminal.Marks = nil
 	if _, err := runtime.Reconcile(daemonTree("98", terminal), start); err != nil {
@@ -93,6 +94,7 @@ func TestSessionRuntimeDelayedApplicationPreservesInterveningIntent(t *testing.T
 			case "disconnect":
 				runtime.HandleEvent(swayipc.Event{Type: swayipc.EventStream, Change: "ready", StreamEpoch: 1}, now)
 				runtime.HandleEvent(swayipc.Event{Type: swayipc.EventStream, Change: "disconnected", StreamEpoch: 1}, now)
+				runtime.eventStreamState = &mutableEventStreamGuard{epoch: 2, connected: true}
 				runtime.HandleEvent(swayipc.Event{Type: swayipc.EventStream, Change: "ready", StreamEpoch: 2}, now)
 			case "desired-closed", "archived", "identity-changed":
 				_, err := sessionstate.UpdateRegistryContext(t.Context(), runtime.root, func(registry *sessionstate.Registry) error {

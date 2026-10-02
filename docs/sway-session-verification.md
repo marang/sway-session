@@ -502,6 +502,27 @@ ambiguous groups, mark retry, genuine mixed-workspace degradation, and retiring
 that degraded intent before its debounced snapshot is written. This is
 not a production reboot or application-internal session restore test.
 
+The application launch freshness regression maps a real matching Alacritty
+window during an injected launcher preparation, after the caller observed
+absence. It checks the real event subscription and current tree, zero starts
+and zero persisted attempts. Its absent control checks exactly one start with
+durable intent already visible inside the effect boundary:
+
+```sh
+SWAY_SESSION_HEADLESS_INTEGRATION=1 GOTOOLCHAIN=go1.26.5 \
+  go test -race ./cmd/sway-session \
+  -run '^TestSessionRuntimeApplicationLaunchHeadless$' -count=1 -v
+```
+
+Runtime tests (`TestApplicationLaunch*`) additionally cover mappings while the
+registry lock is held and between candidate preparations, stream replacement
+or disconnection during preparation and tree acquisition, missing streams,
+unavailable or invalid trees, ambiguous windows, lifecycle reservations, fresh
+attempt timestamps, idempotence, bounded rotation and concurrency. A lost
+stream after the intent commit blocks the effect while preserving the intent.
+All state and windows are disposable; the desktop command is injected, and
+these checks do not claim a real browser startup or workstation reboot.
+
 Use a disposable desktop entry and workspace 98 or higher. Never reuse or purge
 an unrelated registration.
 

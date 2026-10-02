@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -20,6 +21,7 @@ type recordingRequester struct {
 	failAt   int
 	failAll  bool
 	failure  error
+	tree     *Node
 }
 
 type mutableEventStreamGuard struct {
@@ -515,6 +517,10 @@ func (requester *recordingRequester) RequestContext(ctx context.Context, message
 	if err := ctx.Err(); err != nil {
 		return swayipc.Message{}, err
 	}
+	if messageType == swayipc.GetTree && requester.tree != nil {
+		encoded, err := json.Marshal(requester.tree)
+		return swayipc.Message{Type: messageType, Payload: encoded}, err
+	}
 	if messageType == swayipc.SendTick {
 		requester.barriers = append(requester.barriers, string(payload))
 		return swayipc.Message{Type: swayipc.SendTick, Payload: []byte(`{"success":true}`)}, nil
@@ -992,6 +998,7 @@ func TestSessionRuntimeLaunchesDesktopAppsOnlyAfterAdoptionAndPersistsIntentFirs
 	if err != nil {
 		t.Fatal(err)
 	}
+	enableApplicationLaunchFixture(runtime, start.Add(10*time.Second))
 	if _, err := runtime.Reconcile(daemonTree("98: apps"), start.Add(9*time.Second)); err != nil {
 		t.Fatal(err)
 	}
@@ -1047,6 +1054,7 @@ func TestSessionRuntimePreflightFailureDoesNotStarveLaterLaunchCandidates(t *tes
 		t.Fatal(err)
 	}
 
+	enableApplicationLaunchFixture(runtime, start.Add(time.Second))
 	_, reconcileErr := runtime.Reconcile(daemonTree("98: apps"), start.Add(time.Second))
 	if reconcileErr == nil || len(launcher.contexts) != 1 || launcher.contexts[0].ID != ids[1] {
 		t.Fatalf("bounded preflights did not advance to a valid candidate: launches=%+v err=%v", launcher.contexts, reconcileErr)
@@ -1337,7 +1345,19 @@ func testApplicationRuntime(t *testing.T) (*sessionRuntime, *recordingRequester,
 	if err != nil {
 		t.Fatal(err)
 	}
+	enableApplicationLaunchFixture(runtime, start.Add(10*time.Second))
 	return runtime, requester, launcher, context, start
+}
+
+// Existing absent-app fixtures provide an explicit live tree, current stream
+// and virtual launch clock. Tests of stale evidence use independent hooks.
+func enableApplicationLaunchFixture(runtime *sessionRuntime, now time.Time) {
+	runtime.eventStreamState = &mutableEventStreamGuard{epoch: 1, connected: true}
+	runtime.eventStreamReady, runtime.eventStreamEpoch = true, 1
+	runtime.now = func() time.Time { return now }
+	if client, ok := runtime.client.(*recordingRequester); ok {
+		client.tree = daemonTree("98: apps")
+	}
 }
 
 func TestSessionRuntimeCapturesManualMoveOfMarkedWindowAfterDebounce(t *testing.T) {

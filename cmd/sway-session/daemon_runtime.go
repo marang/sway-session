@@ -58,6 +58,7 @@ type sessionRuntimeOptions struct {
 	Root                string
 	CompositorID        string
 	StartedAt           time.Time
+	Now                 func() time.Time
 	ApplicationLauncher applicationContextLauncher
 	ApplicationRestore  sessionstate.ApplicationRestoreOptions
 	IndicatorCatalog    func() (sessionstate.DesktopCatalog, error)
@@ -115,6 +116,7 @@ type sessionRuntime struct {
 	applications                 *sessionstate.ApplicationRestoreCoordinator
 	applicationCloseGeneration   automaticCloseGeneration
 	applicationLauncher          applicationContextLauncher
+	now                          func() time.Time
 	applicationCursor            sessionstate.ContextID
 	applicationPlacementCursor   *sessionstate.PlacementAction
 	placementCursor              *sessionstate.PlacementAction
@@ -234,6 +236,7 @@ func newSessionRuntimeWithOptions(client swayRequester, options sessionRuntimeOp
 		restoreRecoveryPending: true,
 		startupComplete:        len(previous.Workspaces) == 0,
 		applicationLauncher:    options.ApplicationLauncher,
+		now:                    options.Now,
 		expectedMoves:          make(map[int64][]uint64),
 		eventStreamState:       options.EventStreamState,
 		terminalCloseGuard:     options.TerminalCloseGuard,
@@ -242,6 +245,9 @@ func newSessionRuntimeWithOptions(client swayRequester, options sessionRuntimeOp
 		lifecycleOperations:    options.LifecycleOperations,
 		observedTerminals:      make(map[int64]terminalCloseObservation),
 		pendingTerminalClose:   make(map[int64]terminalCloseCandidate),
+	}
+	if runtime.now == nil {
+		runtime.now = time.Now
 	}
 	if options.CompositorID != "" {
 		applicationState := sessionstate.ApplicationSessionState{}
@@ -982,6 +988,7 @@ func (runtime *sessionRuntime) reconcileObservedApplications(root *Node, registr
 		}
 	}
 	refresh := false
+	launchEpoch := runtime.eventStreamEpoch
 	var degradedErrors []error
 	err = sessionstate.WithRegistryLockContext(runtime.context(), runtime.root, func(*statefile.LockedPrivateDirectory) error {
 		current, available, err := runtime.loadRegistry()
@@ -1064,6 +1071,10 @@ func (runtime *sessionRuntime) reconcileObservedApplications(root *Node, registr
 			}
 			preflights++
 			runtime.applicationCursor = context.ID
+			if err := runtime.applicationLaunchStreamCurrent(launchEpoch); err != nil {
+				launchErrors = append(launchErrors, err)
+				break
+			}
 			if runtime.applicationLauncher == nil {
 				runtime.recordRestoreReportEffect(restoreReportEffect{id: context.ID, identityDigest: sessionstate.RestoreContextDigest(context), reason: "launch_failed"})
 				launchErrors = append(launchErrors, fmt.Errorf("launch desktop application %q: launcher is unavailable", context.ID))
@@ -1075,8 +1086,17 @@ func (runtime *sessionRuntime) reconcileObservedApplications(root *Node, registr
 				launchErrors = append(launchErrors, fmt.Errorf("prepare desktop application launch %q: %w", context.ID, err))
 				continue
 			}
+			eligible, present, launchNow, err := runtime.confirmApplicationLaunch(context, launchEpoch)
+			if err != nil {
+				launchErrors = append(launchErrors, fmt.Errorf("confirm desktop application launch %q: %w", context.ID, err))
+				continue
+			}
+			refresh = refresh || present
+			if !eligible {
+				continue
+			}
 			previousState := runtime.applications.State()
-			candidate, err := runtime.applications.BeginAttempt(context.ID, now)
+			candidate, err := runtime.applications.BeginAttempt(context.ID, launchNow)
 			if err != nil {
 				launchErrors = append(launchErrors, fmt.Errorf("begin desktop application launch %q: %w", context.ID, err))
 				continue
@@ -1095,6 +1115,12 @@ func (runtime *sessionRuntime) reconcileObservedApplications(root *Node, registr
 				launchErrors = append(launchErrors, fmt.Errorf("desktop application launch intent %q is visible but crash durability is unknown: %w", context.ID, saveErr))
 			}
 			launchSlots--
+			// The short persistence step can still overlap a disconnect. Keep
+			// its durable intent conservatively, but never start on a lost stream.
+			if err := runtime.applicationLaunchStreamCurrent(launchEpoch); err != nil {
+				launchErrors = append(launchErrors, err)
+				break
+			}
 			if err := prepared.Start(); err != nil {
 				var unknown *sessionstate.ProcessLaunchOutcomeUnknownError
 				if errors.As(err, &unknown) {
@@ -1104,7 +1130,7 @@ func (runtime *sessionRuntime) reconcileObservedApplications(root *Node, registr
 					if runtime.rejectedApplicationStarts == nil {
 						runtime.rejectedApplicationStarts = make(map[sessionstate.ContextID]rejectedApplicationStart)
 					}
-					runtime.rejectedApplicationStarts[context.ID] = rejectedApplicationStart{startedAt: now.UTC(), identityDigest: sessionstate.RestoreContextDigest(context)}
+					runtime.rejectedApplicationStarts[context.ID] = rejectedApplicationStart{startedAt: launchNow.UTC(), identityDigest: sessionstate.RestoreContextDigest(context)}
 					runtime.recordRestoreReportEffect(restoreReportEffect{id: context.ID, identityDigest: sessionstate.RestoreContextDigest(context), reason: "launch_failed"})
 				}
 				launchErrors = append(launchErrors, fmt.Errorf("launch desktop application %q: %w", context.ID, err))

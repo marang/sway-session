@@ -113,6 +113,19 @@ on one side.
 All probes use disposable XDG roots. Never point a test command at live user
 state.
 
+The terminal-creation registry regression checks that successful mutations
+return the full committed registry for both activity-recording branches, with
+new and existing state. It also verifies creation timestamps and the existing
+rollback behavior when an activity insert fails:
+
+```sh
+GOTOOLCHAIN=go1.26.5 go test ./internal/session \
+  -run '^(TestRegistryWithTerminalCreationReturnsCommittedRegistry|TestTerminalContextAndCreationActivityCommitAtomically)$' \
+  -count=1
+```
+
+These tests use disposable SQLite roots and require no compositor.
+
 Create a fresh schema-1 database:
 
 ~~~sh

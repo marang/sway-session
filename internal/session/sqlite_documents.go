@@ -547,7 +547,8 @@ func UpdateRegistryContext(ctx context.Context, root string, mutate func(*Regist
 // UpdateRegistryWithTerminalCreationContext commits one registry mutation and
 // the newly created terminal's presentation timestamp in the same SQLite
 // transaction. The callback is evaluated while the registry lifecycle lock is
-// held but outside the database transaction.
+// held but outside the database transaction. On success, the committed registry
+// is returned whether or not the creation callback requests activity recording.
 func UpdateRegistryWithTerminalCreationContext(
 	ctx context.Context,
 	root string,
@@ -568,7 +569,8 @@ func UpdateRegistryWithTerminalCreationContext(
 	defer database.Close()
 	var candidate Registry
 	err = WithRegistryLockContext(ctx, root, func(*statefile.LockedPrivateDirectory) error {
-		candidate, revision, err := loadRegistrySnapshotDatabase(ctx, database)
+		var revision int64
+		candidate, revision, err = loadRegistrySnapshotDatabase(ctx, database)
 		if errors.Is(err, os.ErrNotExist) {
 			candidate = initial
 			revision = 0

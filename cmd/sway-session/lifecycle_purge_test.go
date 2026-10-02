@@ -106,6 +106,38 @@ func TestPendingPurgeExactContextRetryUsesRecordedRoot(t *testing.T) {
 	}
 }
 
+func TestPurgeHoldsRecoveryGateAcrossForegroundOperation(t *testing.T) {
+	deps := testDependencies(t)
+	item := registerTestContext(t, deps)
+	root, _ := deps.stateRoot()
+	backup := filepath.Join(t.TempDir(), "before-purge.sqlite3")
+	if err := os.Chmod(filepath.Dir(backup), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sessionstate.BackupState(t.Context(), root, backup); err != nil {
+		t.Fatal(err)
+	}
+	paths := deps.herdrPaths
+	checked := false
+	deps.herdrPaths = func() (sessionstate.HerdrPaths, error) {
+		// At this point no inner registry or lifecycle lock is held. The
+		// command-wide lease must already exclude database replacement.
+		_, err := sessionstate.RecoverState(t.Context(), root, backup, true)
+		if !errors.Is(err, sessionstate.ErrStateDatabaseBusy) {
+			t.Fatalf("recovery overtook confirmed foreground purge: %v", err)
+		}
+		checked = true
+		return paths()
+	}
+	result, problem := executePurge(t.Context(), []string{"--yes", string(item.ID)}, strings.NewReader(""), &bytes.Buffer{}, true, deps)
+	if !checked || problem != nil || !reflect.DeepEqual(result.Actions, []string{"purged"}) {
+		t.Fatalf("result=%+v problem=%+v checked=%v", result, problem, checked)
+	}
+	if _, err := sessionstate.RecoverState(t.Context(), root, backup, true); err != nil {
+		t.Fatalf("completed command retained its access lease: %v", err)
+	}
+}
+
 func TestPurgeFailureBeforeJournalLoadRetainsKindAndHonestRecoveryHint(t *testing.T) {
 	deps, item, operation, runner := newPendingPurgeFixture(t)
 	root, _ := deps.stateRoot()

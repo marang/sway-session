@@ -169,13 +169,27 @@ func TestStateOperationsRejectsNilClientWithoutLosingIntent(t *testing.T) {
 
 func TestStateOperationsRetryAdvancesOneStepWithOriginalClient(t *testing.T) {
 	root, operation := newStateOperationFixture(t)
+	backup := filepath.Join(t.TempDir(), "before-retry.sqlite3")
+	if err := os.Chmod(filepath.Dir(backup), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sessionstate.BackupState(t.Context(), root, backup); err != nil {
+		t.Fatal(err)
+	}
 	app := operation.After[0]
 	appID, sandbox := app.App.Identity.WaylandAppID, app.App.Identity.SandboxAppID
 	node := &Node{ID: 42, Type: "con", AppID: &appID, SandboxAppID: &sandbox}
 	client := &lifecycleFixtureRequester{tree: daemonTree("98: fixture", node)}
 	mark, _ := app.ID.Mark()
 	client.afterCommand = func() { node.Marks = []string{mark} }
-	deps := dependencies{newSwayClient: func(string) swayRequester { return client }}
+	deps := dependencies{newSwayClient: func(string) swayRequester {
+		// Retry updated the durable operation and released its inner lock;
+		// reconciliation has not started. Recovery must not enter this gap.
+		if _, err := sessionstate.RecoverState(t.Context(), root, backup, true); !errors.Is(err, sessionstate.ErrStateDatabaseBusy) {
+			t.Fatalf("recovery replaced state between retry and reconciliation: %v", err)
+		}
+		return client
+	}}
 	outcome, err := runLifecycleOperationAction(t.Context(), root, operation.ID, false, "/fixture/socket", operation.UpdatedAt, deps)
 	if err != nil || outcome.Status != "pending" || !outcome.Effects || len(client.commands) != 1 || !client.closed {
 		t.Fatalf("outcome=%+v err=%v commands=%v closed=%v", outcome, err, client.commands, client.closed)

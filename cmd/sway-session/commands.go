@@ -270,6 +270,13 @@ func executePurge(ctx context.Context, arguments []string, stdin io.Reader, stde
 			return commandResult{}, failure("confirmation", "purge confirmation did not match the full context ID", "No state was deleted.")
 		}
 	}
+	// Recovery must not replace the database between durable intent and the
+	// foreground passes. Individual registry/lifecycle locks cover shorter steps.
+	access, err := sessionstate.AcquireStateAccess(ctx, root, true)
+	if err != nil {
+		return commandResult{}, classifyStateError("acquire purge state access", err)
+	}
+	defer access.Close()
 	now := deps.now().UTC()
 	if pending {
 		err = sessionstate.RetryLifecycleOperationContext(ctx, root, operation.ID, now)

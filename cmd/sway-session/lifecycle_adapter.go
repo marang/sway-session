@@ -34,6 +34,11 @@ func (adapter lifecycleCoreAdapter) BlockedContextIDs(ctx context.Context) ([]se
 
 func runLifecycleOperationAction(ctx context.Context, root, id string, cancel bool, socket string, now time.Time, deps dependencies) (sessionstate.LifecycleOutcome, error) {
 	outcome := sessionstate.LifecycleOutcome{OperationID: id, Status: "pending"}
+	access, err := sessionstate.AcquireStateAccess(ctx, root, true)
+	if err != nil {
+		return outcome, err
+	}
+	defer access.Close()
 	operation, err := sessionstate.LoadLifecycleOperationContext(ctx, root, id)
 	if err != nil {
 		return outcome, err

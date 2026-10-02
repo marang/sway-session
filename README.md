@@ -403,6 +403,10 @@ restore. purge first previews the canonical UUID; the destructive --yes form
 accepts only that UUID, stops and deletes the exact Herdr session, and removes
 its registry entry.
 
+Interrupted application registration and rebind are tracked by
+operation ID. Use `sway-session state operations` to inspect pending work and
+its recovery options. See [durable lifecycle recovery](docs/lifecycle-recovery.md).
+
 ## Restore behavior
 
 ~~~mermaid

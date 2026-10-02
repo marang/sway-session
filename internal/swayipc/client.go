@@ -45,6 +45,7 @@ type Client struct {
 	socket         string
 	conn           *Conn
 	requestTimeout time.Duration
+	compositor     *compositorLifetime
 }
 
 // NewClient creates a reconnecting Sway IPC request client.
@@ -52,7 +53,8 @@ func NewClient(socket string) *Client {
 	return &Client{socket: socket, requestTimeout: defaultRequestTimeout}
 }
 
-// Close closes the current control connection, if any.
+// Close closes the current control connection, if any. A compositor lifetime
+// pin is retained: use a new Client to explicitly select another compositor.
 func (client *Client) Close() {
 	if client == nil || client.conn == nil {
 		return
@@ -213,6 +215,9 @@ func CheckSendTickResponse(message Message) error {
 func (client *Client) ensureContext(ctx context.Context) error {
 	if client == nil {
 		return fmt.Errorf("sway ipc client is nil")
+	}
+	if client.compositor != nil {
+		return client.ensurePinnedCompositor(ctx)
 	}
 	if client.conn != nil {
 		return nil

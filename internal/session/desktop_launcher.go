@@ -222,6 +222,13 @@ func RemoveDesktopApprovalSnapshotContext(ctx context.Context, stateRoot string,
 		if registryReferencesDesktopApproval(registry, launcher.ApprovedDesktopPath) {
 			return nil
 		}
+		referenced, err := LifecycleReferencesDesktopApprovalContext(ctx, stateRoot, launcher.ApprovedDesktopPath)
+		if err != nil {
+			return err
+		}
+		if referenced {
+			return nil
+		}
 		return statefile.RemovePrivateFileContext(ctx, directory, filepath.Base(launcher.ApprovedDesktopPath))
 	})
 }

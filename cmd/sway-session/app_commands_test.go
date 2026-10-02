@@ -760,6 +760,10 @@ func (client *appCommandClient) Request(messageType swayipc.MessageType, payload
 	}
 }
 
+func (client *appCommandClient) LifecycleCompositorID(context.Context) (string, error) {
+	return "test-compositor", nil
+}
+
 func (client *appCommandClient) RequestContext(ctx context.Context, messageType swayipc.MessageType, payload []byte) (swayipc.Message, error) {
 	if err := ctx.Err(); err != nil {
 		return swayipc.Message{}, err

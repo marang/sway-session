@@ -288,6 +288,9 @@ func validateStateBackupDatabase(ctx context.Context, db *sql.DB) (StateBackupRe
 			return result, err
 		}
 	}
+	if err := validateLifecycleOperationsQuery(ctx, tx, registry); err != nil {
+		return result, err
+	}
 	if err := ctx.Err(); err != nil {
 		return result, err
 	}
@@ -296,7 +299,7 @@ func validateStateBackupDatabase(ctx context.Context, db *sql.DB) (StateBackupRe
 
 type stateBackupSchemaObject struct {
 	kind, table, sql string
-	ledger           bool
+	extension        string
 	optional         bool
 }
 
@@ -354,9 +357,14 @@ func stateBackupSchemaV1() map[string]stateBackupSchemaObject {
 		"application_attempt_delete_revision": {kind: "trigger", table: "application_launch_attempts", sql: `CREATE TRIGGER application_attempt_delete_revision AFTER DELETE ON application_launch_attempts
 			WHEN EXISTS (SELECT 1 FROM application_session WHERE id = 1)
 			BEGIN UPDATE application_session SET revision = revision + 1 WHERE id = 1; END`},
-		"restore_report_meta":                 {kind: "table", table: "restore_report_meta", ledger: true, sql: `CREATE TABLE restore_report_meta (id INTEGER PRIMARY KEY CHECK (id = 1), automatic_run_id TEXT NOT NULL, interrupted_run_id TEXT NOT NULL DEFAULT '', interrupted_at TEXT) STRICT`},
-		"restore_outcomes":                    {kind: "table", table: "restore_outcomes", ledger: true, sql: `CREATE TABLE restore_outcomes (source TEXT NOT NULL CHECK (source IN ('automatic', 'explicit')), context_id TEXT NOT NULL, attempt_id TEXT NOT NULL, payload BLOB NOT NULL CHECK (length(payload) <= 16777216), PRIMARY KEY (source, context_id)) STRICT`},
-		"sqlite_autoindex_restore_outcomes_1": {kind: "index", table: "restore_outcomes", ledger: true},
+		"restore_report_meta":                       {kind: "table", table: "restore_report_meta", extension: "restore", sql: `CREATE TABLE restore_report_meta (id INTEGER PRIMARY KEY CHECK (id = 1), automatic_run_id TEXT NOT NULL, interrupted_run_id TEXT NOT NULL DEFAULT '', interrupted_at TEXT) STRICT`},
+		"restore_outcomes":                          {kind: "table", table: "restore_outcomes", extension: "restore", sql: `CREATE TABLE restore_outcomes (source TEXT NOT NULL CHECK (source IN ('automatic', 'explicit')), context_id TEXT NOT NULL, attempt_id TEXT NOT NULL, payload BLOB NOT NULL CHECK (length(payload) <= 16777216), PRIMARY KEY (source, context_id)) STRICT`},
+		"sqlite_autoindex_restore_outcomes_1":       {kind: "index", table: "restore_outcomes", extension: "restore"},
+		"lifecycle_operations":                      {kind: "table", table: "lifecycle_operations", extension: "lifecycle", sql: lifecycleOperationsSQL},
+		"sqlite_autoindex_lifecycle_operations_1":   {kind: "index", table: "lifecycle_operations", extension: "lifecycle"},
+		"lifecycle_reservations":                    {kind: "table", table: "lifecycle_reservations", extension: "lifecycle", sql: lifecycleReservationsSQL},
+		"sqlite_autoindex_lifecycle_reservations_1": {kind: "index", table: "lifecycle_reservations", extension: "lifecycle"},
+		"lifecycle_reservations_operation":          {kind: "index", table: "lifecycle_reservations", extension: "lifecycle", sql: lifecycleReservationIndexSQL},
 		// ANALYZE may add these SQLite-owned statistics tables to an otherwise
 		// unchanged v1 database. Do not exempt arbitrary sqlite_* objects.
 		"sqlite_stat1": {kind: "table", table: "sqlite_stat1", optional: true, sql: `CREATE TABLE sqlite_stat1(tbl,idx,stat)`},
@@ -371,7 +379,7 @@ func validateStateBackupSchema(ctx context.Context, queryer stateQueryer) error 
 		return err
 	}
 	defer rows.Close()
-	ledger := false
+	extensions := make(map[string]bool)
 	for rows.Next() {
 		var name, kind, table string
 		var rootPage sql.NullInt64
@@ -390,14 +398,16 @@ func validateStateBackupSchema(ctx context.Context, queryer stateQueryer) error 
 		} else if !rootPage.Valid || rootPage.Int64 <= 1 || rootPage.Int64 > stateDatabaseMaxPageCount {
 			return errors.New("state backup schema object has an invalid root page")
 		}
-		ledger = ledger || want.ledger
+		if want.extension != "" {
+			extensions[want.extension] = true
+		}
 		delete(expected, name)
 	}
 	if err := rows.Err(); err != nil {
 		return err
 	}
 	for name, want := range expected {
-		if !want.optional && (!want.ledger || ledger) {
+		if !want.optional && (want.extension == "" || extensions[want.extension]) {
 			return fmt.Errorf("state backup is missing required schema object %q", name)
 		}
 	}

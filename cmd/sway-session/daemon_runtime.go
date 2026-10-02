@@ -69,6 +69,7 @@ type sessionRuntimeOptions struct {
 	ApplicationRestore  sessionstate.ApplicationRestoreOptions
 	IndicatorCatalog    func() (sessionstate.DesktopCatalog, error)
 	IndicatorOperations func() ([]sessionstate.ApplicationOperation, error)
+	LifecycleOperations lifecycleRuntimeOperations
 }
 
 type sessionRuntime struct {
@@ -101,6 +102,7 @@ type sessionRuntime struct {
 	restoreReportLaunchRearmed   map[sessionstate.ContextID]string
 	rejectedApplicationStarts    map[sessionstate.ContextID]rejectedApplicationStart
 	restoreProgress              *sessionstate.RestoreProgress
+	restoreSuspended             map[string]suspendedLifecycleRestore
 	restoreCleanup               sessionstate.RestoreCleanup
 	restoreCleanupPending        bool
 	restoreRecoveryPending       bool
@@ -146,6 +148,12 @@ type sessionRuntime struct {
 	terminalCloseRetryDeadline   time.Time
 	terminalCloseBatchCursor     int64
 	terminalCloseContinuation    time.Time
+	lifecycleOperations          lifecycleRuntimeOperations
+	lifecycleCursor              string
+	lifecycleDeadline            time.Time
+	lifecycleRetry               time.Duration
+	lifecycleBlocked             map[sessionstate.ContextID]struct{}
+	lifecycleBlockedKnown        bool
 }
 
 func (runtime *sessionRuntime) context() context.Context {
@@ -237,6 +245,7 @@ func newSessionRuntimeWithOptions(client swayRequester, options sessionRuntimeOp
 		terminalCloseGuard:     options.TerminalCloseGuard,
 		indicatorCatalog:       options.IndicatorCatalog,
 		indicatorOperations:    options.IndicatorOperations,
+		lifecycleOperations:    options.LifecycleOperations,
 		observedTerminals:      make(map[int64]terminalCloseObservation),
 		pendingTerminalClose:   make(map[int64]terminalCloseCandidate),
 	}
@@ -305,6 +314,10 @@ func (runtime *sessionRuntime) ReconcileIndicators(root *Node) (bool, error) {
 	}
 	if !available {
 		registry = sessionstate.Registry{Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{}}
+	}
+	registry, err = runtime.lifecyclePlanningRegistry(registry)
+	if err != nil {
+		return false, err
 	}
 	catalog := sessionstate.DesktopCatalog{}
 	operations := []sessionstate.ApplicationOperation{}
@@ -454,7 +467,7 @@ func (runtime *sessionRuntime) HandleEvent(event swayipc.Event, now time.Time) {
 	if event.Change == "move" && event.Container != nil && runtime.consumeExpectedMove(event.Container.ID) {
 		return
 	}
-	if runtime.restoreProgress != nil || runtime.lateRestorePending || len(runtime.startupApplications) != 0 {
+	if runtime.restoreProgress != nil || len(runtime.restoreSuspended) != 0 || runtime.lateRestorePending || len(runtime.startupApplications) != 0 {
 		runtime.cancelConflictingRestore()
 	}
 }
@@ -511,7 +524,7 @@ func focusedManagedContextID(node *Node) (sessionstate.ContextID, bool) {
 }
 
 func (runtime *sessionRuntime) restoreMayConflictWithUserIntent() bool {
-	return !runtime.startupComplete || runtime.restoreProgress != nil || runtime.lateRestorePending || len(runtime.startupApplications) != 0
+	return !runtime.startupComplete || runtime.restoreProgress != nil || len(runtime.restoreSuspended) != 0 || runtime.lateRestorePending || len(runtime.startupApplications) != 0
 }
 
 func (runtime *sessionRuntime) requireCurrentEventStream() error {
@@ -543,6 +556,7 @@ func (runtime *sessionRuntime) cancelConflictingRestore() {
 	}
 	runtime.originalFocusDone = true
 	runtime.restoreProgress = nil
+	clear(runtime.restoreSuspended)
 	runtime.lateRestorePending = false
 	runtime.startupComplete = true
 	runtime.startupDeadline = time.Time{}
@@ -699,6 +713,12 @@ func (runtime *sessionRuntime) Reconcile(root *Node, now time.Time) (needsRefres
 		return false, err
 	}
 	runtime.registryPresent = true
+	registry, err = runtime.lifecyclePlanningRegistry(registry)
+	if err != nil {
+		runtime.observeDeadline = now.Add(sessionStartupRetryDelay)
+		return false, err
+	}
+	runtime.suspendLifecycleRestore(root)
 	runtime.restoreReportInPass = true
 	runtime.restoreReportBudget = restoreReportWriteTimeout
 	// Drain older token-bound effects first so observation writes cannot starve
@@ -717,20 +737,30 @@ func (runtime *sessionRuntime) Reconcile(root *Node, now time.Time) (needsRefres
 		if err := runtime.restoreCleanup.Recover(root, registry, runtime.persisted); err != nil {
 			return false, fmt.Errorf("observe interrupted restore: %w", err)
 		}
-		runtime.restoreRecoveryPending = false
+		// Excluded identities are not closure evidence. Keep restart discovery
+		// armed until reservations release, then recover their staging ownership.
+		runtime.restoreRecoveryPending = len(runtime.lifecycleBlocked) != 0
+		if runtime.restoreCleanup.Pending() && runtime.restoreCancelled {
+			runtime.restoreCleanupPending = true
+		} else if !runtime.restoreRecoveryPending && runtime.restoreCleanup.Pending() && runtime.startupComplete {
+			runtime.lateRestorePending = true
+		}
 	}
 	if runtime.restoreCleanupPending {
-		action, err := runtime.restoreCleanup.Plan(root, registry)
+		action, err := runtime.restoreCleanup.PlanExcluding(root, registry, runtime.lifecycleRestoreExclusions())
 		if err != nil {
 			return false, fmt.Errorf("plan cancelled restore cleanup: %w", err)
 		}
 		if action != nil {
 			if err := runtime.applyRestoreAction(root, *action); err != nil {
+				if errors.Is(err, errLifecyclePlanChanged) {
+					return false, nil
+				}
 				return false, fmt.Errorf("apply cancelled restore cleanup: %w", err)
 			}
 			return true, nil
 		}
-		runtime.restoreCleanupPending = false
+		runtime.restoreCleanupPending = runtime.restoreCleanup.Pending()
 	}
 	if err := runtime.observeTerminalCloseState(root, registry, now); err != nil {
 		return false, err
@@ -795,6 +825,9 @@ func (runtime *sessionRuntime) Reconcile(root *Node, now time.Time) (needsRefres
 				if action.Kind == sessionstate.PlacementAddMark && !alreadyEligible {
 					delete(runtime.restoreEligible, action.ContextID)
 				}
+				if errors.Is(err, errLifecyclePlanChanged) {
+					return true, nil
+				}
 				failedContexts[action.ContextID] = struct{}{}
 				if action.Kind == sessionstate.PlacementMoveWorkspace {
 					failedMoveContexts[action.ContextID] = struct{}{}
@@ -857,7 +890,13 @@ func (runtime *sessionRuntime) Reconcile(root *Node, now time.Time) (needsRefres
 		}
 		runtime.lateRestorePending = false
 	}
-	stable, err := sessionstate.PreserveMissingPlacements(runtime.persisted, captured, registry)
+	// Capture uses the planning view, but preservation uses the full current
+	// registry so an unresolved operation does not erase saved placement.
+	authoritative, available, err := runtime.loadRegistry()
+	if err != nil || !available {
+		return false, err
+	}
+	stable, err := sessionstate.PreserveMissingPlacements(runtime.persisted, captured, authoritative)
 	if err != nil {
 		return false, err
 	}
@@ -875,15 +914,27 @@ func (runtime *sessionRuntime) Reconcile(root *Node, now time.Time) (needsRefres
 	if err != nil {
 		return false, err
 	}
+	pausedWorkspaces := runtime.lifecycleRestoreExclusions()
 	for workspace := range failedWorkspaces {
+		if _, paused := pausedWorkspaces[workspace]; paused {
+			continue
+		}
 		if _, preserved := preservedFailures[workspace]; !preserved {
 			delete(runtime.restoreFailures, workspace)
 		}
+	}
+	stable, safe := runtime.preserveLifecycleCapture(stable)
+	if !safe {
+		runtime.debouncer.Cancel()
+		return false, nil
 	}
 	runtime.desired = stable
 	// A current degradation retires the original structural intent immediately,
 	// including the debounce interval before it replaces the durable snapshot.
 	for id := range runtime.startupApplications {
+		if _, paused := runtime.lifecycleBlocked[id]; paused {
+			continue
+		}
 		name, found := snapshotContextWorkspace(stable, id)
 		workspace, exists := workspaceByName(stable, name)
 		if !found || !exists || workspace.RestoreMode != sessionstate.WorkspaceRestoreLayout {
@@ -904,8 +955,8 @@ func (runtime *sessionRuntime) reconcileApplications(root *Node, registry sessio
 	}
 	// Invalidate explicit policy changes before presence tracking can set
 	// DesiredOpen again for a newly user-opened application.
-	runtime.observeStartupApplications(registry, groups)
-	plan, err := runtime.applications.Plan(registry, groups, now)
+	runtime.observeStartupApplications(runtime.registry, groups)
+	plan, err := runtime.applications.PlanWithSuspended(runtime.registry, groups, now, runtime.lifecycleBlocked)
 	if err != nil {
 		return false, registry, nil, err
 	}
@@ -939,7 +990,10 @@ func (runtime *sessionRuntime) reconcileApplications(root *Node, registry sessio
 		if err != nil {
 			return false, registry, nil, fmt.Errorf("persist desktop application desired-open state: %w", err)
 		}
-		registry = updated
+		registry, err = runtime.lifecyclePlanningRegistry(updated)
+		if err != nil {
+			return false, registry, nil, err
+		}
 	}
 	refresh := false
 	var degradedErrors []error
@@ -951,13 +1005,17 @@ func (runtime *sessionRuntime) reconcileApplications(root *Node, registry sessio
 		if !available {
 			return errors.New("persistent context registry disappeared during application reconciliation")
 		}
+		current, err = runtime.lifecyclePlanningRegistry(current)
+		if err != nil {
+			return err
+		}
 		registry = current
 		currentGroups, err := sessionstate.ObserveApplicationGroups(root, current)
 		if err != nil {
 			return err
 		}
-		runtime.observeStartupApplications(current, currentGroups)
-		currentPlan, err := runtime.applications.Plan(current, currentGroups, now)
+		runtime.observeStartupApplications(runtime.registry, currentGroups)
+		currentPlan, err := runtime.applications.PlanWithSuspended(runtime.registry, currentGroups, now, runtime.lifecycleBlocked)
 		if err != nil {
 			return err
 		}
@@ -991,7 +1049,7 @@ func (runtime *sessionRuntime) reconcileApplications(root *Node, registry sessio
 					runtime.rearmLateRestore(action.ContextID)
 				}
 			}
-			if err := runtime.applyPlacementAction(root, action); err != nil {
+			if err := runtime.applyPlannedPlacementAction(root, action); err != nil {
 				var unknown *swayipc.CommandOutcomeUnknownError
 				var invalid *swayipc.CommandResponseInvalidError
 				if errors.As(err, &unknown) || errors.As(err, &invalid) {
@@ -1097,14 +1155,31 @@ func (runtime *sessionRuntime) restoreStartupLayout(root *Node) (bool, bool, err
 	if err != nil || !available {
 		return false, false, err
 	}
+	registry, err = runtime.lifecyclePlanningRegistry(registry)
+	if err != nil {
+		return false, false, err
+	}
+	excluded := runtime.restoreExcluded
+	blockedWorkspaces := runtime.lifecycleBlockedWorkspaces()
+	if len(blockedWorkspaces) != 0 {
+		excluded = make(map[string]struct{}, len(runtime.restoreExcluded)+len(blockedWorkspaces))
+		for name := range runtime.restoreExcluded {
+			excluded[name] = struct{}{}
+		}
+		for name := range blockedWorkspaces {
+			excluded[name] = struct{}{}
+		}
+	}
+	runtime.suspendLifecycleRestore(root)
 	for range maximumTransitions {
+		runtime.resumeLifecycleRestore()
 		if runtime.restoreProgress == nil {
 			selection, err := sessionstate.SelectRestoreWorkspace(
 				root,
 				registry,
 				runtime.persisted,
 				runtime.restoreEligible,
-				runtime.restoreExcluded,
+				excluded,
 			)
 			if err != nil {
 				return false, false, err
@@ -1123,6 +1198,11 @@ func (runtime *sessionRuntime) restoreStartupLayout(root *Node) (bool, bool, err
 			if selection.Progress == nil {
 				if len(degradationErrors) != 0 {
 					return false, false, errors.Join(degradationErrors...)
+				}
+				if len(runtime.restoreSuspended) != 0 {
+					// Available work is settled. Keep paused cursors and their
+					// staging ledger, while allowing unrelated capture to proceed.
+					return false, true, nil
 				}
 				if !runtime.originalFocusDone && runtime.originalFocusID > 0 {
 					node := findContainerByID(root, runtime.originalFocusID)
@@ -1196,6 +1276,9 @@ func (runtime *sessionRuntime) restoreStartupLayout(root *Node) (bool, bool, err
 
 		action := *step.Action
 		if err := runtime.applyRestoreAction(root, action); err != nil {
+			if errors.Is(err, errLifecyclePlanChanged) {
+				return true, false, nil
+			}
 			var unknown *swayipc.CommandOutcomeUnknownError
 			var invalid *swayipc.CommandResponseInvalidError
 			if errors.As(err, &unknown) || errors.As(err, &invalid) {
@@ -1326,7 +1409,18 @@ func (runtime *sessionRuntime) loadRegistry() (sessionstate.Registry, bool, erro
 	return runtime.registry, true, nil
 }
 
-func (runtime *sessionRuntime) applyPlacementAction(root *Node, action sessionstate.PlacementAction) (resultErr error) {
+func (runtime *sessionRuntime) applyPlacementAction(root *Node, action sessionstate.PlacementAction) error {
+	expected := []sessionstate.Context{}
+	for _, item := range runtime.registry.Contexts {
+		if item.ID == action.ContextID {
+			expected = append(expected, item)
+			break
+		}
+	}
+	return runtime.withLifecycleContextGuard(expected, func() error { return runtime.applyPlannedPlacementAction(root, action) })
+}
+
+func (runtime *sessionRuntime) applyPlannedPlacementAction(root *Node, action sessionstate.PlacementAction) (resultErr error) {
 	defer func() {
 		if resultErr != nil {
 			runtime.recordRestoreReportEffect(restoreReportEffect{id: action.ContextID, reason: "placement_failed", uncertain: restoreReportCommandUncertain(resultErr)})
@@ -1364,7 +1458,17 @@ func (runtime *sessionRuntime) applyPlacementAction(root *Node, action sessionst
 	return nil
 }
 
-func (runtime *sessionRuntime) applyRestoreAction(root *Node, action sessionstate.RestoreAction) (resultErr error) {
+func (runtime *sessionRuntime) applyRestoreAction(root *Node, action sessionstate.RestoreAction) error {
+	expected := []sessionstate.Context{}
+	for _, item := range runtime.registry.Contexts {
+		if name, exists := snapshotContextWorkspace(runtime.persisted, item.ID); exists && name == action.Workspace {
+			expected = append(expected, item)
+		}
+	}
+	return runtime.withLifecycleContextGuard(expected, func() error { return runtime.applyPlannedRestoreAction(root, action) })
+}
+
+func (runtime *sessionRuntime) applyPlannedRestoreAction(root *Node, action sessionstate.RestoreAction) (resultErr error) {
 	defer func() {
 		if resultErr != nil {
 			runtime.recordRestoreReportEffect(restoreReportEffect{workspace: action.Workspace, reason: "layout_failed", uncertain: restoreReportCommandUncertain(resultErr)})
@@ -1496,6 +1600,9 @@ func (runtime *sessionRuntime) Deadline() (time.Time, bool) {
 		return time.Time{}, false
 	}
 	deadline, scheduled := runtime.debouncer.Deadline()
+	if !runtime.lifecycleDeadline.IsZero() && (!scheduled || runtime.lifecycleDeadline.Before(deadline)) {
+		deadline, scheduled = runtime.lifecycleDeadline, true
+	}
 	if !runtime.observeDeadline.IsZero() &&
 		(!scheduled || runtime.observeDeadline.Before(deadline)) {
 		deadline = runtime.observeDeadline
@@ -1519,8 +1626,9 @@ func (runtime *sessionRuntime) Deadline() (time.Time, bool) {
 }
 
 func (runtime *sessionRuntime) ObservationDue(now time.Time) bool {
-	return runtime != nil && !runtime.shutdown && !runtime.observeDeadline.IsZero() &&
-		!now.Before(runtime.observeDeadline)
+	return runtime != nil && !runtime.shutdown &&
+		((!runtime.observeDeadline.IsZero() && !now.Before(runtime.observeDeadline)) ||
+			(!runtime.lifecycleDeadline.IsZero() && !now.Before(runtime.lifecycleDeadline)))
 }
 
 func (runtime *sessionRuntime) ArmObservationRetry(now time.Time) {
@@ -1552,16 +1660,49 @@ func (runtime *sessionRuntime) Flush(now time.Time) error {
 	}
 	focusErr := runtime.flushTerminalFocus(now)
 	closeErr := runtime.flushTerminalClose(now)
-	if runtime.restoreCleanupPending {
+	if runtime.restoreCleanupPending && runtime.restoreCleanup.PendingExcluding(runtime.lifecycleRestoreExclusions()) {
 		return errors.Join(focusErr, closeErr)
 	}
 	candidate, due := runtime.debouncer.Due(now)
 	if !due {
 		return errors.Join(focusErr, closeErr)
 	}
-	err := sessionstate.LayoutStoreFor(runtime.root).SaveContext(runtime.context(), candidate)
+	// A reservation may have appeared after this candidate was queued. Serialize
+	// its final check and save with operation begin/complete, preserving the
+	// latest complete workspace rather than a filtered intermediate capture.
+	deferred := false
+	err := sessionstate.WithRegistryLockContext(runtime.context(), runtime.root, func(*statefile.LockedPrivateDirectory) error {
+		if runtime.lifecycleOperations != nil {
+			if _, _, err := runtime.loadRegistry(); err != nil {
+				return err
+			}
+			if err := runtime.refreshLifecycleBlocked(); err != nil {
+				return err
+			}
+			if len(runtime.lifecycleBlocked) != 0 || len(runtime.restoreSuspended) != 0 {
+				var latest sessionstate.LayoutSnapshot
+				if err := sessionstate.LayoutStoreFor(runtime.root).LoadIntoContext(runtime.context(), &latest); err != nil && !errors.Is(err, os.ErrNotExist) {
+					return err
+				} else if err == nil {
+					runtime.persisted = latest
+				}
+				var safe bool
+				candidate, safe = runtime.preserveLifecycleCapture(candidate)
+				if !safe {
+					deferred = true
+					return nil
+				}
+			}
+		}
+		return sessionstate.LayoutStoreFor(runtime.root).SaveContext(runtime.context(), candidate)
+	})
+	if deferred {
+		runtime.debouncer.Cancel()
+		return errors.Join(focusErr, closeErr)
+	}
 	if err == nil {
 		runtime.persisted = candidate
+		runtime.debouncer.Cancel()
 		return errors.Join(focusErr, closeErr, runtime.debouncer.MarkPersisted(candidate))
 	}
 
@@ -1681,6 +1822,7 @@ func (runtime *sessionRuntime) Shutdown() error {
 	runtime.terminalCloseBatchCursor = 0
 	runtime.terminalCloseContinuation = time.Time{}
 	runtime.restoreProgress = nil
+	clear(runtime.restoreSuspended)
 	runtime.debouncer.Cancel()
 	return reportErr
 }
@@ -1709,6 +1851,10 @@ func reconcilePersistentSession(client swayRequester, runtime *sessionRuntime, r
 	}()
 	if runtime != nil {
 		runtime.ArmObservationRetry(time.Now())
+		collect(runtime.reconcileLifecycleOperations(time.Now()))
+		if runtime.lifecycleOperations != nil && !runtime.lifecycleBlockedKnown {
+			return
+		}
 	}
 	for range maximumObservations {
 		ctx := runtime.context()

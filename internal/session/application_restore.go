@@ -119,6 +119,19 @@ func (coordinator *ApplicationRestoreCoordinator) Plan(
 	groups map[ContextID]ApplicationGroup,
 	now time.Time,
 ) (ApplicationRestorePlan, error) {
+	return coordinator.PlanWithSuspended(registry, groups, now, nil)
+}
+
+// PlanWithSuspended temporarily excludes reserved applications from observation
+// and effects while retaining adopted presence, close tracking, and launch
+// attempts. Supply the authoritative registry, never synthetic archive states.
+// Once released, fresh observation resumes normal follow/pinned policy.
+func (coordinator *ApplicationRestoreCoordinator) PlanWithSuspended(
+	registry Registry,
+	groups map[ContextID]ApplicationGroup,
+	now time.Time,
+	suspended map[ContextID]struct{},
+) (ApplicationRestorePlan, error) {
 	if coordinator == nil {
 		return ApplicationRestorePlan{}, errors.New("application restore coordinator is nil")
 	}
@@ -136,18 +149,25 @@ func (coordinator *ApplicationRestoreCoordinator) Plan(
 		}
 	}
 	for id := range coordinator.seenPresent {
+		if _, paused := suspended[id]; paused {
+			continue
+		}
 		if _, active := activeApplications[id]; !active {
 			delete(coordinator.seenPresent, id)
 		}
 	}
 	for id := range coordinator.missingSince {
+		if _, paused := suspended[id]; paused {
+			continue
+		}
 		if _, active := activeApplications[id]; !active {
 			delete(coordinator.missingSince, id)
 		}
 	}
 	retainedAttempts := make([]ApplicationLaunchAttempt, 0, len(coordinator.state.Attempts))
 	for _, attempt := range coordinator.state.Attempts {
-		if _, registered := registeredApplications[attempt.ContextID]; registered {
+		_, paused := suspended[attempt.ContextID]
+		if _, registered := registeredApplications[attempt.ContextID]; registered || paused {
 			retainedAttempts = append(retainedAttempts, attempt)
 		}
 	}
@@ -155,6 +175,9 @@ func (coordinator *ApplicationRestoreCoordinator) Plan(
 	plan := ApplicationRestorePlan{DesiredOpen: []ApplicationDesiredOpen{}, Launch: []Context{}}
 	closing := make(map[ContextID]struct{})
 	for _, context := range registry.Contexts {
+		if _, paused := suspended[context.ID]; paused {
+			continue
+		}
 		if context.App == nil || context.State != ContextActive {
 			continue
 		}
@@ -214,6 +237,9 @@ func (coordinator *ApplicationRestoreCoordinator) Plan(
 	contexts := append([]Context(nil), registry.Contexts...)
 	sort.Slice(contexts, func(left, right int) bool { return contexts[left].ID < contexts[right].ID })
 	for _, context := range contexts {
+		if _, paused := suspended[context.ID]; paused {
+			continue
+		}
 		if context.App == nil || !EvaluateRestorePolicy(context).Eligible || len(groups[context.ID].Windows) != 0 {
 			continue
 		}

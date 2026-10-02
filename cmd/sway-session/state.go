@@ -11,8 +11,11 @@ import (
 )
 
 func executeState(ctx context.Context, arguments []string, deps dependencies) (commandResult, *commandFailure) {
+	if len(arguments) != 0 && arguments[0] == "operations" {
+		return executeStateOperations(ctx, arguments[1:], deps)
+	}
 	if len(arguments) == 0 {
-		return commandResult{}, usageFailure("state", "state requires backup or recover")
+		return commandResult{}, usageFailure("state", "state requires backup, recover, or operations")
 	}
 	subcommand := arguments[0]
 	var pathOption string
@@ -22,7 +25,7 @@ func executeState(ctx context.Context, arguments []string, deps dependencies) (c
 	case "recover":
 		pathOption = "from"
 	default:
-		return commandResult{}, usageFailure("state", "state requires backup or recover")
+		return commandResult{}, usageFailure("state", "state requires backup, recover, or operations")
 	}
 	flags := newFlagSet("state " + subcommand)
 	var path string
@@ -105,6 +108,10 @@ func stateCommandFailure(code, action string, err error) *commandFailure {
 }
 
 func writeStateHelp(writer io.Writer) {
+	_, _ = fmt.Fprintln(writer, "Pending operations: sway-session [--json] state operations [--after UUID]")
+	_, _ = fmt.Fprintln(writer, "Retry one approved operation: sway-session [--json] state operations --retry UUID [--socket PATH]")
+	_, _ = fmt.Fprintln(writer, "Request application rollback: sway-session [--json] state operations --cancel UUID [--socket PATH]")
+	_, _ = fmt.Fprintln(writer, "Listing is read-only. Retry and cancel resume one exact durable intent with bounded work and fresh identity checks.")
 	_, _ = fmt.Fprintln(writer, "Backup: sway-session [--json] state backup --output PATH")
 	_, _ = fmt.Fprintln(writer, "Preview: sway-session [--json] state recover --from PATH")
 	_, _ = fmt.Fprintln(writer, "Apply: sway-session [--json] state recover --from PATH --yes")

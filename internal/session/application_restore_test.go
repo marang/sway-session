@@ -9,6 +9,58 @@ import (
 	"time"
 )
 
+func TestApplicationRestoreSuspensionPreservesAdoptionAndAllowsIndependentLaunch(t *testing.T) {
+	for _, policy := range []ApplicationRestorePolicy{ApplicationRestoreFollow, ApplicationRestorePinned} {
+		t.Run(string(policy), func(t *testing.T) {
+			adopted := applicationContextWithID(testContextID, "org.example.Adopted")
+			adopted.App.RestorePolicy = policy
+			independent := applicationContextWithID(secondContextID, "org.example.Independent")
+			registry := Registry{Version: ContextsSchemaVersion, Contexts: []Context{adopted, independent}}
+			now := time.Unix(2000, 0)
+			coordinator, err := NewApplicationRestoreCoordinator(strings.Repeat("a", 64), ApplicationSessionState{}, now, ApplicationRestoreOptions{AdoptionGrace: time.Second, CloseGrace: time.Second, LaunchTimeout: 10 * time.Second, MaxConcurrent: 2})
+			if err != nil {
+				t.Fatal(err)
+			}
+			present := map[ContextID]ApplicationGroup{adopted.ID: {Windows: []WindowApplication{{ContainerID: 41}}}}
+			if _, err := coordinator.Plan(registry, present, now); err != nil {
+				t.Fatal(err)
+			}
+			suspended := map[ContextID]struct{}{adopted.ID: {}}
+			for _, elapsed := range []time.Duration{2 * time.Second, time.Minute} {
+				plan, err := coordinator.PlanWithSuspended(registry, nil, now.Add(elapsed), suspended)
+				if err != nil || len(plan.DesiredOpen) != 0 || len(plan.Launch) != 1 || plan.Launch[0].ID != independent.ID {
+					t.Fatalf("suspension affected unrelated app: %+v %v", plan, err)
+				}
+			}
+			// The adopted app has no persisted launch attempt; its presence alone
+			// must survive suspension and prevent a process-watchdog relaunch.
+			if len(coordinator.State().Attempts) != 0 {
+				t.Fatal("fixture should have adoption evidence only")
+			}
+			for _, elapsed := range []time.Duration{2 * time.Minute, 2*time.Minute + time.Second} {
+				plan, err := coordinator.PlanWithSuspended(registry, nil, now.Add(elapsed), nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, launch := range plan.Launch {
+					if launch.ID == adopted.ID {
+						t.Fatal("released reservation relaunched adopted app")
+					}
+				}
+				if elapsed > 2*time.Minute {
+					if policy == ApplicationRestoreFollow {
+						if len(plan.DesiredOpen) != 1 || plan.DesiredOpen[0].ContextID != adopted.ID || plan.DesiredOpen[0].Open {
+							t.Fatalf("lost follow-close evidence: %+v", plan)
+						}
+					} else if len(plan.DesiredOpen) != 0 {
+						t.Fatalf("pinned app closed: %+v", plan)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestObserveApplicationGroupsTreatsMatchingTopLevelsAsOnePresence(t *testing.T) {
 	context := flatpakApplicationContext("org.example.App", "org.example.App")
 	context.ID = testContextID

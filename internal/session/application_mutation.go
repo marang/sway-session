@@ -32,177 +32,71 @@ func NewApplicationContext(id ContextID, entry DesktopEntry, window WindowApplic
 	return context, nil
 }
 
-// RegisterApplicationContext commits the registry record and Sway mark as one
-// compensating transaction. A state-save failure removes the mark; an
-// ambiguous command response is always resolved by fresh GET_TREE evidence.
-func RegisterApplicationContext(ctx context.Context, root string, client SwayRequestClient, context Context, containerID int64) error {
-	return RegisterApplicationContexts(ctx, root, client, []Context{context}, []int64{containerID})
+// RegisterApplicationContext durably records intent before assigning a Sway
+// mark. Interrupted work remains observable and recoverable by operation ID.
+func RegisterApplicationContext(ctx context.Context, root string, client SwayRequestClient, registered Context, containerID int64) error {
+	return RegisterApplicationContexts(ctx, root, client, []Context{registered}, []int64{containerID})
 }
 
-// RegisterApplicationContexts is the all-or-nothing batch variant used by the
-// previewed current-workspace operation.
+// RegisterApplicationContexts commits the complete approved batch only after
+// every intended mark has been freshly observed on its original target.
 func RegisterApplicationContexts(ctx context.Context, root string, client SwayRequestClient, contexts []Context, containerIDs []int64) error {
 	if len(contexts) == 0 || len(contexts) != len(containerIDs) {
 		return errors.New("application registration batch is empty or misaligned")
 	}
-	seenContainers := make(map[int64]struct{}, len(containerIDs))
-	for _, containerID := range containerIDs {
-		if containerID <= 0 {
-			return errors.New("application registration contains an invalid container ID")
+	seen := map[int64]bool{}
+	for _, id := range containerIDs {
+		if id <= 0 || seen[id] {
+			return errors.New("application registration contains an invalid or duplicate container ID")
 		}
-		if _, duplicate := seenContainers[containerID]; duplicate {
-			return errors.New("application registration contains a duplicate container ID")
-		}
-		seenContainers[containerID] = struct{}{}
+		seen[id] = true
 	}
-	access, err := AcquireStateAccess(ctx, root, true)
+	operation, err := beginApplicationOperation(ctx, root, client, LifecycleRegister, nil, contexts, containerIDs)
 	if err != nil {
 		return err
 	}
-	defer access.Close()
-	attemptedItems := 0
-	_, err = UpdateRegistryContext(ctx, root, func(registry *Registry) error {
-		for index := range contexts {
-			if err := validateUnreferencedDesktopApproval(ctx, root, *registry, contexts[index].Launcher); err != nil {
-				return err
-			}
-			if err := AddContext(registry, contexts[index]); err != nil {
-				return err
-			}
-		}
-		registry.Preferences.DesktopIndicators = true
-		for index := range contexts {
-			attemptedItems++
-			if err := SetContextMark(ctx, client, containerIDs[index], contexts[index].ID, true); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-	if err == nil {
-		return nil
-	}
-	compensationCtx, cancelCompensation := mutationCompensationContext(ctx)
-	defer cancelCompensation()
-	committed, reconciliationErr := registryContainsApplicationMutations(compensationCtx, root, contexts)
-	if reconciliationErr != nil {
-		return fmt.Errorf("register application: %w; cannot reconcile registry state: %v; leaving Sway marks unchanged for daemon reconciliation", err, reconciliationErr)
-	}
-	if committed {
-		return nil
-	}
-	var rollbackErrors []error
-	if attemptedItems != 0 {
-		for index := attemptedItems - 1; index >= 0; index-- {
-			if rollbackErr := SetContextMark(compensationCtx, client, containerIDs[index], contexts[index].ID, false); rollbackErr != nil {
-				rollbackErrors = append(rollbackErrors, rollbackErr)
-			}
-		}
-	}
-	if len(rollbackErrors) != 0 {
-		return fmt.Errorf("register application: %w; additionally roll back Sway marks: %v", err, errors.Join(rollbackErrors...))
-	}
-	return err
+	return finishApplicationOperation(ctx, root, client, operation)
 }
 
-// RebindApplicationContext replaces the exact live identity and typed launcher
-// while transferring the context mark to the newly focused window.
-func RebindApplicationContext(ctx context.Context, root string, client SwayRequestClient, expected Context, replacement Context, newContainerID int64) (Context, Context, error) {
-	access, err := AcquireStateAccess(ctx, root, true)
-	if err != nil {
-		return Context{}, Context{}, err
-	}
-	defer access.Close()
+// RebindApplicationContext records both original and replacement targets before
+// transferring their context mark. Concurrent lifecycle policy is preserved at
+// intent creation and protected against further mutation until completion.
+func RebindApplicationContext(ctx context.Context, root string, client SwayRequestClient, expected, replacement Context, newContainerID int64) (Context, Context, error) {
 	expectedRevision, err := ApplicationOperationContextRevision(expected)
 	if err != nil {
 		return Context{}, Context{}, err
 	}
-	var previous Context
-	var applied Context
-	oldContainerID := int64(0)
-	removedOldMark := false
-	addedNewMark := false
-	attemptedOldRemoval := false
-	attemptedNewMark := false
-	_, err = UpdateRegistryContext(ctx, root, func(registry *Registry) error {
-		index, err := ResolveContext(*registry, string(replacement.ID))
-		if err != nil {
-			return err
-		}
-		previous = registry.Contexts[index]
-		if previous.App == nil {
-			return errors.New("rebind is only available for desktop application contexts")
-		}
-		currentRevision, err := ApplicationOperationContextRevision(previous)
-		if err != nil || currentRevision != expectedRevision {
-			return errors.New("application context changed while rebind approval was pending")
-		}
-		if err := validateUnreferencedDesktopApproval(ctx, root, *registry, replacement.Launcher); err != nil {
-			return err
-		}
-		applied = replacement
-		applied.State = previous.State
-		applied.ArchivedAt = previous.ArchivedAt
-		applied.Lifecycle = previous.Lifecycle
-		if applied.App == nil {
-			return errors.New("rebind replacement is not a desktop application context")
-		}
-		applied.App.DesiredOpen = previous.App.DesiredOpen
-		applied.App.RestorePolicy = previous.App.RestorePolicy
-		candidate := *registry
-		candidate.Contexts = append([]Context(nil), registry.Contexts...)
-		candidate.Contexts[index] = applied
-		if err := candidate.Validate(); err != nil {
-			return err
-		}
-		oldContainerID, err = findMarkedContainer(ctx, client, previous.ID)
-		if err != nil {
-			return err
-		}
-		if oldContainerID != 0 && oldContainerID != newContainerID {
-			attemptedOldRemoval = true
-			if err := SetContextMark(ctx, client, oldContainerID, previous.ID, false); err != nil {
-				return err
-			}
-			removedOldMark = true
-		}
-		if oldContainerID != newContainerID {
-			attemptedNewMark = true
-			if err := SetContextMark(ctx, client, newContainerID, previous.ID, true); err != nil {
-				return err
-			}
-			addedNewMark = true
-		}
-		registry.Contexts[index] = applied
-		return nil
-	})
-	if err == nil {
-		return previous, applied, nil
+	var registry Registry
+	if err := RegistryStoreFor(root).LoadIntoContext(ctx, &registry); err != nil {
+		return Context{}, Context{}, err
 	}
-	compensationCtx, cancelCompensation := mutationCompensationContext(ctx)
-	defer cancelCompensation()
-	committed, reconciliationErr := registryContainsApplicationMutation(compensationCtx, root, applied)
-	if reconciliationErr != nil {
-		return Context{}, Context{}, fmt.Errorf("rebind application: %w; cannot reconcile registry state: %v; leaving Sway marks unchanged for daemon reconciliation", err, reconciliationErr)
+	index, err := ResolveContext(registry, string(replacement.ID))
+	if err != nil {
+		return Context{}, Context{}, err
 	}
-	if committed {
-		return previous, applied, nil
+	previous := registry.Contexts[index]
+	revision, err := ApplicationOperationContextRevision(previous)
+	if err != nil || revision != expectedRevision {
+		return Context{}, Context{}, errors.New("application context changed while rebind approval was pending")
 	}
-	var rollbackErrors []error
-	if addedNewMark || attemptedNewMark {
-		if rollbackErr := SetContextMark(compensationCtx, client, newContainerID, replacement.ID, false); rollbackErr != nil {
-			rollbackErrors = append(rollbackErrors, rollbackErr)
-		}
+	if previous.App == nil || replacement.App == nil {
+		return Context{}, Context{}, errors.New("rebind requires desktop application contexts")
 	}
-	if removedOldMark || attemptedOldRemoval {
-		if rollbackErr := SetContextMark(compensationCtx, client, oldContainerID, replacement.ID, true); rollbackErr != nil {
-			rollbackErrors = append(rollbackErrors, rollbackErr)
-		}
+	replacement.State = previous.State
+	replacement.ArchivedAt = previous.ArchivedAt
+	replacement.Lifecycle = previous.Lifecycle
+	app := *replacement.App
+	app.DesiredOpen = previous.App.DesiredOpen
+	app.RestorePolicy = previous.App.RestorePolicy
+	replacement.App = &app
+	operation, err := beginApplicationOperation(ctx, root, client, LifecycleRebind, []Context{previous}, []Context{replacement}, []int64{newContainerID})
+	if err != nil {
+		return Context{}, Context{}, err
 	}
-	if len(rollbackErrors) != 0 {
-		return Context{}, Context{}, fmt.Errorf("rebind application: %w; additionally roll back Sway marks: %v", err, errors.Join(rollbackErrors...))
+	if err := finishApplicationOperation(ctx, root, client, operation); err != nil {
+		return Context{}, Context{}, err
 	}
-	return Context{}, Context{}, err
+	return previous, replacement, nil
 }
 
 // ReapproveApplicationContext replaces only the trusted launcher snapshot
@@ -266,6 +160,9 @@ func RepairApplicationMark(ctx context.Context, root string, client SwayRequestC
 		if err != nil || !reflect.DeepEqual(registry.Contexts[index], registered) {
 			return errors.New("application context changed while mark repair was pending")
 		}
+		if err := CheckLifecycleOperationConflictsContext(ctx, root, []Context{registered}); err != nil {
+			return err
+		}
 		return repairApplicationMark(ctx, client, containerID, registered)
 	})
 }
@@ -319,6 +216,9 @@ func ForgetApplicationContext(ctx context.Context, root string, client SwayReque
 			return err
 		}
 		removed = registry.Contexts[index]
+		if err := CheckLifecycleOperationConflictsContext(ctx, root, []Context{removed}); err != nil {
+			return err
+		}
 		if removed.App == nil {
 			return errors.New("forget is only available for desktop application contexts")
 		}

@@ -100,7 +100,7 @@ _sway_session_marker_is_value() {
 		register) value_options=' --session --cwd --label --provider --id ' ;;
 		restore|daemon|broker) value_options=' --socket ' ;;
 		restore-report) value_options=' --socket --retry ' ;;
-		state) start=2; value_options=' --output --from ' ;;
+		state) start=2; value_options=' --output --from --retry --cancel --after --socket ' ;;
 		doctor) value_options=' --fix --socket --sway-config ' ;;
 		request-start) value_options=' --session --cwd --label --provider --workspace ' ;;
 		app)
@@ -235,10 +235,14 @@ _sway_session() {
 	case $command in
 		state)
 			case $app_command in
-				'') _sway_session_static 'backup recover --json -h --help' ;;
+				'') _sway_session_static 'backup recover operations --json -h --help' ;;
 				backup)
 					[[ ${arguments[-1]-} == --output ]] && { _sway_session_files; return 0; }
 					_sway_session_static '--output --json -h --help'
+					;;
+				operations)
+					case ${arguments[-1]-} in --retry|--cancel|--after) return 0 ;; --socket) _sway_session_files; return 0 ;; esac
+					_sway_session_static '--retry --cancel --after --socket --json -h --help'
 					;;
 				recover)
 					[[ ${arguments[-1]-} == --from ]] && { _sway_session_files; return 0; }

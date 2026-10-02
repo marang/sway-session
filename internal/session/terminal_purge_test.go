@@ -637,3 +637,100 @@ func TestTerminalPurgeRetainsDirectoryPermissionGuards(t *testing.T) {
 		})
 	}
 }
+
+func TestTerminalPurgeConfirmsLostRetirementAcknowledgement(t *testing.T) {
+	for _, effects := range []bool{false, true} {
+		for _, cancelled := range []bool{false, true} {
+			t.Run(fmt.Sprintf("effects=%v/cancelled=%v", effects, cancelled), func(t *testing.T) {
+				fixture := newPurgeFixture(t)
+				operation := fixture.begin(t)
+				path := fixture.sessionPath()
+				if effects {
+					path = filepath.Join(path, "running")
+				}
+				if err := os.RemoveAll(path); err != nil {
+					t.Fatal(err)
+				}
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				original := executeStateCommit
+				t.Cleanup(func() { executeStateCommit = original })
+				commits := 0
+				executeStateCommit = func(tx *stateWriteTransaction) error {
+					if err := original(tx); err != nil {
+						return err
+					}
+					commits++
+					if cancelled {
+						cancel()
+					}
+					return errors.New("fixture lost retirement commit acknowledgement")
+				}
+				manager := fixture.manager(&purgeFixtureRunner{fixture: fixture})
+				outcome, err := ReconcileLifecycleOperationWithPurgeContext(ctx, fixture.Root, operation.ID, nil, manager.DeletePurgeTarget, lifecycleCrashNow)
+				if err != nil || outcome.Status != "completed" || outcome.Effects != effects || commits != 1 {
+					t.Fatalf("committed retirement reported failure: %+v err=%v commits=%d", outcome, err, commits)
+				}
+				if _, err := LoadLifecycleOperationContext(t.Context(), fixture.Root, operation.ID); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("retirement retained or recreated intent: %v", err)
+				}
+			})
+		}
+	}
+}
+
+func TestTerminalPurgeUncommittedRetirementRemainsRetryable(t *testing.T) {
+	fixture := newPurgeFixture(t)
+	operation := fixture.begin(t)
+	if err := os.RemoveAll(fixture.sessionPath()); err != nil {
+		t.Fatal(err)
+	}
+	original := executeStateCommit
+	t.Cleanup(func() { executeStateCommit = original })
+	failure := errors.New("fixture failed retirement before commit")
+	executeStateCommit = func(*stateWriteTransaction) error {
+		executeStateCommit = original
+		return failure
+	}
+	outcome, err := ReconcileLifecycleOperationContext(t.Context(), fixture.Root, operation.ID, nil, lifecycleCrashNow)
+	if !errors.Is(err, failure) || outcome.Status != "retry" {
+		t.Fatalf("uncommitted retirement reported completion: %+v %v", outcome, err)
+	}
+	loaded, err := LoadLifecycleOperationContext(t.Context(), fixture.Root, operation.ID)
+	if err != nil || loaded.Attempts != 1 || loaded.NextAttempt.IsZero() || loaded.Blocked {
+		t.Fatalf("uncommitted retirement lost retry metadata: %+v %v", loaded, err)
+	}
+}
+
+func TestTerminalPurgeUncertainRetirementPreservesRegistryConflict(t *testing.T) {
+	fixture := newPurgeFixture(t)
+	operation := fixture.begin(t)
+	if err := os.RemoveAll(fixture.sessionPath()); err != nil {
+		t.Fatal(err)
+	}
+	database, err := openStateDatabase(t.Context(), fixture.Root, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	payload, err := marshalDatabasePayload("context row", fixture.Before)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := executeStateCommit
+	t.Cleanup(func() { executeStateCommit = original })
+	executeStateCommit = func(tx *stateWriteTransaction) error {
+		if err := original(tx); err != nil {
+			return err
+		}
+		// Simulate an out-of-band writer violating the held registry lock.
+		if _, err := database.db.ExecContext(t.Context(), "INSERT INTO contexts(id, ordinal, encoding_version, payload) VALUES (?, 0, ?, ?)", fixture.Before.ID, ContextsSchemaVersion, payload); err != nil {
+			t.Fatal(err)
+		}
+		return errors.New("fixture lost retirement acknowledgement with conflicting registry")
+	}
+	outcome, err := ReconcileLifecycleOperationContext(t.Context(), fixture.Root, operation.ID, nil, lifecycleCrashNow)
+	if !errors.Is(err, ErrLifecycleOperationConflict) || outcome.Status != "conflict" {
+		t.Fatalf("row absence hid conflicting registry: %+v %v", outcome, err)
+	}
+}

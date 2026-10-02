@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"reflect"
 	"time"
+
+	"github.com/marang/sway-session/internal/statefile"
 )
 
 // ErrTerminalPurgeProgress reports a successful bounded stop step. The caller
@@ -183,7 +185,28 @@ func reconcileLifecyclePurge(ctx context.Context, handle *LifecycleOperationHand
 
 func completeTerminalPurge(ctx context.Context, handle *LifecycleOperationHandle, effects bool) (bool, bool, error) {
 	if err := handle.CompleteContext(ctx, handle.Registry); err != nil {
-		return false, effects, err
+		var unknown *statefile.CommitOutcomeUnknownError
+		if !errors.As(err, &unknown) {
+			return false, effects, err
+		}
+		// The lifecycle and registry locks still exclude competing operations.
+		// Read the exact row from a fresh snapshot, even if the caller's deadline
+		// expired with the acknowledgement. A missing database is not evidence:
+		// this query must confirm absence in the already-open state database.
+		checkCtx, cancel := mutationCompensationContext(ctx)
+		defer cancel()
+		_, loadErr := loadLifecycleOperation(checkCtx, handle.database.db, handle.original.ID)
+		if !errors.Is(loadErr, os.ErrNotExist) {
+			return false, effects, errors.Join(err, loadErr)
+		}
+		registry, _, loadErr := loadRegistrySnapshotDatabase(checkCtx, handle.database)
+		if loadErr != nil {
+			return false, effects, errors.Join(err, loadErr)
+		}
+		if conflict := checkPurgeRegistry(registry, handle.original); conflict != nil {
+			return false, effects, errors.Join(err, conflict)
+		}
+		handle.active = false
 	}
 	return true, effects, nil
 }

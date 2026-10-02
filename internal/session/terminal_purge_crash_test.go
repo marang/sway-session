@@ -144,6 +144,7 @@ func TestTerminalPurgeCrashHelper(t *testing.T) {
 	}
 	manager := fixture.manager(&purgeFixtureRunner{fixture: fixture, boundary: boundary})
 	action := os.Getenv("SWAY_SESSION_PURGE_TEST_ACTION")
+	var outcome LifecycleOutcome
 	if action == "begin" {
 		_, err = StartTerminalPurgeContext(t.Context(), fixture.Root, fixture.Before, fixture.Herdr, lifecycleCrashNow)
 	} else {
@@ -155,7 +156,6 @@ func TestTerminalPurgeCrashHelper(t *testing.T) {
 			if !exists {
 				break
 			}
-			var outcome LifecycleOutcome
 			outcome, err = ReconcileLifecycleOperationWithPurgeContext(t.Context(), fixture.Root, operation.ID, nil, manager.DeletePurgeTarget, lifecycleCrashNow.Add(time.Hour))
 			if err != nil || outcome.Status == "completed" {
 				break
@@ -174,6 +174,9 @@ func TestTerminalPurgeCrashHelper(t *testing.T) {
 		}
 		if action == "begin" && err != nil {
 			t.Fatalf("Start failed to resolve exact committed intent: %v", err)
+		}
+		if action == "retire" && (err != nil || outcome.Status != "completed") {
+			t.Fatalf("retirement did not confirm its committed outcome: %+v %v", outcome, err)
 		}
 		return
 	}

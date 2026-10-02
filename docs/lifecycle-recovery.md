@@ -26,6 +26,15 @@ Other lifecycle changes cannot silently overtake an unresolved operation.
 Launcher cleanup retains files referenced by pending operations as well as by
 registered contexts. Unrelated contexts remain independently usable.
 
+Application forget holds the lifecycle lock through removal and any error
+compensation, so a concurrent rebind cannot reserve a replacement between them.
+Compensation rechecks the unchanged registration, pending reservations, compositor
+lifetime, original window identity and mark ownership under the registry lock.
+It restores only a missing mark on that same window; a closed window needs no
+inverse command. Conflicting evidence leaves marks untouched and reports the
+original error together with the compensation failure. Forget retains its
+synchronous behavior and does not create a durable operation journal entry.
+
 Purge reserves the original context ID, launcher and typed terminal identity
 (when present). Recreating or restoring that identity cannot overtake pending
 cleanup. The operation records the original Herdr root, so a changed environment

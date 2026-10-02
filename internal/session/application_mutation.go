@@ -198,17 +198,27 @@ func repairApplicationMark(ctx context.Context, client SwayRequestClient, contai
 	return SetContextMark(ctx, client, containerID, registered.ID, true)
 }
 
-// ForgetApplicationContext removes the live mark before committing removal
-// and restores it if the registry update fails.
+// ForgetApplicationContext serializes removal and any compensation with other
+// lifecycle operations. Failed removal restores only a freshly verified mark.
 func ForgetApplicationContext(ctx context.Context, root string, client SwayRequestClient, selector string) (Context, error) {
-	access, err := AcquireStateAccess(ctx, root, true)
+	var removed Context
+	err := WithTerminalLifecycleLockContext(ctx, root, func() error {
+		var err error
+		removed, err = forgetApplicationContextLocked(ctx, root, client, selector)
+		return err
+	})
+	return removed, err
+}
+
+func forgetApplicationContextLocked(ctx context.Context, root string, client SwayRequestClient, selector string) (Context, error) {
+	client, closeScope, err := lifecycleClientScope(ctx, client)
 	if err != nil {
 		return Context{}, err
 	}
-	defer access.Close()
+	defer closeScope()
 	var removed Context
-	containerID := int64(0)
-	unmarked := false
+	var target LifecycleWindowTarget
+	var epoch string
 	attemptedUnmark := false
 	_, err = UpdateRegistryContext(ctx, root, func(registry *Registry) error {
 		index, err := ResolveContext(*registry, selector)
@@ -222,16 +232,26 @@ func ForgetApplicationContext(ctx context.Context, root string, client SwayReque
 		if removed.App == nil {
 			return errors.New("forget is only available for desktop application contexts")
 		}
-		containerID, err = findMarkedContainer(ctx, client, removed.ID)
+		var tree *swayipc.TreeNode
+		epoch, tree, err = observeLifecycleTree(ctx, client, "")
+		if err != nil {
+			return err
+		}
+		containerID, err := findMarkedContainerInTree(tree, removed.ID)
 		if err != nil {
 			return err
 		}
 		if containerID != 0 {
+			target, err = captureLifecycleWindow(tree, removed, containerID, false)
+			if err != nil {
+				return err
+			}
+			// Keep the observed lifetime for compensation, including uncertain
+			// command acknowledgements. The transport also pins this compositor.
 			attemptedUnmark = true
 			if err := SetContextMark(ctx, client, containerID, removed.ID, false); err != nil {
 				return err
 			}
-			unmarked = true
 		}
 		_, err = RemoveContext(registry, selector)
 		return err
@@ -239,19 +259,57 @@ func ForgetApplicationContext(ctx context.Context, root string, client SwayReque
 	if err == nil {
 		return removed, nil
 	}
+	if removed.ID == "" {
+		return Context{}, err
+	}
 	compensationCtx, cancelCompensation := mutationCompensationContext(ctx)
 	defer cancelCompensation()
-	stillRegistered, reconciliationErr := registryContainsContextID(compensationCtx, root, removed.ID)
-	if reconciliationErr != nil {
-		return Context{}, fmt.Errorf("forget application: %w; cannot reconcile registry state: %v; leaving Sway marks unchanged for daemon reconciliation", err, reconciliationErr)
-	}
-	if !stillRegistered {
-		return removed, nil
-	}
-	if unmarked || attemptedUnmark {
-		if rollbackErr := SetContextMark(compensationCtx, client, containerID, removed.ID, true); rollbackErr != nil {
-			return Context{}, fmt.Errorf("forget application: %w; additionally restore Sway mark: %v", err, rollbackErr)
+	committed := false
+	reconciliationErr := InspectRegistryLockedContext(compensationCtx, root, func(registry Registry) error {
+		var current *Context
+		for index := range registry.Contexts {
+			if registry.Contexts[index].ID == removed.ID {
+				current = &registry.Contexts[index]
+				break
+			}
 		}
+		if current == nil {
+			committed = true
+			return nil
+		}
+		if !attemptedUnmark {
+			return nil
+		}
+		if !reflect.DeepEqual(*current, removed) {
+			return lifecycleConflictReason("registry_changed", "application changed before forget compensation")
+		}
+		if err := CheckLifecycleOperationConflictsContext(compensationCtx, root, []Context{removed}); err != nil {
+			return err
+		}
+		_, tree, err := observeLifecycleTree(compensationCtx, client, epoch)
+		if err != nil {
+			return err
+		}
+		// Reuse rollback's window and mark ownership checks; a closed target
+		// needs no compensation. No durable operation is created for forget.
+		if err := validateLifecycleTargets(tree, LifecycleOperation{Phase: LifecycleRollback, Targets: []LifecycleWindowTarget{target}}); err != nil {
+			return err
+		}
+		node, present, err := lifecycleTargetNode(tree, target.ContainerID)
+		if err != nil || !present {
+			return err
+		}
+		mark, _ := removed.ID.Mark()
+		if slices.Contains(node.Marks, mark) {
+			return nil
+		}
+		return SetContextMark(compensationCtx, client, target.ContainerID, removed.ID, true)
+	})
+	if reconciliationErr != nil {
+		return Context{}, fmt.Errorf("forget application: %w; cannot safely compensate: %v; leaving Sway marks unchanged for daemon reconciliation", err, reconciliationErr)
+	}
+	if committed {
+		return removed, nil
 	}
 	return Context{}, err
 }
@@ -324,14 +382,6 @@ func containerHasContextMark(ctx context.Context, client SwayRequestClient, cont
 		return false, err
 	}
 	return slices.Contains(node.Marks, mark), nil
-}
-
-func findMarkedContainer(ctx context.Context, client SwayRequestClient, id ContextID) (int64, error) {
-	root, err := requestApplicationTree(ctx, client)
-	if err != nil {
-		return 0, err
-	}
-	return findMarkedContainerInTree(root, id)
 }
 
 func findMarkedContainerInTree(root *swayipc.TreeNode, id ContextID) (int64, error) {
@@ -437,23 +487,4 @@ func sameApplicationMutation(current Context, expected Context) bool {
 		current.Provider == expected.Provider &&
 		reflect.DeepEqual(current.Launcher, expected.Launcher) &&
 		reflect.DeepEqual(current.App.Identity, expected.App.Identity)
-}
-
-func registryContainsContextID(ctx context.Context, root string, id ContextID) (bool, error) {
-	if id == "" {
-		return true, nil
-	}
-	var registry Registry
-	if err := RegistryStoreFor(root).LoadIntoContext(ctx, &registry); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return false, nil
-		}
-		return false, err
-	}
-	for _, context := range registry.Contexts {
-		if context.ID == id {
-			return true, nil
-		}
-	}
-	return false, nil
 }

@@ -414,6 +414,25 @@ Pinned mode keeps desired-open across starts. Launch intent is recorded before
 process start so daemon restart or ambiguous outcome cannot duplicate an
 attempt in one compositor session.
 
+Each prepared desktop launch is confirmed against a new bounded Sway tree
+under the lifecycle/registry lock, outside SQLite transactions. Preparation can
+block on launcher validation; the caller's earlier absence is insufficient.
+Fresh presence is adopted without starting another process or consuming an
+attempt, even when placement is ambiguous. Current policy, reservations,
+adoption, attempts and concurrency use the same coordinator rules. Attempt
+timestamps are sampled after preparation and observation, rather than inherited
+from the beginning of reconciliation.
+
+The event subscription must retain the same connected generation before
+preparation, after observation and immediately before process start. Missing,
+invalid or ambiguous evidence defers the candidate without a launch attempt.
+A disconnect after intent has already committed prevents process start but
+retains that intent conservatively. Candidate rotation and the two-preflight
+pass bound also bound the additional tree requests. An independent application
+can still map between the final observation and process start: SQLite and Sway
+cannot atomically exclude this race, so this is not a global exactly-once launch
+guarantee. User-opened windows are never closed to enforce the earlier plan.
+
 An active, desired-open application in the saved exact layout may finish its
 startup after the settling deadline. The daemon retains that startup intent
 until the first uniquely identified unmarked anchor is adopted, then resumes

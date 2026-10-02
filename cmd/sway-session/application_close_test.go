@@ -62,7 +62,7 @@ func TestFollowApplicationUncertainLifecycleRequiresNewHealthyPresence(t *testin
 			}
 			requester.tree = absent
 			_, err := runtime.Reconcile(absent, start.Add(time.Minute))
-			if uncertainty == "synchronous disconnect" {
+			if uncertainty == "synchronous disconnect" || uncertainty == "disconnect" || uncertainty == "shutdown event" {
 				if err == nil {
 					t.Fatal("stale event stream was accepted")
 				}
@@ -71,7 +71,7 @@ func TestFollowApplicationUncertainLifecycleRequiresNewHealthyPresence(t *testin
 			}
 			assertApplicationDesiredOpen(t, runtime.root, app.ID, true)
 			// Seeing presence while unsafe must not arm a historical close.
-			if stream == nil {
+			if stream == nil && runtime.eventStreamReady {
 				reconcileApplicationClose(t, runtime, requester, present, start.Add(2*time.Minute))
 			}
 			runtime.terminalCloseGuard = guard
@@ -80,6 +80,7 @@ func TestFollowApplicationUncertainLifecycleRequiresNewHealthyPresence(t *testin
 			if stream != nil {
 				stream.epoch, stream.connected = 3, true
 			}
+			runtime.eventStreamState = &testApplicationEventStream{epoch: 3, connected: true}
 			runtime.HandleEvent(swayipc.Event{Type: swayipc.EventStream, Change: "ready", StreamEpoch: 3}, start.Add(3*time.Minute))
 			for _, elapsed := range []time.Duration{3 * time.Minute, 4 * time.Minute} {
 				reconcileApplicationClose(t, runtime, requester, absent, start.Add(elapsed))

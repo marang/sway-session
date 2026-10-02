@@ -800,25 +800,6 @@ func committedContextContext(ctx context.Context, root string, id sessionstate.C
 	return false
 }
 
-func registryMissingContext(ctx context.Context, root string, id sessionstate.ContextID, updateErr error) bool {
-	var unknown *statefile.CommitOutcomeUnknownError
-	if !errors.As(updateErr, &unknown) {
-		return false
-	}
-	reconcileCtx, cancel := commandReconciliationContext(ctx)
-	defer cancel()
-	registry := sessionstate.Registry{}
-	if err := sessionstate.RegistryStoreFor(root).LoadIntoContext(reconcileCtx, &registry); err != nil {
-		return false
-	}
-	for _, context := range registry.Contexts {
-		if context.ID == id {
-			return false
-		}
-	}
-	return true
-}
-
 func commandReconciliationContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	if ctx == nil {
 		ctx = context.Background()

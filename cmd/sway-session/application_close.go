@@ -24,7 +24,25 @@ func (runtime *sessionRuntime) planApplicationObservation(groups map[sessionstat
 	}
 	runtime.applicationCloseGeneration = generation
 	plan, err := runtime.applications.PlanWithCloseTracking(runtime.registry, groups, now, runtime.lifecycleBlocked, safe)
+	if err == nil {
+		err = runtime.persistApplicationObservations()
+	}
 	return plan, observation.generation, err
+}
+
+// Persist observation evidence before placement, policy changes or launches.
+// Keep an uncommitted candidate in memory so a later fresh pass can retry it
+// even if the observed window has disappeared in the meantime.
+func (runtime *sessionRuntime) persistApplicationObservations() error {
+	candidate := runtime.applications.State()
+	if reflect.DeepEqual(candidate, runtime.applicationPersistedState) {
+		return nil
+	}
+	if err := sessionstate.ApplicationSessionStoreFor(runtime.root).SaveContext(runtime.context(), candidate); err != nil {
+		return fmt.Errorf("persist desktop application observation: %w", err)
+	}
+	runtime.applicationPersistedState = candidate
+	return nil
 }
 
 func (runtime *sessionRuntime) applicationCloseStillSafe(expected automaticCloseGeneration) bool {
@@ -83,6 +101,9 @@ func (runtime *sessionRuntime) persistApplicationDesiredOpen(registry sessionsta
 			if runtime.applicationCloseStillSafe(generation) {
 				freshPlan, err := runtime.applications.PlanWithCloseTracking(*current, groups, now, runtime.lifecycleBlocked, true)
 				if err != nil {
+					return err
+				}
+				if err := runtime.persistApplicationObservations(); err != nil {
 					return err
 				}
 				for _, change := range freshPlan.DesiredOpen {

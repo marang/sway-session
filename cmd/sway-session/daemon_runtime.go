@@ -114,6 +114,7 @@ type sessionRuntime struct {
 	observeDeadline              time.Time
 	shutdown                     bool
 	applications                 *sessionstate.ApplicationRestoreCoordinator
+	applicationPersistedState    sessionstate.ApplicationSessionState
 	applicationCloseGeneration   automaticCloseGeneration
 	applicationLauncher          applicationContextLauncher
 	now                          func() time.Time
@@ -272,6 +273,7 @@ func newSessionRuntimeWithOptions(client swayRequester, options sessionRuntimeOp
 			}
 		}
 		runtime.applications = coordinator
+		runtime.applicationPersistedState = coordinator.State()
 	}
 	return runtime, nil
 }
@@ -759,6 +761,19 @@ func (runtime *sessionRuntime) reconcileObserved(root *Node, now time.Time, obse
 		}
 	}
 	if runtime.restoreCleanupPending {
+		// Cleanup also crosses the compositor boundary and can return before
+		// ordinary application reconciliation. Save newly visible presence
+		// first, without launching or placing applications during cleanup.
+		if runtime.applications != nil {
+			groups, err := sessionstate.ObserveApplicationGroups(root, registry)
+			if err != nil {
+				runtime.resetApplicationCloseObservations()
+				return false, err
+			}
+			if _, _, err := runtime.planApplicationObservation(groups, now, observation); err != nil {
+				return false, err
+			}
+		}
 		action, err := runtime.restoreCleanup.PlanExcluding(root, registry, runtime.lifecycleRestoreExclusions())
 		if err != nil {
 			return false, fmt.Errorf("plan cancelled restore cleanup: %w", err)
@@ -1113,6 +1128,8 @@ func (runtime *sessionRuntime) reconcileObservedApplications(root *Node, registr
 					continue
 				}
 				launchErrors = append(launchErrors, fmt.Errorf("desktop application launch intent %q is visible but crash durability is unknown: %w", context.ID, saveErr))
+			} else {
+				runtime.applicationPersistedState = candidate
 			}
 			launchSlots--
 			// The short persistence step can still overlap a disconnect. Keep

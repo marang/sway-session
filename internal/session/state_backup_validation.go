@@ -294,7 +294,7 @@ func validateStateBackupDatabase(ctx context.Context, db *sql.DB) (StateBackupRe
 	if err := ctx.Err(); err != nil {
 		return result, err
 	}
-	return result, tx.Commit()
+	return result, commitStateRead(ctx, tx)
 }
 
 type stateBackupSchemaObject struct {
@@ -308,7 +308,7 @@ type stateBackupSchemaObject struct {
 // in tests. A new supported schema must explicitly account for its executable
 // objects as well as its document columns, constraints, and implicit indexes.
 func stateBackupSchemaV1() map[string]stateBackupSchemaObject {
-	return map[string]stateBackupSchemaObject{
+	objects := map[string]stateBackupSchemaObject{
 		"state_meta": {kind: "table", table: "state_meta", sql: `CREATE TABLE state_meta (
 			id INTEGER PRIMARY KEY CHECK (id = 1),
 			registry_revision INTEGER NOT NULL DEFAULT 0,
@@ -370,6 +370,10 @@ func stateBackupSchemaV1() map[string]stateBackupSchemaObject {
 		"sqlite_stat1": {kind: "table", table: "sqlite_stat1", optional: true, sql: `CREATE TABLE sqlite_stat1(tbl,idx,stat)`},
 		"sqlite_stat4": {kind: "table", table: "sqlite_stat4", optional: true, sql: `CREATE TABLE sqlite_stat4(tbl,idx,neq,nlt,ndlt,sample)`},
 	}
+	for name, object := range applicationAdoptionSchemaV1() {
+		objects[name] = object
+	}
+	return objects
 }
 
 func validateStateBackupSchema(ctx context.Context, queryer stateQueryer) error {
@@ -556,6 +560,13 @@ func validateStateBackupApplications(ctx context.Context, queryer stateQueryer, 
 		state.Attempts = append(state.Attempts, attempt)
 	}
 	if err := rows.Err(); err != nil {
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	_, state.Adoptions, err = loadStoredApplicationAdoptions(ctx, queryer, state.CompositorID)
+	if err != nil {
 		return err
 	}
 	if count != 0 {

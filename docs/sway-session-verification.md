@@ -511,6 +511,26 @@ Sway close/exit test is not evidence of a real power-cycle test.
 
 ### Follow application close intent
 
+For adopted applications, also run:
+
+~~~sh
+GOTOOLCHAIN=go1.26.5 go test ./internal/session ./cmd/sway-session \
+  -run 'Test.*Adopt|TestRuntime(FreshCloseConfirmation|CancelledCleanup)' -count=1
+SWAY_SESSION_HEADLESS_INTEGRATION=1 GOTOOLCHAIN=go1.26.5 \
+  go test ./cmd/sway-session \
+  -run '^TestApplicationAdoptionDaemonRestartHeadless$' -count=1 -v
+~~~
+
+These checks distinguish persisted presence adoption from launch attempts,
+retain closed pinned applications across daemon restart, and permit startup
+again in a new compositor. They cover Follow rearm, launch concurrency, failed
+observation persistence, old schema reads, compositor-tagged evidence, conflicts,
+context deletion and metadata backup/migration. The private Sway case adopts
+and closes a real disposable window on workspace 98, then reconstructs the
+runtime from the same SQLite state without launching the application. Its
+launcher is a recording boundary; it is not a production application or reboot
+test.
+
 Run the bounded runtime regressions with:
 
 ~~~sh

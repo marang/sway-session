@@ -527,6 +527,7 @@ func (runtime *sessionRuntime) retryRejectedApplicationReport(ctx context.Contex
 	if err := runtime.applications.RestoreState(candidate); err != nil {
 		return fmt.Errorf("adopt rejected application retry: %w", err)
 	}
+	runtime.applicationPersistedState = candidate
 	if runtime.restoreReportLaunchRearmed == nil {
 		runtime.restoreReportLaunchRearmed = make(map[sessionstate.ContextID]string)
 	}

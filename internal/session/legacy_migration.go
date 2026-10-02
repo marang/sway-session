@@ -16,15 +16,17 @@ import (
 // LegacyMigrationResult describes the runtime state copied by an explicit
 // pre-1.0 JSON-to-SQLite migration. Source files remain untouched as a backup.
 type LegacyMigrationResult struct {
-	Migrated                   bool
-	Contexts                   int
-	Layout                     bool
-	ApplicationSession         bool
-	ApplicationAttempts        int
-	TerminalActivity           int
-	SkippedApplicationAttempts int
-	SkippedTerminalActivity    int
-	CommitReconciled           bool
+	Migrated                    bool
+	Contexts                    int
+	Layout                      bool
+	ApplicationSession          bool
+	ApplicationAttempts         int
+	ApplicationAdoptions        int
+	TerminalActivity            int
+	SkippedApplicationAttempts  int
+	SkippedApplicationAdoptions int
+	SkippedTerminalActivity     int
+	CommitReconciled            bool
 }
 
 type legacyRuntimeState struct {
@@ -65,10 +67,12 @@ func MigrateLegacyState(ctx context.Context, root string) (LegacyMigrationResult
 				if !legacy.hasRegistry && !legacy.hasLayout && !legacy.hasApplication && !legacy.hasActivity {
 					return errors.New("no legacy sway-session JSON state was found")
 				}
+				adoptionCount := len(legacy.application.Adoptions)
 				legacy, skippedAttempts, skippedActivity := filterLegacyRuntimeState(legacy)
 				result = LegacyMigrationResult{
 					Contexts: len(legacy.registry.Contexts), Layout: legacy.hasLayout,
 					ApplicationSession: legacy.hasApplication, ApplicationAttempts: len(legacy.application.Attempts),
+					ApplicationAdoptions: len(legacy.application.Adoptions), SkippedApplicationAdoptions: adoptionCount - len(legacy.application.Adoptions),
 					TerminalActivity: len(legacy.activity.Terminals), SkippedApplicationAttempts: skippedAttempts,
 					SkippedTerminalActivity: skippedActivity,
 				}
@@ -146,12 +150,22 @@ func equalApplicationSessionState(left ApplicationSessionState, right Applicatio
 	right.Attempts = append([]ApplicationLaunchAttempt(nil), right.Attempts...)
 	sort.Slice(left.Attempts, func(i, j int) bool { return left.Attempts[i].ContextID < left.Attempts[j].ContextID })
 	sort.Slice(right.Attempts, func(i, j int) bool { return right.Attempts[i].ContextID < right.Attempts[j].ContextID })
-	if left.Version != right.Version || left.CompositorID != right.CompositorID || len(left.Attempts) != len(right.Attempts) {
+	left.Adoptions = append([]ApplicationAdoption(nil), left.Adoptions...)
+	right.Adoptions = append([]ApplicationAdoption(nil), right.Adoptions...)
+	sort.Slice(left.Adoptions, func(i, j int) bool { return left.Adoptions[i].ContextID < left.Adoptions[j].ContextID })
+	sort.Slice(right.Adoptions, func(i, j int) bool { return right.Adoptions[i].ContextID < right.Adoptions[j].ContextID })
+	if left.Version != right.Version || left.CompositorID != right.CompositorID || len(left.Attempts) != len(right.Attempts) || len(left.Adoptions) != len(right.Adoptions) {
 		return false
 	}
 	for index := range left.Attempts {
 		if left.Attempts[index].ContextID != right.Attempts[index].ContextID ||
 			!left.Attempts[index].StartedAt.Equal(right.Attempts[index].StartedAt) {
+			return false
+		}
+	}
+	for index := range left.Adoptions {
+		if left.Adoptions[index].ContextID != right.Adoptions[index].ContextID ||
+			!left.Adoptions[index].ObservedAt.Equal(right.Adoptions[index].ObservedAt) {
 			return false
 		}
 	}
@@ -250,6 +264,16 @@ func filterLegacyRuntimeState(legacy legacyRuntimeState) (legacyRuntimeState, in
 	}
 	skippedAttempts := len(legacy.application.Attempts) - len(filteredAttempts)
 	legacy.application.Attempts = filteredAttempts
+	filteredAdoptions := legacy.application.Adoptions[:0]
+	for _, adoption := range legacy.application.Adoptions {
+		if _, exists := applicationContexts[adoption.ContextID]; exists {
+			filteredAdoptions = append(filteredAdoptions, adoption)
+		}
+	}
+	legacy.application.Adoptions = filteredAdoptions
+	if len(filteredAdoptions) == 0 {
+		legacy.application.Adoptions = nil
+	}
 
 	filteredActivity := legacy.activity.Terminals[:0]
 	for _, activity := range legacy.activity.Terminals {
@@ -286,6 +310,20 @@ func importLegacyRuntimeState(ctx context.Context, tx stateTransaction, legacy l
 		for _, attempt := range legacy.application.Attempts {
 			if _, err := tx.ExecContext(ctx, "INSERT INTO application_launch_attempts (context_id, started_at) VALUES (?, ?)", attempt.ContextID, attempt.StartedAt.UTC().Format(time.RFC3339Nano)); err != nil {
 				return fmt.Errorf("import legacy application launch attempt for %s: %w", attempt.ContextID, err)
+			}
+		}
+		if len(legacy.application.Adoptions) != 0 {
+			if err := createApplicationAdoptionTables(ctx, tx); err != nil {
+				return err
+			}
+			for _, adoption := range legacy.application.Adoptions {
+				encoded, err := adoption.ObservedAt.UTC().MarshalText()
+				if err != nil {
+					return fmt.Errorf("encode legacy application adoption for %s: %w", adoption.ContextID, err)
+				}
+				if _, err := tx.ExecContext(ctx, "INSERT INTO application_adoptions (context_id, compositor_id, observed_at) VALUES (?, ?, ?)", adoption.ContextID, legacy.application.CompositorID, string(encoded)); err != nil {
+					return fmt.Errorf("import legacy application adoption for %s: %w", adoption.ContextID, err)
+				}
 			}
 		}
 	}

@@ -414,6 +414,25 @@ Pinned mode keeps desired-open across starts. Launch intent is recorded before
 process start so daemon restart or ambiguous outcome cannot duplicate an
 attempt in one compositor session.
 
+Observed application presence also satisfies its startup opportunity. Adoption
+evidence is durably stored separately from launch attempts before placement,
+policy mutation or a subsequent launch. Restarting the daemon in the same
+compositor therefore cannot relaunch an adopted application after it closes.
+A failed observation write retains the pending evidence in memory and defers
+effects until a later fresh pass can save it. A new compositor clears adoption
+evidence; explicit Follow desired-close/rearm and authorized rejected-launch
+retry can rearm the corresponding opportunity. An adopted, completed launch
+does not occupy a concurrency slot after its window closes.
+
+The optional schema-1 `application_adoptions` table stores context IDs,
+observation timestamps and compositor identity. Its revision triggers and
+context foreign key participate in the application-session conflict checks.
+Existing databases without the extension remain readable without writes, and
+metadata backups validate either complete form. Each row carries its own
+compositor identity so an older binary resetting session metadata cannot revive
+observations from a previous compositor. Older binaries cannot enforce the new
+adoption guarantee themselves.
+
 Each prepared desktop launch is confirmed against a new bounded Sway tree
 under the lifecycle/registry lock, outside SQLite transactions. Preparation can
 block on launcher validation; the caller's earlier absence is insufficient.

@@ -22,6 +22,13 @@ type ApplicationSessionState struct {
 	Version      int                        `json:"version"`
 	CompositorID string                     `json:"compositor_id"`
 	Attempts     []ApplicationLaunchAttempt `json:"attempts"`
+	Adoptions    []ApplicationAdoption      `json:"adoptions,omitempty"`
+}
+
+// ApplicationAdoption records observed presence, not an in-flight launch.
+type ApplicationAdoption struct {
+	ContextID  ContextID `json:"context_id"`
+	ObservedAt time.Time `json:"observed_at"`
 }
 
 type ApplicationLaunchAttempt struct {
@@ -55,6 +62,22 @@ func (state *ApplicationSessionState) Validate() error {
 			return fmt.Errorf("attempts[%d]: duplicate context %q", index, attempt.ContextID)
 		}
 		seen[attempt.ContextID] = struct{}{}
+	}
+	clear(seen)
+	for index, adoption := range state.Adoptions {
+		if err := adoption.ContextID.Validate(); err != nil {
+			return fmt.Errorf("adoptions[%d]: invalid context ID: %w", index, err)
+		}
+		if adoption.ObservedAt.IsZero() {
+			return fmt.Errorf("adoptions[%d]: observed_at is required", index)
+		}
+		if _, err := adoption.ObservedAt.UTC().MarshalText(); err != nil {
+			return fmt.Errorf("adoptions[%d]: observed_at cannot be encoded in UTC: %w", index, err)
+		}
+		if _, exists := seen[adoption.ContextID]; exists {
+			return fmt.Errorf("adoptions[%d]: duplicate context %q", index, adoption.ContextID)
+		}
+		seen[adoption.ContextID] = struct{}{}
 	}
 	return nil
 }
@@ -107,11 +130,15 @@ func NewApplicationRestoreCoordinator(
 		if err := previous.Validate(); err != nil {
 			return nil, err
 		}
-		state = previous
+		state = cloneApplicationSessionState(previous)
+	}
+	seenPresent := make(map[ContextID]bool, len(state.Adoptions))
+	for _, adoption := range state.Adoptions {
+		seenPresent[adoption.ContextID] = true
 	}
 	return &ApplicationRestoreCoordinator{
 		state: state, adoptionDeadline: now.Add(options.AdoptionGrace), options: options,
-		seenPresent: make(map[ContextID]bool), closePresent: make(map[ContextID]bool), missingSince: make(map[ContextID]time.Time),
+		seenPresent: seenPresent, closePresent: make(map[ContextID]bool), missingSince: make(map[ContextID]time.Time),
 	}, nil
 }
 
@@ -212,6 +239,9 @@ func (coordinator *ApplicationRestoreCoordinator) PlanWithCloseTracking(
 		}
 		present := len(groups[context.ID].Windows) != 0
 		if present {
+			if !coordinator.seenPresent[context.ID] {
+				coordinator.state.Adoptions = append(coordinator.state.Adoptions, ApplicationAdoption{ContextID: context.ID, ObservedAt: now.UTC()})
+			}
 			coordinator.seenPresent[context.ID] = true
 			if closeSafe {
 				coordinator.closePresent[context.ID] = true
@@ -241,6 +271,19 @@ func (coordinator *ApplicationRestoreCoordinator) PlanWithCloseTracking(
 			closing[context.ID] = struct{}{}
 		}
 	}
+	retainedAdoptions := coordinator.state.Adoptions[:0]
+	for _, adoption := range coordinator.state.Adoptions {
+		if coordinator.seenPresent[adoption.ContextID] {
+			retainedAdoptions = append(retainedAdoptions, adoption)
+		}
+	}
+	coordinator.state.Adoptions = retainedAdoptions
+	if len(retainedAdoptions) == 0 {
+		coordinator.state.Adoptions = nil
+	}
+	sort.Slice(coordinator.state.Adoptions, func(left, right int) bool {
+		return coordinator.state.Adoptions[left].ContextID < coordinator.state.Adoptions[right].ContextID
+	})
 	if now.Before(coordinator.adoptionDeadline) {
 		return plan, nil
 	}
@@ -258,7 +301,7 @@ func (coordinator *ApplicationRestoreCoordinator) PlanWithCloseTracking(
 			continue
 		}
 		group := groups[attempt.ContextID]
-		if len(group.Windows) == 0 && !attempt.StartedAt.After(now) &&
+		if len(group.Windows) == 0 && !coordinator.seenPresent[attempt.ContextID] && !attempt.StartedAt.After(now) &&
 			now.Before(attempt.StartedAt.Add(coordinator.options.LaunchTimeout)) {
 			inFlight++
 		}
@@ -331,6 +374,11 @@ func cloneApplicationSessionState(state ApplicationSessionState) ApplicationSess
 	attempts := make([]ApplicationLaunchAttempt, len(state.Attempts))
 	copy(attempts, state.Attempts)
 	state.Attempts = attempts
+	if len(state.Adoptions) != 0 {
+		state.Adoptions = append([]ApplicationAdoption(nil), state.Adoptions...)
+	} else {
+		state.Adoptions = nil
+	}
 	return state
 }
 
@@ -352,6 +400,15 @@ func (coordinator *ApplicationRestoreCoordinator) RetryRejectedAttempt(id Contex
 	for index, attempt := range candidate.Attempts {
 		if attempt.ContextID == id && attempt.StartedAt.Equal(startedAt) {
 			candidate.Attempts = append(candidate.Attempts[:index], candidate.Attempts[index+1:]...)
+			for adoptionIndex, adoption := range candidate.Adoptions {
+				if adoption.ContextID == id {
+					candidate.Adoptions = append(candidate.Adoptions[:adoptionIndex], candidate.Adoptions[adoptionIndex+1:]...)
+					break
+				}
+			}
+			if len(candidate.Adoptions) == 0 {
+				candidate.Adoptions = nil
+			}
 			return candidate, true, candidate.Validate()
 		}
 	}
@@ -376,6 +433,16 @@ func (coordinator *ApplicationRestoreCoordinator) RestoreState(state Application
 		return errors.New("application restore state belongs to another compositor session")
 	}
 	coordinator.state = cloneApplicationSessionState(state)
+	clear(coordinator.seenPresent)
+	for _, adoption := range state.Adoptions {
+		coordinator.seenPresent[adoption.ContextID] = true
+	}
+	for id := range coordinator.closePresent {
+		if !coordinator.seenPresent[id] {
+			delete(coordinator.closePresent, id)
+			delete(coordinator.missingSince, id)
+		}
+	}
 	return nil
 }
 

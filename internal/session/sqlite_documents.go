@@ -834,6 +834,7 @@ type storedApplicationSession struct {
 	registryRevision int64
 	compositorID     string
 	attempts         map[ContextID]string
+	adoptions        map[ContextID]storedApplicationAdoption
 }
 
 type applicationAttemptWrite struct {
@@ -850,6 +851,8 @@ type applicationSessionDelta struct {
 	compositorIDChanged      bool
 	upserts                  []applicationAttemptWrite
 	deletes                  []ContextID
+	adoptionUpserts          []applicationAdoptionWrite
+	adoptionDeletes          []ContextID
 }
 
 func prepareApplicationSessionDelta(ctx context.Context, database *stateDatabase, value ApplicationSessionState) (applicationSessionDelta, error) {
@@ -857,9 +860,12 @@ func prepareApplicationSessionDelta(ctx context.Context, database *stateDatabase
 	for _, attempt := range value.Attempts {
 		desiredAttempts[attempt.ContextID] = attempt.StartedAt.UTC().Format(time.RFC3339Nano)
 	}
-	contextIDs := make([]ContextID, 0, len(value.Attempts))
+	contextIDs := make([]ContextID, 0, len(value.Attempts)+len(value.Adoptions))
 	for _, attempt := range value.Attempts {
 		contextIDs = append(contextIDs, attempt.ContextID)
+	}
+	for _, adoption := range value.Adoptions {
+		contextIDs = append(contextIDs, adoption.ContextID)
 	}
 	stored, err := loadStoredApplicationSession(ctx, database, contextIDs)
 	if err != nil {
@@ -884,6 +890,21 @@ func prepareApplicationSessionDelta(ctx context.Context, database *stateDatabase
 		delta.deletes = append(delta.deletes, id)
 	}
 	sort.Slice(delta.deletes, func(left, right int) bool { return delta.deletes[left] < delta.deletes[right] })
+	for _, adoption := range value.Adoptions {
+		encodedTime, err := adoption.ObservedAt.UTC().MarshalText()
+		if err != nil {
+			return applicationSessionDelta{}, fmt.Errorf("encode application adoption time for %s: %w", adoption.ContextID, err)
+		}
+		observedAt := string(encodedTime)
+		if row, exists := stored.adoptions[adoption.ContextID]; !exists || row.compositorID != value.CompositorID || row.observedAt != observedAt {
+			delta.adoptionUpserts = append(delta.adoptionUpserts, applicationAdoptionWrite{contextID: adoption.ContextID, observedAt: observedAt})
+		}
+		delete(stored.adoptions, adoption.ContextID)
+	}
+	for id := range stored.adoptions {
+		delta.adoptionDeletes = append(delta.adoptionDeletes, id)
+	}
+	sort.Slice(delta.adoptionDeletes, func(left, right int) bool { return delta.adoptionDeletes[left] < delta.adoptionDeletes[right] })
 	return delta, nil
 }
 
@@ -929,7 +950,11 @@ func loadStoredApplicationSession(ctx context.Context, database *stateDatabase, 
 	if err := rows.Close(); err != nil {
 		return stored, fmt.Errorf("close stored application launch attempts: %w", err)
 	}
-	if err := tx.Commit(); err != nil {
+	stored.adoptions, _, err = loadStoredApplicationAdoptions(ctx, tx, stored.compositorID)
+	if err != nil {
+		return stored, err
+	}
+	if err := commitStateRead(ctx, tx); err != nil {
 		return stored, fmt.Errorf("finish stored application session snapshot: %w", err)
 	}
 	return stored, nil
@@ -979,10 +1004,10 @@ func applyApplicationSessionDeltaTx(ctx context.Context, tx stateTransaction, de
 			return fmt.Errorf("remove application launch attempt for %s: %w", id, err)
 		}
 	}
-	return nil
+	return applyApplicationAdoptionDeltaTx(ctx, tx, delta)
 }
 
-func requireStoredApplicationContext(ctx context.Context, tx stateTransaction, id ContextID) error {
+func requireStoredApplicationContext(ctx context.Context, tx stateQueryer, id ContextID) error {
 	contextValue, err := loadStoredContextReference(ctx, tx, id)
 	if err != nil {
 		return err
@@ -993,7 +1018,7 @@ func requireStoredApplicationContext(ctx context.Context, tx stateTransaction, i
 	return nil
 }
 
-func loadStoredContextReference(ctx context.Context, tx stateTransaction, id ContextID) (Context, error) {
+func loadStoredContextReference(ctx context.Context, tx stateQueryer, id ContextID) (Context, error) {
 	var encodingVersion int
 	var payload []byte
 	if err := tx.QueryRowContext(ctx, "SELECT encoding_version, payload FROM contexts WHERE id = ?", id).Scan(&encodingVersion, &payload); err != nil {
@@ -1042,6 +1067,12 @@ func (store ApplicationSessionStore) LoadIntoContext(ctx context.Context, target
 	candidate := ApplicationSessionState{Version: ApplicationSessionSchemaVersion, Attempts: []ApplicationLaunchAttempt{}}
 	if err := tx.QueryRowContext(ctx, "SELECT compositor_id FROM application_session WHERE id = 1").Scan(&candidate.CompositorID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
+			if _, _, err := loadStoredApplicationAdoptions(ctx, tx, ""); err != nil {
+				return err
+			}
+			if err := commitStateRead(ctx, tx); err != nil {
+				return fmt.Errorf("finish absent application session snapshot: %w", err)
+			}
 			return os.ErrNotExist
 		}
 		return fmt.Errorf("load application session: %w", err)
@@ -1069,10 +1100,14 @@ func (store ApplicationSessionStore) LoadIntoContext(ctx context.Context, target
 	if err := rows.Close(); err != nil {
 		return fmt.Errorf("close application launch attempts: %w", err)
 	}
+	_, candidate.Adoptions, err = loadStoredApplicationAdoptions(ctx, tx, candidate.CompositorID)
+	if err != nil {
+		return err
+	}
 	if err := candidate.Validate(); err != nil {
 		return fmt.Errorf("validate application session: %w", err)
 	}
-	if err := tx.Commit(); err != nil {
+	if err := commitStateRead(ctx, tx); err != nil {
 		return fmt.Errorf("finish application session snapshot: %w", err)
 	}
 	*target = candidate

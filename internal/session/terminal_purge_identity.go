@@ -136,9 +136,12 @@ func openPurgeDirectoryAt(parent int, name string) (int, error) {
 		_ = unix.Close(fd)
 		return -1, err
 	}
-	if stat.Uid != uint32(os.Getuid()) || stat.Mode&0o077 != 0 {
+	// Native Herdr creates 0755 children under its private 0700 root. Read
+	// and search bits on these descendants do not grant access through that
+	// root; foreign ownership or group/other writes remain unsafe.
+	if stat.Uid != uint32(os.Getuid()) || stat.Mode&0o022 != 0 {
 		_ = unix.Close(fd)
-		return -1, errors.New("Herdr purge directory must be owner-only")
+		return -1, errors.New("Herdr purge directory must be owned by the current user and not group- or other-writable")
 	}
 	return fd, nil
 }

@@ -587,3 +587,53 @@ func TestTerminalPurgeObservedConflictSurvivesSubsequentAbsence(t *testing.T) {
 		t.Fatalf("conflict not durable: %+v %v", loaded, err)
 	}
 }
+
+func TestTerminalPurgeAcceptsNativeDirectoryModesUnderPrivateRoot(t *testing.T) {
+	fixture := newPurgeFixture(t)
+	for _, path := range []string{filepath.Dir(fixture.sessionPath()), fixture.sessionPath()} {
+		if err := os.Chmod(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	operation := fixture.begin(t)
+	manager := fixture.manager(&purgeFixtureRunner{fixture: fixture})
+	for _, want := range []string{"pending", "completed"} {
+		outcome, err := ReconcileLifecycleOperationWithPurgeContext(t.Context(), fixture.Root, operation.ID, nil, manager.DeletePurgeTarget, lifecycleCrashNow)
+		if err != nil || outcome.Status != want {
+			t.Fatalf("native directory permissions prevented %s: %+v %v", want, outcome, err)
+		}
+	}
+}
+
+func TestTerminalPurgeRetainsDirectoryPermissionGuards(t *testing.T) {
+	for _, test := range []struct {
+		part string
+		mode os.FileMode
+	}{
+		{"root", 0o755}, {"root", 0o750},
+		{"sessions", 0o775}, {"sessions", 0o757},
+		{"session", 0o775}, {"session", 0o757},
+	} {
+		t.Run(fmt.Sprintf("%s/%o", test.part, test.mode), func(t *testing.T) {
+			fixture := newPurgeFixture(t)
+			operation := fixture.begin(t)
+			path := fixture.sessionPath()
+			if test.part == "root" {
+				path = fixture.Herdr
+			} else if test.part == "sessions" {
+				path = filepath.Dir(path)
+			}
+			if err := os.Chmod(path, test.mode); err != nil {
+				t.Fatal(err)
+			}
+			calls := 0
+			_, err := ReconcileLifecycleOperationWithPurgeContext(t.Context(), fixture.Root, operation.ID, nil, func(context.Context, Context, LifecyclePurgeTarget) error { calls++; return nil }, lifecycleCrashNow)
+			if err == nil || calls != 0 {
+				t.Fatalf("unsafe permissions authorized effects: %v calls=%d", err, calls)
+			}
+			if _, err := ObserveTerminalPurgeTarget(t.Context(), fixture.Herdr, fixture.Before.Launcher.Session); err == nil {
+				t.Fatal("unsafe permissions accepted during initial capture")
+			}
+		})
+	}
+}

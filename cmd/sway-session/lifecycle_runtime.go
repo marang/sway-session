@@ -149,7 +149,7 @@ func (runtime *sessionRuntime) lifecyclePlanningRegistry(registry sessionstate.R
 		return registry, nil
 	}
 	filtered := registry
-	filtered.Contexts = append([]sessionstate.Context(nil), registry.Contexts...)
+	filtered.Contexts = slices.Clone(registry.Contexts)
 	for index := range filtered.Contexts {
 		if _, blocked := runtime.lifecycleBlocked[filtered.Contexts[index].ID]; blocked {
 			// Only placement/capture eligibility changes in this view. Lifecycle

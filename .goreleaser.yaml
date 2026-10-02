@@ -34,6 +34,8 @@ archives:
       - README.md
       - docs/branding.md
       - docs/agent-reporting.md
+      - docs/lifecycle-recovery.md
+      - docs/research/herdr-plugin-session-deletion.md
       - docs/assets/*.jpeg
       - docs/sway-session-plan.md
       - docs/sway-session-verification.md
@@ -73,6 +75,10 @@ nfpms:
         dst: /usr/share/doc/sway-session/docs/branding.md
       - src: ./docs/agent-reporting.md
         dst: /usr/share/doc/sway-session/docs/agent-reporting.md
+      - src: ./docs/lifecycle-recovery.md
+        dst: /usr/share/doc/sway-session/docs/lifecycle-recovery.md
+      - src: ./docs/research/herdr-plugin-session-deletion.md
+        dst: /usr/share/doc/sway-session/docs/research/herdr-plugin-session-deletion.md
       - src: ./docs/assets/*.jpeg
         dst: /usr/share/doc/sway-session/docs/assets/
       - src: ./LICENSE

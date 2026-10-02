@@ -60,6 +60,21 @@ require_fixed Makefile 'install -m644 docs/agent-reporting.md $(DOC_ROOT)/docs/a
 require_fixed PKGBUILD 'install -Dm644 docs/agent-reporting.md "$pkgdir/usr/share/doc/$pkgname/docs/agent-reporting.md"'
 require_fixed .goreleaser.yaml '      - docs/agent-reporting.md'
 require_fixed .goreleaser.yaml '        dst: /usr/share/doc/sway-session/docs/agent-reporting.md'
+test -f docs/lifecycle-recovery.md
+require_fixed Makefile 'install -m644 docs/lifecycle-recovery.md $(DOC_ROOT)/docs/lifecycle-recovery.md'
+require_fixed PKGBUILD 'install -Dm644 docs/lifecycle-recovery.md "$pkgdir/usr/share/doc/$pkgname/docs/lifecycle-recovery.md"'
+require_fixed .goreleaser.yaml '      - docs/lifecycle-recovery.md'
+require_ordered_lines .goreleaser.yaml \
+  '      - src: ./docs/lifecycle-recovery.md' \
+  '        dst: /usr/share/doc/sway-session/docs/lifecycle-recovery.md'
+test -f docs/research/herdr-plugin-session-deletion.md
+require_fixed Makefile 'install -d $(DOC_ROOT)/docs/research'
+require_fixed Makefile 'install -m644 docs/research/herdr-plugin-session-deletion.md $(DOC_ROOT)/docs/research/herdr-plugin-session-deletion.md'
+require_fixed PKGBUILD 'install -Dm644 docs/research/herdr-plugin-session-deletion.md "$pkgdir/usr/share/doc/$pkgname/docs/research/herdr-plugin-session-deletion.md"'
+require_fixed .goreleaser.yaml '      - docs/research/herdr-plugin-session-deletion.md'
+require_ordered_lines .goreleaser.yaml \
+  '      - src: ./docs/research/herdr-plugin-session-deletion.md' \
+  '        dst: /usr/share/doc/sway-session/docs/research/herdr-plugin-session-deletion.md'
 
 require_fixed .goreleaser.yaml 'project_name: sway-session'
 require_count .goreleaser.yaml '  - id: sway-session' 1

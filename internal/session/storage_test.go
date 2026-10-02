@@ -74,7 +74,7 @@ func TestTerminalContextAndCreationActivityCommitAtomically(t *testing.T) {
 		t.Fatal(err)
 	}
 	created := validRegistry().Contexts[0]
-	_, err = UpdateRegistryWithTerminalCreationContext(t.Context(), root, func(registry *Registry) error {
+	returned, err := UpdateRegistryWithTerminalCreationContext(t.Context(), root, func(registry *Registry) error {
 		return AddContext(registry, created)
 	}, func() (ContextID, time.Time, bool) {
 		return created.ID, time.Date(2026, 9, 4, 18, 0, 0, 0, time.UTC), true
@@ -82,12 +82,74 @@ func TestTerminalContextAndCreationActivityCommitAtomically(t *testing.T) {
 	if err == nil {
 		t.Fatal("injected terminal activity failure was accepted")
 	}
+	if !reflect.DeepEqual(returned, emptyRegistry()) {
+		t.Fatalf("failed activity insert returned uncommitted registry: %+v", returned)
+	}
 	registry, err := ReadRegistrySnapshot(root)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(registry.Contexts) != 0 {
 		t.Fatalf("failed activity insert committed registry context: %+v", registry)
+	}
+}
+
+func TestRegistryWithTerminalCreationReturnsCommittedRegistry(t *testing.T) {
+	for _, existing := range []bool{false, true} {
+		for _, record := range []bool{false, true} {
+			t.Run(fmt.Sprintf("existing=%t/record=%t", existing, record), func(t *testing.T) {
+				root := filepath.Join(t.TempDir(), "state")
+				want := emptyRegistry()
+				if existing {
+					seed := validRegistry()
+					if err := RegistryStoreFor(root).Save(seed); err != nil {
+						t.Fatal(err)
+					}
+					original := seed.Contexts[0]
+					original.Label = "Updated original"
+					want.Contexts = append(want.Contexts, original)
+				}
+				created := validRegistry().Contexts[0]
+				created.ID, created.Label, created.Launcher.Session = secondContextID, "New terminal", "lab-179"
+				want.Contexts = append(want.Contexts, created)
+				want.Preferences.DesktopIndicators = true
+				createdAt := time.Date(2026, 10, 2, 20, 0, 0, 0, time.FixedZone("test", 2*60*60))
+				returned, err := UpdateRegistryWithTerminalCreationContext(t.Context(), root, func(registry *Registry) error {
+					if existing {
+						registry.Contexts[0].Label = "Updated original"
+					}
+					registry.Preferences.DesktopIndicators = true
+					return AddContext(registry, created)
+				}, func() (ContextID, time.Time, bool) {
+					return created.ID, createdAt, record
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				var stored Registry
+				if err := RegistryStoreFor(root).LoadIntoContext(t.Context(), &stored); err != nil {
+					t.Fatal(err)
+				}
+				if !reflect.DeepEqual(stored, want) {
+					t.Fatalf("committed registry differs from mutation: got=%+v want=%+v", stored, want)
+				}
+				if !reflect.DeepEqual(returned, stored) {
+					t.Fatalf("returned registry differs from committed state: returned=%+v stored=%+v", returned, stored)
+				}
+				activity, err := ReadTerminalActivitySnapshotContext(t.Context(), root)
+				if err != nil {
+					t.Fatal(err)
+				}
+				wantActivity := emptyTerminalActivityState()
+				if record {
+					canonical := createdAt.UTC()
+					wantActivity.Terminals = append(wantActivity.Terminals, TerminalActivity{ContextID: created.ID, CreatedAt: &canonical})
+				}
+				if !reflect.DeepEqual(activity, wantActivity) {
+					t.Fatalf("creation activity differs for record=%t: got=%+v want=%+v", record, activity, wantActivity)
+				}
+			})
+		}
 	}
 }
 

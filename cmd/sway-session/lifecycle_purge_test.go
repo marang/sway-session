@@ -95,6 +95,99 @@ func newPendingPurgeFixture(t *testing.T) (dependencies, sessionstate.Context, s
 	return deps, item, operation, runner
 }
 
+func TestLifecycleRuntimePendingLastPurgePreservesEmptyRegistry(t *testing.T) {
+	deps, item, operation, runner := newPendingPurgeFixture(t)
+	root, _ := deps.stateRoot()
+	now := deps.now()
+	previous := placementOnlySnapshot("98", item.ID)
+	if err := sessionstate.LayoutStoreFor(root).Save(previous); err != nil {
+		t.Fatal(err)
+	}
+	requester := &recordingRequester{}
+	runtime, err := newSessionRuntimeWithOptions(requester, sessionRuntimeOptions{
+		Root: root, StartedAt: now, CompositorID: strings.Repeat("f", 64),
+		ApplicationRestore: sessionstate.ApplicationRestoreOptions{
+			AdoptionGrace: time.Second, CloseGrace: time.Second, LaunchTimeout: time.Second, MaxConcurrent: 1,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime.startupComplete = true
+	runtime.restoreRecoveryPending = false
+	runtime.lifecycleOperations = lifecycleCoreAdapter{
+		root: root, client: requester,
+		deleter: nativePurgeDeleter(deps.resolveProgram, runner),
+	}
+	expected := sessionRegistryIDs()
+	tree := daemonTree("98")
+	checkEmptyRegistry := func() {
+		t.Helper()
+		stored, err := sessionstate.ReadRegistrySnapshotContext(t.Context(), root)
+		if err != nil || !reflect.DeepEqual(stored, expected) {
+			t.Fatalf("planning changed authoritative registry: %+v err=%v", stored, err)
+		}
+		if !reflect.DeepEqual(runtime.registry, expected) {
+			t.Fatalf("planning changed cached registry: %+v", runtime.registry)
+		}
+		planning, err := runtime.lifecyclePlanningRegistry(stored)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := planning.Validate(); err != nil {
+			t.Errorf("empty planning registry is invalid: %v", err)
+		}
+		if !reflect.DeepEqual(stored, expected) {
+			t.Fatal("planning mutated its input registry")
+		}
+	}
+	for pass := range 2 {
+		at := now.Add(time.Duration(pass) * time.Second)
+		if refresh, err := runtime.Reconcile(tree, at); err != nil || refresh {
+			t.Errorf("pending purge reconciliation: refresh=%v err=%v", refresh, err)
+		}
+		if refresh, err := runtime.ReconcileIndicators(tree); err != nil || refresh {
+			t.Errorf("pending purge indicators: refresh=%v err=%v", refresh, err)
+		}
+		checkEmptyRegistry()
+	}
+	if _, err := sessionstate.LoadLifecycleOperationContext(t.Context(), root, operation.ID); err != nil {
+		t.Fatalf("ordinary reconciliation removed pending purge: %v", err)
+	}
+	for pass := range 4 {
+		if err := runtime.reconcileLifecycleOperations(now.Add(time.Duration(pass+1) * time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+		if len(runtime.lifecycleBlocked) == 0 {
+			break
+		}
+	}
+	if len(runtime.lifecycleBlocked) != 0 || !reflect.DeepEqual(runner.effects, []string{"stop", "delete"}) {
+		t.Fatalf("purge did not release reservation: blocked=%v effects=%v", runtime.lifecycleBlocked, runner.effects)
+	}
+	if _, err := sessionstate.LoadLifecycleOperationContext(t.Context(), root, operation.ID); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("completed purge still present: %v", err)
+	}
+	if refresh, err := runtime.Reconcile(tree, now.Add(5*time.Minute)); err != nil || refresh {
+		t.Fatalf("completed purge reconciliation: refresh=%v err=%v", refresh, err)
+	}
+	if err := runtime.Flush(now.Add(5*time.Minute + time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	checkEmptyRegistry()
+	var saved sessionstate.LayoutSnapshot
+	if err := sessionstate.LayoutStoreFor(root).LoadInto(&saved); err != nil {
+		t.Fatal(err)
+	}
+	want := sessionstate.LayoutSnapshot{Version: sessionstate.LayoutSchemaVersion, Workspaces: []sessionstate.WorkspaceLayout{}}
+	if !reflect.DeepEqual(saved, want) {
+		t.Fatalf("final empty layout not persisted: got %+v want %+v", saved, want)
+	}
+	if len(requester.commands) != 0 {
+		t.Fatalf("empty registry caused Sway effects: %v", requester.commands)
+	}
+}
+
 func TestPendingPurgeExactContextRetryUsesRecordedRoot(t *testing.T) {
 	deps, item, operation, runner := newPendingPurgeFixture(t)
 	result, problem := executePurge(t.Context(), []string{"--yes", string(item.ID)}, strings.NewReader(""), &bytes.Buffer{}, true, deps)

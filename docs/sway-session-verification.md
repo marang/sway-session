@@ -611,6 +611,11 @@ backup/recovery and forward-only purge cancellation. CLI/daemon adapter tests
 cover pending output, retry backoff, absence completion and a changed Herdr
 configuration after intent was recorded.
 
+The last-context purge regression keeps a real durable reservation pending with
+an empty registry. Runtime observation and indicator planning must still accept
+the empty contexts array without changing the authoritative registry. After
+purge completion, reconciliation and flush must persist the empty layout.
+
 An isolated native check on 2026-10-02 used installed Herdr 0.9.2, private XDG
 directories and `/bin/sh` without login configuration or agent resume:
 

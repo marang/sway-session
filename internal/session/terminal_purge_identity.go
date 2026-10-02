@@ -113,11 +113,11 @@ func openPurgeRootPath(path string) (int, error) {
 		}
 		if stat.Uid != 0 && stat.Uid != uint32(os.Getuid()) || stat.Mode&0o022 != 0 && stat.Mode&unix.S_ISVTX == 0 {
 			_ = unix.Close(fd)
-			return -1, errors.New("Herdr purge ancestor is not a trusted directory")
+			return -1, errors.New("herdr purge ancestor is not a trusted directory")
 		}
 		if index == len(parts)-1 && (stat.Uid != uint32(os.Getuid()) || stat.Mode&0o077 != 0) {
 			_ = unix.Close(fd)
-			return -1, errors.New("Herdr purge root must be owner-only")
+			return -1, errors.New("herdr purge root must be owner-only")
 		}
 	}
 	return fd, nil
@@ -141,7 +141,7 @@ func openPurgeDirectoryAt(parent int, name string) (int, error) {
 	// root; foreign ownership or group/other writes remain unsafe.
 	if stat.Uid != uint32(os.Getuid()) || stat.Mode&0o022 != 0 {
 		_ = unix.Close(fd)
-		return -1, errors.New("Herdr purge directory must be owned by the current user and not group- or other-writable")
+		return -1, errors.New("herdr purge directory must be owned by the current user and not group- or other-writable")
 	}
 	return fd, nil
 }

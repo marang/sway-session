@@ -15,7 +15,7 @@ import (
 func nativePurgeDeleter(resolve func(string) (string, error), runner sessionstate.HerdrCommandRunner) sessionstate.LifecycleSessionDeleter {
 	return func(ctx context.Context, before sessionstate.Context, target sessionstate.LifecyclePurgeTarget) error {
 		if resolve == nil || runner == nil {
-			return errors.New("Herdr purge dependency is unavailable")
+			return errors.New("herdr purge dependency is unavailable")
 		}
 		executable, err := resolve("herdr")
 		if err != nil {

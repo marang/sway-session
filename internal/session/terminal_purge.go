@@ -180,7 +180,7 @@ func reconcileLifecyclePurge(ctx context.Context, handle *LifecycleOperationHand
 	if effectErr != nil {
 		return false, true, effectErr
 	}
-	return false, true, errors.New("Herdr session directory remains after delete")
+	return false, true, errors.New("herdr session directory remains after delete")
 }
 
 func completeTerminalPurge(ctx context.Context, handle *LifecycleOperationHandle, effects bool) (bool, bool, error) {
@@ -237,7 +237,7 @@ func (manager HerdrManager) DeletePurgeTarget(ctx context.Context, before Contex
 		return err
 	}
 	if manager.Runner == nil || !filepath.IsAbs(manager.Executable) {
-		return errors.New("Herdr purge runner or executable is unavailable")
+		return errors.New("herdr purge runner or executable is unavailable")
 	}
 	// Default Herdr discovery derives its root from XDG_CONFIG_HOME. Recovery
 	// must use the captured root even if the daemon's environment later changed.
@@ -264,7 +264,7 @@ func (manager HerdrManager) DeletePurgeTarget(ctx context.Context, before Contex
 			continue
 		}
 		if found {
-			return errors.New("Herdr purge discovery contains duplicate session")
+			return errors.New("herdr purge discovery contains duplicate session")
 		}
 		if err := manager.validateSessionInfo(entry, name); err != nil {
 			return err
@@ -272,7 +272,7 @@ func (manager HerdrManager) DeletePurgeTarget(ctx context.Context, before Contex
 		info, found = entry, true
 	}
 	if !found {
-		return errors.New("Herdr purge discovery omitted existing directory")
+		return errors.New("herdr purge discovery omitted existing directory")
 	}
 	absent, err = verifyTerminalPurgeTarget(ctx, target, name)
 	if err != nil || absent {
@@ -298,7 +298,7 @@ func (manager HerdrManager) DeletePurgeTarget(ctx context.Context, before Contex
 	if info.Running {
 		return ErrTerminalPurgeProgress
 	}
-	return errors.New("Herdr session directory remains after delete")
+	return errors.New("herdr session directory remains after delete")
 }
 
 // Keep the general runner's environment unchanged for non-purge callers.

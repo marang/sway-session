@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -56,7 +55,7 @@ func TestTerminalPurgeProcessDeathRecovery(t *testing.T) {
 				if err != nil || len(activity.Terminals) != 1 {
 					t.Fatalf("uncommitted begin removed activity: %+v %v", activity, err)
 				}
-				operation = fixture.begin(t)
+				fixture.begin(t)
 			} else if exists {
 				assertPurgeReserved(t, fixture, operation)
 			}
@@ -184,6 +183,6 @@ func TestTerminalPurgeCrashHelper(t *testing.T) {
 		t.Fatal(err)
 	}
 	if point != "" {
-		t.Fatal(fmt.Sprintf("did not reach crash boundary %s", point))
+		t.Fatalf("did not reach crash boundary %s", point)
 	}
 }

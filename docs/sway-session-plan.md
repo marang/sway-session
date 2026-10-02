@@ -255,6 +255,12 @@ name from the full UUID. terminal --project NAME resolves one stable project
 identity. terminal with neither option resolves a default identity.
 --ephemeral launches an ordinary typed terminal and never touches the registry.
 
+Terminal and desktop application processes start in independent Unix sessions.
+The shared process starter returns after successful process creation and reaps
+each owned child asynchronously with its own `Cmd.Wait`. An application's later
+exit is not a launch failure. A short-lived CLI can exit while the application
+continues; the long-lived daemon does not retain exited children as zombies.
+
 The management TUI distinguishes durable restore eligibility from observed
 window presence. An active context is enabled for automatic restore; it need
 not have a mapped terminal. An archived context may still have an open window.

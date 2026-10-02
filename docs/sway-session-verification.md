@@ -445,6 +445,19 @@ documentation/integration assets; DEB runtime metadata lists only Sway.
 
 ## Desktop application check
 
+The process-level launcher regression requires Linux but no compositor or Herdr:
+
+```sh
+GOTOOLCHAIN=go1.26.5 go test -race ./internal/session \
+  -run '^TestExecProcessStarterLifecycle$' -count=1
+```
+
+An isolated helper parent exercises the actual starter with several successful
+and nonzero-exit children. It checks bounded reaping while the parent is alive,
+prompt return for a running child, synchronous startup errors, another command's
+exit-status ownership, and detached child survival after a short-lived CLI
+exits. The helper adopts that last child and cleans up only its exact test PIDs.
+
 The delayed-application regression uses a real private Sway compositor and an
 Alacritty window with an ordinary desktop application identity. Launch
 scheduling and time are injected; no browser or agent session is involved:

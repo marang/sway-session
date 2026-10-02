@@ -106,6 +106,27 @@ func TestPendingPurgeExactContextRetryUsesRecordedRoot(t *testing.T) {
 	}
 }
 
+func TestPurgeFailureBeforeJournalLoadRetainsKindAndHonestRecoveryHint(t *testing.T) {
+	deps, item, operation, runner := newPendingPurgeFixture(t)
+	root, _ := deps.stateRoot()
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	result, problem := finishPurgeCommand(ctx, root, item, operation.ID, deps.now(), deps)
+	if problem == nil || result.StateOperations.Outcome.Kind != sessionstate.LifecyclePurge || len(runner.effects) != 0 {
+		t.Fatalf("cancelled result=%+v problem=%+v effects=%v", result, problem, runner.effects)
+	}
+	var rendered bytes.Buffer
+	if err := writeStateOperations(&rendered, result); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(rendered.String(), "--cancel") || !strings.Contains(rendered.String(), "irreversible") || !strings.Contains(rendered.String(), "--retry "+operation.ID) {
+		t.Fatalf("misleading interrupted purge output: %s", &rendered)
+	}
+	if _, err := sessionstate.LoadLifecycleOperationContext(t.Context(), root, operation.ID); err != nil {
+		t.Fatalf("cancelled caller lost purge intent: %v", err)
+	}
+}
+
 func TestDaemonPurgeRetriesBusySessionAndLostDeleteAcknowledgement(t *testing.T) {
 	deps, item, operation, runner := newPendingPurgeFixture(t)
 	root, _ := deps.stateRoot()

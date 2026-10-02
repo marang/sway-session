@@ -37,6 +37,10 @@ func finishPurgeCommand(ctx context.Context, root string, target sessionstate.Co
 	// Refusals, conflicts and interrupted commands retain their durable intent.
 	for range 4 {
 		outcome, err := sessionstate.ReconcileLifecycleOperationWithPurgeContext(ctx, root, id, nil, deleter, now)
+		// Cancellation or storage failure may precede loading the journal row.
+		// The command already knows which irreversible intent it recorded.
+		outcome.Kind = sessionstate.LifecyclePurge
+		outcome.Phase = sessionstate.LifecycleForward
 		result.StateOperations.Outcome = &outcome
 		if outcome.Status == "completed" && err == nil {
 			result.Actions = []string{"purged"}

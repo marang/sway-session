@@ -51,7 +51,10 @@ func runLifecycleOperationAction(ctx context.Context, root, id string, cancel bo
 		outcome.Status = "rollback"
 	}
 	if operation.Kind == sessionstate.LifecyclePurge {
-		return sessionstate.ReconcileLifecycleOperationWithPurgeContext(ctx, root, id, nil, nativePurgeDeleter(deps.resolveProgram, deps.herdrRunner), now)
+		outcome, err = sessionstate.ReconcileLifecycleOperationWithPurgeContext(ctx, root, id, nil, nativePurgeDeleter(deps.resolveProgram, deps.herdrRunner), now)
+		outcome.Kind = operation.Kind
+		outcome.Phase = operation.Phase
+		return outcome, err
 	}
 	var problem *commandFailure
 	socket, problem = applicationSocket(socket)

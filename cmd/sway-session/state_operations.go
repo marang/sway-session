@@ -178,6 +178,9 @@ func writeLifecycleOperationHint(writer io.Writer, id string, kind sessionstate.
 		_, err := fmt.Fprintln(writer, "Purge is irreversible; automatic restore remains disabled while cleanup is pending.")
 		return err
 	}
+	if kind != sessionstate.LifecycleRegister && kind != sessionstate.LifecycleRebind {
+		return nil
+	}
 	_, err := fmt.Fprintf(writer, "Request rollback: sway-session state operations --cancel %s\n", id)
 	return err
 }

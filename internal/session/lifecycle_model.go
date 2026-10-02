@@ -17,6 +17,7 @@ type LifecycleOperationKind string
 const (
 	LifecycleRegister LifecycleOperationKind = "register"
 	LifecycleRebind   LifecycleOperationKind = "rebind"
+	LifecyclePurge    LifecycleOperationKind = "purge"
 )
 
 type LifecycleOperationPhase string
@@ -44,9 +45,24 @@ type LifecycleWindowTarget struct {
 	WantMark    bool                `json:"want_mark"`
 }
 
+// LifecyclePurgeTarget pins the original Herdr root and named session directory.
+// Zero inode means absent; zero birth time means unavailable, so the pin has
+// weaker device/inode evidence against inode reuse. Never manufacture birth time.
+type LifecyclePurgeTarget struct {
+	Root           string `json:"root"`
+	RootDevice     uint64 `json:"root_device"`
+	RootInode      uint64 `json:"root_inode"`
+	RootBirthNS    int64  `json:"root_birth_ns,omitempty"`
+	SessionDevice  uint64 `json:"session_device"`
+	SessionInode   uint64 `json:"session_inode"`
+	SessionBirthNS int64  `json:"session_birth_ns,omitempty"`
+	SessionExists  bool   `json:"session_exists"`
+}
+
 // LifecycleOperation is a durable, typed intent. Before, After, Targets, Kind,
-// and CompositorID are immutable after Begin. Forward completion installs
+// CompositorID, and Purge are immutable after Begin. Forward completion installs
 // After; rollback completion preserves Before after external compensation.
+// Purge removes Before atomically at Begin and cannot roll back.
 // No intent expires automatically, and Blocked intents retain reservations.
 type LifecycleOperation struct {
 	ID           string                  `json:"id"`
@@ -58,6 +74,7 @@ type LifecycleOperation struct {
 	After        []Context               `json:"after"`
 	Targets      []LifecycleWindowTarget `json:"targets"`
 	CompositorID string                  `json:"compositor_id,omitempty"`
+	Purge        *LifecyclePurgeTarget   `json:"purge,omitempty"`
 	Attempts     int                     `json:"attempts"`
 	NextAttempt  time.Time               `json:"next_attempt"`
 	Reason       string                  `json:"reason,omitempty"`
@@ -119,6 +136,12 @@ func (operation LifecycleOperation) Validate() error {
 		if ch != '_' && (ch < 'a' || ch > 'z') && (ch < '0' || ch > '9') {
 			return errors.New("lifecycle operation reason must be a bounded code")
 		}
+	}
+	if operation.Kind == LifecyclePurge {
+		return validateLifecyclePurge(operation)
+	}
+	if operation.Purge != nil {
+		return errors.New("application lifecycle operation cannot contain a purge target")
 	}
 	switch operation.Kind {
 	case LifecycleRegister:

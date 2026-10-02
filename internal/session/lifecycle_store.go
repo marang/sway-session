@@ -98,7 +98,7 @@ func BeginLifecycleOperationContext(ctx context.Context, root string, operation 
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
-		if err := verifyLifecycleOriginals(registry, operation); err != nil {
+		if err := verifyLifecycleBeginOriginals(registry, operation); err != nil {
 			return err
 		}
 		if _, err := lifecycleForwardCandidate(registry, operation); err != nil {
@@ -108,6 +108,23 @@ func BeginLifecycleOperationContext(ctx context.Context, root string, operation 
 			if err := validateUnreferencedDesktopApproval(ctx, root, registry, value.Launcher); err != nil {
 				return err
 			}
+		}
+		var purgeDelta registryDelta
+		if operation.Kind == LifecyclePurge {
+			candidate, err := cloneLifecycleRegistry(registry)
+			if err != nil {
+				return err
+			}
+			index, err := ResolveContext(candidate, string(operation.Before[0].ID))
+			if err != nil {
+				return err
+			}
+			candidate.Contexts = append(candidate.Contexts[:index], candidate.Contexts[index+1:]...)
+			purgeDelta, err = prepareRegistryDelta(ctx, database, candidate, revision)
+			if err != nil {
+				return err
+			}
+			purgeDelta.lifecycleOperationID = operation.ID
 		}
 		payload, err := marshalDatabasePayload("lifecycle operation", operation)
 		if err != nil {
@@ -144,6 +161,11 @@ func BeginLifecycleOperationContext(ctx context.Context, root string, operation 
 		}
 		for resource := range resources {
 			if _, err := tx.ExecContext(ctx, "INSERT INTO lifecycle_reservations(resource_kind, resource_key, resource_scope, operation_id) VALUES (?, ?, ?, ?)", resource.kind, resource.key, resource.scope, operation.ID); err != nil {
+				return err
+			}
+		}
+		if operation.Kind == LifecyclePurge {
+			if err := applyRegistryDeltaTx(ctx, tx, purgeDelta); err != nil {
 				return err
 			}
 		}
@@ -416,7 +438,21 @@ func requireLifecycleCAS(result sql.Result) error {
 	return nil
 }
 
+func verifyLifecycleBeginOriginals(registry Registry, operation LifecycleOperation) error {
+	if operation.Kind == LifecyclePurge {
+		index, err := ResolveContext(registry, string(operation.Before[0].ID))
+		if err != nil || !reflect.DeepEqual(registry.Contexts[index], operation.Before[0]) {
+			return ErrLifecycleOperationConflict
+		}
+		return nil
+	}
+	return verifyLifecycleOriginals(registry, operation)
+}
+
 func verifyLifecycleOriginals(registry Registry, operation LifecycleOperation) error {
+	if operation.Kind == LifecyclePurge {
+		return checkPurgeRegistry(registry, operation)
+	}
 	current := make(map[ContextID]Context, len(registry.Contexts))
 	for _, value := range registry.Contexts {
 		current[value.ID] = value
@@ -485,6 +521,11 @@ func lifecycleContextResources(contexts []Context) map[lifecycleResource]struct{
 		result[lifecycleResource{kind: "context", key: string(value.ID)}] = struct{}{}
 		launcher := value.Launcher.identity()
 		result[lifecycleResource{kind: "launcher", key: lifecycleResourceKey(string(launcher.kind), launcher.value)}] = struct{}{}
+		if identity, ok := value.Launcher.terminalIdentity(); ok {
+			// Reuse the existing launcher kind; its JSON key namespace cannot collide
+			// with the two-element launcher key. No schema migration is needed.
+			result[lifecycleResource{kind: "launcher", key: lifecycleResourceKey("terminal", string(identity.kind), identity.project)}] = struct{}{}
+		}
 		if value.App != nil {
 			identity := value.App.Identity.primary()
 			result[lifecycleResource{kind: "application", key: lifecycleResourceKey(string(identity.protocol), identity.first, identity.second), scope: value.App.Identity.SandboxAppID}] = struct{}{}

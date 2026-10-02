@@ -149,6 +149,36 @@ m, then verify:
 LAB-119 introduces no path, schema, or migration change. Existing live state
 must not be opened or rewritten merely to verify the repository split.
 
+### Backup and recovery CLI checks
+
+Run the CLI tests and completion checks with the declared toolchain:
+
+~~~sh
+GOTOOLCHAIN=go1.26.5 go test ./cmd/sway-session -run '^TestState' -count=1
+sh scripts/check-completions.sh
+~~~
+
+The CLI fixtures use temporary state/runtime directories and injected core
+operations. They check required and invalid arguments, typed JSON results and
+diagnostics, cancellation forwarding, and recovery's preview default even when
+stdin contains confirmation text. Preview must neither prepare a state root
+nor create a runtime daemon lock. Recovery apply must refuse an already held
+daemon lock or invalid runtime, hold the lock throughout the core operation,
+and release it on both success and failure. Busy and pending recovery errors
+must retain distinct diagnostic codes. Human output must distinguish a valid
+rollback database from an unvalidated raw bundle and explain preview limits.
+
+Completion probes cover `state`, `backup --output`, `recover --from`, apply-only
+`--yes`, file paths with spaces, and option terminators. They must not invoke a
+state command or request private context candidates. Bash always runs; Zsh and
+Fish checks run when their interpreters are installed.
+
+Core recovery checks additionally use disposable database fixtures to prove
+writer exclusion, backup validation, preservation of healthy and corrupt
+previous state, and resumption after interruption. No backup/recovery test may
+read real user state, stop a real daemon, signal a process, or use the live
+compositor. The full integration gate remains `make verify`.
+
 ## Real Sway and Herdr check
 
 Use a private compositor/socket, disposable XDG config, state, and runtime

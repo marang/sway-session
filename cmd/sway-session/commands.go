@@ -363,6 +363,11 @@ func executeRestore(ctx context.Context, arguments []string, deps dependencies) 
 	if set.NArg() == 1 {
 		selector = set.Arg(0)
 	}
+	access, accessErr := sessionstate.AcquireStateAccess(ctx, root, true)
+	if accessErr != nil {
+		return commandResult{}, classifyStateError("acquire restore state access", accessErr)
+	}
+	defer access.Close()
 	reporter, reportErr := beginCLIRestoreReport(ctx, root, selector, *requireActive, deps)
 	if reportErr != nil {
 		return commandResult{}, classifyStateError("begin restore report", reportErr)

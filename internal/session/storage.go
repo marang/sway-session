@@ -46,6 +46,11 @@ func WithTerminalLifecycleLockContext(ctx context.Context, root string, action f
 	if action == nil {
 		return errors.New("terminal lifecycle action is nil")
 	}
+	access, err := AcquireStateAccess(ctx, root, true)
+	if err != nil {
+		return err
+	}
+	defer access.Close()
 	return statefile.WithPrivateDirectoryLockContext(ctx, filepath.Join(root, terminalLifecycleDirectory), func(*statefile.LockedPrivateDirectory) error {
 		return action()
 	})

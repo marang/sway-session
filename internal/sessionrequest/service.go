@@ -128,6 +128,11 @@ func (service *Service) Handle(ctx context.Context, request Request) (Response, 
 
 	service.mu.Lock()
 	defer service.mu.Unlock()
+	access, err := sessionstate.AcquireStateAccess(ctx, service.StateRoot, true)
+	if err != nil {
+		return Response{}, err
+	}
+	defer access.Close()
 	client := service.NewSway()
 	if client == nil {
 		return Response{}, errors.New("sway client is nil")

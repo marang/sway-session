@@ -58,6 +58,11 @@ func runSessionDaemon(ctx context.Context, swaySocket string, reportError func(e
 	if err != nil {
 		return err
 	}
+	access, err := sessionstate.AcquireStateAccess(ctx, stateRoot, true)
+	if err != nil {
+		return err
+	}
+	defer access.Close()
 	if err := initializeContextRegistry(ctx, stateRoot); err != nil {
 		return fmt.Errorf("initialize context registry: %w", err)
 	}

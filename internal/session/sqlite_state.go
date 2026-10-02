@@ -64,6 +64,7 @@ func (err *LegacyStateError) Error() string {
 type stateDatabase struct {
 	db          *sql.DB
 	directory   *os.File
+	access      *os.File
 	dsn         string
 	initialized bool
 }
@@ -75,8 +76,18 @@ func (database *stateDatabase) Close() error {
 	var databaseErr error
 	if database.db != nil {
 		databaseErr = database.db.Close()
+		database.db = nil
 	}
-	return errors.Join(databaseErr, database.directory.Close())
+	var accessErr, directoryErr error
+	if database.access != nil {
+		accessErr = database.access.Close()
+		database.access = nil
+	}
+	if database.directory != nil {
+		directoryErr = database.directory.Close()
+		database.directory = nil
+	}
+	return errors.Join(databaseErr, accessErr, directoryErr)
 }
 
 func openStateDatabase(ctx context.Context, root string, create bool) (*stateDatabase, error) {
@@ -93,6 +104,9 @@ func openStateDatabaseWithInitializer(
 	if ctx == nil {
 		return nil, errors.New("state database context is nil")
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if root == "" || !filepath.IsAbs(root) || filepath.Clean(root) != root {
 		return nil, errors.New("state database root must be a clean absolute path")
 	}
@@ -104,12 +118,23 @@ func openStateDatabaseWithInitializer(
 		return nil, err
 	}
 	keepDirectory := false
+	var access *os.File
 	defer func() {
 		if !keepDirectory {
+			if access != nil {
+				_ = access.Close()
+			}
 			_ = directory.Close()
 		}
 	}()
 
+	// Noncreating opens (including activity writes) never create synchronization
+	// metadata. Lock before inspecting presence so a recovery move cannot be
+	// mistaken for empty state.
+	access, err = acquireSharedStateAccessAt(ctx, directory, create)
+	if err != nil {
+		return nil, err
+	}
 	before, exists, err := inspectDatabaseAt(directory)
 	if err != nil {
 		return nil, err
@@ -195,7 +220,8 @@ func openStateDatabaseWithInitializer(
 		}
 		return nil, errors.New("state database changed while it was being opened")
 	}
-	database := &stateDatabase{db: db, directory: directory, dsn: dsn}
+	database := &stateDatabase{db: db, directory: directory, access: access, dsn: dsn}
+	keepDirectory = true
 	initialized, err := database.ensureSchemaBounded(ctx, create, allowLegacy, initializer)
 	if err != nil {
 		_ = database.Close()
@@ -206,7 +232,6 @@ func openStateDatabaseWithInitializer(
 		_ = database.Close()
 		return nil, err
 	}
-	keepDirectory = true
 	return database, nil
 }
 

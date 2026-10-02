@@ -38,12 +38,16 @@ fi
 temporary=$(mktemp -d)
 trap 'find "$temporary" -depth -delete' EXIT HUP INT TERM
 sentinel=$temporary/executed-description
+state_calls=$temporary/state-completion-calls
 mkdir "$temporary/zsh"
 mkdir "$temporary/path values"
 touch "$temporary/path values/example file"
 
 cat >"$temporary/sway-session" <<'EOF'
 #!/bin/sh
+if [ -n "${SWAY_SESSION_COMPLETION_STATE_CALLS:-}" ]; then
+	printf '%s\n' "$*" >>"$SWAY_SESSION_COMPLETION_STATE_CALLS"
+fi
 if [ "${SWAY_SESSION_COMPLETION_FAIL:-}" = 1 ]; then
 	exit 3
 fi
@@ -69,9 +73,44 @@ PATH="$temporary:$PATH" \
 	SWAY_SESSION_COMPLETION_SENTINEL="$sentinel" \
 	BASH_COMPLETION_SPACED_PATH="$temporary/path values/example" \
 	BASH_COMPLETION_FILE="$bash_completion" \
+	STATE_COMPLETION_CALLS="$state_calls" \
 	bash 2>"$temporary/bash-display" <<'EOF'
 set -eu
 source "$BASH_COMPLETION_FILE"
+
+export SWAY_SESSION_COMPLETION_STATE_CALLS=$STATE_COMPLETION_CALLS
+COMP_WORDS=(sway-session '')
+COMP_CWORD=1
+_sway_session
+[[ " ${COMPREPLY[*]} " == *' state '* ]] || exit 1
+COMP_WORDS=(sway-session --json state '')
+COMP_CWORD=3
+_sway_session
+for expected in backup recover; do
+    [[ " ${COMPREPLY[*]} " == *" $expected "* ]] || exit 1
+done
+COMP_WORDS=(sway-session state backup '')
+COMP_CWORD=3
+_sway_session
+[[ " ${COMPREPLY[*]} " == *' --output '* && " ${COMPREPLY[*]} " != *' --yes '* && " ${COMPREPLY[*]} " != *' --from '* ]] || exit 1
+COMP_WORDS=(sway-session state recover '')
+COMP_CWORD=3
+_sway_session
+[[ " ${COMPREPLY[*]} " == *' --from '* && " ${COMPREPLY[*]} " == *' --yes '* && " ${COMPREPLY[*]} " != *' --output '* ]] || exit 1
+for operation in backup recover; do
+    option=--output
+    [[ $operation == recover ]] && option=--from
+    COMP_WORDS=(sway-session state "$operation" "$option" "$BASH_COMPLETION_SPACED_PATH")
+    COMP_CWORD=4
+    _sway_session
+    [[ ${#COMPREPLY[@]} == 1 && ${COMPREPLY[0]} == "$BASH_COMPLETION_SPACED_PATH file" ]] || exit 1
+    COMP_WORDS=(sway-session state "$operation" -- '')
+    COMP_CWORD=4
+    _sway_session
+    [[ ${#COMPREPLY[@]} == 0 ]] || exit 1
+done
+[[ ! -e $STATE_COMPLETION_CALLS ]] || { echo 'state completion invoked the CLI' >&2; exit 1; }
+unset SWAY_SESSION_COMPLETION_STATE_CALLS
 
 COMP_WORDS=(sway-session restore 111)
 COMP_CWORD=2
@@ -413,6 +452,7 @@ if command -v zsh >/dev/null 2>&1; then
 	PATH="$temporary:$PATH" \
 		SWAY_SESSION_COMPLETION_SENTINEL="$sentinel" \
 		ZSH_COMPLETION_FILE="$zsh_completion" \
+		STATE_COMPLETION_CALLS="$state_calls" \
 		ZDOTDIR="$temporary/zsh" \
 		zsh -f <<'EOF'
 set -eu
@@ -442,6 +482,49 @@ compadd() {
 _files() {
 	return 0
 }
+
+export SWAY_SESSION_COMPLETION_STATE_CALLS=$STATE_COMPLETION_CALLS
+captured_values=()
+words=(sway-session '')
+CURRENT=2
+_sway-session
+[[ " ${captured_values[*]} " == *' state '* ]] || exit 1
+captured_values=()
+words=(sway-session --json state '')
+CURRENT=4
+_sway-session
+for expected in backup recover; do
+    [[ " ${captured_values[*]} " == *" $expected "* ]] || exit 1
+done
+captured_values=()
+words=(sway-session state backup '')
+CURRENT=4
+_sway-session
+[[ " ${captured_values[*]} " == *' --output '* && " ${captured_values[*]} " != *' --yes '* && " ${captured_values[*]} " != *' --from '* ]] || exit 1
+captured_values=()
+words=(sway-session state recover '')
+CURRENT=4
+_sway-session
+[[ " ${captured_values[*]} " == *' --from '* && " ${captured_values[*]} " == *' --yes '* && " ${captured_values[*]} " != *' --output '* ]] || exit 1
+_files() { captured_values+=(file-completion); }
+for operation in backup recover; do
+    option=--output
+    [[ $operation == recover ]] && option=--from
+    captured_values=()
+    words=(sway-session state "$operation" "$option" '')
+    CURRENT=5
+    _sway-session
+    [[ ${#captured_values} == 1 && $captured_values[1] == file-completion ]] || exit 1
+    captured_values=()
+    words=(sway-session state "$operation" -- '')
+    CURRENT=5
+    _sway-session
+    [[ ${#captured_values} == 0 ]] || exit 1
+done
+_files() { return 0; }
+[[ ! -e $STATE_COMPLETION_CALLS ]] || { print -u2 'state completion invoked the CLI'; exit 1; }
+unset SWAY_SESSION_COMPLETION_STATE_CALLS
+captured_values=()
 _sway_session_contexts restore ''
 if (( ${#captured_values} != 2 )) || [[ $captured_values[1] != 11111111-1111-4111-8111-111111111111 ]] || [[ $captured_values[2] != 22222222-2222-4222-8222-222222222222 ]]; then
 	print -u2 -r -- "zsh completion did not preserve UUID-only insertion: ${(j:,:)captured_values}"
@@ -712,6 +795,37 @@ if [ -e "$sentinel" ]; then
 fi
 
 if command -v fish >/dev/null 2>&1; then
+
+    PATH="$temporary:$PATH" \
+        SWAY_SESSION_COMPLETION_STATE_CALLS="$state_calls" \
+        STATE_COMPLETION_CALLS="$state_calls" \
+        STATE_COMPLETION_PATH="$temporary/path values/example" \
+        FISH_COMPLETION_FILE="$fish_completion" fish <<'EOF'
+source "$FISH_COMPLETION_FILE"
+function state_values --argument-names invocation
+    complete -C "$invocation" | string split -f 1 \t
+end
+contains -- state (state_values 'sway-session '); or exit 1
+set candidates (state_values 'sway-session --json state ')
+contains -- backup $candidates; and contains -- recover $candidates; or exit 1
+set candidates (state_values 'sway-session state backup --')
+contains -- --output $candidates; or exit 1
+contains -- --yes $candidates; and exit 1
+contains -- --from $candidates; and exit 1
+set candidates (state_values 'sway-session state recover --')
+contains -- --from $candidates; and contains -- --yes $candidates; or exit 1
+contains -- --output $candidates; and exit 1
+for operation in backup recover
+    set option --output
+    test "$operation" = recover; and set option --from
+    set candidates (state_values "sway-session state $operation $option '$STATE_COMPLETION_PATH")
+    test (count $candidates) -eq 1; or exit 1
+    string match -q '*example*file*' -- $candidates[1]; or exit 1
+    set candidates (state_values "sway-session state $operation -- ")
+    test (count $candidates) -eq 0; or exit 1
+end
+test ! -e "$STATE_COMPLETION_CALLS"; or exit 1
+EOF
 	output=$(PATH="$temporary:$PATH" SWAY_SESSION_COMPLETION_SENTINEL="$sentinel" \
 		fish -c "source '$fish_completion'; __sway_session_contexts restore")
 	doctor_fix_output=$(fish -c "source '$fish_completion'; complete -C 'sway-session doctor --fix sway.integration --'")

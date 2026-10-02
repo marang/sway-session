@@ -60,10 +60,11 @@ var commandSpecs = map[string]commandSpec{
 	"app":                  {usage: "app <subcommand> [options]", summary: "Manage explicitly registered desktop applications"},
 	"terminal":             {usage: "terminal [--new | --context <uuid> | --project <name> | --ephemeral] [options]", summary: "Open a typed terminal"},
 	"doctor":               {usage: "doctor [--check | --fix <id> [--yes]] [options]", summary: "Check setup and preview safe configuration fixes"},
+	"state":                {usage: "state <backup | recover> [options]", summary: "Back up or recover sway-session metadata"},
 	"completion":           {usage: "completion contexts <command>", summary: "Emit read-only shell completion candidates"},
 }
 
-var commandOrder = []string{"terminal", "doctor", "register", "restore", "restore-report", "list", "archive", "activate", "purge", "app", "daemon", "broker", "request-start", "report-agent-session", "completion", "version"}
+var commandOrder = []string{"terminal", "doctor", "state", "register", "restore", "restore-report", "list", "archive", "activate", "purge", "app", "daemon", "broker", "request-start", "report-agent-session", "completion", "version"}
 
 type swayRequester interface {
 	RequestContext(context.Context, swayipc.MessageType, []byte) (swayipc.Message, error)
@@ -104,6 +105,8 @@ type dependencies struct {
 	newDoctor                 func(doctor.Options) doctorOperations
 	runDoctor                 doctorRunner
 	doctorInteractive         func(io.Reader, io.Writer) bool
+	backupState               func(context.Context, string, string) (sessionstate.StateBackupResult, error)
+	recoverState              func(context.Context, string, string, bool) (sessionstate.StateRecoveryResult, error)
 }
 
 func defaultDependencies(stdin io.Reader) dependencies {
@@ -156,6 +159,8 @@ func defaultDependencies(stdin io.Reader) dependencies {
 		},
 		runDoctor:         runDoctorUI,
 		doctorInteractive: doctorTerminals,
+		backupState:       sessionstate.BackupState,
+		recoverState:      sessionstate.RecoverState,
 	}
 	deps.presentApproval = func(message string, choices []sessionstate.ApprovalChoice) error {
 		swaynag, err := deps.resolveSystem("swaynag")
@@ -259,23 +264,25 @@ func runWithContext(ctx context.Context, arguments []string, stdin io.Reader, st
 }
 
 type commandResult struct {
-	Version              int                         `json:"version"`
-	Build                *buildmetadata.Metadata     `json:"build,omitempty"`
-	Command              string                      `json:"command"`
-	Contexts             []sessionstate.Context      `json:"contexts"`
-	CompletionCandidates []completionCandidate       `json:"completion_candidates,omitempty"`
-	Message              string                      `json:"message,omitempty"`
-	Workspace            int                         `json:"workspace,omitempty"`
-	Created              bool                        `json:"created,omitempty"`
-	Actions              []string                    `json:"actions,omitempty"`
-	Terminal             *terminalCommandResult      `json:"terminal,omitempty"`
-	Terminals            *[]terminalInventoryResult  `json:"terminals,omitempty"`
-	RestoreReport        *restoreReportCommandResult `json:"restore_report,omitempty"`
-	RestorePreview       *restorePreviewResult       `json:"restore_preview,omitempty"`
-	Preview              bool                        `json:"preview,omitempty"`
-	Doctor               *doctor.Report              `json:"doctor,omitempty"`
-	DoctorPlan           *doctor.Plan                `json:"doctor_plan,omitempty"`
-	DoctorFix            *doctor.FixResult           `json:"doctor_fix,omitempty"`
+	Version              int                               `json:"version"`
+	Build                *buildmetadata.Metadata           `json:"build,omitempty"`
+	Command              string                            `json:"command"`
+	Contexts             []sessionstate.Context            `json:"contexts"`
+	CompletionCandidates []completionCandidate             `json:"completion_candidates,omitempty"`
+	Message              string                            `json:"message,omitempty"`
+	Workspace            int                               `json:"workspace,omitempty"`
+	Created              bool                              `json:"created,omitempty"`
+	Actions              []string                          `json:"actions,omitempty"`
+	Terminal             *terminalCommandResult            `json:"terminal,omitempty"`
+	Terminals            *[]terminalInventoryResult        `json:"terminals,omitempty"`
+	RestoreReport        *restoreReportCommandResult       `json:"restore_report,omitempty"`
+	RestorePreview       *restorePreviewResult             `json:"restore_preview,omitempty"`
+	Preview              bool                              `json:"preview,omitempty"`
+	Doctor               *doctor.Report                    `json:"doctor,omitempty"`
+	DoctorPlan           *doctor.Plan                      `json:"doctor_plan,omitempty"`
+	DoctorFix            *doctor.FixResult                 `json:"doctor_fix,omitempty"`
+	StateBackup          *sessionstate.StateBackupResult   `json:"state_backup,omitempty"`
+	StateRecovery        *sessionstate.StateRecoveryResult `json:"state_recovery,omitempty"`
 }
 
 type terminalCommandResult struct {
@@ -374,6 +381,9 @@ func writeResult(writer io.Writer, structured bool, result commandResult) error 
 	}
 	if result.Doctor != nil || result.DoctorPlan != nil || result.DoctorFix != nil {
 		return writeDoctorResult(writer, result)
+	}
+	if result.StateBackup != nil || result.StateRecovery != nil {
+		return writeStateResult(writer, result)
 	}
 	if len(result.CompletionCandidates) != 0 {
 		for _, candidate := range result.CompletionCandidates {
@@ -528,6 +538,9 @@ func writeCommandHelp(name string, stdout io.Writer, stderr io.Writer, structure
 
 func writeCommandUsage(writer io.Writer, name string, spec commandSpec) {
 	_, _ = fmt.Fprintf(writer, "Usage: sway-session [--json] %s\n\n%s.\n", spec.usage, spec.summary)
+	if name == "state" {
+		writeStateHelp(writer)
+	}
 	if slices.Contains([]string{"archive", "activate", "purge", "restore"}, name) {
 		_, _ = fmt.Fprintln(writer, "A context is an unambiguous exact UUID or label.")
 	}
@@ -621,6 +634,8 @@ func executeCommand(ctx context.Context, name string, arguments []string, stdin 
 		return executeTerminal(ctx, arguments, stdin, stdout, structured, configPath, deps)
 	case "doctor":
 		return executeDoctor(ctx, arguments, stdin, stdout, structured, configPath, deps)
+	case "state":
+		return executeState(ctx, arguments, deps)
 	case "register":
 		return executeRegister(ctx, arguments, deps)
 	case "list":
@@ -688,6 +703,9 @@ func stateRoot(deps dependencies) (string, *commandFailure) {
 }
 
 func classifyStateError(action string, err error) *commandFailure {
+	if accessFailure := stateAccessFailure(action, err); accessFailure != nil {
+		return accessFailure
+	}
 	code := "state"
 	hint := ""
 	var unsupported *sessionstate.UnsupportedVersionError
@@ -708,6 +726,21 @@ func classifyStateError(action string, err error) *commandFailure {
 		hint = err.Error()
 	}
 	return failure(code, action, hint)
+}
+
+func stateAccessFailure(action string, err error) *commandFailure {
+	var code, hint string
+	switch {
+	case errors.Is(err, sessionstate.ErrStateRecoveryPending):
+		code = "state_recovery_pending"
+		hint = "Resume recovery using the same source: sway-session state recover --from PATH --yes."
+	case sessionstate.IsStateDatabaseBusy(err):
+		code = "state_database_busy"
+		hint = "Wait for the active state operation or recovery to finish, then retry. Before applying recovery, stop other state users, including brokers and older CLI processes."
+	default:
+		return nil
+	}
+	return failure(code, action, err.Error()+". "+hint)
 }
 
 func diagnosticForContext(code string, context sessionstate.Context, err error, hint string) diagnostic.Diagnostic {

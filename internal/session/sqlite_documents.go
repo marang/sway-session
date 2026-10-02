@@ -242,6 +242,7 @@ type registryOrdinalWrite struct {
 }
 
 type registryDelta struct {
+	lifecycleOperationID     string
 	expectedRevision         int64
 	desktopIndicators        bool
 	desktopIndicatorsChanged bool
@@ -358,6 +359,9 @@ func applyRegistryDeltaTx(ctx context.Context, tx stateTransaction, delta regist
 	}
 	if changed != 1 {
 		return ErrRegistryConflict
+	}
+	if err := checkLifecycleRegistryDelta(ctx, tx, delta); err != nil {
+		return err
 	}
 	for _, write := range delta.upserts {
 		if _, err := tx.ExecContext(ctx, `

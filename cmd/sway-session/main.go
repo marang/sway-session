@@ -60,7 +60,7 @@ var commandSpecs = map[string]commandSpec{
 	"app":                  {usage: "app <subcommand> [options]", summary: "Manage explicitly registered desktop applications"},
 	"terminal":             {usage: "terminal [--new | --context <uuid> | --project <name> | --ephemeral] [options]", summary: "Open a typed terminal"},
 	"doctor":               {usage: "doctor [--check | --fix <id> [--yes]] [options]", summary: "Check setup and preview safe configuration fixes"},
-	"state":                {usage: "state <backup | recover> [options]", summary: "Back up or recover sway-session metadata"},
+	"state":                {usage: "state <backup | recover | operations> [options]", summary: "Back up state, recover metadata, or inspect pending lifecycle operations"},
 	"completion":           {usage: "completion contexts <command>", summary: "Emit read-only shell completion candidates"},
 }
 
@@ -107,6 +107,8 @@ type dependencies struct {
 	doctorInteractive         func(io.Reader, io.Writer) bool
 	backupState               func(context.Context, string, string) (sessionstate.StateBackupResult, error)
 	recoverState              func(context.Context, string, string, bool) (sessionstate.StateRecoveryResult, error)
+	listLifecycleOperations   func(context.Context, string, string, int, time.Time) (stateOperationsResult, error)
+	runLifecycleOperation     func(context.Context, string, string, bool, string, time.Time, dependencies) (sessionstate.LifecycleOutcome, error)
 }
 
 func defaultDependencies(stdin io.Reader) dependencies {
@@ -157,10 +159,12 @@ func defaultDependencies(stdin io.Reader) dependencies {
 		newDoctor: func(options doctor.Options) doctorOperations {
 			return doctor.New(options)
 		},
-		runDoctor:         runDoctorUI,
-		doctorInteractive: doctorTerminals,
-		backupState:       sessionstate.BackupState,
-		recoverState:      sessionstate.RecoverState,
+		runDoctor:               runDoctorUI,
+		doctorInteractive:       doctorTerminals,
+		backupState:             sessionstate.BackupState,
+		recoverState:            sessionstate.RecoverState,
+		listLifecycleOperations: listLifecycleOperationSummaries,
+		runLifecycleOperation:   runLifecycleOperationAction,
 	}
 	deps.presentApproval = func(message string, choices []sessionstate.ApprovalChoice) error {
 		swaynag, err := deps.resolveSystem("swaynag")
@@ -283,6 +287,7 @@ type commandResult struct {
 	DoctorFix            *doctor.FixResult                 `json:"doctor_fix,omitempty"`
 	StateBackup          *sessionstate.StateBackupResult   `json:"state_backup,omitempty"`
 	StateRecovery        *sessionstate.StateRecoveryResult `json:"state_recovery,omitempty"`
+	StateOperations      *stateOperationsResult            `json:"state_operations,omitempty"`
 }
 
 type terminalCommandResult struct {
@@ -384,6 +389,9 @@ func writeResult(writer io.Writer, structured bool, result commandResult) error 
 	}
 	if result.StateBackup != nil || result.StateRecovery != nil {
 		return writeStateResult(writer, result)
+	}
+	if result.StateOperations != nil {
+		return writeStateOperations(writer, result)
 	}
 	if len(result.CompletionCandidates) != 0 {
 		for _, candidate := range result.CompletionCandidates {

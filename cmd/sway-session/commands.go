@@ -380,7 +380,13 @@ func executeRestore(ctx context.Context, arguments []string, deps dependencies) 
 	}()
 	result := commandResult{Command: "restore", Contexts: []sessionstate.Context{}}
 	if selector != "" {
-		queued, handled, err := queueDesktopRestoreWithPolicy(ctx, root, selector, deps.requireRestoreEligibility)
+		var queued sessionstate.Context
+		var handled bool
+		err := sessionstate.WithTerminalLifecycleLockContext(ctx, root, func() error {
+			var err error
+			queued, handled, err = queueDesktopRestoreWithPolicy(ctx, root, selector, deps.requireRestoreEligibility)
+			return err
+		})
 		if err != nil {
 			return commandResult{}, classifyStateError("queue desktop application restore", err)
 		}
@@ -403,6 +409,21 @@ func executeRestore(ctx context.Context, arguments []string, deps dependencies) 
 				if err != nil {
 					return err
 				}
+				blocked, err := sessionstate.BlockedLifecycleContextIDsContext(ctx, root)
+				if err != nil {
+					return err
+				}
+				allowed := targets[:0]
+				for _, target := range targets {
+					if _, reserved := blocked[target.ID]; reserved {
+						if selector != "" {
+							return fmt.Errorf("%w: context %s", sessionstate.ErrLifecyclePending, target.ID)
+						}
+						continue
+					}
+					allowed = append(allowed, target)
+				}
+				targets = allowed
 				if deps.requireRestoreEligibility {
 					for _, target := range targets {
 						if !sessionstate.EvaluateRestorePolicy(target).Eligible {
@@ -714,6 +735,9 @@ func queueDesktopRestoreWithPolicy(ctx context.Context, root string, selector st
 	_, err := sessionstate.UpdateRegistryContext(ctx, root, func(registry *sessionstate.Registry) error {
 		index, err := sessionstate.ResolveContext(*registry, selector)
 		if err != nil {
+			return err
+		}
+		if err := sessionstate.CheckLifecycleOperationConflictsContext(ctx, root, []sessionstate.Context{registry.Contexts[index]}); err != nil {
 			return err
 		}
 		if registry.Contexts[index].App == nil {

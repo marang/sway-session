@@ -75,7 +75,7 @@ function __sway_session_options_open
             return 1
         end
         switch $token
-            case --config --socket --sway-config --fix --desktop-id --session --cwd --label --provider --id --workspace --output --from
+            case --config --socket --sway-config --fix --desktop-id --session --cwd --label --provider --id --workspace --output --from --retry --cancel --after
                 set skip_next 1
             case --
                 set global_options_open 0
@@ -706,7 +706,12 @@ complete -c sway-session -n '__sway_session_top_context_pending restore; and __s
 complete -c sway-session -n '__sway_session_is_command restore-report; and __sway_session_options_open' -l retry -x -a '(__sway_session_contexts restore-active)' -d "Retry an eligible failed or interrupted restore"
 complete -c sway-session -n '__sway_session_is_command restore-report; and __sway_session_options_open' -l socket -r -F
 
-complete -c sway-session -n '__sway_session_is_command state; and __sway_session_options_open; and not __sway_session_state_subcommand >/dev/null' -a 'backup recover'
+complete -c sway-session -n '__sway_session_is_command state; and __sway_session_options_open; and not __sway_session_state_subcommand >/dev/null' -a 'backup recover operations'
 complete -c sway-session -n '__sway_session_is_state_subcommand backup; and __sway_session_options_open' -l output -r -F -d 'Write a metadata backup to an absolute file path'
 complete -c sway-session -n '__sway_session_is_state_subcommand recover; and __sway_session_options_open' -l from -r -F -d 'Read a metadata backup from an absolute file path'
 complete -c sway-session -n '__sway_session_is_state_subcommand recover; and __sway_session_options_open' -l yes -d 'Apply recovery instead of previewing it'
+
+complete -c sway-session -n '__sway_session_is_state_subcommand operations; and __sway_session_options_open' -l retry -x -d 'Retry one exact durable operation UUID'
+complete -c sway-session -n '__sway_session_is_state_subcommand operations; and __sway_session_options_open' -l cancel -x -d 'Request rollback of one application operation UUID'
+complete -c sway-session -n '__sway_session_is_state_subcommand operations; and __sway_session_options_open' -l after -x -d 'List the next page after an operation UUID'
+complete -c sway-session -n '__sway_session_is_state_subcommand operations; and __sway_session_options_open' -l socket -r -F -d 'Sway IPC socket for retry or rollback'

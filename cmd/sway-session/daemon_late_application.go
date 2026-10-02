@@ -61,8 +61,18 @@ func (runtime *sessionRuntime) observeStartupApplicationLayout(root *Node) {
 	visit(root)
 	observations := make(map[string]*startupApplicationLayout)
 	projections := make(map[*startupApplicationLayout]*startupApplicationLayout)
+	excluded := runtime.lifecycleBlockedWorkspaces()
+	for name := range runtime.restoreSuspended {
+		excluded[name] = struct{}{}
+	}
 	for id, pending := range runtime.startupApplications {
 		name, found := snapshotContextWorkspace(runtime.desired, id)
+		if _, paused := runtime.lifecycleBlocked[id]; paused {
+			continue
+		}
+		if _, paused := excluded[name]; paused {
+			continue
+		}
 		if !found {
 			delete(runtime.startupApplications, id)
 			continue
@@ -74,7 +84,7 @@ func (runtime *sessionRuntime) observeStartupApplicationLayout(root *Node) {
 		}
 		previous := pending.observation
 		if previous != nil && runtime.restoreProgress == nil &&
-			!runtime.lateRestorePending && !runtime.restoreCleanupPending {
+			!runtime.lateRestorePending && !(runtime.restoreCleanupPending && runtime.restoreCleanup.PendingExcluding(excluded)) {
 			// New views legitimately resize existing siblings. Compare structure
 			// after projecting them out. Initial client/decorations geometry can
 			// settle without another map, so compare rectangles only after the
@@ -184,6 +194,9 @@ func (runtime *sessionRuntime) observeStartupApplications(registry sessionstate.
 	}
 	for id, pending := range runtime.startupApplications {
 		context, exists := current[id]
+		if _, paused := runtime.lifecycleBlocked[id]; paused {
+			continue
+		}
 		if !exists || context.State != sessionstate.ContextActive || context.App == nil || !context.App.DesiredOpen || context.App.Identity != pending.identity {
 			delete(runtime.startupApplications, id)
 			continue

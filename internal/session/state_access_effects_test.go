@@ -1,6 +1,7 @@
 package session
 
 import (
+	"errors"
 	"path/filepath"
 	"testing"
 
@@ -26,7 +27,15 @@ func TestStateAccessSpansApplicationCompensation(t *testing.T) {
 				mark, _ := registered.ID.Mark()
 				window.Marks = []string{mark}
 			}
-			client := &mutationSwayClient{tree: applicationTree(window), reject: true}
+			if operation == "rebind" {
+				sandbox := "org.example.Rebound"
+				window.SandboxAppID = &sandbox
+			}
+			client := &mutationSwayClient{tree: applicationTree(window), reject: operation == "forget"}
+			if operation != "forget" {
+				client.unknownAfterApply = true
+				client.observeFailuresAfterCommand = 2
+			}
 			compensated := false
 			client.beforeCommand = func() {
 				requireRecoveryBusy(t, directory)
@@ -34,12 +43,23 @@ func TestStateAccessSpansApplicationCompensation(t *testing.T) {
 					return
 				}
 				compensated = true
-				// Compensation is outside the registry callback and after its
-				// SQLite handle closed; only the outer operation guard covers it.
-				if err := unix.Flock(int(directory.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
-					t.Fatalf("compensation still holds registry lock: %v", err)
+				// Durable compensation serializes observation and effects under the
+				// registry lock; the legacy forget path retains its outer state guard.
+				lockErr := unix.Flock(int(directory.Fd()), unix.LOCK_EX|unix.LOCK_NB)
+				if operation == "forget" {
+					if lockErr != nil {
+						t.Fatalf("forget compensation still holds registry lock: %v", lockErr)
+					}
+					_ = unix.Flock(int(directory.Fd()), unix.LOCK_UN)
+				} else {
+					if lockErr == nil {
+						_ = unix.Flock(int(directory.Fd()), unix.LOCK_UN)
+						t.Fatal("durable compensation released its registry lock")
+					}
+					if !errors.Is(lockErr, unix.EWOULDBLOCK) {
+						t.Fatalf("probe registry lock: %v", lockErr)
+					}
 				}
-				_ = unix.Flock(int(directory.Fd()), unix.LOCK_UN)
 			}
 			var err error
 			switch operation {
@@ -53,7 +73,7 @@ func TestStateAccessSpansApplicationCompensation(t *testing.T) {
 				_, err = ForgetApplicationContext(t.Context(), root, client, string(registered.ID))
 			}
 			if err == nil || !compensated {
-				t.Fatalf("did not exercise rejected mutation and compensation: compensated=%v err=%v", compensated, err)
+				t.Fatalf("did not exercise failed mutation and compensation: compensated=%v err=%v", compensated, err)
 			}
 			gate, err := acquireStateAccessAt(t.Context(), directory, true)
 			if err != nil {

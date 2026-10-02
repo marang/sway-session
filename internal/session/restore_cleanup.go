@@ -41,6 +41,22 @@ func (cleanup *RestoreCleanup) Pending() bool {
 	return len(cleanup.staged) != 0 || len(cleanup.marks) != 0
 }
 
+// PendingExcluding leaves suspended workspaces owned, without treating their
+// cleanup as a barrier to independent capture and restoration.
+func (cleanup *RestoreCleanup) PendingExcluding(excluded map[string]struct{}) bool {
+	for _, owned := range cleanup.staged {
+		if _, paused := excluded[owned.Workspace]; !paused {
+			return true
+		}
+	}
+	for _, owned := range cleanup.marks {
+		if _, paused := excluded[owned.Workspace]; !paused {
+			return true
+		}
+	}
+	return false
+}
+
 // Recover adopts only saved contexts already in the reserved workspace on the
 // first trusted observation of a new daemon. This also handles cancellation
 // before startup selection has had an opportunity to rediscover staging.
@@ -81,12 +97,21 @@ func (cleanup *RestoreCleanup) Recover(root *swayipc.TreeNode, registry Registry
 // changes focus, or moves a window that has left staging, including one moved
 // by the user. Entries survive errors and disappear only after observation.
 func (cleanup *RestoreCleanup) Plan(root *swayipc.TreeNode, registry Registry) (*RestoreAction, error) {
+	return cleanup.PlanExcluding(root, registry, nil)
+}
+
+// PlanExcluding neither dispatches nor prunes ownership for suspended
+// workspaces. Their absence from an eligibility view is not closure evidence.
+func (cleanup *RestoreCleanup) PlanExcluding(root *swayipc.TreeNode, registry Registry, excluded map[string]struct{}) (*RestoreAction, error) {
 	observation, err := observeRestoreTree(root, registry)
 	if err != nil {
 		return nil, err
 	}
 	actions := make([]RestoreAction, 0, len(cleanup.staged)+len(cleanup.marks))
 	for id, owned := range cleanup.staged {
+		if _, paused := excluded[owned.Workspace]; paused {
+			continue
+		}
 		node := observation.contexts[id]
 		if node == nil || node.ID != owned.ContainerID || observation.workspaceName(node) != RestoreStagingWorkspace {
 			delete(cleanup.staged, id)
@@ -96,6 +121,9 @@ func (cleanup *RestoreCleanup) Plan(root *swayipc.TreeNode, registry Registry) (
 	}
 	var markErr error
 	for mark, owned := range cleanup.marks {
+		if _, paused := excluded[owned.Workspace]; paused {
+			continue
+		}
 		node := observation.marks[mark]
 		if node == nil {
 			delete(cleanup.marks, mark)

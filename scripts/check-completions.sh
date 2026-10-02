@@ -86,8 +86,20 @@ _sway_session
 COMP_WORDS=(sway-session --json state '')
 COMP_CWORD=3
 _sway_session
-for expected in backup recover; do
+for expected in backup recover operations; do
     [[ " ${COMPREPLY[*]} " == *" $expected "* ]] || exit 1
+done
+COMP_WORDS=(sway-session state operations '')
+COMP_CWORD=3
+_sway_session
+for expected in --retry --cancel --after --socket; do
+    [[ " ${COMPREPLY[*]} " == *" $expected "* ]] || exit 1
+done
+for option in --retry --cancel --after; do
+    COMP_WORDS=(sway-session state operations "$option" '')
+    COMP_CWORD=4
+    _sway_session
+    [[ ${#COMPREPLY[@]} == 0 ]] || exit 1
 done
 COMP_WORDS=(sway-session state backup '')
 COMP_CWORD=3
@@ -493,8 +505,22 @@ captured_values=()
 words=(sway-session --json state '')
 CURRENT=4
 _sway-session
-for expected in backup recover; do
+for expected in backup recover operations; do
     [[ " ${captured_values[*]} " == *" $expected "* ]] || exit 1
+done
+captured_values=()
+words=(sway-session state operations '')
+CURRENT=4
+_sway-session
+for expected in --retry --cancel --after --socket; do
+    [[ " ${captured_values[*]} " == *" $expected "* ]] || exit 1
+done
+for option in --retry --cancel --after; do
+    captured_values=()
+    words=(sway-session state operations "$option" '')
+    CURRENT=5
+    _sway-session
+    [[ ${#captured_values} == 0 ]] || exit 1
 done
 captured_values=()
 words=(sway-session state backup '')
@@ -807,7 +833,18 @@ function state_values --argument-names invocation
 end
 contains -- state (state_values 'sway-session '); or exit 1
 set candidates (state_values 'sway-session --json state ')
-contains -- backup $candidates; and contains -- recover $candidates; or exit 1
+contains -- backup $candidates; and contains -- recover $candidates; and contains -- operations $candidates; or exit 1
+set candidates (state_values 'sway-session state operations --')
+for expected in --retry --cancel --after --socket
+    contains -- $expected $candidates; or exit 1
+end
+for option in --retry --cancel --after
+    set candidates (state_values "sway-session state operations $option ")
+    if test (count $candidates) -ne 0
+        printf 'fish operation completion proposed values for %s: %s\n' "$option" "$candidates" >&2
+        exit 1
+    end
+end
 set candidates (state_values 'sway-session state backup --')
 contains -- --output $candidates; or exit 1
 contains -- --yes $candidates; and exit 1

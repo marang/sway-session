@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -64,9 +65,12 @@ func TestRegisterRollsBackAttemptedMarkWhenUnknownOutcomeCannotBeObserved(t *tes
 	context := flatpakApplicationContext("org.example.App", "org.example.App")
 	context.ID = testContextID
 	window := appWindow(42, true, "org.example.App", "", "", "org.example.App")
-	client := &mutationSwayClient{tree: applicationTree(window), unknownAfterApply: true, observeFailures: 1}
+	client := &mutationSwayClient{tree: applicationTree(window), unknownAfterApply: true, observeFailuresAfterCommand: 2}
 	if err := RegisterApplicationContext(t.Context(), root, client, context, 42); err == nil {
 		t.Fatal("unobservable mark outcome was accepted")
+	}
+	if client.commandCalls != 2 {
+		t.Fatalf("expected attempted mark and compensation, got %d commands", client.commandCalls)
 	}
 	mark, _ := context.ID.Mark()
 	if containsMark(window.Marks, mark) {
@@ -84,22 +88,8 @@ func TestRegisterDoesNotRollBackMarkWhenCommittedRegistryCannotBeReconciled(t *t
 		Contexts:    []Context{applicationContext},
 	}
 	window := appWindow(42, true, "org.example.App", "", "", "org.example.App")
-	wroteCommittedRegistry := false
-	client := &mutationSwayClient{
-		tree:              applicationTree(window),
-		unknownAfterApply: true,
-		observeFailures:   1,
-		beforeCommand: func() {
-			if wroteCommittedRegistry {
-				return
-			}
-			wroteCommittedRegistry = true
-			writeRegistryBypassingLifecycleLock(t, root, committed)
-			if err := os.Chmod(filepath.Join(root, StateDatabaseFilename), 0); err != nil {
-				t.Fatalf("make reconciliation load fail: %v", err)
-			}
-		},
-	}
+	injectLifecycleCompletionOutcome(t, root, committed.Contexts[0], true)
+	client := &mutationSwayClient{tree: applicationTree(window)}
 
 	err := RegisterApplicationContext(t.Context(), root, client, applicationContext, 42)
 	if err == nil {
@@ -142,19 +132,8 @@ func TestRegisterDoesNotRollBackCommittedMarkAfterConcurrentLifecycleChange(t *t
 		Contexts:    []Context{committedContext},
 	}
 	window := appWindow(42, true, "org.example.App", "", "", "org.example.App")
-	wroteCommittedRegistry := false
-	client := &mutationSwayClient{
-		tree:                        applicationTree(window),
-		unknownAfterApply:           true,
-		observeFailuresAfterCommand: 1,
-		beforeCommand: func() {
-			if wroteCommittedRegistry {
-				return
-			}
-			wroteCommittedRegistry = true
-			writeRegistryBypassingLifecycleLock(t, root, committed)
-		},
-	}
+	injectLifecycleCompletionOutcome(t, root, committed.Contexts[0], false)
+	client := &mutationSwayClient{tree: applicationTree(window)}
 
 	if err := RegisterApplicationContext(t.Context(), root, client, applicationContext, 42); err != nil {
 		t.Fatalf("committed registration was mistaken for rollback after lifecycle change: %v", err)
@@ -358,22 +337,8 @@ func TestRebindDoesNotRollBackMarkWhenCommittedRegistryCannotBeReconciled(t *tes
 	replacement.ID = expected.ID
 	committed := Registry{Version: ContextsSchemaVersion, Contexts: []Context{replacement}}
 	window := appWindow(42, true, "org.example.New", "", "", "org.example.New")
-	wroteCommittedRegistry := false
-	client := &mutationSwayClient{
-		tree:                        applicationTree(window),
-		unknownAfterApply:           true,
-		observeFailuresAfterCommand: 1,
-		beforeCommand: func() {
-			if wroteCommittedRegistry {
-				return
-			}
-			wroteCommittedRegistry = true
-			writeRegistryBypassingLifecycleLock(t, root, committed)
-			if err := os.Chmod(filepath.Join(root, StateDatabaseFilename), 0); err != nil {
-				t.Fatalf("make reconciliation load fail: %v", err)
-			}
-		},
-	}
+	injectLifecycleCompletionOutcome(t, root, committed.Contexts[0], true)
+	client := &mutationSwayClient{tree: applicationTree(window)}
 
 	_, _, err := RebindApplicationContext(t.Context(), root, client, expected, replacement, 42)
 	if err == nil {
@@ -460,21 +425,50 @@ func TestReapproveReportsUnknownRegistryReconciliation(t *testing.T) {
 	}
 }
 
-func writeRegistryBypassingLifecycleLock(t *testing.T, root string, registry Registry) {
+// Inject at the actual atomic completion boundary: the desired registry row
+// and journal removal commit together. No ordinary writer bypasses reservations.
+func injectLifecycleCompletionOutcome(t *testing.T, root string, committed Context, unreadable bool) {
 	t.Helper()
-	database, err := openStateDatabase(t.Context(), root, false)
-	if err != nil {
-		t.Fatalf("open state database for concurrent write: %v", err)
-	}
-	defer database.Close()
-	_, revision, err := loadRegistrySnapshotDatabase(t.Context(), database)
-	if errors.Is(err, os.ErrNotExist) {
-		revision = 0
-	} else if err != nil {
-		t.Fatalf("load registry revision for concurrent write: %v", err)
-	}
-	if err := saveRegistryDatabase(t.Context(), database, registry, revision); err != nil {
-		t.Fatalf("write concurrent registry: %v", err)
+	original := executeStateCommit
+	injected := false
+	t.Cleanup(func() {
+		executeStateCommit = original
+		if !injected {
+			t.Error("completion fault was never injected")
+		}
+	})
+	executeStateCommit = func(tx *stateWriteTransaction) error {
+		if injected {
+			return original(tx)
+		}
+		var tableExists, pending, present int
+		err := tx.QueryRowContext(t.Context(), "SELECT count(*) FROM sqlite_schema WHERE type='table' AND name='lifecycle_operations'").Scan(&tableExists)
+		if err != nil || tableExists != 1 {
+			return original(tx)
+		}
+		if err := tx.QueryRowContext(t.Context(), "SELECT count(*) FROM lifecycle_operations").Scan(&pending); err != nil || pending != 0 {
+			return original(tx)
+		}
+		if err := tx.QueryRowContext(t.Context(), "SELECT count(*) FROM contexts WHERE id=?", string(committed.ID)).Scan(&present); err != nil || present != 1 {
+			return original(tx)
+		}
+		payload, err := json.Marshal(committed)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(t.Context(), "UPDATE contexts SET payload=? WHERE id=?", payload, string(committed.ID)); err != nil {
+			return err
+		}
+		if err := original(tx); err != nil {
+			return err
+		}
+		injected = true
+		if unreadable {
+			if err := os.Chmod(filepath.Join(root, StateDatabaseFilename), 0); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return errors.New("injected lost completion acknowledgement")
 	}
 }
 
@@ -520,6 +514,10 @@ type mutationSwayClient struct {
 	cancelAfterCommand          func()
 }
 
+func (client *mutationSwayClient) LifecycleCompositorID(context.Context) (string, error) {
+	return "test-compositor", nil
+}
+
 func (client *mutationSwayClient) RequestContext(ctx context.Context, messageType swayipc.MessageType, payload []byte) (swayipc.Message, error) {
 	if client.honorContext && ctx.Err() != nil {
 		return swayipc.Message{}, ctx.Err()
@@ -545,7 +543,11 @@ func (client *mutationSwayClient) RequestContext(ctx context.Context, messageTyp
 	}
 	command := string(payload)
 	mark := command[strings.LastIndex(command, " ")+1:]
-	node, err := findContainer(client.tree, 42)
+	var containerID int64
+	if _, err := fmt.Sscanf(command, "[con_id=%d]", &containerID); err != nil {
+		return swayipc.Message{}, err
+	}
+	node, err := findContainer(client.tree, containerID)
 	if err != nil {
 		return swayipc.Message{}, err
 	}

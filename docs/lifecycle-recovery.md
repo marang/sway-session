@@ -104,8 +104,10 @@ operation begins under the lifecycle lock, compares the confirmed context with
 the current registry and atomically saves intent while removing the context and
 its activity. Database transactions remain separate from subprocess calls.
 
-Each pass reopens and validates the owner-only Herdr root and named session
-directory. Device/inode evidence, plus directory birth time where the filesystem
+Each pass reopens and validates the owner-only Herdr root and owned, non-writable
+by other users child directories. Native Herdr's `0755` children are accepted
+inside that private root; symlinks and nested session mounts are refused.
+Device/inode evidence, plus directory birth time where the filesystem
 supports it, distinguishes an observed replacement from the authorized target.
 Without birth time, device/inode evidence is weaker because inodes can be reused.
 A replacement blocks the operation as a conflict; retry retains the original

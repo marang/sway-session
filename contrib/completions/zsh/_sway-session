@@ -75,6 +75,7 @@ _sway_session_marker_is_value() {
 		register) value_options=' --session --cwd --label --provider --id ' ;;
 		restore|daemon|broker) value_options=' --socket ' ;;
 		restore-report) value_options=' --socket --retry ' ;;
+		state) start=2; value_options=' --output --from ' ;;
 		doctor) value_options=' --fix --socket --sway-config ' ;;
 		request-start) value_options=' --session --cwd --label --provider --workspace ' ;;
 		app)
@@ -180,7 +181,7 @@ _sway-session() {
 	(( invalid_command_option )) && return 0
 	if [[ -z $command ]]; then
 		(( options_ended )) && return 0
-		_sway_session_add terminal register restore restore-report list archive activate purge app daemon broker request-start report-agent-session completion doctor version --config --json --version -h --help
+		_sway_session_add terminal register restore restore-report list archive activate purge app daemon broker request-start report-agent-session completion doctor state version --config --json --version -h --help
 		return
 	fi
 	app_command=${arguments[2]-}
@@ -206,6 +207,19 @@ _sway-session() {
 	fi
 
 	case $command in
+		state)
+			case $app_command in
+				'') _sway_session_add backup recover --json -h --help ;;
+				backup)
+					[[ ${arguments[-1]-} == --output ]] && { _files; return; }
+					_sway_session_add --output --json -h --help
+					;;
+				recover)
+					[[ ${arguments[-1]-} == --from ]] && { _files; return; }
+					_sway_session_add --from --yes --json -h --help
+					;;
+			esac
+			;;
 		version|--version)
 			_sway_session_add --json -h --help
 			;;

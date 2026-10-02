@@ -55,8 +55,13 @@ func RegisterApplicationContexts(ctx context.Context, root string, client SwayRe
 		}
 		seenContainers[containerID] = struct{}{}
 	}
+	access, err := AcquireStateAccess(ctx, root, true)
+	if err != nil {
+		return err
+	}
+	defer access.Close()
 	attemptedItems := 0
-	_, err := UpdateRegistryContext(ctx, root, func(registry *Registry) error {
+	_, err = UpdateRegistryContext(ctx, root, func(registry *Registry) error {
 		for index := range contexts {
 			if err := validateUnreferencedDesktopApproval(ctx, root, *registry, contexts[index].Launcher); err != nil {
 				return err
@@ -103,6 +108,11 @@ func RegisterApplicationContexts(ctx context.Context, root string, client SwayRe
 // RebindApplicationContext replaces the exact live identity and typed launcher
 // while transferring the context mark to the newly focused window.
 func RebindApplicationContext(ctx context.Context, root string, client SwayRequestClient, expected Context, replacement Context, newContainerID int64) (Context, Context, error) {
+	access, err := AcquireStateAccess(ctx, root, true)
+	if err != nil {
+		return Context{}, Context{}, err
+	}
+	defer access.Close()
 	expectedRevision, err := ApplicationOperationContextRevision(expected)
 	if err != nil {
 		return Context{}, Context{}, err
@@ -199,9 +209,14 @@ func RebindApplicationContext(ctx context.Context, root string, client SwayReque
 // after revalidating the reviewed launcher-and-identity revision under the
 // registry lock. Concurrent lifecycle changes remain authoritative.
 func ReapproveApplicationContext(ctx context.Context, root string, id ContextID, expectedRevision string, launcher Launcher) (Context, Context, error) {
+	access, err := AcquireStateAccess(ctx, root, true)
+	if err != nil {
+		return Context{}, Context{}, err
+	}
+	defer access.Close()
 	var previous Context
 	var replacement Context
-	_, err := UpdateRegistryContext(ctx, root, func(registry *Registry) error {
+	_, err = UpdateRegistryContext(ctx, root, func(registry *Registry) error {
 		index, err := ResolveContext(*registry, string(id))
 		if err != nil {
 			return err
@@ -289,11 +304,16 @@ func repairApplicationMark(ctx context.Context, client SwayRequestClient, contai
 // ForgetApplicationContext removes the live mark before committing removal
 // and restores it if the registry update fails.
 func ForgetApplicationContext(ctx context.Context, root string, client SwayRequestClient, selector string) (Context, error) {
+	access, err := AcquireStateAccess(ctx, root, true)
+	if err != nil {
+		return Context{}, err
+	}
+	defer access.Close()
 	var removed Context
 	containerID := int64(0)
 	unmarked := false
 	attemptedUnmark := false
-	_, err := UpdateRegistryContext(ctx, root, func(registry *Registry) error {
+	_, err = UpdateRegistryContext(ctx, root, func(registry *Registry) error {
 		index, err := ResolveContext(*registry, selector)
 		if err != nil {
 			return err

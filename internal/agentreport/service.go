@@ -20,6 +20,11 @@ func (service RegistryService) Handle(ctx context.Context, report Report) error 
 	if err := report.Validate(); err != nil {
 		return err
 	}
+	access, err := sessionstate.AcquireStateAccess(ctx, service.StateRoot, false)
+	if err != nil {
+		return err
+	}
+	defer access.Close()
 	now := time.Now
 	if service.Now != nil {
 		now = service.Now
@@ -29,7 +34,7 @@ func (service RegistryService) Handle(ctx context.Context, report Report) error 
 		reportHerdr = service.Report
 	}
 	registry := sessionstate.Registry{}
-	if err := sessionstate.RegistryStoreFor(service.StateRoot).LoadSnapshotInto(&registry); err != nil {
+	if err := sessionstate.RegistryStoreFor(service.StateRoot).LoadIntoContext(ctx, &registry); err != nil {
 		return fmt.Errorf("load context registry snapshot: %w", err)
 	}
 	for _, candidate := range registry.Contexts {

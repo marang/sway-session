@@ -75,7 +75,7 @@ function __sway_session_options_open
             return 1
         end
         switch $token
-            case --config --socket --sway-config --fix --desktop-id --session --cwd --label --provider --id --workspace
+            case --config --socket --sway-config --fix --desktop-id --session --cwd --label --provider --id --workspace --output --from
                 set skip_next 1
             case --
                 set global_options_open 0
@@ -600,12 +600,38 @@ function __sway_session_doctor_mode --argument-names wanted
     end
 end
 
+function __sway_session_state_subcommand
+    __sway_session_is_command state
+    or return 1
+    set -l tokens (commandline -opc)
+    set -e tokens[1]
+    set -l seen_state 0
+    for token in $tokens
+        if test $seen_state -eq 0
+            test "$token" = state
+            and set seen_state 1
+            continue
+        end
+        contains -- "$token" --json -h --help
+        and continue
+        printf '%s\n' "$token"
+        return 0
+    end
+    return 1
+end
+
+function __sway_session_is_state_subcommand --argument-names wanted
+    set -l actual (__sway_session_state_subcommand)
+    test (count $actual) -eq 1
+    and test "$actual[1]" = "$wanted"
+end
+
 complete -c sway-session -f
 complete -c sway-session -n '__sway_session_global_options_open; and not __sway_session_terminal_subcommand manage' -l json -d 'Emit machine-readable results and diagnostics'
 complete -c sway-session -n '__sway_session_global_options_open' -s h -d 'Show help'
 complete -c sway-session -n '__sway_session_global_options_open' -l help -d 'Show help'
 complete -c sway-session -n '__sway_session_global_options_open' -l config -r -F
-complete -c sway-session -n '__sway_session_no_command' -a 'register restore restore-report list archive activate purge app daemon broker request-start report-agent-session completion terminal doctor version'
+complete -c sway-session -n '__sway_session_no_command' -a 'register restore restore-report list archive activate purge app daemon broker request-start report-agent-session completion terminal doctor state version'
 complete -c sway-session -n '__sway_session_no_command' -l version -d 'Show build version and commit'
 complete -c sway-session -n '__sway_session_marker_value_open' -a '(__sway_session_command_options)'
 
@@ -679,3 +705,8 @@ complete -c sway-session -n '__sway_session_top_context_pending restore; and __s
 
 complete -c sway-session -n '__sway_session_is_command restore-report; and __sway_session_options_open' -l retry -x -a '(__sway_session_contexts restore-active)' -d "Retry an eligible failed or interrupted restore"
 complete -c sway-session -n '__sway_session_is_command restore-report; and __sway_session_options_open' -l socket -r -F
+
+complete -c sway-session -n '__sway_session_is_command state; and __sway_session_options_open; and not __sway_session_state_subcommand >/dev/null' -a 'backup recover'
+complete -c sway-session -n '__sway_session_is_state_subcommand backup; and __sway_session_options_open' -l output -r -F -d 'Write a metadata backup to an absolute file path'
+complete -c sway-session -n '__sway_session_is_state_subcommand recover; and __sway_session_options_open' -l from -r -F -d 'Read a metadata backup from an absolute file path'
+complete -c sway-session -n '__sway_session_is_state_subcommand recover; and __sway_session_options_open' -l yes -d 'Apply recovery instead of previewing it'

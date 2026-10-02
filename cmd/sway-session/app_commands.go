@@ -421,6 +421,11 @@ func executeAppForget(ctx context.Context, arguments []string, deps dependencies
 	if commandFailure != nil {
 		return commandResult{}, commandFailure
 	}
+	access, err := sessionstate.AcquireStateAccess(ctx, root, true)
+	if err != nil {
+		return commandResult{}, classifyStateError("acquire application state access", err)
+	}
+	defer access.Close()
 	client := deps.newSwayClient(socket)
 	if client == nil {
 		return commandResult{}, failure("sway", "connect to Sway", "Sway client is unavailable")
@@ -621,6 +626,11 @@ func applyApplicationOperation(ctx context.Context, operation sessionstate.Appli
 	if commandFailure != nil {
 		return commandResult{}, commandFailure
 	}
+	access, err := sessionstate.AcquireStateAccess(ctx, root, true)
+	if err != nil {
+		return commandResult{}, classifyStateError("acquire application state access", err)
+	}
+	defer access.Close()
 	catalog, err := deps.desktopCatalog()
 	if err != nil {
 		return commandResult{}, failure("desktop_catalog", "reload desktop application catalog", err.Error())

@@ -155,6 +155,45 @@ $XDG_CONFIG_HOME/sway-session/config.toml, or
 ~/.config/sway-session/config.toml when XDG_CONFIG_HOME is unset. Runtime
 sockets and locks remain below $XDG_RUNTIME_DIR/sway-session.
 
+`state backup --output PATH` exports sway-session metadata to a private backup
+file. `state recover --from PATH` validates that input and previews the target
+without preparing runtime locks or modifying state. Only `--yes` applies the
+replacement. Neither operation backs up or restores Herdr history, application
+state, or configuration, and neither controls processes or the compositor.
+Paths must be clean and absolute; portable recovery input is a current-owner,
+regular `0600` file inside a current-owner `0700` parent directory.
+Approved desktop launcher files and external Herdr session files are not
+included in the backup. Recovery on another machine requires providing them
+separately and checking launcher approvals against its installed applications.
+
+The permanent `.state-access.lock` gate is held shared for the full lifetime
+of ordinary database handles and operations, including their external effects;
+recovery requires exclusive access. Read-only access to an older root without
+the gate uses a shared root-directory lock during bootstrap and creates no
+metadata. `state-recovery.json` and `state-recovery-completed.json` are versioned,
+owner-only recovery coordination metadata outside the replaceable SQLite file.
+They must survive database replacement to record pending and completed recovery;
+they do not introduce another storage format for session documents. Session
+runtime records remain in SQLite. A `recovery-UUID` directory retains the
+previous database archive or raw bundle.
+
+Recovery apply holds the CLI's existing daemon lock through the operation and
+requires exclusive state access in the session core. It refuses a running
+daemon, invalid runtime setup, or busy state. Stop standalone brokers and all
+older CLI and broker processes beforehand; mixed-version writers are not
+supported. The previous healthy database becomes a private standalone rollback
+file. Corrupt previous state is preserved as a raw bundle, explicitly marked as
+unvalidated. An interrupted replacement blocks ordinary state access and is
+resumed by repeating the same source path with explicit `--yes`. A durable
+completion receipt permits idempotent retry only while the installed database
+remains unchanged and has no live WAL/SHM files. After normal writers resume,
+applying the same source with `--yes` deliberately performs a new recovery.
+A partial result on error retains installation status and rollback locations.
+A preview does not guarantee exclusive access at apply time or live session
+resumability.
+The [backup and recovery instructions](../README.md#state-backup-and-recovery)
+describe the operating procedure and JSON summaries.
+
 SQLite schema 1 stores schema-5 contexts, layout schema 1, terminal
 creation/focus activity, compositor identity, and application launch attempts.
 Context rows may include optional `lifecycle: {reason, at}` metadata for the

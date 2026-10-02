@@ -227,6 +227,7 @@ sway-session help restore
 sway-session help restore-report
 sway-session help app
 sway-session help daemon
+sway-session help state
 sway-session help request-start
 ~~~
 
@@ -493,6 +494,86 @@ already provided by terminal manage: press m when the database is absent and
 legacy runtime documents are present. The import is idempotent, transactional,
 and does not delete its JSON source. No additional extraction migration is
 required.
+
+### State backup and recovery
+
+`state backup` saves sway-session metadata: registered contexts and the runtime
+records owned by this program. It does **not** save Herdr pane history, running
+processes, application data or state, or configuration. Keep those backups
+separately. The backup itself contains private metadata; CLI summaries do not
+print the stored context list or session payloads.
+
+Use a new output filename with a clean absolute path inside an existing,
+current-owner `0700` directory. The resulting file is owner-only `0600`:
+
+~~~sh
+install -d -m 0700 "$HOME/sway-session-backups"
+sway-session state backup --output "$HOME/sway-session-backups/before-change.sqlite3"
+sway-session --json state backup --output "$HOME/sway-session-backups/another-backup.sqlite3"
+~~~
+
+For a backup copied from another machine or storage device, first place it in a
+private `0700` directory owned by your current user. The input must be a regular
+`0600` file owned by that user, addressed by a clean absolute file path. Do not
+use a symlink, a hard-linked file, a relative path, or a path containing `..`.
+Use the backup command instead of copying a live `state.sqlite3` and ignoring
+its SQLite WAL files.
+
+Approved desktop launcher files and external Herdr session files are not
+included. When using a backup on another machine, provide those separately
+and verify launcher approvals against that machine's installed applications.
+
+Recovery previews by default, including with global `--json`:
+
+~~~sh
+sway-session state recover --from "$HOME/sway-session-backups/before-change.sqlite3"
+sway-session --json state recover --from "$HOME/sway-session-backups/before-change.sqlite3"
+~~~
+
+Preview validates the input and names the target database. It does not replace
+state, create a rollback file or daemon lock, start or stop processes, or contact
+the compositor. It does not prove that exclusive access will be available at
+apply time or that the saved applications and Herdr sessions can resume.
+
+Before applying, stop the daemon and other state users, including standalone
+brokers and **all older CLI and broker processes**. Mixed-version writers are
+unsupported during recovery. Use the normal supervisor or terminal to stop
+them yourself; recovery never stops or signals them. Apply also requires a
+valid `XDG_RUNTIME_DIR`. It holds the existing daemon lock and exclusive state
+access through the operation, and refuses a running daemon or busy state.
+
+~~~sh
+sway-session state recover --from "$HOME/sway-session-backups/before-change.sqlite3" --yes
+~~~
+
+Only explicit `--yes` applies recovery. The output reports the rollback
+location when previous state existed. A healthy previous database is retained
+as a validated standalone file that can itself be supplied to `--from` after
+review. Corrupt previous state is retained as a raw bundle directory marked
+`previous_valid: false`; that bundle is evidence for manual recovery, not a
+validated input file. No previous state means no rollback location.
+
+If recovery is interrupted, preserve the original source and repeat the same
+`state recover --from PATH --yes` command to resume. Ordinary state access fails
+closed while recovery is pending. A durable completion receipt makes retrying
+the same completed recovery idempotent only while the installed database
+remains unchanged and has no live WAL/SHM files, including after uncertainty
+during final cleanup. After normal writers resume, applying the same source
+with `--yes` deliberately performs a new recovery.
+
+An error can accompany a partial result: inspect the diagnostic and retained
+artifact paths. `applied: true` means the replacement was installed even if the
+command also reports a completion failure; an error never implies the previous
+state is unchanged. Review the result before restarting state users; recovery
+does not restore Herdr history, application state, or config.
+
+JSON uses the standard result envelope with typed `state_backup` or
+`state_recovery` fields and no private context listing. Recovery reports
+`source`, `database`, `applied`, `previous`, `previous_valid`, and `resumed` as
+applicable. Diagnostics remain on stderr; exit `2` means invalid arguments and
+exit `3` means an operational refusal or failure. `state_database_busy` means
+exclusive access was unavailable; `state_recovery_pending` directs you to
+resume an interrupted recovery.
 
 ## Narrow agent integration
 

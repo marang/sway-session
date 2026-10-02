@@ -79,6 +79,15 @@ func runSessionRequestBroker(ctx context.Context, swaySocket string, reportError
 	if ctx == nil {
 		return errors.New("broker context is nil")
 	}
+	stateRoot, err := sessionstate.DefaultStateRoot()
+	if err != nil {
+		return err
+	}
+	access, err := sessionstate.AcquireStateAccess(ctx, stateRoot, true)
+	if err != nil {
+		return err
+	}
+	defer access.Close()
 	monitor, err := subscribeToSwayShutdown(ctx, swaySocket)
 	if err != nil {
 		return err

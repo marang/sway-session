@@ -646,6 +646,14 @@ func InspectRegistryLockedContext(ctx context.Context, root string, inspect func
 // callback keeps the caller's original context and may complete its explicit
 // observe/act/reconcile saga without an artificial 250 ms action deadline.
 func WithRegistryLockContext(ctx context.Context, root string, action func(*statefile.LockedPrivateDirectory) error) error {
+	if action == nil {
+		return errors.New("registry lock action is nil")
+	}
+	access, err := AcquireStateAccess(ctx, root, true)
+	if err != nil {
+		return err
+	}
+	defer access.Close()
 	return withBoundedPrivateDirectoryLockContext(ctx, root, "registry", action)
 }
 

@@ -29,8 +29,7 @@ type terminalCloseCandidate struct {
 var errTerminalCloseDiscarded = errors.New("terminal close candidate discarded")
 
 func (runtime *sessionRuntime) queueTerminalClose(node *Node, observedAt time.Time) {
-	if runtime == nil || runtime.shutdown || node == nil || node.ID <= 0 || observedAt.IsZero() ||
-		runtime.terminalCloseGuard == nil || !runtime.terminalCloseStreamCurrent() {
+	if runtime == nil || node == nil || node.ID <= 0 || observedAt.IsZero() {
 		return
 	}
 	contextID, ok := focusedManagedContextID(node)
@@ -41,7 +40,7 @@ func (runtime *sessionRuntime) queueTerminalClose(node *Node, observedAt time.Ti
 	if !ok || observation.contextID != contextID || observation.epoch != runtime.eventStreamEpoch {
 		return
 	}
-	generation, safe := runtime.terminalCloseGuard.Snapshot()
+	generation, safe := runtime.automaticCloseSnapshot()
 	if !safe {
 		return
 	}
@@ -51,7 +50,7 @@ func (runtime *sessionRuntime) queueTerminalClose(node *Node, observedAt time.Ti
 	candidate := terminalCloseCandidate{
 		terminalCloseObservation: observation,
 		deadline:                 observedAt.Add(terminalCloseGrace),
-		guardGeneration:          generation,
+		guardGeneration:          generation.shutdown,
 	}
 	runtime.pendingTerminalClose[node.ID] = candidate
 	runtime.rearmTerminalCloseDeadline()
@@ -318,8 +317,8 @@ func (runtime *sessionRuntime) flushTerminalClose(now time.Time) error {
 			// The guard is re-read immediately before the state mutation. Its
 			// Snapshot implementation is pure memory access, so this does not
 			// introduce an external effect into the database write.
-			generation, safe := runtime.terminalCloseGuard.Snapshot()
-			if !safe || !runtime.terminalCloseStreamCurrent() {
+			generation, safe := runtime.automaticCloseSnapshot()
+			if !safe {
 				for containerID := range runtime.pendingTerminalClose {
 					discarded[containerID] = struct{}{}
 				}
@@ -327,7 +326,7 @@ func (runtime *sessionRuntime) flushTerminalClose(now time.Time) error {
 			}
 			for _, containerID := range batch {
 				candidate, exists := runtime.pendingTerminalClose[containerID]
-				if exists && generation != candidate.guardGeneration {
+				if exists && generation.shutdown != candidate.guardGeneration {
 					for containerID := range runtime.pendingTerminalClose {
 						discarded[containerID] = struct{}{}
 					}

@@ -82,6 +82,7 @@ type ApplicationRestoreCoordinator struct {
 	adoptionDeadline time.Time
 	options          ApplicationRestoreOptions
 	seenPresent      map[ContextID]bool
+	closePresent     map[ContextID]bool
 	missingSince     map[ContextID]time.Time
 }
 
@@ -110,7 +111,7 @@ func NewApplicationRestoreCoordinator(
 	}
 	return &ApplicationRestoreCoordinator{
 		state: state, adoptionDeadline: now.Add(options.AdoptionGrace), options: options,
-		seenPresent: make(map[ContextID]bool), missingSince: make(map[ContextID]time.Time),
+		seenPresent: make(map[ContextID]bool), closePresent: make(map[ContextID]bool), missingSince: make(map[ContextID]time.Time),
 	}, nil
 }
 
@@ -132,11 +133,38 @@ func (coordinator *ApplicationRestoreCoordinator) PlanWithSuspended(
 	now time.Time,
 	suspended map[ContextID]struct{},
 ) (ApplicationRestorePlan, error) {
+	return coordinator.PlanWithCloseTracking(registry, groups, now, suspended, true)
+}
+
+// ResetCloseObservations discards presence and timers used to infer a Follow
+// close. Adoption and launch attempts survive: uncertainty is not permission
+// to relaunch an application already observed in this compositor session.
+func (coordinator *ApplicationRestoreCoordinator) ResetCloseObservations() {
+	if coordinator != nil {
+		clear(coordinator.closePresent)
+		clear(coordinator.missingSince)
+	}
+}
+
+// PlanWithCloseTracking additionally requires trustworthy lifecycle evidence
+// for automatic Follow closes. When closeSafe is false, presence still adopts
+// applications and can enable restore, but cannot seed a later close decision.
+// Call ResetCloseObservations when the external lifecycle generation changes.
+func (coordinator *ApplicationRestoreCoordinator) PlanWithCloseTracking(
+	registry Registry,
+	groups map[ContextID]ApplicationGroup,
+	now time.Time,
+	suspended map[ContextID]struct{},
+	closeSafe bool,
+) (ApplicationRestorePlan, error) {
 	if coordinator == nil {
 		return ApplicationRestorePlan{}, errors.New("application restore coordinator is nil")
 	}
 	if err := registry.Validate(); err != nil {
 		return ApplicationRestorePlan{}, fmt.Errorf("validate context registry: %w", err)
+	}
+	if !closeSafe {
+		coordinator.ResetCloseObservations()
 	}
 	registeredApplications := make(map[ContextID]struct{})
 	activeApplications := make(map[ContextID]struct{})
@@ -154,6 +182,7 @@ func (coordinator *ApplicationRestoreCoordinator) PlanWithSuspended(
 		}
 		if _, active := activeApplications[id]; !active {
 			delete(coordinator.seenPresent, id)
+			delete(coordinator.closePresent, id)
 		}
 	}
 	for id := range coordinator.missingSince {
@@ -184,6 +213,9 @@ func (coordinator *ApplicationRestoreCoordinator) PlanWithSuspended(
 		present := len(groups[context.ID].Windows) != 0
 		if present {
 			coordinator.seenPresent[context.ID] = true
+			if closeSafe {
+				coordinator.closePresent[context.ID] = true
+			}
 			delete(coordinator.missingSince, context.ID)
 			if !context.App.DesiredOpen {
 				plan.DesiredOpen = append(plan.DesiredOpen, ApplicationDesiredOpen{ContextID: context.ID, Open: true})
@@ -192,10 +224,11 @@ func (coordinator *ApplicationRestoreCoordinator) PlanWithSuspended(
 		}
 		if !context.App.DesiredOpen {
 			coordinator.seenPresent[context.ID] = false
+			delete(coordinator.closePresent, context.ID)
 			delete(coordinator.missingSince, context.ID)
 			continue
 		}
-		if !coordinator.seenPresent[context.ID] || context.App.RestorePolicy == ApplicationRestorePinned {
+		if !closeSafe || !coordinator.closePresent[context.ID] || context.App.RestorePolicy == ApplicationRestorePinned {
 			continue
 		}
 		missingSince, tracked := coordinator.missingSince[context.ID]

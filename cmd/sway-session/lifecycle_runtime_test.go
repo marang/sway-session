@@ -324,7 +324,7 @@ func TestLifecycleReservationRetainsLateApplicationStartupIntent(t *testing.T) {
 }
 
 func TestLifecycleReservationRetainsAdoptedFollowCloseEvidence(t *testing.T) {
-	runtime, _, launcher, app, start := testApplicationRuntime(t)
+	runtime, _, launcher, _, app, start := guardedApplicationRuntime(t)
 	fixture := &fixtureLifecycleAdapter{}
 	runtime.lifecycleOperations = fixture
 	runtime.startupComplete = true

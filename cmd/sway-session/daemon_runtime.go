@@ -47,13 +47,6 @@ type eventStreamGuard interface {
 	Snapshot() (uint64, bool)
 }
 
-// TerminalCloseGuard reports whether automatic terminal-close archival is safe
-// for the current external shutdown generation. A nil guard deliberately
-// disables automatic archival.
-type TerminalCloseGuard interface {
-	Snapshot() (uint64, bool)
-}
-
 type preparedApplicationLaunch interface {
 	Start() error
 }
@@ -120,6 +113,7 @@ type sessionRuntime struct {
 	observeDeadline              time.Time
 	shutdown                     bool
 	applications                 *sessionstate.ApplicationRestoreCoordinator
+	applicationCloseGeneration   automaticCloseGeneration
 	applicationLauncher          applicationContextLauncher
 	applicationCursor            sessionstate.ContextID
 	applicationPlacementCursor   *sessionstate.PlacementAction
@@ -375,6 +369,7 @@ func (runtime *sessionRuntime) HandleEvent(event swayipc.Event, now time.Time) {
 		return
 	}
 	if event.Type == swayipc.EventShutdown {
+		runtime.resetApplicationCloseObservations()
 		runtime.expectedFocus = nil
 		clear(runtime.pendingMappingFocus)
 		clear(runtime.mappingCandidates)
@@ -389,6 +384,7 @@ func (runtime *sessionRuntime) HandleEvent(event swayipc.Event, now time.Time) {
 		return
 	}
 	if event.Type == swayipc.EventStream && event.Change == "ready" {
+		runtime.resetApplicationCloseObservations()
 		// A reconnect creates a new event-generation boundary. Any move whose
 		// event was lost with the old connection must be rediscovered through
 		// the fresh tree instead of consuming later user intent.
@@ -413,6 +409,7 @@ func (runtime *sessionRuntime) HandleEvent(event swayipc.Event, now time.Time) {
 		return
 	}
 	if event.Type == swayipc.EventStream && event.Change == "disconnected" {
+		runtime.resetApplicationCloseObservations()
 		clear(runtime.expectedMoves)
 		runtime.expectedFocus = nil
 		clear(runtime.pendingMappingFocus)
@@ -535,6 +532,7 @@ func (runtime *sessionRuntime) requireCurrentEventStream() error {
 	if connected && runtime.eventStreamReady && epoch == runtime.eventStreamEpoch {
 		return nil
 	}
+	runtime.resetApplicationCloseObservations()
 	if runtime.restoreMayConflictWithUserIntent() {
 		runtime.cancelConflictingRestore()
 	}
@@ -678,7 +676,15 @@ func (runtime *sessionRuntime) sendMoveBarrier(sequence uint64) error {
 
 // Reconcile applies placement for newly mapped stable application IDs. It
 // returns true only when the caller must obtain a fresh tree before capture.
+// The supplied tree must belong to the current lifecycle generation; IPC
+// callers use reconcileObserved with a snapshot taken before acquisition.
 func (runtime *sessionRuntime) Reconcile(root *Node, now time.Time) (needsRefresh bool, resultErr error) {
+	return runtime.reconcileObserved(root, now, runtime.automaticCloseObservation())
+}
+
+// reconcileObserved carries the acquisition generation through both planning
+// passes. Callers which perform IPC capture it before fetching the tree.
+func (runtime *sessionRuntime) reconcileObserved(root *Node, now time.Time, observation automaticCloseObservation) (needsRefresh bool, resultErr error) {
 	var degraded []error
 	defer func() {
 		if runtime != nil && !runtime.shutdown {
@@ -778,7 +784,7 @@ func (runtime *sessionRuntime) Reconcile(root *Node, now time.Time) (needsRefres
 	// The missing-registry branch above schedules a separate discovery tick.
 	runtime.observeDeadline = now.Add(sessionObservationDelay)
 	runtime.observeStartupApplicationLayout(root)
-	applicationRefresh, registry, applicationDegraded, applicationErr := runtime.reconcileApplications(root, registry, now)
+	applicationRefresh, registry, applicationDegraded, applicationErr := runtime.reconcileObservedApplications(root, registry, now, observation)
 	if applicationDegraded != nil {
 		degraded = append(degraded, applicationDegraded)
 	}
@@ -946,47 +952,27 @@ func (runtime *sessionRuntime) Reconcile(root *Node, now time.Time) (needsRefres
 }
 
 func (runtime *sessionRuntime) reconcileApplications(root *Node, registry sessionstate.Registry, now time.Time) (bool, sessionstate.Registry, error, error) {
+	return runtime.reconcileObservedApplications(root, registry, now, runtime.automaticCloseObservation())
+}
+
+func (runtime *sessionRuntime) reconcileObservedApplications(root *Node, registry sessionstate.Registry, now time.Time, observation automaticCloseObservation) (bool, sessionstate.Registry, error, error) {
 	if runtime.applications == nil {
 		return false, registry, nil, nil
 	}
 	groups, err := sessionstate.ObserveApplicationGroups(root, registry)
 	if err != nil {
+		runtime.resetApplicationCloseObservations()
 		return false, registry, nil, err
 	}
 	// Invalidate explicit policy changes before presence tracking can set
 	// DesiredOpen again for a newly user-opened application.
 	runtime.observeStartupApplications(runtime.registry, groups)
-	plan, err := runtime.applications.PlanWithSuspended(runtime.registry, groups, now, runtime.lifecycleBlocked)
+	plan, closeGeneration, err := runtime.planApplicationObservation(groups, now, observation)
 	if err != nil {
 		return false, registry, nil, err
 	}
 	if len(plan.DesiredOpen) != 0 {
-		type desiredChange struct {
-			open     bool
-			identity sessionstate.ApplicationIdentity
-		}
-		changes := make(map[sessionstate.ContextID]desiredChange, len(plan.DesiredOpen))
-		for _, change := range plan.DesiredOpen {
-			for _, context := range registry.Contexts {
-				if context.ID == change.ContextID && context.App != nil {
-					changes[change.ContextID] = desiredChange{open: change.Open, identity: context.App.Identity}
-					break
-				}
-			}
-		}
-		updated, err := sessionstate.UpdateRegistryContext(runtime.context(), runtime.root, func(current *sessionstate.Registry) error {
-			for index := range current.Contexts {
-				change, exists := changes[current.Contexts[index].ID]
-				if !exists || current.Contexts[index].App == nil || current.Contexts[index].App.Identity != change.identity {
-					continue
-				}
-				if current.Contexts[index].App.RestorePolicy == sessionstate.ApplicationRestorePinned && !change.open {
-					continue
-				}
-				current.Contexts[index].App.DesiredOpen = change.open
-			}
-			return current.Validate()
-		})
+		updated, err := runtime.persistApplicationDesiredOpen(registry, plan, closeGeneration, now)
 		if err != nil {
 			return false, registry, nil, fmt.Errorf("persist desktop application desired-open state: %w", err)
 		}
@@ -1015,7 +1001,7 @@ func (runtime *sessionRuntime) reconcileApplications(root *Node, registry sessio
 			return err
 		}
 		runtime.observeStartupApplications(runtime.registry, currentGroups)
-		currentPlan, err := runtime.applications.PlanWithSuspended(runtime.registry, currentGroups, now, runtime.lifecycleBlocked)
+		currentPlan, _, err := runtime.planApplicationObservation(currentGroups, now, observation)
 		if err != nil {
 			return err
 		}
@@ -1858,8 +1844,10 @@ func reconcilePersistentSession(client swayRequester, runtime *sessionRuntime, r
 	}
 	for range maximumObservations {
 		ctx := runtime.context()
+		observation := runtime.automaticCloseObservation()
 		root, err := requestTree(ctx, client)
 		if err != nil {
+			runtime.resetApplicationCloseObservations()
 			// An IPC disconnect preserves the last snapshot. The normal event
 			// reconnect path will obtain another tree without turning a socket
 			// outage into persistent diagnostic noise.
@@ -1868,7 +1856,7 @@ func reconcilePersistentSession(client swayRequester, runtime *sessionRuntime, r
 		if runtime == nil {
 			return
 		}
-		refresh, err := runtime.Reconcile(root, time.Now())
+		refresh, err := runtime.reconcileObserved(root, time.Now(), observation)
 		collect(err)
 		indicatorRefresh, indicatorErr := runtime.ReconcileIndicators(root)
 		collect(indicatorErr)

@@ -388,11 +388,31 @@ or executable changes require reapproval.
 
 Every matching eligible top-level is one application presence group. Multiple
 indistinguishable windows prove presence but do not provide an anchor. Only an
-existing stable mark or one unique match permits placement. Follow mode derives
-desired-open from presence after a short close grace. Pinned mode keeps
-desired-open across starts. Launch intent is recorded before process start so
-daemon restart or ambiguous outcome cannot duplicate an attempt in one
-compositor session.
+existing stable mark or one unique match permits placement. Follow mode enables
+desired-open from live presence. Disabling it after the last window disappears
+requires prior healthy presence, the close grace, fresh absence under the
+registry lock, and the same healthy logind and Sway subscription generations.
+The shared shutdown observer also protects automatic terminal archival; no
+second monitor is created. Its memory guard is rechecked immediately before
+the registry mutation, outside any external calls or SQLite write transaction.
+Tree acquisition and every planning pass share one lifecycle generation, so a
+tree captured before shutdown or rearm cannot seed new healthy close evidence.
+
+Shutdown, sleep, monitor failure, missing logind protection, or compositor
+disconnect preserve Follow desired-open. Changes to either generation discard
+close observations and timers even if an unsafe interval fell between passes.
+Rearming requires new healthy presence before a subsequent absence can count
+as a close; time spent unsafe cannot consume the close grace. App adoption and
+launch attempts remain intact so uncertainty cannot cause a watchdog relaunch.
+Explicit archive, policy changes, and lifecycle reservations retain authority.
+Startup absence is never interpreted as a historical close. Forced shutdowns
+or logout tools which kill clients before notifying Sway/logind remain outside
+the observable intent contract. A crash and an ordinary last-window close
+cannot be distinguished while lifecycle observation is otherwise healthy.
+
+Pinned mode keeps desired-open across starts. Launch intent is recorded before
+process start so daemon restart or ambiguous outcome cannot duplicate an
+attempt in one compositor session.
 
 An active, desired-open application in the saved exact layout may finish its
 startup after the settling deadline. The daemon retains that startup intent

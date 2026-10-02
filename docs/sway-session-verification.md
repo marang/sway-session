@@ -395,6 +395,31 @@ before the inhibitor is released and cannot be re-enabled by stale setup work.
 Do not reboot or suspend the user's workstation to drive these tests. A private
 Sway close/exit test is not evidence of a real power-cycle test.
 
+### Follow application close intent
+
+Run the bounded runtime regressions with:
+
+~~~sh
+GOTOOLCHAIN=go1.26.5 go test ./cmd/sway-session \
+  -run 'Test(FollowApplication|ApplicationClose)' -count=1
+~~~
+
+The tests start with a previously present Follow application, then inject unsafe
+shutdown generations, unavailable or failed monitoring, Sway shutdown, and
+subscription loss. Absence beyond the grace must preserve durable desired-open.
+They also cover a generation change immediately before the registry mutation,
+or during tree acquisition or between both planning passes using the same tree,
+fresh absence failure or window reappearance, concurrent archive/policy/identity
+changes, lifecycle reservations, initially missing apps, and unchanged pinned
+policy. Recovery requires fresh healthy presence and a complete new close grace;
+uncertain observation cannot trigger an extra launch or focus change.
+
+The opt-in private compositor test uses a real disposable application window
+and injected lifecycle guards. This checks the runtime/Sway boundary but is not
+evidence of actual logind ordering or a reboot. For that separate acceptance
+check, use the [disposable VM procedure](follow-application-vm-check.md). Never
+reboot the workstation or reuse production state to run it.
+
 For the manager, archive consecutive items at the middle and end of the active
 section; verify remaining active entries remain convenient to select. Delete,
 activate, rename and refresh under a filter that excludes at least one entry.

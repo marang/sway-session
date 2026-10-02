@@ -20,26 +20,93 @@ schema-v1 envelope; its top-level `version` remains the envelope schema.
 
 ## What it owns
 
+A work context is an explicitly registered terminal session or desktop
+application with a stable context UUID. That identity connects its lifecycle
+policy to its saved workspace and layout. The CLI and TUI manage contexts; the
+daemon reconciles them with live compositor state.
+
 ~~~mermaid
-flowchart LR
-    User[CLI or key binding] --> CLI[cmd/sway-session]
-    CLI --> Store[(owner-only state.sqlite3)]
-    CLI --> Herdr[typed Herdr adapter]
-    CLI --> Sway[bounded Sway IPC]
-    Daemon[sway-session daemon] --> Store
-    Daemon --> Sway
-    Daemon --> Launch[desktop and terminal launchers]
-    Daemon --> Broker[owner-only typed brokers]
-    Broker --> Herdr
-    Store -. short transactions only .-> Daemon
-    Sway -. v1 presentation marks .-> Render[optional title renderer]
-    Render -->|title format commands| Sway
+flowchart TB
+    subgraph App["sway-session"]
+        CLI["CLI and terminal TUI"]
+        Daemon["Daemon: observe, capture, restore"]
+        Broker["Owner-only typed brokers"]
+        Session["internal/session: identities, lifecycle, storage and planning"]
+        IPC["internal/swayipc: bounded requests and events"]
+    end
+    CLI --> Session
+    Daemon --> Session
+    Daemon -->|hosts| Broker
+    Broker --> Session
+    Session <--> Store[("owner-only state.sqlite3")]
+    Session --> Herdr["Herdr: named terminal sessions"]
+    CLI --> IPC
+    Daemon <--> IPC
+    IPC <--> Sway["Sway: windows, workspaces and layout"]
+    Daemon --> Launch["Desktop and terminal launchers"]
+    Sway -. v1 presentation marks .-> Render["Optional title renderer"]
+    Render -->|title formatting| Sway
 ~~~
 
-The daemon observes live compositor state, maintains marks, captures layout,
-restores missing desired applications, and applies placement. One-shot restore
-can launch or map a terminal, but daemon reconciliation performs its saved
-workspace placement and layout reconstruction.
+The main responsibilities are:
+
+- **Session state:** `internal/session` validates context identities, stores
+  lifecycle and layout state, and plans capture, placement and restoration.
+  Runtime state lives in the private SQLite database; configuration stays in
+  strict text files.
+- **Terminal sessions:** typed Alacritty and Foot adapters connect windows to
+  named Herdr sessions. Herdr owns the terminal session and pane history;
+  sway-session owns registration and outer-window placement.
+- **Desktop applications:** registered applications are tracked as groups of
+  matching windows and launched according to their approved identity and
+  lifecycle policy. Applications own their tabs, buffers and documents.
+- **Compositor integration:** the daemon observes windows, maintains hidden
+  identity and presentation marks, captures layout, and applies bounded Sway
+  actions. The typed brokers provide session-start and agent-association
+  operations. An optional independent renderer consumes presentation marks.
+
+### How restoration works
+
+The one-shot `sway-session restore` command queues or launches selected
+contexts. It can launch or map a terminal, but the daemon performs saved
+workspace placement and layout reconstruction. Both are started by the Sway
+integration in [Sway setup](#sway-setup).
+
+~~~mermaid
+sequenceDiagram
+    participant Restore as sway-session restore
+    participant DB as state.sqlite3
+    participant Manager as Terminal adapter / Herdr
+    participant Sway
+    participant Daemon as sway-session daemon
+    Restore->>DB: Read contexts to restore
+    Restore->>Sway: Observe existing windows
+    opt Missing terminal context
+        Restore->>Manager: Start or attach named session
+        Manager-->>Sway: Terminal window maps
+    end
+    Sway-->>Daemon: Window and workspace events
+    Daemon->>DB: Load registry and saved layout
+    Daemon->>Sway: Observe current tree
+    Note over Daemon: Restore missing desired desktop applications
+    loop Bounded placement and layout steps
+        Daemon->>Sway: Apply planned action
+        Daemon->>Sway: Observe the resulting tree
+    end
+    Daemon->>DB: Commit captured state after settling
+~~~
+
+Each reconciliation pass does a bounded amount of work and resumes from a
+fresh observation. These limits keep the event loop responsive without imposing
+a total context-count cap. Live user focus and layout changes take priority
+over automatic restoration, and placement requires an unambiguous window
+identity.
+
+SQLite transactions are short and never include Sway, Herdr, process or
+launcher calls. Durable transitions surround external effects, allowing the
+next observation to resolve an interrupted or uncertain operation. For package
+boundaries and recovery details, see the
+[architecture plan](docs/sway-session-plan.md).
 
 ## Install
 
@@ -460,8 +527,13 @@ identity is never guessed. System entries are revalidated as root-owned launch
 material; approved user-local entries are stored as owner-only immutable
 snapshots and must be reapproved after source or executable changes.
 
-Follow mode remembers whether at least one matching top-level remains open
-after a short close grace. Pinned mode keeps the application desired-open
+Follow mode remembers whether at least one matching top-level remains open.
+After the last window closes, a short grace and fresh absence confirmation
+disable restore only while logind shutdown protection and the Sway event stream
+remain healthy. Shutdown, disconnect, or unavailable protection preserve restore
+eligibility; the daemon reports missing protection and explicit archive remains
+available. After observation recovers, new healthy presence is required before
+a later close can disable restore. Pinned mode keeps the application desired-open
 across Sway starts. Multiple indistinguishable windows prove presence but are
 not guessed between for anchor placement. sway-session restores the optional
 outer anchor only; tabs, documents, profiles, URLs, and application-internal

@@ -9,6 +9,39 @@ import (
 	"time"
 )
 
+func TestApplicationCloseResetPreservesAdoptionAttemptsAndIndependentStartup(t *testing.T) {
+	adopted := applicationContextWithID(testContextID, "org.example.Adopted")
+	independent := applicationContextWithID(secondContextID, "org.example.Independent")
+	registry := Registry{Version: ContextsSchemaVersion, Contexts: []Context{adopted, independent}}
+	now := time.Unix(2000, 0)
+	coordinator, err := NewApplicationRestoreCoordinator(strings.Repeat("a", 64), ApplicationSessionState{}, now,
+		ApplicationRestoreOptions{AdoptionGrace: time.Second, CloseGrace: time.Second, LaunchTimeout: time.Second, MaxConcurrent: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	present := map[ContextID]ApplicationGroup{adopted.ID: {Windows: []WindowApplication{{ContainerID: 41}}}}
+	if _, err := coordinator.Plan(registry, present, now); err != nil {
+		t.Fatal(err)
+	}
+	state, err := coordinator.BeginAttempt(adopted.ID, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	coordinator.ResetCloseObservations()
+	for _, safe := range []bool{false, true} {
+		plan, err := coordinator.PlanWithCloseTracking(registry, nil, now.Add(time.Minute), nil, safe)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(plan.DesiredOpen) != 0 || len(plan.Launch) != 1 || plan.Launch[0].ID != independent.ID {
+			t.Fatalf("uncertainty changed close or startup policy: %+v", plan)
+		}
+		if !reflect.DeepEqual(state, coordinator.State()) {
+			t.Fatal("close reset discarded launch attempts")
+		}
+	}
+}
+
 func TestApplicationRestoreSuspensionPreservesAdoptionAndAllowsIndependentLaunch(t *testing.T) {
 	for _, policy := range []ApplicationRestorePolicy{ApplicationRestoreFollow, ApplicationRestorePinned} {
 		t.Run(string(policy), func(t *testing.T) {

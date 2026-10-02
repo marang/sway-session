@@ -92,14 +92,14 @@ func runSessionDaemon(ctx context.Context, swaySocket string, reportError func(e
 	shutdownMonitor, monitorErr := shutdownwatch.Start(ctx)
 	if monitorErr != nil {
 		if reportError != nil {
-			reportError(fmt.Errorf("automatic terminal close detection unavailable; use explicit archive: %w", monitorErr))
+			reportError(fmt.Errorf("automatic terminal and Follow application close detection unavailable; restore eligibility is preserved, use explicit archive: %w", monitorErr))
 		}
 	} else {
 		defer shutdownMonitor.Close()
 		go func() {
 			<-shutdownMonitor.Done()
 			if err := shutdownMonitor.Err(); err != nil && ctx.Err() == nil && reportError != nil {
-				reportError(fmt.Errorf("automatic terminal close detection disabled; use explicit archive: %w", err))
+				reportError(fmt.Errorf("automatic terminal and Follow application close detection disabled; restore eligibility is preserved, use explicit archive: %w", err))
 			}
 		}()
 	}

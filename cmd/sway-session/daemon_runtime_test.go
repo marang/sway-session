@@ -1107,7 +1107,7 @@ func TestSessionRuntimePlacesLateDesktopAnchorWithoutRebuildingLayout(t *testing
 }
 
 func TestSessionRuntimePersistsFollowAppClosedOnlyAfterLastWindowGrace(t *testing.T) {
-	runtime, _, launcher, context, start := testApplicationRuntime(t)
+	runtime, _, launcher, _, context, start := guardedApplicationRuntime(t)
 	runtime.startupComplete = true
 	appID := context.App.Identity.WaylandAppID
 	sandbox := context.App.Identity.SandboxAppID

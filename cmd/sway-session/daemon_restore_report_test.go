@@ -857,7 +857,7 @@ func TestRestoreReportManagedIdentityIssuePreventsRejectedApplicationRetry(t *te
 				t.Fatalf("initial rejection fixture: starts:%d err:%v", launcher.starts, err)
 			}
 			launcher.startErr = nil
-			restoreReportExplicit(t, runtime, item, sessionstate.RestoreWork{Window: true}, now.Add(time.Second))
+			explicit := restoreReportExplicit(t, runtime, item, sessionstate.RestoreWork{Window: true}, now.Add(time.Second))
 			mark, _ := item.ID.Mark()
 			otherMark, _ := restoreReportSecondID.Mark()
 			invalid := &Node{ID: 41, Type: "con", Marks: []string{mark, otherMark}}
@@ -884,13 +884,28 @@ func TestRestoreReportManagedIdentityIssuePreventsRejectedApplicationRetry(t *te
 				calls++
 				return store.UpdatePendingContext(ctx, source, id, token, change)
 			}
-			if err := runtime.observeRestoreReportWithUpdater(tree, registry, now.Add(2*time.Second), update); err != nil {
-				t.Fatal(err)
+			// Diagnostic I/O may yield without an error before ownership commits.
+			// Confirm the exact pending token's durable owner before measuring
+			// no-progress polling; every setup pass must preserve the launch guard.
+			owned := false
+			for pass := 0; pass < 16; pass++ {
+				if err := runtime.observeRestoreReportWithUpdater(tree, registry, now.Add(2*time.Second), update); err != nil {
+					t.Fatal(err)
+				}
+				if runtime.restoreReportLaunchRearmed[item.ID] != "" || len(runtime.applications.State().Attempts) != 1 {
+					t.Fatal("managed ambiguity cleared rejected-launch guard")
+				}
+				record := restoreReportOutcome(t, runtime, "explicit", item.ID)
+				if record.AttemptID != explicit.AttemptID || record.Status != "pending" {
+					t.Fatalf("explicit ownership fixture changed: %+v", record)
+				}
+				if record.OwnerRunID == runtime.restoreRunID {
+					owned = true
+					break
+				}
 			}
-			// The first CAS can claim this request's ownership. Managed ambiguity
-			// must still prevent the matched post-CAS branch from clearing the guard.
-			if runtime.restoreReportLaunchRearmed[item.ID] != "" || len(runtime.applications.State().Attempts) != 1 {
-				t.Fatal("managed ambiguity cleared rejected-launch guard")
+			if !owned {
+				t.Fatal("explicit ownership fixture did not commit within bounded observation passes")
 			}
 			calls = 0
 			if err := runtime.observeRestoreReportWithUpdater(tree, registry, now.Add(3*time.Second), update); err != nil {

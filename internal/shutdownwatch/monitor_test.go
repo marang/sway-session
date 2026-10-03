@@ -3,6 +3,7 @@ package shutdownwatch
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"sync"
@@ -401,6 +402,173 @@ func TestSignalDuringStartupCannotEnableMonitor(t *testing.T) {
 	}
 }
 
+func TestSessionRemovalDuringStartupIsAttributedToOwnSession(t *testing.T) {
+	for _, boundary := range []string{"subscribe", "owner", "inhibit", "session"} {
+		for _, own := range []bool{false, true} {
+			name := boundary + "/unrelated"
+			if own {
+				name = boundary + "/own"
+			}
+			t.Run(name, func(t *testing.T) {
+				client := newFakeClient()
+				path := "/org/freedesktop/login1/session/_88"
+				if own {
+					path = testSessionPath
+				}
+				emit := func() { client.emit(event{kind: eventSessionRemoved, source: ":1.44", path: path}) }
+				switch boundary {
+				case "subscribe":
+					client.subscribeHook = func(context.Context) error { emit(); return nil }
+				case "owner":
+					client.ownerHook = emit
+				case "inhibit":
+					client.inhibitHook = func(context.Context) (io.Closer, error) { emit(); return client.inhibitor, nil }
+				case "session":
+					client.sessionHook = emit
+				}
+				monitor, err := start(t.Context(), 42, time.Second, fakeConnector(client))
+				if own {
+					if monitor != nil || err == nil || !strings.Contains(err.Error(), "own logind session was removed") {
+						t.Fatalf("own removal returned (%v, %v)", monitor, err)
+					}
+					if client.closeCount.Load() != 1 || (client.inhibitorWasReturned() && client.inhibitor.closeCount.Load() != 1) {
+						t.Fatal("own removal leaked startup resources")
+					}
+					return
+				}
+				if err != nil || monitor == nil {
+					t.Fatalf("unrelated removal disabled monitor: %v", err)
+				}
+				t.Cleanup(func() { _ = monitor.Close() })
+				if _, safe := monitor.Snapshot(); !safe || client.inhibitor.closeCount.Load() != 0 {
+					t.Fatal("validated monitor lost its delay inhibitor")
+				}
+				// Learning the identity must not weaken subsequent own-session loss.
+				client.emit(event{kind: eventSessionRemoved, source: ":1.44", path: testSessionPath})
+				if _, safe := monitor.Snapshot(); safe || client.inhibitor.closeCount.Load() != 1 {
+					t.Fatal("own removal after startup did not disable and release guard")
+				}
+			})
+		}
+	}
+}
+
+func TestStartupSessionRemovalTrackingIsBounded(t *testing.T) {
+	for _, overflow := range []bool{false, true} {
+		t.Run(fmt.Sprintf("overflow_%t", overflow), func(t *testing.T) {
+			client := newFakeClient()
+			client.sessionHook = func() {
+				count := startupSessionRemovalLimit
+				if overflow {
+					count++
+				}
+				for index := 0; index < count; index++ {
+					path := fmt.Sprintf("/org/freedesktop/login1/session/_other%d", index)
+					// Duplicate delivery must not consume another slot.
+					for range 2 {
+						client.emit(event{kind: eventSessionRemoved, source: ":1.44", path: path})
+					}
+				}
+			}
+			monitor, err := start(t.Context(), 42, time.Second, fakeConnector(client))
+			if overflow {
+				if monitor != nil || err == nil || !strings.Contains(err.Error(), "too many logind sessions removed") {
+					t.Fatalf("unbounded churn returned (%v, %v)", monitor, err)
+				}
+				if client.closeCount.Load() != 1 || client.inhibitor.closeCount.Load() != 1 {
+					t.Fatal("startup overflow leaked resources")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("bounded unrelated churn disabled monitor: %v", err)
+			}
+			t.Cleanup(func() { _ = monitor.Close() })
+			if _, safe := monitor.Snapshot(); !safe || monitor.startupSessionRemovals != nil {
+				t.Fatal("startup did not validate and discard unrelated removals")
+			}
+		})
+	}
+}
+
+func TestStartupSessionRemovalRejectsUntrustedSignals(t *testing.T) {
+	for _, name := range []string{"sender_before_owner", "sender_after_owner", "changed_duplicate_sender", "malformed"} {
+		t.Run(name, func(t *testing.T) {
+			client := newFakeClient()
+			path := "/org/freedesktop/login1/session/_88"
+			emit := func() { client.emit(event{kind: eventSessionRemoved, source: ":1.99", path: path}) }
+			switch name {
+			case "sender_before_owner":
+				client.subscribeHook = func(context.Context) error { emit(); return nil }
+			case "sender_after_owner":
+				client.sessionHook = emit
+			case "changed_duplicate_sender":
+				client.subscribeHook = func(context.Context) error {
+					client.emit(event{kind: eventSessionRemoved, source: ":1.44", path: path})
+					emit()
+					return nil
+				}
+			case "malformed":
+				client.subscribeHook = func(context.Context) error {
+					client.emit(event{kind: eventSessionRemoved, source: ":1.44", err: errors.New("malformed session-removal signal")})
+					return nil
+				}
+			}
+			monitor, err := start(t.Context(), 42, time.Second, fakeConnector(client))
+			if monitor != nil || err == nil {
+				t.Fatalf("untrusted signal enabled monitor: (%v, %v)", monitor, err)
+			}
+			if client.closeCount.Load() != 1 || (client.inhibitorWasReturned() && client.inhibitor.closeCount.Load() != 1) {
+				t.Fatal("untrusted signal leaked startup resources")
+			}
+		})
+	}
+}
+
+func TestConcurrentSessionRemovalAndStartupIdentityResolution(t *testing.T) {
+	for _, own := range []bool{false, true} {
+		t.Run(fmt.Sprintf("own_%t", own), func(t *testing.T) {
+			for range 32 {
+				client := newFakeClient()
+				path := "/org/freedesktop/login1/session/_88"
+				if own {
+					path = testSessionPath
+				}
+				delivered := make(chan struct{})
+				client.sessionHook = func() {
+					go func() {
+						defer close(delivered)
+						client.emit(event{kind: eventSessionRemoved, source: ":1.44", path: path})
+					}()
+				}
+				monitor, err := start(t.Context(), 42, time.Second, fakeConnector(client))
+				<-delivered
+				if own {
+					if monitor != nil {
+						if _, safe := monitor.Snapshot(); safe {
+							t.Fatal("concurrent own-session removal left monitor safe")
+						}
+						_ = monitor.Close()
+					} else if err == nil {
+						t.Fatal("startup returned neither monitor nor error")
+					}
+					if client.closeCount.Load() != 1 || client.inhibitor.closeCount.Load() != 1 {
+						t.Fatal("concurrent own-session removal leaked resources")
+					}
+				} else {
+					if err != nil || monitor == nil {
+						t.Fatalf("concurrent unrelated removal rejected startup: %v", err)
+					}
+					if _, safe := monitor.Snapshot(); !safe {
+						t.Fatal("concurrent unrelated removal disabled monitor")
+					}
+					_ = monitor.Close()
+				}
+			}
+		})
+	}
+}
+
 func TestStartupTimeoutIsBounded(t *testing.T) {
 	client := newFakeClient()
 	client.subscribeHook = func(ctx context.Context) error {
@@ -454,6 +622,7 @@ type fakeClient struct {
 	subscribeHook func(context.Context) error
 	inhibitHook   func(context.Context) (io.Closer, error)
 	ownerHook     func()
+	sessionHook   func()
 	sleepHook     func()
 	closeCount    atomic.Int32
 	inhibitCalls  atomic.Int32
@@ -502,6 +671,9 @@ func (client *fakeClient) Inhibit(ctx context.Context) (io.Closer, error) {
 
 func (client *fakeClient) SessionByPID(context.Context, uint32) (string, error) {
 	client.record("session")
+	if client.sessionHook != nil {
+		client.sessionHook()
+	}
 	return client.sessionPath, client.sessionErr
 }
 

@@ -597,7 +597,11 @@ example attaches to Codex; a different agent needs its own profile name and
 executable attachment. Its file rules protect the default Herdr history and
 sway-session state trees, but pathname-socket connect mediation is not reliable
 on every supported kernel and launched terminal panes remain unconfined. LAB-89
-tracks a stronger agent sandbox boundary.
+tracks a stronger agent sandbox boundary. The
+[AGS/Herdr contract audit](research/ags-herdr-broker-confinement.md) records
+the upstream evidence and the conditions for replacing the current start path.
+Root-owned launchers and typed requests do not by themselves confine the
+host-shell startup or the agent and shell panes created by Herdr.
 
 ## Standalone and release decisions
 

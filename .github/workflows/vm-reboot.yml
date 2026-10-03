@@ -1,0 +1,59 @@
+name: KVM reboot acceptance
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'cmd/**'
+      - 'internal/**'
+      - 'go.mod'
+      - 'go.sum'
+      - 'scripts/verify-vm-reboot.py'
+      - 'scripts/vm-reboot/**'
+      - '.github/workflows/vm-reboot.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  arch-guest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout without persisted credentials
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Install VM tools and enable runner KVM access
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes qemu-system-x86 qemu-utils cloud-image-utils openssh-client acl
+          test -c /dev/kvm
+          sudo setfacl -m "u:$(id -un):rw" /dev/kvm
+
+      - name: Verify two regular guest reboots
+        env:
+          GOMAXPROCS: '4'
+          GOFLAGS: '-p=1'
+        run: make vm-reboot-check VM_ARGS="--output $RUNNER_TEMP/vm-reboot-evidence"
+
+      - name: Retain bounded guest evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kvm-reboot-evidence
+          path: |
+            ${{ runner.temp }}/vm-reboot-evidence/*.json
+            ${{ runner.temp }}/vm-reboot-evidence/*.log
+          if-no-files-found: warn
+          retention-days: 14

@@ -7,10 +7,10 @@ COMMIT ?= $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
 MODIFIED ?= $(shell if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then test -z "$$(git status --porcelain --untracked-files=normal)" && echo false || echo true; else echo false; fi)
 GO_LDFLAGS += -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.modified=$(MODIFIED)
 GO_LDFLAGS += -X github.com/marang/sway-session/internal/buildmetadata.Stamp=sway-session-build-v1|$(VERSION)|$(COMMIT)|$(MODIFIED)|end-sway-session-build-v1
-GO_FILES := $(shell find cmd internal -name '*.go' -type f)
+GO_FILES := $(shell find cmd internal scripts -name '*.go' -type f)
 DOC_ROOT := $(PREFIX)/share/doc/sway-session
 
-.PHONY: build install clean fmt fmt-check test race vet lint apparmor-check completion-check packaging-check standalone-check diff-check verify lifecycle-check
+.PHONY: build install clean fmt fmt-check test race vet lint apparmor-check completion-check packaging-check standalone-check diff-check verify lifecycle-check vm-harness-check vm-reboot-check
 
 fmt:
 	gofmt -w $(GO_FILES)
@@ -56,7 +56,13 @@ diff-check:
 lifecycle-check:
 	sh scripts/verify-lifecycle.sh
 
-verify: fmt-check test race vet lint apparmor-check completion-check packaging-check standalone-check build diff-check
+vm-harness-check:
+	python3 -B -m unittest discover -s scripts/vm-reboot -p 'test_*.py'
+
+vm-reboot-check:
+	python3 -B scripts/verify-vm-reboot.py $(VM_ARGS)
+
+verify: fmt-check test race vet lint apparmor-check completion-check packaging-check standalone-check vm-harness-check build diff-check
 
 install: build
 	install -d $(PREFIX)/bin

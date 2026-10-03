@@ -732,6 +732,10 @@ func (runtime *sessionRuntime) reconcileObserved(root *Node, now time.Time, obse
 		runtime.observeDeadline = now.Add(sessionStartupRetryDelay)
 		return false, err
 	}
+	if err := runtime.observeRestoreMappingFocus(root, registry); err != nil {
+		runtime.resetApplicationCloseObservations()
+		return false, err
+	}
 	runtime.suspendLifecycleRestore(root)
 	runtime.restoreReportInPass = true
 	runtime.restoreReportBudget = restoreReportWriteTimeout

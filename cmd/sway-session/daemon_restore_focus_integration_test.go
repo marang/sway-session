@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -11,6 +13,7 @@ import (
 	"time"
 
 	sessionstate "github.com/marang/sway-session/internal/session"
+	"github.com/marang/sway-session/internal/statefile"
 	"github.com/marang/sway-session/internal/swayipc"
 )
 
@@ -299,14 +302,22 @@ func TestSessionRuntimeRestoreColdStartFocusHeadless(t *testing.T) {
 		}
 	}
 	for _, test := range []struct {
-		name    string
-		binding bool
-		reverse bool
+		name           string
+		binding        bool
+		reverse        bool
+		explicitReport bool
+		cliLock        bool
 	}{
 		{name: "mapping_focus"},
 		{name: "mapping_focus_reverse_creation", reverse: true},
 		{name: "binding_before_mapping_focus", binding: true},
 		{name: "binding_before_mapping_focus_reverse_creation", binding: true, reverse: true},
+		{name: "mapping_focus_with_cli_report", explicitReport: true},
+		{name: "mapping_focus_with_cli_report_reverse_creation", explicitReport: true, reverse: true},
+		{name: "binding_before_mapping_focus_with_cli_report", explicitReport: true, binding: true},
+		{name: "mapping_focus_with_cli_lock", explicitReport: true, cliLock: true},
+		{name: "mapping_focus_with_cli_lock_reverse_creation", explicitReport: true, cliLock: true, reverse: true},
+		{name: "binding_before_mapping_focus_with_cli_lock", explicitReport: true, cliLock: true, binding: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			binding := test.binding
@@ -328,18 +339,60 @@ func TestSessionRuntimeRestoreColdStartFocusHeadless(t *testing.T) {
 			streamState := &swayipc.EventStreamState{}
 			runtime, err := newSessionRuntimeWithOptions(requester, sessionRuntimeOptions{
 				Context: h.ctx, Root: h.state, EventStreamState: streamState,
+				CompositorID: strings.Repeat("a", 64), StartedAt: time.Now(),
+				ApplicationRestore: sessionstate.ApplicationRestoreOptions{
+					AdoptionGrace: time.Second, CloseGrace: time.Second, LaunchTimeout: time.Second, MaxConcurrent: 1,
+				},
 				IndicatorCatalog: func() (sessionstate.DesktopCatalog, error) { return sessionstate.DesktopCatalog{}, nil },
 			})
 			if err != nil {
 				t.Fatal(err)
 			}
 			h.subscribe(runtime, streamState)
+			lockHeld, contention := false, false
+			release := func() {}
 			reconcile := func() {
-				reconcilePersistentSession(requester, runtime, func(err error) { t.Fatal(err) })
+				reconcilePersistentSession(requester, runtime, func(err error) {
+					if lockHeld && errors.Is(err, context.DeadlineExceeded) {
+						contention = true
+						return
+					}
+					t.Fatal(err)
+				})
 			}
 			reconcile()
 			if runtime.startupComplete || runtime.restoreProgress != nil {
 				t.Fatal("cold fixture must await terminals before starting reconstruction")
+			}
+			if test.explicitReport {
+				// Login's one-shot restore records its request before mapping the
+				// terminal. Diagnostic observation must not steal normal adoption.
+				for _, item := range registry.Contexts {
+					restoreReportExplicit(t, runtime, item, restoreRequestedWork(desired, item.ID), time.Now())
+				}
+			}
+			if test.cliLock {
+				entered, unlocked := make(chan struct{}), make(chan struct{})
+				locked := make(chan error, 1)
+				go func() {
+					locked <- sessionstate.WithRegistryLockContext(h.ctx, h.state, func(*statefile.LockedPrivateDirectory) error {
+						close(entered)
+						<-unlocked
+						return nil
+					})
+				}()
+				<-entered
+				lockHeld = true
+				release = func() {
+					if lockHeld {
+						close(unlocked)
+						if err := <-locked; err != nil {
+							t.Error(err)
+						}
+						lockHeld = false
+					}
+				}
+				t.Cleanup(release)
 			}
 			creationOrder := []int{0, 1}
 			if test.reverse {
@@ -363,7 +416,7 @@ func TestSessionRuntimeRestoreColdStartFocusHeadless(t *testing.T) {
 				if event.Type == swayipc.EventWindow && event.Change == "focus" && event.Container != nil && slices.Contains(owned, event.Container.ID) {
 					focusEvents++
 					if binding && bindingCommands < 0 && newEvents != 0 {
-						if runtime.restoreProgress == nil {
+						if runtime.restoreProgress == nil && !test.cliLock {
 							t.Fatal("binding was not interleaved with active restore before queued mapping focus")
 						}
 						// Synthesize only explicit keyboard intent; mapping, focus,
@@ -377,6 +430,12 @@ func TestSessionRuntimeRestoreColdStartFocusHeadless(t *testing.T) {
 				}
 				restoring := runtime.restoreProgress != nil
 				runtime.HandleEvent(event, time.Now())
+				if event.Type == swayipc.EventWindow && event.Change == "focus" && lockHeld {
+					if !contention || len(requester.commands) != 0 || len(runtime.restoreEligible) != 0 {
+						t.Fatal("mapping focus was not delivered after a locked application pass without effects")
+					}
+					release()
+				}
 				if !binding && restoring && runtime.restoreProgress == nil && event.Type == swayipc.EventWindow && event.Change == "focus" && event.Container != nil {
 					t.Logf("cold restore cancelled by queued focus of container %d after new=%d; commands=%q", event.Container.ID, newEvents, requester.commands)
 				}
@@ -415,8 +474,16 @@ func TestSessionRuntimeRestoreColdStartFocusHeadless(t *testing.T) {
 				if bindingCommands < 0 {
 					t.Fatal("explicit binding was never interleaved")
 				}
+				var adoptionCommands []string
+				for index, id := range ids {
+					mark, err := id.Mark()
+					if err != nil {
+						t.Fatal(err)
+					}
+					adoptionCommands = append(adoptionCommands, fmt.Sprintf("[con_id=%d] mark --add %s", owned[index], quoteSwayString(mark)))
+				}
 				for _, command := range requester.commands[bindingCommands:] {
-					if !strings.HasSuffix(command, `] move container to workspace "98"`) {
+					if !strings.HasSuffix(command, `] move container to workspace "98"`) && !slices.Contains(adoptionCommands, command) {
 						t.Errorf("binding was followed by reconstruction command: %q", command)
 					}
 				}

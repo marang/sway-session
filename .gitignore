@@ -1,3 +1,4 @@
 /sway-session
 /dist/
 *.log
+/scripts/vm-reboot/__pycache__/

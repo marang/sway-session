@@ -1,0 +1,10 @@
+{
+  "arch": {
+    "url": "https://geo.mirror.pkgbuild.com/images/v20261001.604814/Arch-Linux-x86_64-cloudimg-20261001.604814.qcow2",
+    "sha256": "360f0fa49db6813bdc8e35bed230a2dc2ae3567b7b5ab74719c0a706e4e34e87"
+  },
+  "herdr": {
+    "url": "https://github.com/herdrdev/herdr/releases/download/v0.9.2/herdr-linux-x86_64",
+    "sha256": "74de34746f96236f76d599f8f5d2439f884351eabe25b7495e0edab75414064a"
+  }
+}

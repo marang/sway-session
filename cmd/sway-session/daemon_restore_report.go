@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -271,6 +272,7 @@ func (runtime *sessionRuntime) observeRestoreReportWithUpdater(root *Node, regis
 		}
 		record := pending[(start+offset)%len(pending)]
 		update := sessionstate.RestoreOutcomeUpdate{UpdatedAt: now.UTC(), OwnerRunID: runtime.restoreRunID, Status: "pending", Reason: record.Reason}
+		layoutRetryReady := false
 		item, exists := current[record.ContextID]
 		if !exists {
 			update.Status, update.Reason = "failed", "context_missing"
@@ -283,10 +285,16 @@ func (runtime *sessionRuntime) observeRestoreReportWithUpdater(root *Node, regis
 			if item.App == nil {
 				window, found := windows[item.ID]
 				mapped, workspace = found && !ambiguous[item.ID], window.Workspace
+				if mapped {
+					node := findContainerByID(root, window.ContainerID)
+					mark, markErr := item.ID.Mark()
+					layoutRetryReady = node != nil && markErr == nil && slices.Contains(node.Marks, mark)
+				}
 			} else if groupErr == nil {
 				group := groups[item.ID]
 				if group.Anchor != nil && !group.Ambiguous && !ambiguous[item.ID] {
 					mapped, workspace = true, group.Anchor.Workspace
+					layoutRetryReady = group.AnchorMarked
 				}
 			}
 			update.WindowMapped = mapped
@@ -326,7 +334,7 @@ func (runtime *sessionRuntime) observeRestoreReportWithUpdater(root *Node, regis
 		}
 		retryIntent := false
 		if update.Status == "pending" && record.Source == "explicit" {
-			if update.WindowMapped {
+			if update.WindowMapped && layoutRetryReady {
 				retryIntent = runtime.canRearmExplicitRestoreReport(record, item)
 			} else if item.App != nil && groupErr == nil {
 				group := groups[item.ID]
@@ -345,7 +353,13 @@ func (runtime *sessionRuntime) observeRestoreReportWithUpdater(root *Node, regis
 		}
 		if matched && update.Status == "pending" && record.Source == "explicit" {
 			if update.WindowMapped {
-				runtime.rearmExplicitRestoreReport(record, item)
+				// A fresh unmarked window must first pass through normal adoption,
+				// which records its mapping-focus provenance before eligibility.
+				// Report-driven eligibility would otherwise make that adoption look
+				// like a user-controlled reopen and cancel startup on automatic focus.
+				if layoutRetryReady {
+					runtime.rearmExplicitRestoreReport(record, item)
+				}
 			} else if item.App != nil && groupErr == nil {
 				group := groups[item.ID]
 				if !ambiguous[item.ID] && !group.Ambiguous && group.Anchor == nil && len(group.Windows) == 0 {

@@ -71,6 +71,9 @@ func PreserveMissingPlacements(previous LayoutSnapshot, captured LayoutSnapshot,
 	active := activeContextIDs(registry)
 	visible := snapshotContextIDs(captured)
 	visibleTargets := placementTargets(captured)
+	for id := range scratchpadContextIDs(captured) {
+		visibleTargets[id] = "__i3_scratch"
+	}
 	resultByName := make(map[string]int, len(result.Workspaces))
 	for index := range result.Workspaces {
 		resultByName[result.Workspaces[index].Name] = index
@@ -139,6 +142,14 @@ func PreserveMissingPlacements(previous LayoutSnapshot, captured LayoutSnapshot,
 		} else {
 			result.Workspaces = append(result.Workspaces, replacement)
 			resultByName[previousWorkspace.Name] = len(result.Workspaces) - 1
+		}
+	}
+	for _, placement := range previous.Scratchpad {
+		if _, keep := active[placement.ContextID]; !keep {
+			continue
+		}
+		if _, present := visible[placement.ContextID]; !present {
+			result.Scratchpad = append(result.Scratchpad, placement)
 		}
 	}
 	sort.Slice(result.Workspaces, func(left, right int) bool {
@@ -303,15 +314,24 @@ func canonicalSnapshot(snapshot LayoutSnapshot) (LayoutSnapshot, error) {
 	sort.Slice(canonical.Workspaces, func(left, right int) bool {
 		return canonical.Workspaces[left].Name < canonical.Workspaces[right].Name
 	})
+	sort.Slice(canonical.Scratchpad, func(i, j int) bool { return canonical.Scratchpad[i].ContextID < canonical.Scratchpad[j].ContextID })
 	return canonical, nil
 }
 
 func snapshotContextIDs(snapshot LayoutSnapshot) map[ContextID]struct{} {
-	ids := make(map[ContextID]struct{})
+	ids := scratchpadContextIDs(snapshot)
 	for _, workspace := range snapshot.Workspaces {
 		for _, id := range workspaceContextIDs(workspace) {
 			ids[id] = struct{}{}
 		}
+	}
+	return ids
+}
+
+func scratchpadContextIDs(snapshot LayoutSnapshot) map[ContextID]struct{} {
+	ids := make(map[ContextID]struct{}, len(snapshot.Scratchpad))
+	for _, placement := range snapshot.Scratchpad {
+		ids[placement.ContextID] = struct{}{}
 	}
 	return ids
 }

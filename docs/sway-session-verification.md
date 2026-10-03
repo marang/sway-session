@@ -703,8 +703,43 @@ an unrelated registration.
 6. Confirm a user focus or move invalidates stale automatic work.
 
 Treat Chrome, Slack, and similar application-internal restoration as app-owned.
-Scratchpad restore remains deferred. Native Wayland parent/type limits in Sway
+Registered application anchors also support typed scratchpad placement. Native Wayland parent/type limits in Sway
 1.12 remain documented rather than guessed around.
+
+### Scratchpad application acceptance
+
+`TestSessionRuntimeScratchpadHeadless` captures hidden and shown registered
+application anchors, stops and reaps its private compositor, and restores the
+owner-only snapshot in a second private compositor. It exercises native Wayland
+and, when XWayland is installed, isolated XWayland windows on workspaces 98 and
+99. Real map, focus, move and tick events are processed through the daemon.
+The focused unrelated window and an unrelated hidden scratchpad window must
+remain unchanged; repeated reconciliation must not relaunch or toggle anchors.
+The launcher is injected and creates real Alacritty windows with distinct
+application identities. This proves compositor restart and placement, not
+browser/Slack startup, a VM reboot, or application-private session restoration.
+
+Run the test directly or as part of `scripts/verify-lifecycle.sh --headless`:
+
+```sh
+SWAY_SESSION_HEADLESS_INTEGRATION=1 GOTOOLCHAIN=go1.26.5 \
+  go test -race ./cmd/sway-session -run '^TestSessionRuntimeScratchpadHeadless$' \
+  -count=1 -timeout=3m -v
+```
+
+The deterministic scratchpad tests cover absent and ambiguous anchors, command
+rejection and uncertain acknowledgements, user cancellation, lifecycle
+reservations, read-only v1 layout migration, metadata privacy and restore-report
+proof. A mapped window alone cannot complete requested scratchpad placement:
+membership and saved visibility, including the workspace when shown, must be
+freshly observed. Cycling order and reconstruction of scratchpad groups are
+not guaranteed. Showing a fresh hidden leaf uses an absolute hide before the
+show command and restores original focus; the Sway tree/command interval is
+not an atomic compare-and-swap with user input.
+The same real-compositor fixture checks hidden and shown scratchpad arrivals
+whose saved intent is a normal layout: show, leave membership with an absolute
+floating disable, observe again, then mark. Moving a scratchpad window to a
+workspace alone does not remove its scratchpad membership.
 
 ## AppArmor and broker check
 

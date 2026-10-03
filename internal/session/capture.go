@@ -13,9 +13,12 @@ import (
 type PlacementActionKind string
 
 const (
-	PlacementMoveWorkspace PlacementActionKind = "move_workspace"
-	PlacementAddMark       PlacementActionKind = "add_mark"
-	maxPlacementActions                        = 256
+	PlacementMoveWorkspace   PlacementActionKind = "move_workspace"
+	PlacementMoveScratchpad  PlacementActionKind = "move_scratchpad"
+	PlacementShowScratchpad  PlacementActionKind = "show_scratchpad"
+	PlacementLeaveScratchpad PlacementActionKind = "leave_scratchpad"
+	PlacementAddMark         PlacementActionKind = "add_mark"
+	maxPlacementActions                          = 256
 )
 
 // PlacementAction is an absolute, idempotently plannable operation for a
@@ -26,6 +29,10 @@ type PlacementAction struct {
 	ContextID   ContextID
 	ContainerID int64
 	Workspace   string
+}
+
+func (action PlacementAction) IsMove() bool {
+	return action.Kind == PlacementMoveWorkspace || action.Kind == PlacementMoveScratchpad || action.Kind == PlacementShowScratchpad || action.Kind == PlacementLeaveScratchpad
 }
 
 type observedContext struct {
@@ -53,11 +60,27 @@ func CaptureLayout(root *swayipc.TreeNode, registry Registry) (LayoutSnapshot, e
 		return LayoutSnapshot{}, fmt.Errorf("validate context registry: %w", err)
 	}
 	registered := activeContextIDs(registry)
+	groups, err := ObserveApplicationGroupsForCapture(root, registry)
+	if err != nil {
+		return LayoutSnapshot{}, err
+	}
+	scratchpad := make([]ScratchpadPlacement, 0)
+	for id, group := range groups {
+		if _, active := registered[id]; active && !group.Ambiguous && group.AnchorMarked && group.Anchor != nil && group.Anchor.Scratchpad {
+			placement := ScratchpadPlacement{ContextID: id, Visible: group.Anchor.Workspace != "__i3_scratch"}
+			if placement.Visible {
+				placement.Workspace = group.Anchor.Workspace
+			}
+			scratchpad = append(scratchpad, placement)
+			delete(registered, id)
+		}
+	}
 	workspaces, err := collectWorkspaces(root, false)
 	if err != nil {
 		return LayoutSnapshot{}, err
 	}
-	snapshot := LayoutSnapshot{Version: LayoutSchemaVersion, Workspaces: []WorkspaceLayout{}}
+	snapshot := LayoutSnapshot{Version: LayoutSchemaVersion, Workspaces: []WorkspaceLayout{}, Scratchpad: scratchpad}
+	sort.Slice(snapshot.Scratchpad, func(i, j int) bool { return snapshot.Scratchpad[i].ContextID < snapshot.Scratchpad[j].ContextID })
 
 	for _, workspaceNode := range workspaces {
 		workspace, include, err := captureWorkspace(workspaceNode, registered)
@@ -75,6 +98,83 @@ func CaptureLayout(root *swayipc.TreeNode, registry Registry) (LayoutSnapshot, e
 		return LayoutSnapshot{}, fmt.Errorf("validate captured layout: %w", err)
 	}
 	return snapshot, nil
+}
+
+// ObserveApplicationGroupsForCapture supports read-only capture and mapping
+// attribution. It tolerates only incomplete XWayland identities which cannot
+// belong to a registered application. Registration, launch and lifecycle
+// observation stay strict; shared grouping rejects identity and mark errors.
+func ObserveApplicationGroupsForCapture(root *swayipc.TreeNode, registry Registry) (map[ContextID]ApplicationGroup, error) {
+	classes, instances := make(map[string]struct{}), make(map[string]struct{})
+	for _, context := range registry.Contexts {
+		if context.App != nil && context.App.Identity.Protocol == WindowXWayland {
+			// Include inactive registrations too: an eligibility projection must
+			// not make uncertain registered identity evidence look unrelated.
+			classes[context.App.Identity.X11Class] = struct{}{}
+			instances[context.App.Identity.X11Instance] = struct{}{}
+		}
+	}
+	var walk func(*swayipc.TreeNode, string, bool, func(WindowApplication, bool)) error
+	walk = func(node *swayipc.TreeNode, workspace string, scratchpad bool, visit func(WindowApplication, bool)) error {
+		if node == nil {
+			return errors.New("sway tree contains a nil node")
+		}
+		if node.Type == "workspace" {
+			workspace = node.Name
+			scratchpad = workspace == "__i3_scratch"
+		}
+		scratchpad = scratchpad || node.ScratchpadState == "fresh" || node.ScratchpadState == "changed"
+		if len(node.Nodes) == 0 && len(node.FloatingNodes) == 0 {
+			err := walkApplicationWindowsWithPlacement(node, workspace, scratchpad, applicationWindowWalkOptions{includeScratchpad: true, includeRestoreStaging: true}, visit)
+			if err != nil && captureUnrelatedIncompleteXWayland(node, classes, instances) {
+				return nil
+			}
+			return err
+		}
+		for _, child := range node.Nodes {
+			if err := walk(child, workspace, scratchpad, visit); err != nil {
+				return err
+			}
+		}
+		for _, child := range node.FloatingNodes {
+			if err := walk(child, workspace, scratchpad, visit); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return observeApplicationGroups(root, registry, func(node *swayipc.TreeNode, workspace string, visit func(WindowApplication, bool)) error {
+		return walk(node, workspace, false, visit)
+	})
+}
+
+func captureUnrelatedIncompleteXWayland(node *swayipc.TreeNode, classes, instances map[string]struct{}) bool {
+	if pointerString(node.AppID) != "" {
+		return false
+	}
+	class, instance := node.WindowProperties.Class, node.WindowProperties.Instance
+	if (class == "") == (instance == "") {
+		return false
+	}
+	for _, mark := range node.Marks {
+		if strings.HasPrefix(mark, MarkPrefix) {
+			return false
+		}
+	}
+	if validateIdentityValue("X11 class", class) != nil || validateIdentityValue("X11 instance", instance) != nil {
+		return false
+	}
+	if sandbox := pointerString(node.SandboxAppID); sandbox != "" && !validFlatpakID(sandbox) {
+		return false
+	}
+	// Missing fields are unknown, never a mismatch. Only the supplied half of
+	// the exact class/instance identity can prove this window is unregistered.
+	if class != "" {
+		_, possible := classes[class]
+		return !possible
+	}
+	_, possible := instances[instance]
+	return !possible
 }
 
 // PlanPlacementActions recognizes registered stable application IDs which do
@@ -148,8 +248,8 @@ func collectWorkspaces(root *swayipc.TreeNode, includeScratchpad bool) ([]*swayi
 		}
 		if node.Type == "workspace" {
 			// Sway exposes hidden scratchpad contents under a synthetic
-			// workspace. Version 1 has no scratchpad restore contract, so a
-			// temporary scratchpad move must not replace the saved workspace.
+			// workspace. Application scratchpad membership is captured
+			// separately; it must never become a normal workspace layout.
 			if (includeScratchpad || node.Name != "__i3_scratch") && node.Name != RestoreStagingWorkspace {
 				workspaces = append(workspaces, node)
 			}

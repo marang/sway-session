@@ -235,7 +235,7 @@ func newSessionRuntimeWithOptions(client swayRequester, options sessionRuntimeOp
 		restoreSkipped:         make(map[string]struct{}),
 		restoreFailures:        make(map[string]error),
 		restoreRecoveryPending: true,
-		startupComplete:        len(previous.Workspaces) == 0,
+		startupComplete:        len(previous.Workspaces)+len(previous.Scratchpad) == 0,
 		applicationLauncher:    options.ApplicationLauncher,
 		now:                    options.Now,
 		expectedMoves:          make(map[int64][]uint64),
@@ -472,7 +472,7 @@ func (runtime *sessionRuntime) HandleEvent(event swayipc.Event, now time.Time) {
 	if event.Change == "move" && event.Container != nil && runtime.consumeExpectedMove(event.Container.ID) {
 		return
 	}
-	if runtime.restoreProgress != nil || len(runtime.restoreSuspended) != 0 || runtime.lateRestorePending || len(runtime.startupApplications) != 0 {
+	if runtime.restoreMayConflictWithUserIntent() || !runtime.restoreCancelled && len(runtime.desired.Scratchpad) != 0 {
 		runtime.cancelConflictingRestore()
 	}
 }
@@ -768,7 +768,7 @@ func (runtime *sessionRuntime) reconcileObserved(root *Node, now time.Time, obse
 		// Cleanup also crosses the compositor boundary and can return before
 		// ordinary application reconciliation. Save newly visible presence
 		// first, without launching or placing applications during cleanup.
-		if runtime.applications != nil {
+		if runtime.applications != nil && runtime.restoreCleanup.Pending() {
 			groups, err := sessionstate.ObserveApplicationGroups(root, registry)
 			if err != nil {
 				runtime.resetApplicationCloseObservations()
@@ -813,8 +813,23 @@ func (runtime *sessionRuntime) reconcileObserved(root *Node, now time.Time, obse
 	if applicationDegraded != nil {
 		degraded = append(degraded, applicationDegraded)
 	}
-	if applicationRefresh || applicationErr != nil {
-		return applicationRefresh, applicationErr
+	if applicationRefresh {
+		return true, applicationErr
+	}
+	if applicationErr != nil {
+		var observationErr *applicationObservationError
+		if !errors.As(applicationErr, &observationErr) {
+			return false, applicationErr
+		}
+		// Strict application identity failure authorizes no application
+		// lifecycle, adoption or launch effects. Independently validated
+		// capture may still advance, with ordinary startup/reservation guards.
+		// Its narrow observer excludes only provably unrelated partial X11
+		// windows; registered uncertainty continues to reject the pass.
+		if _, captureErr := sessionstate.CaptureLayout(root, registry); captureErr != nil {
+			return false, errors.Join(applicationErr, captureErr)
+		}
+		degraded = append(degraded, applicationErr)
 	}
 	actions, err := sessionstate.PlanPlacementActionsAfter(root, registry, runtime.desired, runtime.placementCursor)
 	if err != nil {
@@ -826,7 +841,7 @@ func (runtime *sessionRuntime) reconcileObserved(root *Node, now time.Time, obse
 		moved := false
 		failedContexts := make(map[sessionstate.ContextID]struct{})
 		for _, action := range actions {
-			if action.Kind == sessionstate.PlacementMoveWorkspace && moved {
+			if action.IsMove() && moved {
 				// The next focus prediction needs a tree after the previous move.
 				return true, nil
 			}
@@ -860,14 +875,14 @@ func (runtime *sessionRuntime) reconcileObserved(root *Node, now time.Time, obse
 					return true, nil
 				}
 				failedContexts[action.ContextID] = struct{}{}
-				if action.Kind == sessionstate.PlacementMoveWorkspace {
+				if action.IsMove() {
 					failedMoveContexts[action.ContextID] = struct{}{}
 				}
 				degraded = append(degraded, err)
 				continue
 			}
 			placementRefresh = true
-			moved = moved || action.Kind == sessionstate.PlacementMoveWorkspace
+			moved = moved || action.IsMove()
 		}
 		if placementRefresh {
 			return true, nil
@@ -976,6 +991,12 @@ func (runtime *sessionRuntime) reconcileObserved(root *Node, now time.Time, obse
 	return false, err
 }
 
+// Only failures before application effects can fall back to independent capture.
+type applicationObservationError struct{ err error }
+
+func (err *applicationObservationError) Error() string { return err.err.Error() }
+func (err *applicationObservationError) Unwrap() error { return err.err }
+
 func (runtime *sessionRuntime) reconcileApplications(root *Node, registry sessionstate.Registry, now time.Time) (bool, sessionstate.Registry, error, error) {
 	return runtime.reconcileObservedApplications(root, registry, now, runtime.automaticCloseObservation())
 }
@@ -987,7 +1008,7 @@ func (runtime *sessionRuntime) reconcileObservedApplications(root *Node, registr
 	groups, err := sessionstate.ObserveApplicationGroups(root, registry)
 	if err != nil {
 		runtime.resetApplicationCloseObservations()
-		return false, registry, nil, err
+		return false, registry, nil, &applicationObservationError{err: err}
 	}
 	// Invalidate explicit policy changes before presence tracking can set
 	// DesiredOpen again for a newly user-opened application.
@@ -1024,7 +1045,8 @@ func (runtime *sessionRuntime) reconcileObservedApplications(root *Node, registr
 		registry = current
 		currentGroups, err := sessionstate.ObserveApplicationGroups(root, current)
 		if err != nil {
-			return err
+			runtime.resetApplicationCloseObservations()
+			return &applicationObservationError{err: err}
 		}
 		runtime.observeStartupApplications(runtime.registry, currentGroups)
 		currentPlan, _, err := runtime.planApplicationObservation(currentGroups, now, observation)
@@ -1037,14 +1059,21 @@ func (runtime *sessionRuntime) reconcileObservedApplications(root *Node, registr
 		if len(currentPlan.DesiredOpen) != 0 {
 			return nil
 		}
-		placement, err := sessionstate.PlanApplicationPlacementActionsAfter(currentGroups, runtime.desired, runtime.applicationPlacementCursor)
+		placementDesired := runtime.desired
+		if runtime.restoreCancelled {
+			// Adopt the live application without any saved placement effects
+			// after user cancellation, including exits from the scratchpad.
+			placementDesired.Workspaces = []sessionstate.WorkspaceLayout{}
+			placementDesired.Scratchpad = nil
+		}
+		placement, err := sessionstate.PlanApplicationPlacementActionsAfter(currentGroups, placementDesired, runtime.applicationPlacementCursor)
 		if err != nil {
 			return err
 		}
 		moved := false
 		failedContexts := make(map[sessionstate.ContextID]struct{})
 		for _, action := range placement {
-			if action.Kind == sessionstate.PlacementMoveWorkspace && moved {
+			if action.IsMove() && moved {
 				return nil
 			}
 			cursor := action
@@ -1076,7 +1105,7 @@ func (runtime *sessionRuntime) reconcileObservedApplications(root *Node, registr
 				continue
 			}
 			refresh = true
-			moved = moved || action.Kind == sessionstate.PlacementMoveWorkspace
+			moved = moved || action.IsMove()
 		}
 		var launchErrors []error
 		launchSlots := currentPlan.LaunchSlots
@@ -1469,6 +1498,12 @@ func (runtime *sessionRuntime) applyPlannedPlacementAction(root *Node, action se
 			action.ContainerID,
 			quoteSwayString(action.Workspace),
 		)
+	case sessionstate.PlacementMoveScratchpad:
+		return runtime.hideRestoredScratchpad(root, action)
+	case sessionstate.PlacementShowScratchpad:
+		return runtime.showRestoredScratchpad(root, action)
+	case sessionstate.PlacementLeaveScratchpad:
+		return runtime.leaveRestoredScratchpad(root, action)
 	case sessionstate.PlacementAddMark:
 		mark, err := action.ContextID.Mark()
 		if err != nil {
@@ -1482,10 +1517,11 @@ func (runtime *sessionRuntime) applyPlannedPlacementAction(root *Node, action se
 	if !move {
 		effect.Kind = sessionstate.RestoreAddTemporaryMark
 	}
-	if err := runtime.runAttributedCommand(root, effect, command, move); err != nil {
-		return fmt.Errorf("apply %s for context %q: %w", action.Kind, action.ContextID, err)
+	effectErr := runtime.runAttributedCommand(root, effect, command, move)
+	if effectErr != nil {
+		return fmt.Errorf("apply %s for context %q: %w", action.Kind, action.ContextID, effectErr)
 	}
-	if move {
+	if action.Kind == sessionstate.PlacementMoveWorkspace {
 		runtime.rebaseStartupApplicationPlacement(root, action)
 	}
 	return nil

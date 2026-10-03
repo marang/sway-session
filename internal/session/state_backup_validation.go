@@ -506,14 +506,7 @@ func validateStateBackupLayout(ctx context.Context, queryer stateQueryer) error 
 		if id != 1 {
 			return errors.New("state backup layout key is invalid")
 		}
-		if version != LayoutSchemaVersion {
-			return &UnsupportedVersionError{Document: "layout", Got: version, Want: LayoutSchemaVersion}
-		}
-		var layout LayoutSnapshot
-		if err := decodeDatabasePayload("layout", payload, &layout); err != nil {
-			return err
-		}
-		if err := layout.Validate(); err != nil {
+		if _, err := decodeStoredLayoutSnapshot("state backup layout", version, payload); err != nil {
 			return err
 		}
 	}

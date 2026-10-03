@@ -50,6 +50,7 @@ var commandSpecs = map[string]commandSpec{
 	"restore-report":       {usage: "restore-report [--retry <context-uuid>] [--socket <path>]", summary: "Explain recorded restore outcomes or retry one failed context"},
 	"restore":              {usage: "restore [--socket <path>] [context]", summary: "Restore active or selected contexts; --preview explains next-login policy"},
 	"list":                 {usage: "list", summary: "List registered contexts"},
+	"status":               {usage: "status [--socket <path>]", summary: "Show registered contexts and live desktop application placement"},
 	"archive":              {usage: "archive <context>", summary: "Exclude a context from automatic restore"},
 	"activate":             {usage: "activate <context>", summary: "Return an archived context to automatic restore"},
 	"purge":                {usage: "purge [--yes] <context>", summary: "Permanently remove a Herdr terminal context and its saved session"},
@@ -64,7 +65,7 @@ var commandSpecs = map[string]commandSpec{
 	"completion":           {usage: "completion contexts <command>", summary: "Emit read-only shell completion candidates"},
 }
 
-var commandOrder = []string{"terminal", "doctor", "state", "register", "restore", "restore-report", "list", "archive", "activate", "purge", "app", "daemon", "broker", "request-start", "report-agent-session", "completion", "version"}
+var commandOrder = []string{"terminal", "doctor", "state", "register", "restore", "restore-report", "list", "status", "archive", "activate", "purge", "app", "daemon", "broker", "request-start", "report-agent-session", "completion", "version"}
 
 type swayRequester interface {
 	RequestContext(context.Context, swayipc.MessageType, []byte) (swayipc.Message, error)
@@ -268,26 +269,27 @@ func runWithContext(ctx context.Context, arguments []string, stdin io.Reader, st
 }
 
 type commandResult struct {
-	Version              int                               `json:"version"`
-	Build                *buildmetadata.Metadata           `json:"build,omitempty"`
-	Command              string                            `json:"command"`
-	Contexts             []sessionstate.Context            `json:"contexts"`
-	CompletionCandidates []completionCandidate             `json:"completion_candidates,omitempty"`
-	Message              string                            `json:"message,omitempty"`
-	Workspace            int                               `json:"workspace,omitempty"`
-	Created              bool                              `json:"created,omitempty"`
-	Actions              []string                          `json:"actions,omitempty"`
-	Terminal             *terminalCommandResult            `json:"terminal,omitempty"`
-	Terminals            *[]terminalInventoryResult        `json:"terminals,omitempty"`
-	RestoreReport        *restoreReportCommandResult       `json:"restore_report,omitempty"`
-	RestorePreview       *restorePreviewResult             `json:"restore_preview,omitempty"`
-	Preview              bool                              `json:"preview,omitempty"`
-	Doctor               *doctor.Report                    `json:"doctor,omitempty"`
-	DoctorPlan           *doctor.Plan                      `json:"doctor_plan,omitempty"`
-	DoctorFix            *doctor.FixResult                 `json:"doctor_fix,omitempty"`
-	StateBackup          *sessionstate.StateBackupResult   `json:"state_backup,omitempty"`
-	StateRecovery        *sessionstate.StateRecoveryResult `json:"state_recovery,omitempty"`
-	StateOperations      *stateOperationsResult            `json:"state_operations,omitempty"`
+	Version               int                               `json:"version"`
+	Build                 *buildmetadata.Metadata           `json:"build,omitempty"`
+	Command               string                            `json:"command"`
+	Contexts              []sessionstate.Context            `json:"contexts"`
+	ApplicationPlacements *[]applicationPlacementResult     `json:"application_placements,omitempty"`
+	CompletionCandidates  []completionCandidate             `json:"completion_candidates,omitempty"`
+	Message               string                            `json:"message,omitempty"`
+	Workspace             int                               `json:"workspace,omitempty"`
+	Created               bool                              `json:"created,omitempty"`
+	Actions               []string                          `json:"actions,omitempty"`
+	Terminal              *terminalCommandResult            `json:"terminal,omitempty"`
+	Terminals             *[]terminalInventoryResult        `json:"terminals,omitempty"`
+	RestoreReport         *restoreReportCommandResult       `json:"restore_report,omitempty"`
+	RestorePreview        *restorePreviewResult             `json:"restore_preview,omitempty"`
+	Preview               bool                              `json:"preview,omitempty"`
+	Doctor                *doctor.Report                    `json:"doctor,omitempty"`
+	DoctorPlan            *doctor.Plan                      `json:"doctor_plan,omitempty"`
+	DoctorFix             *doctor.FixResult                 `json:"doctor_fix,omitempty"`
+	StateBackup           *sessionstate.StateBackupResult   `json:"state_backup,omitempty"`
+	StateRecovery         *sessionstate.StateRecoveryResult `json:"state_recovery,omitempty"`
+	StateOperations       *stateOperationsResult            `json:"state_operations,omitempty"`
 }
 
 type terminalCommandResult struct {
@@ -392,6 +394,9 @@ func writeResult(writer io.Writer, structured bool, result commandResult) error 
 	}
 	if result.StateOperations != nil {
 		return writeStateOperations(writer, result)
+	}
+	if result.ApplicationPlacements != nil {
+		return writeStatus(writer, result)
 	}
 	if len(result.CompletionCandidates) != 0 {
 		for _, candidate := range result.CompletionCandidates {
@@ -648,6 +653,8 @@ func executeCommand(ctx context.Context, name string, arguments []string, stdin 
 		return executeRegister(ctx, arguments, deps)
 	case "list":
 		return executeList(ctx, arguments, deps)
+	case "status":
+		return executeStatus(ctx, arguments, deps)
 	case "archive":
 		return executeStateChange(ctx, name, arguments, sessionstate.ContextArchived, deps)
 	case "activate":

@@ -15,6 +15,9 @@ import (
 type restoreFocusEvent struct {
 	kind                 swayipc.EventType
 	container, old, next int64
+	// Names are used only for workspaces created by this command, whose IDs
+	// cannot be observed beforehand, including a recreated empty workspace.
+	oldName, nextName string
 }
 
 type restoreFocusExpectation struct {
@@ -39,14 +42,14 @@ type restoreMappingCandidate struct {
 // This grants only the exact new window's bounded focus allowance; it neither
 // makes a context restore-eligible nor bypasses any lifecycle effect guard.
 func (runtime *sessionRuntime) observeRestoreMappingFocus(root *Node, registry sessionstate.Registry) error {
-	if runtime.restoreCancelled || len(runtime.desired.Workspaces) == 0 {
+	if runtime.restoreCancelled || len(runtime.desired.Workspaces)+len(runtime.desired.Scratchpad) == 0 {
 		return nil
 	}
 	windows, issues, err := sessionstate.ObserveManagedWindowsIsolated(root, registry)
 	if err != nil {
 		return err
 	}
-	groups, err := sessionstate.ObserveApplicationGroups(root, registry)
+	groups, err := sessionstate.ObserveApplicationGroupsForCapture(root, registry)
 	if err != nil {
 		return err
 	}
@@ -106,7 +109,7 @@ func (runtime *sessionRuntime) observeRestoreMappingFocus(root *Node, registry s
 // reconciliation. Reserve an ordering boundary at window::new, but authorize
 // no focus until a fresh tree identifies an active saved restore candidate.
 func (runtime *sessionRuntime) observeMappingFocus(node *Node) {
-	if node == nil || node.ID <= 0 || runtime.restoreCancelled || len(runtime.desired.Workspaces) == 0 {
+	if node == nil || node.ID <= 0 || runtime.restoreCancelled || len(runtime.desired.Workspaces)+len(runtime.desired.Scratchpad) == 0 {
 		return
 	}
 	if len(runtime.pendingMappingFocus) >= 64 {
@@ -135,7 +138,9 @@ func (runtime *sessionRuntime) attributeMappingFocus(containerID int64, id sessi
 	if runtime.restoreCancelled {
 		return
 	}
-	if _, saved := snapshotContextWorkspace(runtime.desired, id); !saved {
+	_, savedWorkspace := snapshotContextWorkspace(runtime.desired, id)
+	_, savedScratchpad := savedScratchpadPlacement(runtime.desired, id)
+	if !savedWorkspace && !savedScratchpad {
 		return
 	}
 	candidate, adopted := runtime.mappingCandidates[containerID]
@@ -172,21 +177,38 @@ func (runtime *sessionRuntime) attributeMappingFocus(containerID int64, id sessi
 
 func (runtime *sessionRuntime) runAttributedCommand(root *Node, action sessionstate.RestoreAction, command string, move bool) error {
 	events := predictedRestoreFocus(root, action)
-	if len(events) != 0 && len(runtime.expectedFocus) >= 64 {
+	if move {
+		return runtime.runAttributedCommandFocus(action.ContainerID, command, true, nil, events)
+	}
+	return runtime.runAttributedCommandFocus(action.ContainerID, command, false, events, nil)
+}
+
+// Scratchpad show focuses before emitting move; ordinary moves focus after it.
+// Keep the two portions ordered under the same command sequence and barrier.
+func (runtime *sessionRuntime) runAttributedCommandFocus(containerID int64, command string, move bool, beforeMove, afterMove []restoreFocusEvent) error {
+	allowances := 0
+	for _, events := range [][]restoreFocusEvent{beforeMove, afterMove} {
+		if len(events) != 0 {
+			allowances++
+		}
+	}
+	if len(runtime.expectedFocus)+allowances > 64 {
 		runtime.cancelConflictingRestore()
 		return fmt.Errorf("restore focus attribution backlog exceeded")
 	}
 	sequence := uint64(0)
 	if move {
-		sequence = runtime.expectMove(action.ContainerID)
-	} else if len(events) != 0 {
+		sequence = runtime.expectMove(containerID)
+	} else if allowances != 0 {
 		runtime.nextMoveSequence++
 		sequence = runtime.nextMoveSequence
 	}
-	if len(events) != 0 {
-		runtime.expectedFocus = append(runtime.expectedFocus, restoreFocusExpectation{
-			sequence: sequence, epoch: runtime.eventStreamEpoch, afterMove: move, events: events,
-		})
+	for index, events := range [][]restoreFocusEvent{beforeMove, afterMove} {
+		if len(events) != 0 {
+			runtime.expectedFocus = append(runtime.expectedFocus, restoreFocusExpectation{
+				sequence: sequence, epoch: runtime.eventStreamEpoch, afterMove: index == 1, events: events,
+			})
+		}
 	}
 	err := runtime.runSwayCommand(command)
 	if err == nil && sequence != 0 {
@@ -195,7 +217,7 @@ func (runtime *sessionRuntime) runAttributedCommand(root *Node, action sessionst
 		}
 	}
 	if err != nil && sequence != 0 {
-		runtime.handleFailedMove(action.ContainerID, sequence, err)
+		runtime.handleFailedMove(containerID, sequence, err)
 	}
 	return err
 }
@@ -252,7 +274,7 @@ func (runtime *sessionRuntime) consumeRestoreFocus(event swayipc.Event) bool {
 		if event.Container == nil || event.Container.ID != want.container {
 			return false
 		}
-	} else if event.Old == nil || event.Current == nil || event.Old.ID != want.old || event.Current.ID != want.next {
+	} else if !matchesRestoreWorkspace(event.Old, want.old, want.oldName) || !matchesRestoreWorkspace(event.Current, want.next, want.nextName) {
 		return false
 	}
 	expected.events = expected.events[1:]
@@ -260,6 +282,16 @@ func (runtime *sessionRuntime) consumeRestoreFocus(event swayipc.Event) bool {
 		runtime.expectedFocus = slices.Delete(runtime.expectedFocus, index, index+1)
 	}
 	return true
+}
+
+func matchesRestoreWorkspace(node *Node, id int64, name string) bool {
+	if node == nil || node.ID <= 0 {
+		return false
+	}
+	if id > 0 {
+		return node.ID == id
+	}
+	return name != "" && node.Type == "workspace" && node.Name == name
 }
 
 func (runtime *sessionRuntime) discardRestoreFocus(sequence uint64) {
@@ -279,7 +311,7 @@ func predictedRestoreFocus(root *Node, action sessionstate.RestoreAction) []rest
 	target := path[len(path)-1]
 	workspace := pathWorkspace(path)
 	isGroup := len(target.Nodes)+len(target.FloatingNodes) != 0
-	if workspace == nil || target.Type != "con" || isGroup && action.Kind != sessionstate.RestoreSetFullscreen {
+	if workspace == nil || target.Type != "con" && target.Type != "floating_con" || isGroup && action.Kind != sessionstate.RestoreSetFullscreen {
 		return nil
 	}
 	switch action.Kind {
@@ -366,7 +398,7 @@ func focusLeafExcept(root *Node, excluded int64) *Node {
 	if root.ID == excluded {
 		return nil
 	}
-	if root.Type == "con" && len(root.Nodes)+len(root.FloatingNodes) == 0 {
+	if (root.Type == "con" || root.Type == "floating_con") && len(root.Nodes)+len(root.FloatingNodes) == 0 {
 		return root
 	}
 	// Sway's focus stack, not child order, determines the successor. Missing

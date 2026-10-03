@@ -636,7 +636,7 @@ func TestPlacementOnlyLayoutJSONSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode placement-only layout: %v", err)
 	}
-	want := `{"version":1,"workspaces":[{"name":"2: mixed","restore_mode":"placement_only","placement_contexts":["123e4567-e89b-12d3-a456-426614174000"]}]}`
+	want := `{"version":2,"workspaces":[{"name":"2: mixed","restore_mode":"placement_only","placement_contexts":["123e4567-e89b-12d3-a456-426614174000"]}]}`
 	if string(encoded) != want {
 		t.Fatalf("unexpected placement-only schema:\n got: %s\nwant: %s", encoded, want)
 	}

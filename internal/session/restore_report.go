@@ -8,11 +8,18 @@ import (
 
 // RestoreWork records bounded operational intent, never application-private data.
 type RestoreWork struct {
-	Window       bool   `json:"window"`
-	Placement    bool   `json:"placement"`
-	Layout       bool   `json:"layout"`
-	Workspace    string `json:"workspace,omitempty"`
-	LayoutDigest string `json:"layout_digest,omitempty"`
+	Window       bool                   `json:"window"`
+	Placement    bool                   `json:"placement"`
+	Layout       bool                   `json:"layout"`
+	Workspace    string                 `json:"workspace,omitempty"`
+	LayoutDigest string                 `json:"layout_digest,omitempty"`
+	Scratchpad   *ScratchpadRestoreWork `json:"scratchpad,omitempty"`
+}
+
+// ScratchpadRestoreWork keeps hidden membership separate from workspace names.
+type ScratchpadRestoreWork struct {
+	Visible   bool   `json:"visible"`
+	Workspace string `json:"workspace,omitempty"`
 }
 
 // RestoreOutcome retains the latest attempt for one source and context.
@@ -102,7 +109,22 @@ func (work RestoreWork) Validate() error {
 	if err := validateMetadata("restore workspace", work.Workspace); err != nil {
 		return err
 	}
-	if (work.Placement || work.Layout) && work.Workspace == "" {
+	if work.Scratchpad != nil {
+		if !work.Placement || work.Layout || work.Workspace != "" || work.LayoutDigest != "" {
+			return errors.New("scratchpad intent requires exclusive typed placement")
+		}
+		if work.Scratchpad.Visible {
+			if !validApplicationWorkspace(work.Scratchpad.Workspace) {
+				return errors.New("shown scratchpad intent requires a normal workspace")
+			}
+			if err := validateMetadata("scratchpad restore workspace", work.Scratchpad.Workspace); err != nil {
+				return err
+			}
+		} else if work.Scratchpad.Workspace != "" {
+			return errors.New("hidden scratchpad intent has no workspace")
+		}
+	}
+	if (work.Layout || work.Placement && work.Scratchpad == nil) && work.Workspace == "" {
 		return errors.New("requested placement/layout requires a workspace")
 	}
 	if work.Layout && work.LayoutDigest == "" {

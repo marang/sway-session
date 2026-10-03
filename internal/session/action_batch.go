@@ -82,7 +82,7 @@ func comparePlacementActions(left, right PlacementAction) int {
 }
 
 func placementActionKindOrder(kind PlacementActionKind) int {
-	if kind == PlacementMoveWorkspace {
+	if kind == PlacementMoveWorkspace || kind == PlacementMoveScratchpad {
 		return 0
 	}
 	return 1

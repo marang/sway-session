@@ -38,6 +38,7 @@ type TreeNode struct {
 	Type             string           `json:"type"`
 	PID              int              `json:"pid"`
 	Layout           string           `json:"layout"`
+	ScratchpadState  string           `json:"scratchpad_state"`
 	Percent          *float64         `json:"percent"`
 	AppID            *string          `json:"app_id"`
 	Window           *int64           `json:"window"`

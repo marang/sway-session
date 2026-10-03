@@ -13,7 +13,7 @@ import (
 
 const (
 	ContextsSchemaVersion = 5
-	LayoutSchemaVersion   = 1
+	LayoutSchemaVersion   = 2
 )
 
 type ContextState string
@@ -156,8 +156,17 @@ type ApplicationIdentity struct {
 
 // LayoutSnapshot is the versioned layout state written by the daemon.
 type LayoutSnapshot struct {
-	Version    int               `json:"version"`
-	Workspaces []WorkspaceLayout `json:"workspaces"`
+	Version    int                   `json:"version"`
+	Workspaces []WorkspaceLayout     `json:"workspaces"`
+	Scratchpad []ScratchpadPlacement `json:"scratchpad,omitempty"`
+}
+
+// ScratchpadPlacement records membership separately from normal workspace
+// structure, including the last visibility and workspace when shown.
+type ScratchpadPlacement struct {
+	ContextID ContextID `json:"context_id"`
+	Visible   bool      `json:"visible"`
+	Workspace string    `json:"workspace,omitempty"`
 }
 
 type WorkspaceLayout struct {
@@ -655,6 +664,18 @@ func (snapshot *LayoutSnapshot) Validate() error {
 		}
 		workspaceNames[workspace.Name] = struct{}{}
 	}
+	for index, placement := range snapshot.Scratchpad {
+		if err := placement.ContextID.Validate(); err != nil {
+			return fmt.Errorf("scratchpad[%d]: %w", index, err)
+		}
+		if placement.Visible && !validApplicationWorkspace(placement.Workspace) || !placement.Visible && placement.Workspace != "" {
+			return fmt.Errorf("scratchpad[%d]: only visible placement requires a normal workspace", index)
+		}
+		if other, exists := contextIDs[placement.ContextID]; exists {
+			return fmt.Errorf("scratchpad[%d]: context %q also appears in %q", index, placement.ContextID, other)
+		}
+		contextIDs[placement.ContextID] = "scratchpad"
+	}
 	return nil
 }
 
@@ -665,7 +686,7 @@ func (workspace *WorkspaceLayout) validate(contextIDs map[ContextID]string, glob
 	if len(workspace.Name) > 256 {
 		return errors.New("workspace name must be at most 256 characters")
 	}
-	if workspace.Name == RestoreStagingWorkspace {
+	if workspace.Name == RestoreStagingWorkspace || workspace.Name == "__i3_scratch" {
 		return fmt.Errorf("workspace name %q is reserved for restore staging", workspace.Name)
 	}
 	localIDs := make(map[ContextID]struct{})

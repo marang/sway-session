@@ -205,7 +205,7 @@ type restoreCleanupHeadless struct {
 	tick   int
 }
 
-func newRestoreCleanupHeadless(t *testing.T) *restoreCleanupHeadless {
+func newRestoreCleanupHeadless(t *testing.T, enableXWayland ...bool) *restoreCleanupHeadless {
 	t.Helper()
 	// Short paths keep both Unix socket names below sockaddr_un's limit.
 	root, err := os.MkdirTemp("/tmp", "lab143-sway-")
@@ -239,7 +239,11 @@ func newRestoreCleanupHeadless(t *testing.T) *restoreCleanupHeadless {
 		h.env = append(h.env, entry.key+"="+path)
 	}
 	config := filepath.Join(root, "config", "sway.conf")
-	if err := os.WriteFile(config, []byte("xwayland disable\noutput HEADLESS-1 mode 1280x720\nworkspace 98 output HEADLESS-1\nworkspace 99 output HEADLESS-1\ndefault_orientation horizontal\nfocus_follows_mouse no\nworkspace 98\n"), 0600); err != nil {
+	xwayland := "disable"
+	if len(enableXWayland) != 0 && enableXWayland[0] {
+		xwayland = "enable"
+	}
+	if err := os.WriteFile(config, []byte("xwayland "+xwayland+"\noutput HEADLESS-1 mode 1280x720\nworkspace 98 output HEADLESS-1\nworkspace 99 output HEADLESS-1\ndefault_orientation horizontal\nfocus_follows_mouse no\nworkspace 98\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	sway := h.start("sway", "--config", config)

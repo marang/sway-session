@@ -3,6 +3,7 @@ package session
 import (
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/marang/sway-session/internal/swayipc"
@@ -229,6 +230,105 @@ func TestCaptureLayoutIgnoresIndependentUnmanagedFloatingWindow(t *testing.T) {
 	if snapshot.Workspaces[0].RestoreMode != WorkspaceRestoreLayout || len(snapshot.Workspaces[0].Floating) != 0 {
 		t.Fatalf("independent unmanaged floating window degraded managed tiling: %+v", snapshot.Workspaces[0])
 	}
+}
+
+func TestCaptureLayoutIgnoresProvablyUnrelatedIncompleteXWayland(t *testing.T) {
+	for _, properties := range []swayipc.WindowProperties{
+		{Class: "Unregistered"},
+		{Instance: "unregistered"},
+	} {
+		for _, mixed := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%+v/mixed=%v", properties, mixed), func(t *testing.T) {
+				root, registry := scratchpadApplicationTree(t, false, true)
+				registry.Contexts = append(registry.Contexts, registryWithContexts(secondContextID).Contexts[0], captureTestXWaylandContext(thirdContextID, "org.example.Registered"))
+				terminal := managedTreeLeaf(t, 51, secondContextID, floatPointer(1), false)
+				unrelated := &swayipc.TreeNode{ID: 52, Type: "con", WindowProperties: properties}
+				workspace := &swayipc.TreeNode{ID: 50, Type: "workspace", Name: "99", Layout: "splith", Nodes: []*swayipc.TreeNode{terminal}}
+				if mixed {
+					workspace.Nodes = append(workspace.Nodes, unrelated)
+				} else {
+					workspace.FloatingNodes = []*swayipc.TreeNode{unrelated}
+				}
+				root.Nodes[0].Nodes = append(root.Nodes[0].Nodes, workspace)
+				snapshot, err := CaptureLayout(root, registry)
+				if err != nil {
+					t.Fatalf("unrelated partial identity blocked capture: %v", err)
+				}
+				wantMode := WorkspaceRestoreLayout
+				if mixed {
+					wantMode = WorkspaceRestorePlacementOnly
+				}
+				if len(snapshot.Workspaces) != 1 || snapshot.Workspaces[0].RestoreMode != wantMode || !reflect.DeepEqual(workspaceContextIDs(snapshot.Workspaces[0]), []ContextID{secondContextID}) || !reflect.DeepEqual(snapshot.Scratchpad, []ScratchpadPlacement{{ContextID: testContextID}}) {
+					t.Fatalf("unmanaged window changed independent capture: %+v", snapshot)
+				}
+				if unrelated.WindowProperties != properties {
+					t.Fatal("capture mutated compositor identity evidence")
+				}
+				if _, err := ObserveApplicationGroups(root, registry); err == nil {
+					t.Fatal("capture exception broadened normal application identity semantics")
+				}
+				if _, err := SelectRestoreWorkspace(root, registry, snapshot, nil, nil); err != nil {
+					t.Fatalf("unrelated partial identity blocked independent restore selection: %v", err)
+				}
+			})
+		}
+	}
+}
+
+func TestCaptureLayoutKeepsRegisteredAndMalformedIdentityErrors(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		class    string
+		instance string
+		mark     string
+		sandbox  string
+		archived bool
+		want     string
+	}{
+		{name: "possible class match", class: "Registered", want: "requires both class and instance"},
+		{name: "possible instance match", instance: "registered", want: "requires both class and instance"},
+		{name: "archived registration", class: "Registered", archived: true, want: "requires both class and instance"},
+		{name: "marked partial identity", class: "Unregistered", mark: string(thirdContextID), want: "requires both class and instance"},
+		{name: "unknown persistent mark", class: "Unregistered", mark: string(testContextID), want: "requires both class and instance"},
+		{name: "malformed persistent mark", class: "Unregistered", mark: "invalid", want: "requires both class and instance"},
+		{name: "malformed class", class: " Unregistered", want: "must be trimmed"},
+		{name: "malformed sandbox", class: "Unregistered", sandbox: "invalid", want: "not a valid Flatpak ID"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			app := captureTestXWaylandContext(thirdContextID, "org.example.Registered")
+			if test.archived {
+				app.State = ContextArchived
+			}
+			registry := registryWithContexts(secondContextID)
+			registry.Contexts = append(registry.Contexts, app)
+			window := appWindow(52, false, "", test.class, test.instance, test.sandbox)
+			if test.mark != "" {
+				window.Marks = []string{MarkPrefix + test.mark}
+			}
+			root := treeWithWorkspaces(&swayipc.TreeNode{ID: 50, Type: "workspace", Name: "99", Layout: "splith", Nodes: []*swayipc.TreeNode{managedTreeLeaf(t, 51, secondContextID, floatPointer(1), false)}, FloatingNodes: []*swayipc.TreeNode{window}})
+			if _, err := CaptureLayout(root, registry); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("identity error was hidden: got %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestCaptureLayoutDoesNotHideAmbiguousRegisteredXWayland(t *testing.T) {
+	first := captureTestXWaylandContext(testContextID, "org.example.First")
+	second := captureTestXWaylandContext(thirdContextID, "org.example.Second")
+	registry := registryWithContexts(secondContextID)
+	registry.Contexts = append(registry.Contexts, first, second)
+	window := appWindow(52, false, "", "Registered", "registered", "")
+	root := treeWithWorkspaces(&swayipc.TreeNode{ID: 50, Type: "workspace", Name: "99", Layout: "splith", Nodes: []*swayipc.TreeNode{managedTreeLeaf(t, 51, secondContextID, floatPointer(1), false)}, FloatingNodes: []*swayipc.TreeNode{window}})
+	if _, err := CaptureLayout(root, registry); err == nil || !strings.Contains(err.Error(), "overlaps 2 registered contexts") {
+		t.Fatalf("registered ambiguity was hidden: %v", err)
+	}
+}
+
+func captureTestXWaylandContext(id ContextID, sandbox string) Context {
+	app := applicationContextWithID(id, sandbox)
+	app.App.Identity = ApplicationIdentity{Protocol: WindowXWayland, X11Class: "Registered", X11Instance: "registered", SandboxAppID: sandbox}
+	return app
 }
 
 func TestCaptureLayoutDegradesMixedGroupedFloatingSubtree(t *testing.T) {

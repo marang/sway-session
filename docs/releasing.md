@@ -4,6 +4,10 @@ This document is for maintainers. The first standalone release is v0.1.0.
 Although the repository preserves the complete source history, do not push or
 recreate sway-title-animator tags in the sway-session remote.
 
+Use the repository [release-validation skill](../.agents/skills/sway-session-release-validation/SKILL.md)
+required by AGENTS.md to select affected user scenarios and record candidate
+evidence. The publication gates below remain authoritative.
+
 `sway-session --version` and `sway-session version` print the executing build's
 product version and commit on one line. Add `--json` for the normal schema-v1
 envelope: `version` is the envelope schema, while `build.product_version`,

@@ -25,6 +25,12 @@ Run the code-review skill before opening or finalizing a PR. Run review-codebase
 after every fifth substantive branch or at a meaningful project checkpoint,
 whichever comes first.
 
+For release preparation or a release-readiness assessment, read and apply the
+repository [sway-session-release-validation skill](.agents/skills/sway-session-release-validation/SKILL.md).
+This pointer establishes the scoped requirement; discovery metadata alone does
+not guarantee loading. Behavioral validation complements code-review and the
+canonical release gates.
+
 ## Workflow
 
 docs/workflow_conventions.md is canonical for planning, branches, PRs, review,

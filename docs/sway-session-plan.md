@@ -598,7 +598,7 @@ executable attachment. Its file rules protect the default Herdr history and
 sway-session state trees, but pathname-socket connect mediation is not reliable
 on every supported kernel and launched terminal panes remain unconfined. LAB-89
 tracks a stronger agent sandbox boundary. The
-[AGS/Herdr contract audit](research/ags-herdr-broker-confinement.md) records
+[AGS/Herdr contract audit](https://github.com/marang/sway-session/blob/main/docs/research/ags-herdr-broker-confinement.md) records
 the upstream evidence and the conditions for replacing the current start path.
 Root-owned launchers and typed requests do not by themselves confine the
 host-shell startup or the agent and shell panes created by Herdr.
@@ -634,6 +634,11 @@ Codebase → Sway Session label:
 - LAB-93: stable native Wayland per-window identity.
 - LAB-94 and LAB-95: remaining bounded session roadmap slices.
 - LAB-116: current post-SQLite session follow-up.
+
+The [native window-tag audit](https://github.com/marang/sway-session/blob/main/docs/research/xdg-toplevel-tag-audit.md) records that
+Sway 1.12 already exposes client tags. Duplicate/mutable tag semantics and
+unproven durable application adoption keep generic per-window restore gated;
+application-level restore remains the fallback.
 
 Active sequencing and acceptance criteria live in Linear; this document owns
 the durable architecture and compatibility decisions.

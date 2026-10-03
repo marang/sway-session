@@ -15,6 +15,14 @@ reversed window creation and explicit user cancellation. Report-driven layout
 retry now waits for an already marked live window or application anchor; the
 normal adoption path handles fresh windows first.
 
+The observer also requires the candidate daemon's actual shutdown/sleep delay
+inhibitor after each reboot. This caught a logind initialization race: removing
+an unrelated SSH session before the daemon resolved its own login identity was
+mistaken for its own logout. Early removal signals are now attributed after
+identity resolution with bounded storage and sender validation. Own-session
+loss still disables the guard. A missing inhibitor remains an acceptance
+failure even when the windows and layout otherwise appear correct.
+
 ## Requirements and execution
 
 The host must be Linux x86_64 with read/write access to `/dev/kvm`, Python 3.11+, Go from `go.mod`, QEMU, `qemu-img`, `cloud-localds`,

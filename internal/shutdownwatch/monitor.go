@@ -15,6 +15,11 @@ import (
 
 const startupTimeout = 5 * time.Second
 
+// Session-removal signals can arrive before GetSessionByPID resolves our
+// identity. Retain a bounded set until that reply, rather than attributing an
+// unrelated logout to this daemon. Excessive startup churn remains unsafe.
+const startupSessionRemovalLimit = 64
+
 var errStartupInvalidated = errors.New("logind state changed during shutdown monitor startup")
 
 type eventKind uint8
@@ -65,22 +70,24 @@ type Monitor struct {
 	epoch               atomic.Uint64
 	preparationSequence atomic.Uint64
 
-	mu          sync.Mutex
-	ctx         context.Context
-	cancel      context.CancelFunc
-	client      loginClient
-	inhibitor   *heldInhibitor
-	owner       string
-	sessionPath string
-	pid         uint32
-	ready       bool
-	shutdown    bool
-	sleep       bool
-	rearming    bool
-	rearmID     uint64
-	finished    bool
-	err         error
-	closeErr    error
+	mu                     sync.Mutex
+	ctx                    context.Context
+	cancel                 context.CancelFunc
+	client                 loginClient
+	inhibitor              *heldInhibitor
+	owner                  string
+	sessionPath            string
+	startupSessionRemovals map[string]string
+	sessionRemovalErr      error
+	pid                    uint32
+	ready                  bool
+	shutdown               bool
+	sleep                  bool
+	rearming               bool
+	rearmID                uint64
+	finished               bool
+	err                    error
+	closeErr               error
 
 	finishOnce sync.Once
 	rearmWG    sync.WaitGroup
@@ -166,8 +173,8 @@ func (monitor *Monitor) initialize(ctx context.Context, pid uint32) error {
 	if owner == "" || owner[0] != ':' {
 		return fmt.Errorf("resolve logind bus owner: invalid unique name %q", owner)
 	}
-	if !monitor.setOwner(owner) {
-		return errStartupInvalidated
+	if err := monitor.setOwner(owner); err != nil {
+		return err
 	}
 
 	inhibitor, err := client.Inhibit(ctx)
@@ -189,8 +196,8 @@ func (monitor *Monitor) initialize(ctx context.Context, pid uint32) error {
 	if sessionPath == "" {
 		return fmt.Errorf("resolve logind session for PID %d: empty object path", pid)
 	}
-	if !monitor.setSessionPath(sessionPath) {
-		return errStartupInvalidated
+	if err := monitor.setSessionPath(sessionPath); err != nil {
+		return err
 	}
 
 	state, err := client.SessionState(ctx, sessionPath)
@@ -299,30 +306,80 @@ func (monitor *Monitor) bindInhibitor(inhibitor io.Closer) bool {
 	return true
 }
 
-func (monitor *Monitor) setOwner(owner string) bool {
+func (monitor *Monitor) setOwner(owner string) error {
 	monitor.mu.Lock()
 	defer monitor.mu.Unlock()
 	if monitor.finished {
-		return false
+		return errStartupInvalidated
+	}
+	for _, sender := range monitor.startupSessionRemovals {
+		if sender != owner {
+			return fmt.Errorf("monitor logind lifecycle: signal sender changed from %q to %q", owner, sender)
+		}
 	}
 	monitor.owner = owner
-	return true
+	return nil
 }
 
-func (monitor *Monitor) setSessionPath(path string) bool {
+func (monitor *Monitor) setSessionPath(path string) error {
 	monitor.mu.Lock()
 	defer monitor.mu.Unlock()
 	if monitor.finished {
-		return false
+		return errStartupInvalidated
+	}
+	if monitor.sessionRemovalErr != nil {
+		return monitor.sessionRemovalErr
+	}
+	if _, removed := monitor.startupSessionRemovals[path]; removed {
+		monitor.sessionRemovalErr = errors.New("own logind session was removed")
+		return monitor.sessionRemovalErr
 	}
 	monitor.sessionPath = path
-	return true
+	monitor.startupSessionRemovals = nil
+	return nil
+}
+
+func (monitor *Monitor) handleSessionRemoved(path, sender string) {
+	monitor.mu.Lock()
+	if monitor.finished {
+		monitor.mu.Unlock()
+		return
+	}
+	var err error
+	if monitor.owner != "" && sender != monitor.owner {
+		err = fmt.Errorf("monitor logind lifecycle: signal sender changed from %q to %q", monitor.owner, sender)
+	} else if monitor.sessionPath == "" {
+		if monitor.startupSessionRemovals == nil {
+			monitor.startupSessionRemovals = make(map[string]string)
+		}
+		if previous, known := monitor.startupSessionRemovals[path]; known {
+			if previous != sender {
+				err = errors.New("logind session-removal sender changed during monitor startup")
+			}
+		} else {
+			if len(monitor.startupSessionRemovals) >= startupSessionRemovalLimit {
+				err = errors.New("too many logind sessions removed during monitor startup")
+			} else {
+				monitor.startupSessionRemovals[path] = sender
+			}
+		}
+	} else if path == monitor.sessionPath {
+		err = errors.New("own logind session was removed")
+	}
+	if err != nil {
+		monitor.sessionRemovalErr = err
+		monitor.forceUnsafe()
+	}
+	monitor.mu.Unlock()
+	if err != nil {
+		monitor.finish(err)
+	}
 }
 
 func (monitor *Monitor) activate() bool {
 	monitor.mu.Lock()
 	defer monitor.mu.Unlock()
-	if monitor.finished || monitor.client == nil || monitor.inhibitor == nil ||
+	if monitor.finished || monitor.sessionRemovalErr != nil || monitor.client == nil || monitor.inhibitor == nil ||
 		monitor.owner == "" || monitor.sessionPath == "" || monitor.shutdown || monitor.sleep ||
 		monitor.preparationSequence.Load() != 0 {
 		return false
@@ -374,9 +431,7 @@ func (monitor *Monitor) handleEvent(received event) {
 	case eventNameOwnerChanged:
 		monitor.finish(errors.New("logind D-Bus name owner changed"))
 	case eventSessionRemoved:
-		if sessionPath == "" || received.path == sessionPath {
-			monitor.finish(errors.New("own logind session was removed"))
-		}
+		monitor.handleSessionRemoved(received.path, received.source)
 	case eventSessionState:
 		if sessionPath != "" && received.path == sessionPath &&
 			(received.invalidated || !validSessionState(received.state)) {
@@ -519,7 +574,7 @@ func (monitor *Monitor) rearm(rearmID, preparationSequence uint64) {
 	}
 
 	monitor.mu.Lock()
-	if monitor.finished || monitor.rearmID != rearmID || monitor.shutdown || monitor.sleep ||
+	if monitor.finished || monitor.sessionRemovalErr != nil || monitor.rearmID != rearmID || monitor.shutdown || monitor.sleep ||
 		monitor.inhibitor != held || monitor.preparationSequence.Load() != preparationSequence {
 		monitor.mu.Unlock()
 		monitor.releaseIfOwned(held)
@@ -538,7 +593,7 @@ func (monitor *Monitor) rearm(rearmID, preparationSequence uint64) {
 func (monitor *Monitor) bindRearmInhibitor(held *heldInhibitor) bool {
 	monitor.mu.Lock()
 	defer monitor.mu.Unlock()
-	if monitor.finished || monitor.rearmID != held.rearm || monitor.shutdown || monitor.sleep {
+	if monitor.finished || monitor.sessionRemovalErr != nil || monitor.rearmID != held.rearm || monitor.shutdown || monitor.sleep {
 		return false
 	}
 	monitor.inhibitor = held
@@ -596,6 +651,7 @@ func (monitor *Monitor) finish(cause error) {
 	monitor.finishOnce.Do(func() {
 		monitor.mu.Lock()
 		monitor.finished = true
+		monitor.startupSessionRemovals = nil
 		monitor.forceUnsafe()
 		monitor.err = cause
 		inhibitor := monitor.inhibitor

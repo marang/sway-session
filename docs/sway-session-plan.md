@@ -351,7 +351,11 @@ An absent context at daemon startup is not evidence of a manual close.
 Close candidates are valid only within one healthy Sway subscription and one
 healthy shutdown-observer generation. The logind observer holds a delay
 inhibitor and suppresses close handling before releasing it on shutdown/sleep
-preparation. Sway shutdown invalidates the synchronous stream guard before
+preparation. During initialization, it retains up to 64 distinct session-removal
+paths with their signal senders until its own PID's session is resolved. An
+unrelated logout does not disable the validated guard; own-session removal,
+sender inconsistency or excessive startup churn fails closed. The pending set
+is discarded after attribution or termination. Sway shutdown invalidates the synchronous stream guard before
 queueing the event. Disconnect, cancellation, ambiguous identities, or loss of
 shutdown protection discard candidates conservatively. No monitor support means
 explicit archive remains available, not that every disappearance becomes a

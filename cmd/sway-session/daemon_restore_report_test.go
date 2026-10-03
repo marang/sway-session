@@ -10,6 +10,7 @@ import (
 	"time"
 
 	sessionstate "github.com/marang/sway-session/internal/session"
+	"github.com/marang/sway-session/internal/swayipc"
 )
 
 const restoreReportSecondID sessionstate.ContextID = "22222222-2222-4222-8222-222222222222"
@@ -904,6 +905,43 @@ func TestRestoreReportManagedIdentityIssuePreventsRejectedApplicationRetry(t *te
 			}
 			if launcher.starts != 1 {
 				t.Fatal("unresolved managed window caused duplicate desktop launch")
+			}
+		})
+	}
+}
+
+func TestPendingExplicitRestoreDoesNotStealNewMappingFocus(t *testing.T) {
+	for _, late := range []bool{false, true} {
+		t.Run(fmt.Sprintf("late_%t", late), func(t *testing.T) {
+			runtime, compositor, leaf, now := newMappingFocusScenario(t)
+			runtime.startupComplete = late
+			registry, err := sessionstate.ReadRegistrySnapshotContext(t.Context(), runtime.root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			restoreReportExplicit(t, runtime, registry.Contexts[0], restoreRequestedWork(runtime.persisted, testManagedContextID), now)
+			runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "new", Container: leaf}, now)
+			if _, err := runtime.Reconcile(compositor.root, now); err != nil {
+				t.Fatal(err)
+			}
+			runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "title", Container: leaf}, now)
+			runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "focus", Container: leaf}, now)
+			if runtime.restoreCancelled || (!late && runtime.startupComplete) || (late && !runtime.lateRestorePending) {
+				t.Fatal("pending CLI restore report cancelled automatic mapping focus")
+			}
+			if err := runtime.Flush(now.Add(sessionSnapshotDebounce)); err != nil {
+				t.Fatal(err)
+			}
+			var saved sessionstate.LayoutSnapshot
+			if err := sessionstate.LayoutStoreFor(runtime.root).LoadInto(&saved); err != nil {
+				t.Fatal(err)
+			}
+			if saved.Workspaces[0].Tiling == nil || saved.Workspaces[0].Tiling.Layout != sessionstate.LayoutTabbed {
+				t.Fatal("pending restore report lost the saved tabbed target")
+			}
+			runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "focus", Container: leaf}, now)
+			if !runtime.restoreCancelled {
+				t.Fatal("the report enabled a second mapping-focus allowance")
 			}
 		})
 	}

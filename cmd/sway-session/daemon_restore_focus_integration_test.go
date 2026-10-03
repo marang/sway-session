@@ -299,14 +299,18 @@ func TestSessionRuntimeRestoreColdStartFocusHeadless(t *testing.T) {
 		}
 	}
 	for _, test := range []struct {
-		name    string
-		binding bool
-		reverse bool
+		name           string
+		binding        bool
+		reverse        bool
+		explicitReport bool
 	}{
 		{name: "mapping_focus"},
 		{name: "mapping_focus_reverse_creation", reverse: true},
 		{name: "binding_before_mapping_focus", binding: true},
 		{name: "binding_before_mapping_focus_reverse_creation", binding: true, reverse: true},
+		{name: "mapping_focus_with_cli_report", explicitReport: true},
+		{name: "mapping_focus_with_cli_report_reverse_creation", explicitReport: true, reverse: true},
+		{name: "binding_before_mapping_focus_with_cli_report", explicitReport: true, binding: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			binding := test.binding
@@ -340,6 +344,13 @@ func TestSessionRuntimeRestoreColdStartFocusHeadless(t *testing.T) {
 			reconcile()
 			if runtime.startupComplete || runtime.restoreProgress != nil {
 				t.Fatal("cold fixture must await terminals before starting reconstruction")
+			}
+			if test.explicitReport {
+				// Login's one-shot restore records its request before mapping the
+				// terminal. Diagnostic observation must not steal normal adoption.
+				for _, item := range registry.Contexts {
+					restoreReportExplicit(t, runtime, item, restoreRequestedWork(desired, item.ID), time.Now())
+				}
 			}
 			creationOrder := []int{0, 1}
 			if test.reverse {

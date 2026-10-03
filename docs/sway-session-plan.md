@@ -268,7 +268,10 @@ tokens prevent late updates from overwriting a newer request; window,
 placement, and layout proofs are independent of launch acceptance. Reports are
 never read as lifecycle authority or desired layout. A fresh explicit attempt
 may rearm the existing daemon layout algorithm only after current policy and
-identity checks and an exact match with the currently saved layout; a historical
+identity checks, an already marked live window or application anchor, and an
+exact match with the currently saved layout. Newly mapped unmarked windows first
+pass through normal adoption so their automatic focus remains attributable;
+report observation must not preempt that adoption. A historical
 record cannot supply a layout to replay. Application launch retries clear a
 coordinator guard only after a newer explicit request, fresh policy/identity
 and absence checks, and this daemon's definitive rejection of the matching

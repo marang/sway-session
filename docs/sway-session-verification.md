@@ -101,8 +101,10 @@ healthy-close assertions document that limitation; shutdown/disconnect/unsafe
 guard cases test separate conservative behavior. Do not infer user intent from
 startup absence or claim injected shutdown signals prove a real reboot.
 
-Actual VM reboot and real logind ordering are **not run** for LAB-134 because no
-disposable VM was supplied. The existing opt-in
+At LAB-134 delivery, actual VM reboot and real logind ordering were **not run**
+because no disposable VM was supplied. The later
+[automated KVM runner](kvm-reboot-verification.md) adds a repeatable layout reboot
+scenario; its actual result must be recorded per candidate. The existing opt-in
 [guest reboot procedure](https://github.com/marang/sway-session/blob/03e9cfdf47fa40965eb73b391285ec80eb66feb1/docs/follow-application-vm-check.md) records guest boot IDs,
 pre-daemon eligible state, healthy-close controls and real inhibitor evidence.
 A private compositor, forced reset or simulated logind event does not satisfy
@@ -379,8 +381,10 @@ SWAY_SESSION_HEADLESS_INTEGRATION=1 go test -race ./cmd/sway-session \
   -run '^TestSessionRuntime(LayoutShapes|LateApplication)Headless$' -count=1 -v
 ```
 
-These checks do not substitute for observing the user's layout after a real
-reboot and again after a second reboot.
+The automated [KVM reboot acceptance](kvm-reboot-verification.md) complements
+these checks with two regular guest reboots, persistent guest state and the
+normal Sway login/autostart path. It establishes VM reboot behavior; a user
+workstation result remains separate evidence.
 
 Also exercise:
 

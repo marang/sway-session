@@ -140,6 +140,56 @@ selected Sway config. Other config content is preserved and excluded from
 repair previews. File checks never imply that a binding or socket endpoint is
 live. Users reload Sway separately after reviewing applied edits.
 
+The inspection module separates logical-line lexing, pure declaration and
+command-relevance classification, safe include traversal, and repair writes.
+Classification accepts supplied variable seeds and source locations; it never
+reads files, queries IPC, executes a shell or applies an edit. The traversal
+adapter supplies included files in source order and preserves Sway's first
+inclusion rule. Repair continues to derive authority from the resulting facts
+and revalidates the same file fingerprints before applying a preview.
+
+The supported integration grammar is deliberately narrower than Sway:
+
+| Requirement | Matching declaration |
+| --- | --- |
+| Daemon startup | One `exec [--no-startup-id] /path/to/sway-session daemon` |
+| Restore startup | One `exec [--no-startup-id] /path/to/sway-session restore` |
+| Persistent terminal | Default-mode `bindsym $mod+Return exec [--no-startup-id] /path/to/sway-session terminal --new` |
+| Ephemeral terminal | Default-mode `bindsym $mod+Shift+Return exec [--no-startup-id] /path/to/sway-session terminal --ephemeral` |
+
+Sway keywords are case-insensitive; executable names and arguments are not.
+Known modifier aliases and ordering are accepted, as are `--no-warn` and
+`--inhibited` binding flags. Other binding variants are conflicts or require
+manual review. Ordered scalar `set` values, safe scalar/glob includes, quoted
+arguments, continuation lines and supported command blocks remain inspectable.
+Known non-default binding modes do not satisfy default shortcuts. Unrelated
+output, input, bar, media and window rules retain their own scope.
+
+One bounded classifier recognizes executable positions through shell/env
+wrappers, including quoted names. Literal redirections and balanced
+`if`/`then`/`elif`/`else`/`fi` envelopes are inspected only to locate possible
+executables in every branch; conditions are never evaluated. It reports
+potentially affected requirements as uncertain instead of treating indirect
+startup as a matching declaration. Other programming forms remain outside this
+grammar. It does not evaluate shell expressions or inspect arbitrary launcher
+scripts.
+Unresolved relevant syntax, exhausted limits and incomplete include graphs
+prevent repair while retaining independently established facts. Repeated
+uncertainty at the same location is deduplicated; separate declarations still
+count as duplicates or conflicts.
+
+The file/graph limits remain 1 MiB per file, 4 MiB total, 64 files, include depth
+16, block depth 64 and 64 KiB per logical line or expanded scalar. Wrapper
+recognition is bounded to four levels and 256 KiB of shared work per command.
+Retained evidence is limited to eight items per requirement, with at most 4096
+distinct uncertainty keys. These are inspection bounds, not limits on saved
+contexts.
+Diagnostics distinguish static declaration presence, runtime observations and
+repair eligibility. Sway's `GET_CONFIG` returns loaded configuration text and
+`GET_BINDING_STATE` returns the current mode; neither provides an evaluated
+binding table. See the primary [Sway configuration](https://github.com/swaywm/sway/blob/master/sway/sway.5.scd)
+and [IPC specifications](https://github.com/swaywm/sway/blob/master/sway/sway-ipc.7.scd).
+
 The existing GET_VERSION IPC query supplies the loaded root path. GET_CONFIG
 does not expose evaluated settings: Sway stores folded main-file text without
 included files, while GET_BINDING_STATE supplies only a mode name. Neither is

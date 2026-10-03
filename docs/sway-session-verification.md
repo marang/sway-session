@@ -160,6 +160,30 @@ that all four requirements, locations, and limitations remain inspectable.
 Independent review must assess everyday usefulness as well as fail-closed
 repair safety; safe-but-unusable is not sufficient acceptance.
 
+Run the pure classification regressions and fuzz seeds alongside the existing
+Doctor include, repair, workstation and TUI tests. Bound fuzz campaigns explicitly
+and retain any new failure as a minimal permanent case. Quoting, continuation,
+structural braces, wrapper nesting and expansion exhaustion must not panic or
+convert potentially relevant uncertainty into permission to repair.
+
+The automated private-compositor acceptance uses:
+
+~~~sh
+SWAY_SESSION_HEADLESS_INTEGRATION=1 GOTOOLCHAIN=go1.26.5 \
+  go test ./cmd/sway-session -run '^TestDoctorConfigurationHeadless$' \
+  -count=1 -v
+~~~
+
+It validates realistic complete, partial, conflicting and missing-declaration
+fixtures with `sway -C`, then loads them into a disposable compositor on
+workspace 98. Startup declarations use an inert test executable. Loaded text
+and current mode are the only asserted configuration IPC facts; these do not
+prove effective bindings or actual startup success. Public Doctor reports,
+short/structured CLI output, the rendered 80x24 TUI and stale included-file
+repair previews use the same fixtures. Inspection and rejected stale application
+must leave configuration unchanged and create no repair snippet. It is not an
+interactive keyboard, production workstation or reboot test.
+
 ## Standalone extraction checks
 
 Confirm the Go package graph contains the sway-session command and exactly the

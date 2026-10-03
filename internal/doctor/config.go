@@ -1,7 +1,6 @@
 package doctor
 
 import (
-	"bufio"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -54,17 +53,12 @@ type integrationOccurrence struct {
 }
 
 type swayConfigAnalysis struct {
-	root              string
-	live              bool
-	occurrences       map[integrationKind][]integrationOccurrence
-	occurrenceCounts  map[integrationKind]int
-	matchingCounts    map[integrationKind]int
-	uncertain         map[integrationKind][]configUncertainty
-	uncertaintyCounts map[integrationKind]int
-	includes          map[string]struct{}
-	files             int
-	unsupported       error
-	observed          []configFingerprint
+	root string
+	live bool
+	swayConfigEvidence
+	includes map[string]struct{}
+	files    int
+	observed []configFingerprint
 }
 
 type configUncertainty struct {
@@ -151,7 +145,10 @@ func inspectSwayConfig(ctx context.Context, options Options) []Check {
 				}
 				check.Evidence = append(check.Evidence, evidence)
 			}
-			if omitted := analysis.uncertaintyCounts[kind] - len(limitations); omitted > 0 {
+			if analysis.uncertaintySaturated[kind] {
+				check.Evidence = append(check.Evidence,
+					fmt.Sprintf("%s: additional limitations omitted after the diagnostic deduplication limit", integrationLabel(kind)))
+			} else if omitted := analysis.uncertaintyCounts[kind] - len(limitations); omitted > 0 {
 				check.Evidence = append(check.Evidence,
 					fmt.Sprintf("%s: %d additional limitations omitted", integrationLabel(kind), omitted))
 			}
@@ -224,23 +221,18 @@ func analyzeSwayConfigWithEdits(ctx context.Context, options Options, edits []fi
 		return swayConfigAnalysis{}, fmt.Errorf("resolve Sway configuration: %w", err)
 	}
 	analysis := swayConfigAnalysis{
-		root:              selection.path,
-		live:              selection.live,
-		occurrences:       make(map[integrationKind][]integrationOccurrence),
-		occurrenceCounts:  make(map[integrationKind]int),
-		matchingCounts:    make(map[integrationKind]int),
-		uncertain:         make(map[integrationKind][]configUncertainty),
-		uncertaintyCounts: make(map[integrationKind]int),
-		includes:          make(map[string]struct{}),
+		root:               selection.path,
+		live:               selection.live,
+		swayConfigEvidence: newSwayConfigEvidence(),
+		includes:           make(map[string]struct{}),
 	}
-	variables := defaultSwayVariables()
 	scanner := swayStaticScanner{
-		ctx:       ctx,
-		analysis:  &analysis,
-		variables: variables,
-		active:    make(map[string]bool),
-		visited:   make(map[string]bool),
-		overrides: make(map[string][]byte),
+		ctx:        ctx,
+		analysis:   &analysis,
+		classifier: newSwayConfigClassifier(defaultSwayVariables()),
+		active:     make(map[string]bool),
+		visited:    make(map[string]bool),
+		overrides:  make(map[string][]byte),
 	}
 	for _, edit := range edits {
 		scanner.overrides[edit.path] = edit.newContent
@@ -255,305 +247,14 @@ func analyzeSwayConfigWithEdits(ctx context.Context, options Options, edits []fi
 }
 
 type swayStaticScanner struct {
-	ctx       context.Context
-	analysis  *swayConfigAnalysis
-	variables map[string]string
-	active    map[string]bool
-	visited   map[string]bool
-	overrides map[string][]byte
-	total     int64
-	exhausted bool
-}
-
-type swayLogicalLine struct {
-	text  string
-	start int
-}
-
-type swayBlockKind uint8
-
-const (
-	swayBlockOpaque swayBlockKind = iota
-	swayBlockMode
-	swayBlockBinding
-	swayBlockForWindow
-)
-
-type swayModeScope uint8
-
-const (
-	swayModeOther swayModeScope = iota
-	swayModeDefault
-	swayModeUnknown
-)
-
-type swayBlock struct {
-	kind          swayBlockKind
-	mode          swayModeScope
-	bindingPrefix []string
-}
-
-func forEachSwayLogicalLine(content []byte, visit func(swayLogicalLine) bool) error {
-	physical := bufio.NewScanner(strings.NewReader(string(content)))
-	physical.Buffer(make([]byte, 4096), maxSwayConfigLine)
-	var logical strings.Builder
-	var pending *swayLogicalLine
-	start := 0
-	line := 0
-	continued := false
-	emit := func(item swayLogicalLine) bool {
-		trimmed := strings.TrimSpace(item.text)
-		if pending != nil {
-			if trimmed == "" {
-				return true
-			}
-			if trimmed == "{" {
-				pending.text += " {"
-				ready := *pending
-				pending = nil
-				return visit(ready)
-			}
-			ready := *pending
-			pending = nil
-			if !visit(ready) {
-				return false
-			}
-		}
-		if trimmed == "" || strings.HasPrefix(trimmed, "#") || strings.HasSuffix(trimmed, "{") || strings.HasSuffix(trimmed, "}") {
-			return visit(item)
-		}
-		copy := item
-		pending = &copy
-		return true
-	}
-	for physical.Scan() {
-		line++
-		part := physical.Text()
-		if start == 0 {
-			start = line
-		}
-		isContinuation := strings.HasSuffix(part, "\\") && (len(part) == 0 || part[0] != '#')
-		if isContinuation {
-			part = strings.TrimSuffix(part, "\\")
-		}
-		if logical.Len()+len(part) > maxSwayConfigLine {
-			return fmt.Errorf("continued line starting at %d exceeds the supported length", start)
-		}
-		logical.WriteString(part)
-		continued = isContinuation
-		if continued {
-			continue
-		}
-		if !emit(swayLogicalLine{text: logical.String(), start: start}) {
-			return nil
-		}
-		logical.Reset()
-		start = 0
-	}
-	if err := physical.Err(); err != nil {
-		return errors.New("a physical line exceeds the supported length")
-	}
-	if continued {
-		return fmt.Errorf("continued line starting at %d has no following line", start)
-	}
-	if pending != nil {
-		visit(*pending)
-	}
-	return nil
-}
-
-func terminalSwayBrace(line string) byte {
-	var quote byte
-	escaped := false
-	tokenActive := false
-	var tokenBrace byte
-	var lastBrace byte
-	finishToken := func() {
-		if tokenActive {
-			lastBrace = tokenBrace
-		}
-		tokenActive = false
-		tokenBrace = 0
-	}
-	for index := 0; index < len(line); index++ {
-		character := line[index]
-		if escaped {
-			if !tokenActive {
-				tokenActive = true
-			} else {
-				tokenBrace = 0
-			}
-			escaped = false
-			continue
-		}
-		if character == '\\' && quote != '\'' {
-			escaped = true
-			continue
-		}
-		if quote != 0 {
-			if character == quote {
-				quote = 0
-			} else {
-				tokenActive = true
-				tokenBrace = 0
-			}
-			continue
-		}
-		switch character {
-		case '\'', '"':
-			quote = character
-			tokenActive = true
-			tokenBrace = 0
-		case '#':
-			finishToken()
-			return lastBrace
-		case ' ', '\t', '\r':
-			finishToken()
-		default:
-			if tokenActive {
-				tokenBrace = 0
-			} else {
-				tokenActive = true
-				if character == '{' || character == '}' {
-					tokenBrace = character
-				}
-			}
-		}
-	}
-	finishToken()
-	return lastBrace
-}
-
-func (scanner *swayStaticScanner) classifyBlock(header []string, blocks []swayBlock, location configLocation) swayBlock {
-	if len(blocks) != 0 {
-		if blocks[len(blocks)-1].kind == swayBlockMode {
-			scanner.markShortcutUncertain(location, "nested syntax in a mode block requires manual shortcut review")
-		}
-		return swayBlock{kind: swayBlockOpaque}
-	}
-	if len(header) == 0 {
-		scanner.markUncertainAll(location, "a block without a command requires manual review")
-		return swayBlock{kind: swayBlockOpaque}
-	}
-	command := strings.ToLower(header[0])
-	if strings.ContainsRune(command, '$') {
-		scanner.markUncertainAll(location, "a variable-derived block command requires manual review")
-		return swayBlock{kind: swayBlockOpaque}
-	}
-	switch command {
-	case "mode":
-		return swayBlock{kind: swayBlockMode, mode: scanner.classifyModeBlock(header, location)}
-	case "output", "input", "bar":
-		return swayBlock{kind: swayBlockOpaque}
-	case "for_window":
-		return swayBlock{kind: swayBlockForWindow}
-	case "bindsym":
-		return swayBlock{kind: swayBlockBinding, bindingPrefix: append([]string(nil), header[1:]...)}
-	case "bindcode", "unbindsym", "unbindcode":
-		scanner.markShortcutUncertain(location, "a compound shortcut block requires manual review")
-	case "exec", "exec_always":
-		scanner.markStartupUncertain(location, "a compound startup block requires manual review")
-	default:
-		scanner.markUncertainAll(location, "an unsupported block command requires manual review")
-	}
-	return swayBlock{kind: swayBlockOpaque}
-}
-
-func (scanner *swayStaticScanner) classifyModeBlock(header []string, location configLocation) swayModeScope {
-	index := 1
-	if index < len(header) && strings.EqualFold(header[index], "--pango_markup") {
-		index++
-	}
-	if index != len(header)-1 {
-		scanner.markShortcutUncertain(location, "the binding mode name could not be resolved")
-		return swayModeUnknown
-	}
-	if strings.ContainsRune(header[index], '$') {
-		scanner.markShortcutUncertain(location, "a variable-derived binding mode name requires manual shortcut review")
-		return swayModeUnknown
-	}
-	name, err := expandSwayInclude(header[index], scanner.variables)
-	if err != nil {
-		scanner.markShortcutUncertain(location, "the binding mode name could not be resolved: "+err.Error())
-		return swayModeUnknown
-	}
-	if name == "default" {
-		return swayModeDefault
-	}
-	return swayModeOther
-}
-
-func (scanner *swayStaticScanner) recordSet(tokens []string, location configLocation) {
-	if len(tokens) < 3 || !strings.HasPrefix(tokens[1], "$") || !validSwayVariable(tokens[1]) {
-		return
-	}
-	value := strings.Join(tokens[2:], " ")
-	if tokens[1] == "$mod" {
-		if previous := scanner.variables["$mod"]; previous != "" && previous != value {
-			scanner.markShortcutUncertain(location, "changing $mod definitions require manual shortcut review")
-		}
-	}
-	scanner.variables[tokens[1]] = value
-}
-
-func (scanner *swayStaticScanner) markPotentialBindingUncertain(tokens []string, location configLocation) {
-	if len(tokens) == 0 {
-		return
-	}
-	command := strings.ToLower(tokens[0])
-	if strings.ContainsRune(command, '$') {
-		scanner.markShortcutUncertain(location, "a variable-derived command in an unresolved mode requires manual shortcut review")
-		return
-	}
-	switch command {
-	case "bindcode", "unbindcode", "unbindsym":
-		scanner.markShortcutUncertain(location, "a shortcut in an unresolved binding mode requires manual review")
-	case "bindsym":
-		copyTokens := append([]string(nil), tokens...)
-		copyTokens[0] = command
-		_, relevant, _, err := classifyBinding(copyTokens, scanner.variables)
-		if err != nil || relevant {
-			scanner.markShortcutUncertain(location, "a shortcut in an unresolved binding mode requires manual review")
-		}
-	}
-}
-
-func (scanner *swayStaticScanner) markUncertain(kinds []integrationKind, location configLocation, reason string) {
-	if scanner.analysis.unsupported == nil {
-		scanner.analysis.unsupported = errors.New(reason)
-	}
-	for _, kind := range kinds {
-		scanner.analysis.uncertaintyCounts[kind]++
-		if len(scanner.analysis.uncertain[kind]) < maxSwayEvidenceItems {
-			scanner.analysis.uncertain[kind] = append(scanner.analysis.uncertain[kind], configUncertainty{
-				where: location, reason: reason,
-			})
-		}
-	}
-}
-
-func (scanner *swayStaticScanner) recordOccurrence(kind integrationKind, correct bool, location configLocation) {
-	scanner.analysis.occurrenceCounts[kind]++
-	if correct {
-		scanner.analysis.matchingCounts[kind]++
-	}
-	if len(scanner.analysis.occurrences[kind]) < maxSwayEvidenceItems {
-		scanner.analysis.occurrences[kind] = append(scanner.analysis.occurrences[kind], integrationOccurrence{
-			kind: kind, correct: correct, where: location,
-		})
-	}
-}
-
-func (scanner *swayStaticScanner) markUncertainAll(location configLocation, reason string) {
-	scanner.markUncertain(integrationOrder, location, reason)
-}
-
-func (scanner *swayStaticScanner) markStartupUncertain(location configLocation, reason string) {
-	scanner.markUncertain([]integrationKind{integrationDaemon, integrationRestore}, location, reason)
-}
-
-func (scanner *swayStaticScanner) markShortcutUncertain(location configLocation, reason string) {
-	scanner.markUncertain([]integrationKind{integrationPersistent, integrationEphemeral}, location, reason)
+	ctx        context.Context
+	analysis   *swayConfigAnalysis
+	classifier *swayConfigClassifier
+	active     map[string]bool
+	visited    map[string]bool
+	overrides  map[string][]byte
+	total      int64
+	exhausted  bool
 }
 
 func (scanner *swayStaticScanner) scan(path string, depth int) error {
@@ -564,17 +265,17 @@ func (scanner *swayStaticScanner) scan(path string, depth int) error {
 		return nil
 	}
 	if depth > maxSwayIncludeDepth {
-		scanner.markUncertainAll(configLocation{path: path},
+		scanner.analysis.markUncertainAll(configLocation{path: path},
 			fmt.Sprintf("include nesting exceeds the supported depth of %d", maxSwayIncludeDepth))
 		return nil
 	}
 	clean, err := cleanAbsolutePath(path)
 	if err != nil {
-		scanner.markUncertainAll(configLocation{path: path}, fmt.Sprintf("unsafe include path %q: %v", path, err))
+		scanner.analysis.markUncertainAll(configLocation{path: path}, fmt.Sprintf("unsafe include path %q: %v", path, err))
 		return nil
 	}
 	if scanner.active[clean] {
-		scanner.markUncertainAll(configLocation{path: clean}, fmt.Sprintf("include cycle detected at %s", clean))
+		scanner.analysis.markUncertainAll(configLocation{path: clean}, fmt.Sprintf("include cycle detected at %s", clean))
 		return nil
 	}
 	if scanner.visited[clean] {
@@ -582,7 +283,7 @@ func (scanner *swayStaticScanner) scan(path string, depth int) error {
 	}
 	if scanner.analysis.files >= maxSwayConfigFiles {
 		scanner.exhausted = true
-		scanner.markUncertainAll(configLocation{path: clean},
+		scanner.analysis.markUncertainAll(configLocation{path: clean},
 			fmt.Sprintf("include graph exceeds the supported limit of %d files", maxSwayConfigFiles))
 		return nil
 	}
@@ -593,7 +294,7 @@ func (scanner *swayStaticScanner) scan(path string, depth int) error {
 		content, state, err = readSafeConfigFile(clean)
 		if err != nil {
 			if depth > 0 {
-				scanner.markUncertainAll(configLocation{path: clean},
+				scanner.analysis.markUncertainAll(configLocation{path: clean},
 					fmt.Sprintf("included Sway configuration %s could not be inspected safely", clean))
 				return nil
 			}
@@ -604,7 +305,7 @@ func (scanner *swayStaticScanner) scan(path string, depth int) error {
 	scanner.total += int64(len(content))
 	if scanner.total > maxSwayConfigTotal {
 		scanner.exhausted = true
-		scanner.markUncertainAll(configLocation{path: clean}, "include graph exceeds the supported byte limit")
+		scanner.analysis.markUncertainAll(configLocation{path: clean}, "include graph exceeds the supported byte limit")
 		return nil
 	}
 	scanner.analysis.files++
@@ -612,157 +313,34 @@ func (scanner *swayStaticScanner) scan(path string, depth int) error {
 	scanner.active[clean] = true
 	defer delete(scanner.active, clean)
 
-	blocks := make([]swayBlock, 0, 4)
-	blockDepthExhausted := false
+	parser := scanner.classifier.source(clean)
 	var traversalErr error
 	err = forEachSwayLogicalLine(content, func(logical swayLogicalLine) bool {
-		if err := scanner.ctx.Err(); err != nil {
+		if scanner.ctx.Err() != nil {
 			return false
 		}
-		tokens, unsupported, err := tokenizeSwayLine(logical.text)
-		if err != nil {
-			scanner.markUncertainAll(configLocation{path: clean, line: logical.start},
-				fmt.Sprintf("cannot safely parse %s:%d: %v", clean, logical.start, err))
-			return true
-		}
-		if unsupported {
-			scanner.markUncertainAll(configLocation{path: clean, line: logical.start},
-				fmt.Sprintf("unsupported syntax at %s:%d", clean, logical.start))
-			return true
-		}
-		if len(tokens) == 0 {
-			return true
-		}
-		location := configLocation{path: clean, line: logical.start}
-		if blockDepthExhausted {
-			return true
-		}
-		brace := terminalSwayBrace(logical.text)
-		if brace == '}' {
-			if len(blocks) == 0 {
-				scanner.markUncertainAll(location, fmt.Sprintf("unmatched closing block at %s:%d", clean, logical.start))
-			} else {
-				if len(tokens) > 1 && blocks[len(blocks)-1].kind == swayBlockMode {
-					scanner.markUncertainAll(location, "a command combined with a mode block closing brace requires manual review")
-				}
-				blocks = blocks[:len(blocks)-1]
-			}
-			return true
-		}
-		if brace == '{' {
-			if len(blocks) >= maxSwayBlockDepth {
-				scanner.markUncertainAll(location,
-					fmt.Sprintf("block nesting exceeds the supported depth of %d", maxSwayBlockDepth))
-				blockDepthExhausted = true
-				return true
-			}
-			blocks = append(blocks, scanner.classifyBlock(tokens[:len(tokens)-1], blocks, location))
-			return true
-		}
-
-		if len(blocks) != 0 {
-			block := blocks[len(blocks)-1]
-			switch block.kind {
-			case swayBlockBinding:
-				combined := append([]string{"bindsym"}, block.bindingPrefix...)
-				combined = append(combined, tokens...)
-				scanner.recordIntegration(combined, location)
-				return true
-			case swayBlockForWindow:
-				if strings.ContainsRune(tokens[0], '$') {
-					expanded, err := expandSwayInclude(strings.Join(tokens, " "), scanner.variables)
-					if err != nil {
-						scanner.markStartupUncertain(location, "an unresolved variable-derived command in a for_window block requires manual startup review")
-						return true
-					}
-					command, unsupported, err := tokenizeSwayLine(expanded)
-					if err != nil || unsupported || len(command) == 0 {
-						scanner.markStartupUncertain(location, "a variable-derived command in a for_window block requires manual startup review")
-						return true
-					}
-					if (strings.EqualFold(command[0], "exec") || strings.EqualFold(command[0], "exec_always")) && execReferencesSwaySession(command[1:], scanner.variables) {
-						scanner.markStartupUncertain(location, "a conditional sway-session startup in a for_window block requires manual review")
-					}
-					return true
-				}
-				if (strings.EqualFold(tokens[0], "exec") || strings.EqualFold(tokens[0], "exec_always")) && execReferencesSwaySession(tokens[1:], scanner.variables) {
-					scanner.markStartupUncertain(location, "a conditional sway-session startup in a for_window block requires manual review")
-				}
-				return true
-			case swayBlockMode:
-				if strings.ContainsRune(tokens[0], '$') {
-					scanner.markUncertainAll(location, "a variable-derived command in a mode block requires manual review")
-					return true
-				}
-				if strings.EqualFold(tokens[0], "set") {
-					if len(tokens) < 3 || !strings.HasPrefix(tokens[1], "$") || !validSwayVariable(tokens[1]) {
-						scanner.markUncertainAll(location, "an unsupported variable assignment in a mode block requires manual review")
-						return true
-					}
-					scanner.recordSet(tokens, location)
-					return true
-				}
-				switch block.mode {
-				case swayModeDefault:
-					scanner.recordDefaultModeIntegration(tokens, location)
-				case swayModeUnknown:
-					scanner.markPotentialBindingUncertain(tokens, location)
-				}
-			}
-			if block.kind != swayBlockMode {
-				return true
-			}
-			return true
-		}
-
-		if strings.ContainsRune(tokens[0], '$') {
-			scanner.markUncertainAll(location,
-				fmt.Sprintf("variable-derived command at %s:%d requires manual review", clean, logical.start))
-			return true
-		}
-		// Sway command keywords are case-insensitive. Executable paths and their
-		// arguments remain case-sensitive and must not be normalized.
-		tokens[0] = strings.ToLower(tokens[0])
-		scanner.recordIntegration(tokens, location)
-		switch tokens[0] {
-		case "set":
-			scanner.recordSet(tokens, location)
-		case "include":
-			if err := scanner.followIncludes(clean, logical.start, tokens[1:], depth); err != nil {
-				traversalErr = err
+		facts := parser.line(logical)
+		scanner.analysis.record(facts)
+		if len(facts.includes) != 0 {
+			traversalErr = scanner.followIncludes(clean, logical.start, facts.includes, depth)
+			if traversalErr != nil {
 				return false
 			}
 		}
 		return true
 	})
 	if err != nil {
-		scanner.markUncertainAll(configLocation{path: clean}, fmt.Sprintf("cannot safely parse %s: %v", clean, err))
+		scanner.analysis.markUncertainAll(configLocation{path: clean}, "cannot safely parse configuration: "+err.Error())
 	}
 	if traversalErr != nil {
 		return traversalErr
 	}
-	if contextErr := scanner.ctx.Err(); contextErr != nil {
-		return contextErr
+	if err := scanner.ctx.Err(); err != nil {
+		return err
 	}
-	if len(blocks) != 0 {
-		scanner.markUncertainAll(configLocation{path: clean}, fmt.Sprintf("unterminated block in %s", clean))
-	}
-	return nil
-}
+	scanner.analysis.record(parser.finish())
 
-func (scanner *swayStaticScanner) recordDefaultModeIntegration(tokens []string, location configLocation) {
-	if len(tokens) == 0 {
-		return
-	}
-	command := strings.ToLower(tokens[0])
-	if strings.ContainsRune(command, '$') {
-		scanner.markShortcutUncertain(location, "a variable-derived default-mode command requires manual shortcut review")
-		return
-	}
-	switch command {
-	case "bindsym", "bindcode", "unbindsym", "unbindcode":
-		scanner.recordIntegration(tokens, location)
-	}
+	return nil
 }
 
 func (scanner *swayStaticScanner) followIncludes(parent string, line int, patterns []string, depth int) error {
@@ -771,22 +349,17 @@ func (scanner *swayStaticScanner) followIncludes(parent string, line int, patter
 	}
 	location := configLocation{path: parent, line: line}
 	if len(patterns) == 0 {
-		scanner.markUncertainAll(location, fmt.Sprintf("include at %s:%d has no path", parent, line))
+		scanner.analysis.markUncertainAll(location, fmt.Sprintf("include at %s:%d has no path", parent, line))
 		return nil
 	}
 	for _, pattern := range patterns {
-		expanded, err := expandSwayInclude(pattern, scanner.variables)
-		if err != nil {
-			scanner.markUncertainAll(location,
-				fmt.Sprintf("cannot safely expand include at %s:%d: %v", parent, line, err))
-			continue
-		}
+		expanded := pattern
 		if !filepath.IsAbs(expanded) {
 			expanded = filepath.Join(filepath.Dir(parent), expanded)
 		}
 		matches, err := filepath.Glob(expanded)
 		if err != nil {
-			scanner.markUncertainAll(location, fmt.Sprintf("invalid include glob at %s:%d", parent, line))
+			scanner.analysis.markUncertainAll(location, fmt.Sprintf("invalid include glob at %s:%d", parent, line))
 			continue
 		}
 		for path := range scanner.overrides {
@@ -807,13 +380,13 @@ func (scanner *swayStaticScanner) followIncludes(parent string, line int, patter
 			if strings.ContainsAny(expanded, "*?[") {
 				continue
 			}
-			scanner.markUncertainAll(location,
+			scanner.analysis.markUncertainAll(location,
 				fmt.Sprintf("include at %s:%d does not match an existing file", parent, line))
 			continue
 		}
 		if len(matches)+scanner.analysis.files > maxSwayConfigFiles {
 			scanner.exhausted = true
-			scanner.markUncertainAll(location,
+			scanner.analysis.markUncertainAll(location,
 				fmt.Sprintf("include graph exceeds the supported limit of %d files", maxSwayConfigFiles))
 			return nil
 		}
@@ -828,343 +401,6 @@ func (scanner *swayStaticScanner) followIncludes(parent string, line int, patter
 	return nil
 }
 
-func (scanner *swayStaticScanner) recordIntegration(tokens []string, location configLocation) {
-	if len(tokens) == 0 {
-		return
-	}
-	tokens = append([]string(nil), tokens...)
-	tokens[0] = strings.ToLower(tokens[0])
-	if tokens[0] == "mode" {
-		scanner.markShortcutUncertain(location, "binding mode selection requires manual shortcut review")
-		return
-	}
-	if tokens[0] == "bindcode" || tokens[0] == "unbindcode" || tokens[0] == "unbindsym" {
-		scanner.markShortcutUncertain(location, "keycode or unbinding syntax requires manual shortcut review")
-		return
-	}
-	if (tokens[0] == "exec" || tokens[0] == "exec_always") && execReferencesSwaySession(tokens[1:], scanner.variables) {
-		for _, token := range tokens[1:] {
-			if strings.ContainsAny(token, "$`") {
-				scanner.markStartupUncertain(location,
-					fmt.Sprintf("variable or shell-derived sway-session startup at %s:%d requires manual review", location.path, location.line))
-				return
-			}
-		}
-	}
-	if kind, relevant, correct := classifyStartup(tokens); relevant {
-		scanner.recordOccurrence(kind, correct, location)
-	} else if (tokens[0] == "exec" || tokens[0] == "exec_always") && execReferencesSwaySession(tokens[1:], scanner.variables) {
-		scanner.markStartupUncertain(location,
-			fmt.Sprintf("indirect sway-session startup at %s:%d requires manual review", location.path, location.line))
-		return
-	}
-	kind, relevant, correct, err := classifyBinding(tokens, scanner.variables)
-	if err != nil {
-		scanner.markShortcutUncertain(location,
-			fmt.Sprintf("cannot safely resolve shortcut at %s:%d: %v", location.path, location.line, err))
-		return
-	}
-	if relevant {
-		scanner.recordOccurrence(kind, correct, location)
-	}
-}
-
-func classifyStartup(tokens []string) (integrationKind, bool, bool) {
-	if len(tokens) < 2 || (tokens[0] != "exec" && tokens[0] != "exec_always") {
-		return 0, false, false
-	}
-	command := skipExecOptions(tokens[1:])
-	if len(command) < 2 || filepath.Base(command[0]) != "sway-session" {
-		return 0, false, false
-	}
-	var kind integrationKind
-	switch command[1] {
-	case "daemon":
-		kind = integrationDaemon
-	case "restore":
-		kind = integrationRestore
-	default:
-		return 0, false, false
-	}
-	return kind, true, tokens[0] == "exec" && len(command) == 2
-}
-
-func classifyBinding(tokens []string, variables map[string]string) (integrationKind, bool, bool, error) {
-	if len(tokens) < 3 || tokens[0] != "bindsym" {
-		return 0, false, false, nil
-	}
-	index := 1
-	ordinaryOptions := true
-	for index < len(tokens) && strings.HasPrefix(tokens[index], "--") {
-		switch tokens[index] {
-		case "--no-warn", "--inhibited":
-		case "--release", "--locked", "--no-repeat", "--whole-window", "--border", "--exclude-titlebar", "--to-code":
-			ordinaryOptions = false
-		default:
-			if !strings.HasPrefix(tokens[index], "--input-device=") {
-				return 0, false, false, errors.New("unknown binding option requires manual review")
-			}
-			ordinaryOptions = false
-		}
-		index++
-	}
-	if index >= len(tokens) {
-		return 0, false, false, nil
-	}
-	key, err := expandSwayInclude(tokens[index], variables)
-	if err != nil {
-		return 0, false, false, err
-	}
-	mod, ok := modifierMask(variables["$mod"])
-	if !ok || mod&1 != 0 {
-		return 0, false, false, errors.New("a known $mod definition without Shift is required to verify the default shortcuts")
-	}
-	parts := strings.Split(key, "+")
-	keyMask := uint16(0)
-	returnKey := false
-	unknownPart := false
-	for _, part := range parts {
-		if strings.EqualFold(part, "Return") {
-			returnKey = true
-			continue
-		}
-		mask, ok := modifierMask(part)
-		if !ok {
-			unknownPart = true
-			continue
-		}
-		keyMask |= mask
-	}
-	if !returnKey {
-		return 0, false, false, nil
-	}
-	if unknownPart {
-		return 0, false, false, errors.New("unsupported Return shortcut requires manual review")
-	}
-	var kind integrationKind
-	switch keyMask {
-	case mod:
-		kind = integrationPersistent
-	case mod | 1:
-		kind = integrationEphemeral
-	default:
-		return 0, false, false, nil
-	}
-	command := tokens[index+1:]
-	if !ordinaryOptions {
-		return kind, true, false, nil
-	}
-	if len(command) == 0 || !strings.EqualFold(command[0], "exec") {
-		return kind, true, false, nil
-	}
-	command = skipExecOptions(command[1:])
-	if len(command) != 3 || filepath.Base(command[0]) != "sway-session" || command[1] != "terminal" {
-		return kind, true, false, nil
-	}
-	if kind == integrationPersistent {
-		return kind, true, command[2] == "--new", nil
-	}
-	return kind, true, command[2] == "--ephemeral", nil
-}
-
-func execReferencesSwaySession(tokens []string, variables map[string]string) bool {
-	command := skipExecOptions(tokens)
-	if len(command) == 0 {
-		return false
-	}
-	executable, err := expandSwayInclude(command[0], variables)
-	if err == nil && filepath.Base(executable) == "sway-session" {
-		return true
-	}
-	if err == nil && commandTokenStartsSwaySession(executable, variables) {
-		return true
-	}
-	if err != nil && strings.HasPrefix(command[0], "$") {
-		return true
-	}
-	if err == nil && filepath.Base(executable) == "env" {
-		return wrappedCommandReferencesSwaySession(command[1:], variables)
-	}
-	if err == nil {
-		switch filepath.Base(executable) {
-		case "sh", "bash", "zsh", "fish":
-			return shellCommandReferencesSwaySession(command[1:], variables)
-		}
-	}
-	if strings.HasPrefix(command[0], "--") {
-		return wrappedCommandReferencesSwaySession(command[1:], variables)
-	}
-	return false
-}
-
-func commandTokenStartsSwaySession(value string, variables map[string]string) bool {
-	return shellPayloadReferencesSwaySession(value, variables)
-}
-
-func wrappedCommandReferencesSwaySession(tokens []string, variables map[string]string) bool {
-	return wrappedCommandReferencesSwaySessionDepth(tokens, variables, 0)
-}
-
-const maxEnvSplitStringDepth = 4
-
-func wrappedCommandReferencesSwaySessionDepth(tokens []string, variables map[string]string, depth int) bool {
-	if depth > maxEnvSplitStringDepth {
-		return true
-	}
-	for index := 0; index < len(tokens); index++ {
-		token := tokens[index]
-		expanded, err := expandSwayInclude(token, variables)
-		if err != nil {
-			return strings.HasPrefix(token, "$")
-		}
-		if strings.HasPrefix(expanded, "-") {
-			switch expanded {
-			case "-i", "--ignore-environment", "-0", "--null", "--":
-				continue
-			case "-S", "--split-string":
-				if index+1 >= len(tokens) {
-					return true
-				}
-				return splitStringCommandReferencesSwaySession(tokens[index+1], tokens[index+2:], variables, depth+1)
-			case "-u", "-C", "-a", "--unset", "--chdir", "--argv0":
-				if index+1 >= len(tokens) {
-					return true
-				}
-				index++
-				continue
-			default:
-				if strings.HasPrefix(expanded, "--split-string=") {
-					return splitStringCommandReferencesSwaySession(strings.TrimPrefix(expanded, "--split-string="), tokens[index+1:], variables, depth+1)
-				}
-				if strings.HasPrefix(expanded, "-S") && len(expanded) > len("-S") {
-					return splitStringCommandReferencesSwaySession(strings.TrimPrefix(expanded, "-S"), tokens[index+1:], variables, depth+1)
-				}
-				if strings.Contains(expanded, "=") || (len(expanded) > 2 && expanded[0] == '-' && expanded[1] != '-') {
-					continue
-				}
-				// Unknown option shapes may consume the next token. Preserve repair
-				// safety rather than guessing where the wrapped executable begins.
-				return true
-			}
-		}
-		if shellAssignment(expanded) {
-			continue
-		}
-		if filepath.Base(expanded) == "sway-session" {
-			return true
-		}
-		switch filepath.Base(expanded) {
-		case "env":
-			return wrappedCommandReferencesSwaySessionDepth(tokens[index+1:], variables, depth+1)
-		case "sh", "bash", "zsh", "fish":
-			return shellCommandReferencesSwaySession(tokens[index+1:], variables)
-		}
-		return false
-	}
-	return false
-}
-
-func splitStringCommandReferencesSwaySession(split string, remaining []string, variables map[string]string, depth int) bool {
-	expanded, err := expandSwayInclude(split, variables)
-	if err != nil {
-		return true
-	}
-	command, unsupported, err := tokenizeSwayLine(expanded)
-	if err != nil || unsupported || len(command) == 0 {
-		return true
-	}
-	command = append(command, remaining...)
-	return wrappedCommandReferencesSwaySessionDepth(command, variables, depth)
-}
-
-func shellCommandReferencesSwaySession(tokens []string, variables map[string]string) bool {
-	for _, token := range tokens {
-		if strings.HasPrefix(token, "-") {
-			continue
-		}
-		expanded, err := expandSwayInclude(token, variables)
-		if err != nil {
-			return true
-		}
-		if shellPayloadReferencesSwaySession(expanded, variables) {
-			return true
-		}
-	}
-	return false
-}
-
-// shellPayloadReferencesSwaySession identifies only executable positions in a
-// shell payload. Sway's exec command delegates to a shell, so an executable
-// after a command separator is relevant, while an ordinary argument such as
-// "notify-send sway-session" is not.
-func shellPayloadReferencesSwaySession(payload string, variables map[string]string) bool {
-	segments := strings.FieldsFunc(payload, func(character rune) bool {
-		return strings.ContainsRune(";|&()<>", character)
-	})
-	for _, segment := range segments {
-		fields := strings.Fields(segment)
-		for len(fields) != 0 && shellAssignment(fields[0]) {
-			fields = fields[1:]
-		}
-		for len(fields) != 0 && (fields[0] == "exec" || fields[0] == "command") {
-			fields = fields[1:]
-			for len(fields) != 0 && strings.HasPrefix(fields[0], "-") {
-				fields = fields[1:]
-			}
-		}
-		if len(fields) != 0 && filepath.Base(fields[0]) == "env" {
-			if wrappedCommandReferencesSwaySession(fields[1:], variables) {
-				return true
-			}
-			continue
-		}
-		if len(fields) != 0 && filepath.Base(fields[0]) == "sway-session" {
-			return true
-		}
-	}
-	return false
-}
-
-func shellAssignment(token string) bool {
-	name, _, found := strings.Cut(token, "=")
-	if !found || name == "" {
-		return false
-	}
-	for index, character := range name {
-		if !(character == '_' || character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || (index != 0 && character >= '0' && character <= '9')) {
-			return false
-		}
-	}
-	return true
-}
-
-func modifierMask(value string) (uint16, bool) {
-	var mask uint16
-	for _, part := range strings.Split(value, "+") {
-		switch strings.ToLower(part) {
-		case "shift":
-			mask |= 1
-		case "lock":
-			mask |= 2
-		case "control", "ctrl":
-			mask |= 4
-		case "mod1":
-			mask |= 8
-		case "mod2":
-			mask |= 16
-		case "mod3":
-			mask |= 32
-		case "mod4":
-			mask |= 64
-		case "mod5":
-			mask |= 128
-		default:
-			return 0, false
-		}
-	}
-	return mask, mask != 0
-}
-
 func containsPath(paths []string, path string) bool {
 	for _, candidate := range paths {
 		if candidate == path {
@@ -1172,28 +408,6 @@ func containsPath(paths []string, path string) bool {
 		}
 	}
 	return false
-}
-
-func skipExecOptions(tokens []string) []string {
-	if len(tokens) > 0 && tokens[0] == "--no-startup-id" {
-		tokens = tokens[1:]
-	}
-	return tokens
-}
-
-func integrationLabel(kind integrationKind) string {
-	switch kind {
-	case integrationDaemon:
-		return "one-time daemon startup"
-	case integrationRestore:
-		return "one-time restore startup"
-	case integrationPersistent:
-		return "default persistent-terminal shortcut"
-	case integrationEphemeral:
-		return "default ephemeral-terminal shortcut"
-	default:
-		return "unknown integration"
-	}
 }
 
 func defaultSwayVariables() map[string]string {
@@ -1205,126 +419,6 @@ func defaultSwayVariables() map[string]string {
 		variables["$XDG_CONFIG_HOME"] = filepath.Clean(config)
 	}
 	return variables
-}
-
-func validSwayVariable(variable string) bool {
-	if len(variable) < 2 || variable[0] != '$' {
-		return false
-	}
-	for _, character := range variable[1:] {
-		if (character < 'a' || character > 'z') && (character < 'A' || character > 'Z') &&
-			(character < '0' || character > '9') && character != '_' {
-			return false
-		}
-	}
-	return true
-}
-
-func expandSwayInclude(value string, variables map[string]string) (string, error) {
-	if strings.Contains(value, "`") || strings.Contains(value, "$(") || strings.Contains(value, "${") {
-		return "", errors.New("command or braced expansion is unsupported")
-	}
-	var expanded strings.Builder
-	for index := 0; index < len(value); {
-		if value[index] != '$' {
-			expanded.WriteByte(value[index])
-			index++
-			continue
-		}
-		end := index + 1
-		for end < len(value) && ((value[end] >= 'a' && value[end] <= 'z') ||
-			(value[end] >= 'A' && value[end] <= 'Z') || (value[end] >= '0' && value[end] <= '9') || value[end] == '_') {
-			end++
-		}
-		if end == index+1 {
-			return "", errors.New("unsupported variable reference")
-		}
-		variable := value[index:end]
-		replacement, ok := variables[variable]
-		if !ok {
-			return "", fmt.Errorf("unknown variable %s", variable)
-		}
-		expanded.WriteString(replacement)
-		index = end
-	}
-	result := expanded.String()
-	if result == "~" || strings.HasPrefix(result, "~/") {
-		home, ok := variables["$HOME"]
-		if !ok {
-			return "", errors.New("home directory is unavailable")
-		}
-		if result == "~" {
-			result = home
-		} else {
-			result = filepath.Join(home, strings.TrimPrefix(result, "~/"))
-		}
-	} else if strings.HasPrefix(result, "~") {
-		return "", errors.New("named-user home expansion is unsupported")
-	}
-	if strings.ContainsAny(result, "$`") {
-		return "", errors.New("nested variable or command expansion requires manual review")
-	}
-	if strings.ContainsRune(result, '\x00') || strings.ContainsAny(result, "\r\n") {
-		return "", errors.New("include path contains control characters")
-	}
-	return result, nil
-}
-
-func tokenizeSwayLine(line string) ([]string, bool, error) {
-	var tokens []string
-	var token strings.Builder
-	quote := byte(0)
-	escaped := false
-	haveToken := false
-	for index := 0; index < len(line); index++ {
-		character := line[index]
-		if escaped {
-			token.WriteByte(character)
-			haveToken = true
-			escaped = false
-			continue
-		}
-		if character == '\\' && quote != '\'' {
-			escaped = true
-			haveToken = true
-			continue
-		}
-		if quote != 0 {
-			if character == quote {
-				quote = 0
-			} else {
-				token.WriteByte(character)
-			}
-			haveToken = true
-			continue
-		}
-		switch character {
-		case '\'', '"':
-			quote = character
-			haveToken = true
-		case '#':
-			index = len(line)
-		case ' ', '\t', '\r':
-			if haveToken {
-				tokens = append(tokens, token.String())
-				token.Reset()
-				haveToken = false
-			}
-		default:
-			token.WriteByte(character)
-			haveToken = true
-		}
-	}
-	if escaped {
-		return nil, true, nil
-	}
-	if quote != 0 {
-		return nil, false, errors.New("unterminated quoted string")
-	}
-	if haveToken {
-		tokens = append(tokens, token.String())
-	}
-	return tokens, false, nil
 }
 
 type safeFileState struct {

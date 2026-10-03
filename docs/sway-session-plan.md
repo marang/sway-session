@@ -640,5 +640,10 @@ Sway 1.12 already exposes client tags. Duplicate/mutable tag semantics and
 unproven durable application adoption keep generic per-window restore gated;
 application-level restore remains the fallback.
 
+The [privileged desktop restore evaluation](https://github.com/marang/sway-session/blob/main/docs/research/privileged-desktop-restore-gate.md)
+documents the current administrative-launcher rejection boundary and the
+consent, identity and upstream mechanism requirements for a future design.
+It does not enable privileged restore or automatic authentication at login.
+
 Active sequencing and acceptance criteria live in Linear; this document owns
 the durable architecture and compatibility decisions.

@@ -532,6 +532,33 @@ func TestSessionRuntimeEarlyMappingObservationRejectsUnsafeIdentity(t *testing.T
 	}
 }
 
+func TestSessionRuntimeEarlyMappingObservationRejectsApplicationParentMark(t *testing.T) {
+	runtime, _, _, item, now := testApplicationRuntime(t)
+	leaf := applicationLaunchWindow(item, 41)
+	mark, err := item.ID.Mark()
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent := &Node{ID: 42, Type: "con", Layout: "splith", Marks: []string{mark}, Nodes: []*Node{leaf}}
+	tree := daemonTree("98: apps", parent)
+	groups, err := sessionstate.ObserveApplicationGroups(tree, runtime.registry)
+	if err != nil || groups[item.ID].Ambiguous || groups[item.ID].Anchor == nil || groups[item.ID].AnchorMarked {
+		t.Fatalf("fixture must expose one unmarked application anchor: %+v err=%v", groups[item.ID], err)
+	}
+	_, issues, err := sessionstate.ObserveManagedWindowsIsolated(tree, runtime.registry)
+	if err != nil || len(issues) != 1 || issues[0].ContextID != item.ID {
+		t.Fatalf("fixture must reject the context mark on its layout parent: %+v err=%v", issues, err)
+	}
+	runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "new", Container: leaf}, now)
+	if err := runtime.observeRestoreMappingFocus(tree, runtime.registry); err != nil {
+		t.Fatal(err)
+	}
+	runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "focus", Container: leaf}, now)
+	if !runtime.restoreCancelled {
+		t.Fatal("application-only observation hid a malformed managed identity")
+	}
+}
+
 func TestSessionRuntimeMappingFocusStillHonorsIndependentUserIntent(t *testing.T) {
 	for _, name := range []string{"binding-before-map", "binding-after-adoption", "expired-focus", "expired-adoption", "unknown-window", "reopened-context"} {
 		t.Run(name, func(t *testing.T) {

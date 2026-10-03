@@ -110,10 +110,12 @@ scenario; its actual result must be recorded per candidate. The existing opt-in
 [guest reboot procedure](https://github.com/marang/sway-session/blob/03e9cfdf47fa40965eb73b391285ec80eb66feb1/docs/follow-application-vm-check.md) records guest boot IDs,
 pre-daemon eligible state, healthy-close controls and real inhibitor evidence.
 A private compositor, forced reset or simulated logind event does not satisfy
-that evidence class. Uncovered saga behavior remains scoped to LAB-116;
-per-compositor adopted-app startup opportunities across daemon restart remain
-the focused LAB-211 follow-up. This test issue does not change production
-behavior or claim those outstanding fixes are delivered.
+that evidence class. Later delivery closed the durable saga and adoption/restart
+gaps in LAB-116 and LAB-211; the scenario table above names their executable
+coverage. The
+[desktop acceptance closeout](https://github.com/marang/sway-session/blob/main/docs/desktop-application-acceptance.md)
+separates that evidence from real Chrome/Slack and full guest-reboot acceptance.
+The original LAB-134 delivery did not itself implement those later fixes.
 
 ## Doctor checks
 

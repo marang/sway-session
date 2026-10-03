@@ -511,7 +511,7 @@ Focus a normal top-level window and register it explicitly:
 ~~~sh
 sway-session app register-focused
 sway-session --json app list
-sway-session app status CONTEXT
+sway-session app status
 sway-session app pin CONTEXT
 sway-session app unpin CONTEXT
 sway-session app archive CONTEXT

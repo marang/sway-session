@@ -643,8 +643,10 @@ Codebase → Sway Session label:
 
 - LAB-89: stronger sandboxing for broker-created agent sessions.
 - LAB-93: stable native Wayland per-window identity.
-- LAB-94 and LAB-95: remaining bounded session roadmap slices.
-- LAB-116: current post-SQLite session follow-up.
+- LAB-94: explicit privileged desktop restore design.
+- LAB-250: complete desktop inventory lifecycle explanations.
+- LAB-252: investigate bounded restore-report CI contention.
+- LAB-253: remaining real Chrome/Slack lifecycle and guest reboot acceptance.
 
 The [native window-tag audit](https://github.com/marang/sway-session/blob/main/docs/research/xdg-toplevel-tag-audit.md) records that
 Sway 1.12 already exposes client tags. Duplicate/mutable tag semantics and

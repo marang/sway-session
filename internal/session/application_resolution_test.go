@@ -59,6 +59,40 @@ func TestResolveFocusedApplicationNeverGuessesAmbiguousEntry(t *testing.T) {
 	}
 }
 
+func TestResolveFocusedFlatpakRequiresObservedSandboxIdentity(t *testing.T) {
+	const appID = "org.example.Flat"
+	const desktopID = appID + ".desktop"
+	catalog := buildDesktopCatalog(map[string]DesktopEntry{
+		desktopID: {
+			ID: desktopID, StartupWMClass: appID,
+			FlatpakID: appID, FlatpakInstallation: FlatpakUser,
+		},
+	}, nil)
+	for _, test := range []struct {
+		name string
+		node *swayipc.TreeNode
+		want int
+	}{
+		{"wayland without sandbox identity", appWindow(11, true, appID, "", "", ""), 0},
+		{"xwayland without sandbox identity", appWindow(11, true, "", appID, appID, ""), 0},
+		{"wrong sandbox identity", appWindow(11, true, appID, "", "", "org.example.Other"), 0},
+		{"observed sandbox identity", appWindow(11, true, appID, "", "", appID), 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			result, err := ResolveFocusedApplication(applicationTree(test.node), catalog, Registry{Version: ContextsSchemaVersion, Contexts: []Context{}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Registered != nil || len(result.Candidates) != test.want {
+				t.Fatalf("Flatpak resolution must use observed sandbox identity: %+v", result)
+			}
+			if test.want == 1 && result.Candidates[0].ID != desktopID {
+				t.Fatalf("wrong Flatpak candidate: %+v", result.Candidates)
+			}
+		})
+	}
+}
+
 func TestResolveFocusedApplicationLeavesNoMatchUnregistered(t *testing.T) {
 	result, err := ResolveFocusedApplication(
 		applicationTree(appWindow(11, true, "org.example.Unknown", "", "", "")),

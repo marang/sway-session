@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	sessionstate "github.com/marang/sway-session/internal/session"
+	"github.com/marang/sway-session/internal/statefile"
 	"github.com/marang/sway-session/internal/swayipc"
 )
 
@@ -361,6 +363,76 @@ func TestSessionRuntimeNewMappingFocusKeepsStartupAlive(t *testing.T) {
 	}
 }
 
+func TestSessionRuntimeMappingFocusSurvivesConcurrentCLIRestoreLock(t *testing.T) {
+	for _, binding := range []bool{false, true} {
+		t.Run(fmt.Sprintf("binding_%t", binding), func(t *testing.T) {
+			runtime, c, leaf, now := newMappingFocusScenario(t)
+			coordinator, err := sessionstate.NewApplicationRestoreCoordinator(strings.Repeat("a", 64), sessionstate.ApplicationSessionState{}, now, sessionstate.ApplicationRestoreOptions{
+				AdoptionGrace: time.Second, CloseGrace: time.Second, LaunchTimeout: time.Second, MaxConcurrent: 1,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			runtime.applications = coordinator
+			runtime.applicationPersistedState = coordinator.State()
+			entered, release := make(chan struct{}), make(chan struct{})
+			locked := make(chan error, 1)
+			go func() {
+				locked <- sessionstate.WithRegistryLockContext(t.Context(), runtime.root, func(*statefile.LockedPrivateDirectory) error {
+					close(entered)
+					<-release
+					return nil
+				})
+			}()
+			<-entered
+			unlocked := false
+			t.Cleanup(func() {
+				if !unlocked {
+					close(release)
+					<-locked
+				}
+			})
+			runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "new", Container: leaf}, now)
+			before := len(c.commands)
+			if refresh, err := runtime.Reconcile(c.root, now); err == nil || refresh {
+				t.Fatalf("application pass must wait for the CLI registry lock: refresh=%t err=%v", refresh, err)
+			}
+			if len(c.commands) != before || len(runtime.restoreEligible) != 0 {
+				t.Fatal("focus observation bypassed lifecycle effect locking")
+			}
+			if binding {
+				runtime.HandleEvent(swayipc.Event{Type: swayipc.EventBinding}, now)
+			}
+			runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "title", Container: leaf}, now)
+			runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "focus", Container: leaf}, now)
+			if runtime.restoreCancelled != binding {
+				t.Fatalf("automatic mapping focus cancelled restore while its identity was already observable: cancelled=%t binding=%t", runtime.restoreCancelled, binding)
+			}
+			close(release)
+			if err := <-locked; err != nil {
+				t.Fatal(err)
+			}
+			unlocked = true
+			if _, err := runtime.Reconcile(c.root, now); err != nil {
+				t.Fatal(err)
+			}
+			if _, adopted := runtime.restoreEligible[testManagedContextID]; !adopted || len(leaf.Marks) == 0 || runtime.restoreCancelled != binding {
+				t.Fatal("normal adoption did not resume with the original cancellation policy")
+			}
+			if err := runtime.Flush(now.Add(sessionSnapshotDebounce)); err != nil {
+				t.Fatal(err)
+			}
+			var saved sessionstate.LayoutSnapshot
+			if err := sessionstate.LayoutStoreFor(runtime.root).LoadInto(&saved); err != nil {
+				t.Fatal(err)
+			}
+			if len(saved.Workspaces) != 1 || saved.Workspaces[0].Tiling.Layout != sessionstate.LayoutTabbed {
+				t.Fatalf("lost original tabbed target while the other terminal is still missing: %+v", saved)
+			}
+		})
+	}
+}
+
 func TestSessionRuntimeMappingObservedBeforeItsQueuedNewEvent(t *testing.T) {
 	runtime, c, first, now := newMappingFocusScenario(t)
 	second := managedDaemonLeaf(t, 42, "6ba7b810-9dad-11d1-80b4-00c04fd430c8")
@@ -393,6 +465,70 @@ func TestSessionRuntimeMappingObservedBeforeItsQueuedNewEvent(t *testing.T) {
 	runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "focus", Container: second}, now)
 	if !runtime.restoreCancelled {
 		t.Fatal("duplicate mapping focus hid user activity")
+	}
+}
+
+func TestSessionRuntimeMappingFocusBeyondPlacementBatch(t *testing.T) {
+	runtime, c, leaf, now := newMappingFocusScenario(t)
+	registry := runtime.registry
+	for index := range 260 {
+		id := sessionstate.ContextID(fmt.Sprintf("00000000-0000-4000-8000-%012d", index))
+		item := sessionRegistry(id).Contexts[0]
+		item.Launcher.Session = fmt.Sprintf("batch-session-%d", index)
+		registry.Contexts = append(registry.Contexts, item)
+		node := managedDaemonLeaf(t, int64(1000+index), id)
+		node.Marks = nil
+		c.root.Nodes[0].Nodes[0].Nodes = append(c.root.Nodes[0].Nodes[0].Nodes, node)
+	}
+	actions, err := sessionstate.PlanPlacementActions(c.root, registry, runtime.desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.ContainsFunc(actions, func(action sessionstate.PlacementAction) bool { return action.ContainerID == leaf.ID }) {
+		t.Fatal("fixture did not place the saved mapping beyond the bounded command batch")
+	}
+	runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "new", Container: leaf}, now)
+	if err := runtime.observeRestoreMappingFocus(c.root, registry); err != nil {
+		t.Fatal(err)
+	}
+	runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "focus", Container: leaf}, now)
+	if runtime.restoreCancelled || len(runtime.restoreEligible) != 0 || len(c.commands) != 0 {
+		t.Fatal("full-tree identity observation lost a mapping beyond the command batch or performed effects")
+	}
+}
+
+func TestSessionRuntimeEarlyMappingObservationRejectsUnsafeIdentity(t *testing.T) {
+	for _, name := range []string{"archived", "ambiguous", "marked", "reopened", "unsaved"} {
+		t.Run(name, func(t *testing.T) {
+			runtime, c, leaf, now := newMappingFocusScenario(t)
+			registry := runtime.registry
+			switch name {
+			case "archived":
+				registry.Contexts[0].State = sessionstate.ContextArchived
+			case "ambiguous":
+				duplicate := *leaf
+				duplicate.ID++
+				c.root.Nodes[0].Nodes[0].Nodes = append(c.root.Nodes[0].Nodes[0].Nodes, &duplicate)
+			case "marked":
+				mark, err := testManagedContextID.Mark()
+				if err != nil {
+					t.Fatal(err)
+				}
+				leaf.Marks = []string{mark}
+			case "reopened":
+				runtime.restoreEligible[testManagedContextID] = struct{}{}
+			case "unsaved":
+				runtime.desired = exactDaemonSnapshot("98", registry.Contexts[1].ID)
+			}
+			runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "new", Container: leaf}, now)
+			if err := runtime.observeRestoreMappingFocus(c.root, registry); err != nil {
+				t.Fatal(err)
+			}
+			runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "focus", Container: leaf}, now)
+			if !runtime.restoreCancelled {
+				t.Fatal("early identity observation authorized unsafe mapping focus")
+			}
+		})
 	}
 }
 

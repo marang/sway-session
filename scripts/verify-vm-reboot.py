@@ -177,18 +177,19 @@ class Guest:
         self.ssh(f'cat > {target}', input=Path(local).read_bytes(), timeout=90)
 
     def close(self):
-        if self.process is not None and self.process.poll() is None:
-            try:
-                qmp(self.root / 'qmp.sock', 'quit')
-                self.process.wait(timeout=10)
-            except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired):
-                self.process.terminate()
+        with defer_start_signals():
+            if self.process is not None and self.process.poll() is None:
                 try:
+                    qmp(self.root / 'qmp.sock', 'quit')
                     self.process.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    self.process.kill(); self.process.wait(timeout=10)
-        if self.log is not None:
-            self.log.close()
+                except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired):
+                    self.process.terminate()
+                    try:
+                        self.process.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        self.process.kill(); self.process.wait(timeout=10)
+            if self.log is not None:
+                self.log.close()
 
 
 def request_reboot(guest, previous_boot, index):

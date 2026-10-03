@@ -33,9 +33,51 @@ type restoreMappingCandidate struct {
 	attributed bool
 }
 
+// Identity observation must precede effect locks: login's one-shot restore
+// can hold the registry lock while its terminals map. Waiting for application
+// reconciliation or mark dispatch would misclassify their queued map focus.
+// This grants only the exact new window's bounded focus allowance; it neither
+// makes a context restore-eligible nor bypasses any lifecycle effect guard.
+func (runtime *sessionRuntime) observeRestoreMappingFocus(root *Node, registry sessionstate.Registry) error {
+	if runtime.restoreCancelled || len(runtime.desired.Workspaces) == 0 {
+		return nil
+	}
+	windows, _, err := sessionstate.ObserveManagedWindowsIsolated(root, registry)
+	if err != nil {
+		return err
+	}
+	groups, err := sessionstate.ObserveApplicationGroups(root, registry)
+	if err != nil {
+		return err
+	}
+	for _, item := range registry.Contexts {
+		if !sessionstate.EvaluateRestorePolicy(item).Eligible {
+			continue
+		}
+		if item.App != nil {
+			group := groups[item.ID]
+			if !group.Ambiguous && group.Anchor != nil && !group.AnchorMarked {
+				runtime.attributeMappingFocus(group.Anchor.ContainerID, item.ID)
+			}
+			continue
+		}
+		if window, exists := windows[item.ID]; exists {
+			node := findContainerByID(root, window.ContainerID)
+			mark, err := item.ID.Mark()
+			if err != nil {
+				return err
+			}
+			if node != nil && !slices.Contains(node.Marks, mark) {
+				runtime.attributeMappingFocus(window.ContainerID, item.ID)
+			}
+		}
+	}
+	return nil
+}
+
 // A newly mapped window can emit focus before commands issued by the ensuing
 // reconciliation. Reserve an ordering boundary at window::new, but authorize
-// no focus until placement identifies an active saved restore candidate.
+// no focus until a fresh tree identifies an active saved restore candidate.
 func (runtime *sessionRuntime) observeMappingFocus(node *Node) {
 	if node == nil || node.ID <= 0 || runtime.restoreCancelled || len(runtime.desired.Workspaces) == 0 {
 		return

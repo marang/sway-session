@@ -6,6 +6,7 @@ import io
 import json
 import os
 import signal
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -167,6 +168,61 @@ class RunnerCleanupTests(unittest.TestCase):
             runner.main()
             self.assertFalse(root.exists())
             self.assertIn((runner.FIXTURE / 'transport.py', '/opt/sway-session-test/transport.py'), uploads)
+
+    def test_sigterm_at_qmp_shutdown_reaps_owned_child_before_removing_root(self):
+        failure = RuntimeError('synthetic baseline failure')
+        children, log_closed = [], []
+
+        class Log:
+            def close(self):
+                log_closed.append(True)
+
+        def start_owned_child(guest):
+            # An ordinary child stands in for QEMU; no VM is started.
+            guest.process = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'],
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                start_new_session=True)
+            children.append(guest.process)
+            guest.log = Log()
+
+        def qmp_shutdown(path, request):
+            if request == 'query-kvm':
+                return {'enabled': True}
+            self.assertEqual(request, 'quit')
+            os.kill(os.getpid(), signal.SIGTERM)
+            raise OSError('synthetic QMP shutdown unavailable')
+
+        with self.fixture(failure=failure) as (root, output, _, _):
+            original_rmtree = runner.shutil.rmtree
+
+            def remove_after_reaping(path, *args, **kwargs):
+                if Path(path) == root:
+                    self.assertIsNotNone(children[0].returncode, 'owned child is alive during root removal')
+                    with self.assertRaises(ChildProcessError):
+                        os.waitpid(children[0].pid, os.WNOHANG)
+                    self.assertEqual(log_closed, [True], 'log closure was interrupted')
+                return original_rmtree(path, *args, **kwargs)
+
+            try:
+                with patch.object(runner.Guest, 'start', start_owned_child), \
+                     patch.object(runner, 'qmp', qmp_shutdown), \
+                     patch.object(runner.shutil, 'rmtree', remove_after_reaping), \
+                     self.assertRaises(RuntimeError) as raised:
+                    runner.main()
+                self.assertIs(raised.exception, failure)
+                self.assertIsNotNone(children[0].returncode, 'SIGTERM bypassed owned-child shutdown')
+                with self.assertRaises(ProcessLookupError):
+                    os.kill(children[0].pid, 0)
+                self.assertFalse(root.exists())
+                cleanup = json.loads((output / 'cleanup.json').read_text())
+                self.assertEqual(cleanup['failure'], str(failure))
+                self.assertEqual(cleanup['cleanup_errors'], [{'operation': 'close guest',
+                    'error': 'runner interrupted; cleaning owned VM'}])
+            finally:
+                for child in children:
+                    if child.poll() is None:
+                        child.kill()
+                    child.wait(timeout=3)
 
 
 if __name__ == '__main__':

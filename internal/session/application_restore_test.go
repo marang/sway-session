@@ -141,7 +141,7 @@ func TestObserveApplicationGroupsIsolatesMarkedIdentityDriftAsAmbiguousPresence(
 	}
 }
 
-func TestObserveApplicationGroupsCountsScratchpadAsPresenceWithoutRestoringIt(t *testing.T) {
+func TestObserveApplicationGroupsAdoptsUniqueScratchpadAnchor(t *testing.T) {
 	context := applicationContextWithID(testContextID, "org.example.App")
 	appID := context.App.Identity.WaylandAppID
 	sandbox := context.App.Identity.SandboxAppID
@@ -154,8 +154,8 @@ func TestObserveApplicationGroupsCountsScratchpadAsPresenceWithoutRestoringIt(t 
 		t.Fatal(err)
 	}
 	group := groups[context.ID]
-	if len(group.Windows) != 1 || group.Anchor != nil || !group.Ambiguous {
-		t.Fatalf("scratchpad presence became restorable placement: %+v", group)
+	if len(group.Windows) != 1 || group.Anchor == nil || group.Ambiguous || !group.Anchor.Scratchpad {
+		t.Fatalf("unique scratchpad presence was not adopted: %+v", group)
 	}
 }
 
@@ -262,6 +262,87 @@ func TestPlanApplicationPlacementMarksOnlyOneUniqueAnchor(t *testing.T) {
 	}
 	if len(actions) != 0 {
 		t.Fatalf("ambiguous application windows were guessed between: %+v", actions)
+	}
+}
+
+func TestPlanApplicationPlacementRestoresNormalWorkspaceFromScratchpad(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		visible   bool
+		workspace string
+	}{
+		{name: "hidden", workspace: "99"},
+		{name: "shown elsewhere", visible: true, workspace: "99"},
+		{name: "shown on target", visible: true, workspace: "98"},
+	} {
+		for _, marked := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/marked=%v", test.name, marked), func(t *testing.T) {
+				root, registry := scratchpadApplicationTree(t, test.visible, marked)
+				desired := placementSnapshot(test.workspace, testContextID)
+				groups, err := ObserveApplicationGroups(root, registry)
+				if err != nil {
+					t.Fatal(err)
+				}
+				actions, err := PlanApplicationPlacementActions(groups, desired)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if marked {
+					if len(actions) != 0 {
+						t.Fatalf("marked scratchpad anchor was moved: %+v", actions)
+					}
+					return
+				}
+				workspace := root.Nodes[0].Nodes[0]
+				assertPhase := func(kind PlacementActionKind, target string) {
+					t.Helper()
+					groups, err := ObserveApplicationGroups(root, registry)
+					if err != nil {
+						t.Fatal(err)
+					}
+					want := []PlacementAction{{Kind: kind, ContextID: testContextID, ContainerID: 41, Workspace: target}}
+					actions, err := PlanApplicationPlacementActions(groups, desired)
+					if err != nil || !reflect.DeepEqual(actions, want) {
+						t.Fatalf("placement phase: got %+v, %v; want %+v", actions, err, want)
+					}
+					// An unchanged observation after rejection or an unknown outcome
+					// must replay this phase, even after the batch cursor advances.
+					for range 2 {
+						retry, err := PlanApplicationPlacementActionsAfter(groups, desired, &actions[0])
+						if err != nil || !reflect.DeepEqual(retry, want) {
+							t.Fatalf("unconfirmed phase was skipped: %+v, %v", retry, err)
+						}
+						actions = retry
+					}
+				}
+				if test.visible && workspace.Name != test.workspace {
+					assertPhase(PlacementMoveScratchpad, "")
+					workspace.Name = "__i3_scratch"
+				}
+				if workspace.Name == "__i3_scratch" {
+					assertPhase(PlacementShowScratchpad, test.workspace)
+					workspace.Name = test.workspace
+				}
+				assertPhase(PlacementLeaveScratchpad, test.workspace)
+				// Being on the target workspace does not prove normal membership:
+				// a fresh observation which still says scratchpad must retry leave.
+				workspace.FloatingNodes[0].ScratchpadState = "changed"
+				assertPhase(PlacementLeaveScratchpad, test.workspace)
+				// Only a subsequent observation with cleared membership can mark.
+				workspace.Name = test.workspace
+				workspace.FloatingNodes[0].ScratchpadState = "none"
+				assertPhase(PlacementAddMark, "")
+				mark, _ := testContextID.Mark()
+				workspace.FloatingNodes[0].Nodes[0].Marks = []string{mark}
+				groups, err = ObserveApplicationGroups(root, registry)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if actions, err = PlanApplicationPlacementActions(groups, desired); err != nil || len(actions) != 0 {
+					t.Fatalf("adopted normal anchor did not converge: %+v, %v", actions, err)
+				}
+			})
+		}
 	}
 }
 

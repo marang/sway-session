@@ -106,7 +106,7 @@ function __sway_session_marker_value_open
             set bool_options --new --ephemeral
         case register
             set value_options --session --cwd --label --provider --id
-        case restore daemon broker
+        case restore status daemon broker
             set value_options --socket
             test "$command[1]" = restore
             and set bool_options --require-active --preview
@@ -200,7 +200,7 @@ function __sway_session_command_options
             printf '%s\n' --session --cwd --label --provider --id
         case restore
             printf '%s\n' --socket --require-active --preview
-        case daemon broker
+        case status daemon broker
             printf '%s\n' --socket
         case doctor
             printf '%s\n' --fix --socket --sway-config
@@ -631,7 +631,7 @@ complete -c sway-session -n '__sway_session_global_options_open; and not __sway_
 complete -c sway-session -n '__sway_session_global_options_open' -s h -d 'Show help'
 complete -c sway-session -n '__sway_session_global_options_open' -l help -d 'Show help'
 complete -c sway-session -n '__sway_session_global_options_open' -l config -r -F
-complete -c sway-session -n '__sway_session_no_command' -a 'register restore restore-report list archive activate purge app daemon broker request-start report-agent-session completion terminal doctor state version'
+complete -c sway-session -n '__sway_session_no_command' -a 'register restore restore-report list status archive activate purge app daemon broker request-start report-agent-session completion terminal doctor state version'
 complete -c sway-session -n '__sway_session_no_command' -l version -d 'Show build version and commit'
 complete -c sway-session -n '__sway_session_marker_value_open' -a '(__sway_session_command_options)'
 
@@ -655,6 +655,7 @@ complete -c sway-session -n '__sway_session_top_context_pending restore' -a '(__
 complete -c sway-session -n '__sway_session_top_context_pending purge' -a '(__sway_session_contexts purge)'
 complete -c sway-session -n '__sway_session_top_context_pending purge; and __sway_session_options_open' -l yes -d 'Confirm non-interactively'
 
+complete -c sway-session -n '__sway_session_is_command status; and __sway_session_options_open' -l socket -r -F -d 'Observe live application placement through this Sway IPC socket'
 complete -c sway-session -n '__sway_session_is_command daemon; and __sway_session_options_open' -l socket -r -F
 complete -c sway-session -n '__sway_session_is_command broker; and __sway_session_options_open' -l socket -r -F
 complete -c sway-session -n '__sway_session_is_command request-start; and __sway_session_options_open' -l session -x

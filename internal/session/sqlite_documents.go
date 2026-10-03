@@ -775,15 +775,9 @@ func (store LayoutStore) LoadIntoContext(ctx context.Context, target *LayoutSnap
 		}
 		return fmt.Errorf("load layout: %w", err)
 	}
-	if encodingVersion != LayoutSchemaVersion {
-		return &UnsupportedVersionError{Document: "layout", Got: encodingVersion, Want: LayoutSchemaVersion}
-	}
-	var candidate LayoutSnapshot
-	if err := decodeDatabasePayload("layout", payload, &candidate); err != nil {
+	candidate, err := decodeStoredLayoutSnapshot("layout", encodingVersion, payload)
+	if err != nil {
 		return err
-	}
-	if err := candidate.Validate(); err != nil {
-		return fmt.Errorf("validate layout: %w", err)
 	}
 	*target = candidate
 	return nil

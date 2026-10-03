@@ -25,6 +25,11 @@ const restoreReportWriteTimeout = 250 * time.Millisecond
 // daemon and explicit CLI requests use the same workspace encoding.
 func restoreRequestedWork(snapshot sessionstate.LayoutSnapshot, id sessionstate.ContextID) sessionstate.RestoreWork {
 	work := sessionstate.RestoreWork{Window: true}
+	if placement, found := savedScratchpadPlacement(snapshot, id); found {
+		work.Placement = true
+		work.Scratchpad = &sessionstate.ScratchpadRestoreWork{Visible: placement.Visible, Workspace: placement.Workspace}
+		return work
+	}
 	name, found := snapshotContextWorkspace(snapshot, id)
 	if !found {
 		return work
@@ -302,6 +307,13 @@ func (runtime *sessionRuntime) observeRestoreReportWithUpdater(root *Node, regis
 				update.Reason = "window_mapped"
 			}
 			update.PlacementApplied = mapped && record.Requested.Placement && workspace == record.Requested.Workspace
+			if intent := record.Requested.Scratchpad; intent != nil {
+				group := groups[item.ID]
+				update.PlacementApplied = mapped && group.Anchor != nil && group.Anchor.Scratchpad &&
+					(intent.Visible && workspace == intent.Workspace || !intent.Visible && workspace == "__i3_scratch")
+			} else if item.App != nil && groups[item.ID].Anchor != nil && groups[item.ID].Anchor.Scratchpad {
+				update.PlacementApplied = false
+			}
 			if update.PlacementApplied {
 				update.Reason = "placement_applied"
 			}

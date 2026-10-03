@@ -15,6 +15,7 @@ import (
 type WindowApplication struct {
 	ContainerID  int64
 	Workspace    string
+	Scratchpad   bool
 	Identity     ApplicationIdentity
 	ContextMarks []ContextID
 }
@@ -133,9 +134,8 @@ func FocusedWorkspaceApplications(root *swayipc.TreeNode) ([]WindowApplication, 
 	return windows, nil
 }
 
-// ApplicationWindows returns every eligible normal top-level on a regular
-// workspace. Scratchpad windows remain outside the first desktop persistence
-// release.
+// ApplicationWindows returns eligible normal top-levels on regular workspaces.
+// ObserveApplicationGroups additionally includes hidden scratchpad membership.
 func ApplicationWindows(root *swayipc.TreeNode) ([]WindowApplication, error) {
 	windows := make([]WindowApplication, 0)
 	if err := walkApplicationWindows(root, "", func(window WindowApplication, _ bool) {
@@ -183,12 +183,18 @@ type applicationWindowWalkOptions struct {
 }
 
 func walkApplicationWindowsWithOptions(node *swayipc.TreeNode, workspace string, options applicationWindowWalkOptions, visit func(WindowApplication, bool)) error {
+	return walkApplicationWindowsWithPlacement(node, workspace, false, options, visit)
+}
+
+func walkApplicationWindowsWithPlacement(node *swayipc.TreeNode, workspace string, scratchpad bool, options applicationWindowWalkOptions, visit func(WindowApplication, bool)) error {
 	if node == nil {
 		return errors.New("sway tree contains a nil node")
 	}
 	if node.Type == "workspace" {
 		workspace = node.Name
+		scratchpad = workspace == "__i3_scratch"
 	}
+	scratchpad = scratchpad || node.ScratchpadState == "fresh" || node.ScratchpadState == "changed"
 	if len(node.Nodes) == 0 && len(node.FloatingNodes) == 0 {
 		identity, ok, err := compositorApplicationIdentity(node)
 		if err != nil {
@@ -199,16 +205,16 @@ func walkApplicationWindowsWithOptions(node *swayipc.TreeNode, workspace string,
 			if err != nil {
 				return fmt.Errorf("container %d: %w", node.ID, err)
 			}
-			visit(WindowApplication{ContainerID: node.ID, Workspace: workspace, Identity: identity, ContextMarks: marks}, node.Focused)
+			visit(WindowApplication{ContainerID: node.ID, Workspace: workspace, Scratchpad: scratchpad, Identity: identity, ContextMarks: marks}, node.Focused)
 		}
 	}
 	for _, child := range node.Nodes {
-		if err := walkApplicationWindowsWithOptions(child, workspace, options, visit); err != nil {
+		if err := walkApplicationWindowsWithPlacement(child, workspace, scratchpad, options, visit); err != nil {
 			return err
 		}
 	}
 	for _, child := range node.FloatingNodes {
-		if err := walkApplicationWindowsWithOptions(child, workspace, options, visit); err != nil {
+		if err := walkApplicationWindowsWithPlacement(child, workspace, scratchpad, options, visit); err != nil {
 			return err
 		}
 	}

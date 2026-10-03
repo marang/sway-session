@@ -286,11 +286,30 @@ func (runtime *sessionRuntime) preserveLifecycleCapture(candidate sessionstate.L
 	for name := range runtime.restoreSuspended {
 		blocked[name] = struct{}{}
 	}
-	if len(blocked) == 0 {
+	blockedScratchpad := false
+	for _, snapshot := range []sessionstate.LayoutSnapshot{runtime.persisted, candidate} {
+		for _, placement := range snapshot.Scratchpad {
+			if _, reserved := runtime.lifecycleBlocked[placement.ContextID]; reserved {
+				blockedScratchpad = true
+			}
+		}
+	}
+	if len(blocked) == 0 && !blockedScratchpad {
 		return candidate, true
 	}
 	result := candidate
-	result.Workspaces = append([]sessionstate.WorkspaceLayout(nil), candidate.Workspaces...)
+	result.Workspaces = slices.Clone(candidate.Workspaces)
+	result.Scratchpad = make([]sessionstate.ScratchpadPlacement, 0, len(candidate.Scratchpad))
+	for _, placement := range candidate.Scratchpad {
+		if _, reserved := runtime.lifecycleBlocked[placement.ContextID]; !reserved {
+			result.Scratchpad = append(result.Scratchpad, placement)
+		}
+	}
+	for _, placement := range runtime.persisted.Scratchpad {
+		if _, reserved := runtime.lifecycleBlocked[placement.ContextID]; reserved {
+			result.Scratchpad = append(result.Scratchpad, placement)
+		}
+	}
 	for _, previous := range runtime.persisted.Workspaces {
 		if _, keep := blocked[previous.Name]; !keep {
 			continue

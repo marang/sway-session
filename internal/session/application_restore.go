@@ -463,6 +463,14 @@ type ApplicationGroup struct {
 // candidate; multiple indistinguishable windows prove presence but are never
 // guessed between.
 func ObserveApplicationGroups(root *swayipc.TreeNode, registry Registry) (map[ContextID]ApplicationGroup, error) {
+	return observeApplicationGroups(root, registry, walkApplicationWindowsIncludingTransient)
+}
+
+func observeApplicationGroups(
+	root *swayipc.TreeNode,
+	registry Registry,
+	walk func(*swayipc.TreeNode, string, func(WindowApplication, bool)) error,
+) (map[ContextID]ApplicationGroup, error) {
 	if root == nil {
 		return nil, fmt.Errorf("sway tree is nil")
 	}
@@ -483,7 +491,7 @@ func ObserveApplicationGroups(root *swayipc.TreeNode, registry Registry) (map[Co
 	// The restore engine temporarily moves live windows to staging. They
 	// remain present for Follow policy and duplicate-launch prevention, while
 	// the placement planner leaves marked or non-placeable anchors untouched.
-	if err := walkApplicationWindowsIncludingTransient(root, "", func(window WindowApplication, _ bool) {
+	if err := walk(root, "", func(window WindowApplication, _ bool) {
 		if matchErr != nil {
 			return
 		}
@@ -536,7 +544,7 @@ func ObserveApplicationGroups(root *swayipc.TreeNode, registry Registry) (map[Co
 			group.Anchor = &anchor
 			group.AnchorMarked = true
 		case marked == -2:
-		case len(group.Windows) == 1 && len(group.Windows[0].ContextMarks) == 0 && validApplicationWorkspace(group.Windows[0].Workspace):
+		case len(group.Windows) == 1 && len(group.Windows[0].ContextMarks) == 0 && (validApplicationWorkspace(group.Windows[0].Workspace) || group.Windows[0].Scratchpad):
 			anchor := group.Windows[0]
 			group.Anchor = &anchor
 		default:
@@ -565,6 +573,10 @@ func PlanApplicationPlacementActionsAfter(
 		return nil, fmt.Errorf("validate desired layout: %w", err)
 	}
 	targets := placementTargets(desired)
+	scratchpad := make(map[ContextID]ScratchpadPlacement, len(desired.Scratchpad))
+	for _, placement := range desired.Scratchpad {
+		scratchpad[placement.ContextID] = placement
+	}
 	ids := make([]ContextID, 0, len(groups))
 	for id := range groups {
 		if err := id.Validate(); err != nil {
@@ -579,10 +591,34 @@ func PlanApplicationPlacementActionsAfter(
 		if group.Ambiguous || group.Anchor == nil || group.AnchorMarked {
 			continue
 		}
-		if group.Anchor.ContainerID <= 0 || !validApplicationWorkspace(group.Anchor.Workspace) {
+		if group.Anchor.ContainerID <= 0 || (!validApplicationWorkspace(group.Anchor.Workspace) && !group.Anchor.Scratchpad) {
 			return nil, fmt.Errorf("application context %q has an invalid anchor", id)
 		}
-		if target, exists := targets[id]; exists && target != group.Anchor.Workspace {
+		if placement, restoreScratchpad := scratchpad[id]; restoreScratchpad && (!group.Anchor.Scratchpad || !placement.Visible && group.Anchor.Workspace != "__i3_scratch" || placement.Visible && group.Anchor.Workspace != "__i3_scratch" && group.Anchor.Workspace != placement.Workspace) {
+			actions = append(actions, PlacementAction{Kind: PlacementMoveScratchpad, ContextID: id, ContainerID: group.Anchor.ContainerID})
+			// Visibility is applied from a fresh hidden observation, not by
+			// toggling a possibly already-visible window in the same batch.
+			continue
+		} else if restoreScratchpad && placement.Visible && group.Anchor.Workspace == "__i3_scratch" {
+			actions = append(actions, PlacementAction{Kind: PlacementShowScratchpad, ContextID: id, ContainerID: group.Anchor.ContainerID, Workspace: placement.Workspace})
+			continue
+		} else if target, exists := targets[id]; exists && group.Anchor.Scratchpad {
+			// A workspace move preserves Sway scratchpad membership (and can
+			// be a no-op on the same workspace). Show on the normal target
+			// before leaving membership through an absolute floating disable.
+			// Each phase needs a fresh observation before the anchor is marked.
+			action := PlacementAction{ContextID: id, ContainerID: group.Anchor.ContainerID, Workspace: target}
+			switch group.Anchor.Workspace {
+			case "__i3_scratch":
+				action.Kind = PlacementShowScratchpad
+			case target:
+				action.Kind = PlacementLeaveScratchpad
+			default:
+				action.Kind, action.Workspace = PlacementMoveScratchpad, ""
+			}
+			actions = append(actions, action)
+			continue
+		} else if target, exists := targets[id]; exists && target != group.Anchor.Workspace {
 			actions = append(actions, PlacementAction{
 				Kind: PlacementMoveWorkspace, ContextID: id, ContainerID: group.Anchor.ContainerID, Workspace: target,
 			})

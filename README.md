@@ -539,6 +539,40 @@ not guessed between for anchor placement. sway-session restores the optional
 outer anchor only; tabs, documents, profiles, URLs, and application-internal
 state remain application-owned.
 
+### Scratchpad applications
+
+After registering an application on a normal workspace, move its anchor to
+Sway's scratchpad as usual. The daemon stores scratchpad membership separately
+from normal workspace layouts, including whether the window is hidden or shown
+and its workspace when shown. At the next Sway start, a hidden window returns
+hidden; a shown window returns on its saved workspace while the current focus
+is restored. Already adopted windows remain under user control. Missing or
+ambiguous anchors retain safe intent without guessing or duplicating launches.
+Scratchpad cycling order is best-effort; application-owned additional windows
+and terminal pane layouts are not reconstructed by this feature.
+
+Use `sway-session status` or `sway-session --json status` for current application
+placement. An ambiguous group has no guessed scratchpad or visibility value.
+The layout document is version 2. Existing version-1 layouts and backups remain
+readable without a write; the next layout save uses version 2. Older binaries
+cannot read the new layout document, so use a compatible binary when recovering
+a new backup.
+
+For an optional count and live tooltip, add the native `sway/scratchpad` module
+to Waybar's module list and configure it, for example:
+
+```json
+"sway/scratchpad": {
+  "format": "scratchpad {count}",
+  "show-empty": true,
+  "tooltip": true,
+  "tooltip-format": "{app}"
+}
+```
+
+This uses [Waybar's native module](https://github.com/Alexays/Waybar/blob/master/man/waybar-sway-scratchpad.5.scd).
+Its tooltip reads live compositor metadata; the example omits window titles.
+
 The daemon emits versioned hidden marks for optional presentation clients:
 
 ~~~text

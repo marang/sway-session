@@ -244,8 +244,20 @@ resumability.
 The [backup and recovery instructions](../README.md#state-backup-and-recovery)
 describe the operating procedure and JSON summaries.
 
-SQLite schema 1 stores schema-5 contexts, layout schema 1, terminal
+SQLite schema 1 stores schema-5 contexts, layout schema 2, terminal
 creation/focus activity, compositor identity, and application launch attempts.
+Layout v2 stores application scratchpad placements separately from normal
+workspace trees, with visibility and the normal workspace of shown anchors.
+Valid v1 SQLite, legacy JSON, and backup layouts upgrade only in memory on read;
+the next layout save writes v2. Row and payload versions must agree, and v1
+documents cannot contain scratchpad fields. Database/context schemas and broker
+protocols are unchanged. Older binaries reject v2 layouts rather than treating
+scratchpad membership as a workspace or silently discarding it.
+Restore reports use optional typed scratchpad intent rather than a synthetic
+workspace name. Completion requires fresh membership and visibility proof,
+including the saved normal workspace for shown anchors. Live application
+placement is available through the read-only `status` command; ambiguous groups
+have unknown placement instead of a guessed anchor.
 Context rows may include optional `lifecycle: {reason, at}` metadata for the
 latest explicit archive, explicit activation, or confirmed terminal-close
 transition. This is a bounded explanation attached to authoritative state, not
@@ -630,7 +642,6 @@ The following existing issues belong to the Sway Session Linear project and
 Codebase → Sway Session label:
 
 - LAB-89: stronger sandboxing for broker-created agent sessions.
-- LAB-92: scratchpad persistence.
 - LAB-93: stable native Wayland per-window identity.
 - LAB-94 and LAB-95: remaining bounded session roadmap slices.
 - LAB-116: current post-SQLite session follow-up.

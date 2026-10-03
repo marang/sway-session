@@ -196,7 +196,11 @@ func loadLegacyRuntimeStateLocked(
 	if err != nil {
 		return state, fmt.Errorf("load legacy context registry: %w", err)
 	}
-	state.hasLayout, err = loadOptionalLegacyDocumentLocked(ctx, rootDirectory, legacyLayoutFilename, (*LayoutSnapshot).Validate, &state.layout)
+	var layout layoutDocument
+	state.hasLayout, err = loadOptionalLegacyDocumentLocked(ctx, rootDirectory, legacyLayoutFilename, nil, &layout)
+	if err == nil && state.hasLayout {
+		state.layout, err = migrateLayoutDocument("legacy "+legacyLayoutFilename, layout)
+	}
 	if err != nil {
 		return state, fmt.Errorf("load legacy layout: %w", err)
 	}

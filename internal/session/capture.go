@@ -60,7 +60,7 @@ func CaptureLayout(root *swayipc.TreeNode, registry Registry) (LayoutSnapshot, e
 		return LayoutSnapshot{}, fmt.Errorf("validate context registry: %w", err)
 	}
 	registered := activeContextIDs(registry)
-	groups, err := captureApplicationGroups(root, registry)
+	groups, err := ObserveApplicationGroupsForCapture(root, registry)
 	if err != nil {
 		return LayoutSnapshot{}, err
 	}
@@ -100,10 +100,11 @@ func CaptureLayout(root *swayipc.TreeNode, registry Registry) (LayoutSnapshot, e
 	return snapshot, nil
 }
 
-// Capture tolerates only incomplete XWayland identities which cannot belong to
-// a registered application. Registration and lifecycle observation stay strict;
-// the shared grouping logic still rejects registered ambiguity and mark errors.
-func captureApplicationGroups(root *swayipc.TreeNode, registry Registry) (map[ContextID]ApplicationGroup, error) {
+// ObserveApplicationGroupsForCapture supports read-only capture and mapping
+// attribution. It tolerates only incomplete XWayland identities which cannot
+// belong to a registered application. Registration, launch and lifecycle
+// observation stay strict; shared grouping rejects identity and mark errors.
+func ObserveApplicationGroupsForCapture(root *swayipc.TreeNode, registry Registry) (map[ContextID]ApplicationGroup, error) {
 	classes, instances := make(map[string]struct{}), make(map[string]struct{})
 	for _, context := range registry.Contexts {
 		if context.App != nil && context.App.Identity.Protocol == WindowXWayland {

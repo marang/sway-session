@@ -49,7 +49,7 @@ func (runtime *sessionRuntime) observeRestoreMappingFocus(root *Node, registry s
 	if err != nil {
 		return err
 	}
-	groups, err := sessionstate.ObserveApplicationGroups(root, registry)
+	groups, err := sessionstate.ObserveApplicationGroupsForCapture(root, registry)
 	if err != nil {
 		return err
 	}

@@ -348,7 +348,15 @@ test -z "$(_sway-session)" || exit 1
 function __sway_session_contexts; echo 'status completion read registry' >&2; exit 1; end
 complete -C 'sway-session sta'
 complete -C 'sway-session status --s'
-complete -C "sway-session status --socket --json $STATUS_FIXTURE/"
+for prefix in 'sway-session status --socket ' 'sway-session status --socket --json ' 'sway-session --config status status --socket --json '
+    set -l paths (complete -C "$prefix$STATUS_FIXTURE/")
+    string match -q '*file-completion*' -- $paths; or exit 1
+    printf '%s\n' $paths
+end
+for prefix in 'sway-session status ' 'sway-session status --socket /tmp/already-provided ' 'sway-session status --socket --json /tmp/already-provided ' 'sway-session status -- '
+    set -l unexpected (complete -C "$prefix$STATUS_FIXTURE/")
+    test (count $unexpected) -eq 0; or exit 1
+end
 set -l terminated (complete -C 'sway-session status -- ')
 test (count $terminated) -eq 0; or exit 1
 `

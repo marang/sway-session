@@ -523,6 +523,292 @@ func TestTerminalManagerRetainsContextAfterConcurrentPendingLaunchMayCreateManag
 	}
 }
 
+func TestTerminalManagerWaitsForTransientPendingAmbiguityAfterStart(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state", "sway-session")
+	client := &terminalManagerClient{id: testContextID}
+	starter := &terminalManagerStarter{}
+	manager := terminalTestManager(root, client, starter)
+	now := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
+	manager.Now = func() time.Time { return now }
+	manager.Sleep = func(delay time.Duration) { now = now.Add(delay) }
+	initializations := 0
+	manager.SessionManager = testTerminalSessionManager{
+		root: "/tmp/herdr-test", configFile: "/tmp/herdr-test/config.toml",
+		initialize: func(context.Context, Context, []string) (TerminalSessionInitialization, error) {
+			initializations++
+			return TerminalSessionInitialization{Manager: TerminalSessionManagerHerdr, Initialized: true}, nil
+		},
+	}
+	pending := [][]int{nil, {4321, 4322}, {4321, 4322}, {4321}}
+	observations := 0
+	manager.FindPending = func(_ string, spec ProcessSpec) ([]int, error) {
+		if observations > 0 {
+			if len(starter.specs) != 1 || !reflect.DeepEqual(spec, starter.specs[0]) {
+				t.Fatal("pending observation did not use the one accepted launch's full specification")
+			}
+			if client.focusCommands != 0 || initializations != 0 {
+				t.Fatal("pending ambiguity allowed focus or session initialization")
+			}
+		}
+		index := min(observations, len(pending)-1)
+		observations++
+		if index == 1 {
+			// A matching window becomes visible while two full-argv matches
+			// remain. It cannot authorize effects until a fresh scan resolves them.
+			client.setMapped(false)
+		}
+		return pending[index], nil
+	}
+
+	result, err := manager.Open(t.Context(), TerminalOpenRequest{
+		New: true, Adapter: TerminalAdapterAlacritty, Cwd: t.TempDir(), Focus: true,
+		Roles: []string{"codex", "shell"},
+	})
+	if err != nil {
+		t.Fatalf("transient pending observations rejected the accepted launch: %v", err)
+	}
+	if observations < len(pending) || len(starter.specs) != 1 || client.focusCommands != 1 || initializations != 1 {
+		t.Fatalf("open did not wait for unique pending identity: observations:%d starts:%d focus:%d initialization:%d", observations, len(starter.specs), client.focusCommands, initializations)
+	}
+	if result.Context.ID != testContextID || !reflect.DeepEqual(result.Actions, []TerminalOpenAction{
+		TerminalActionCreated, TerminalActionAttached, TerminalActionFocused,
+	}) || result.Initialization == nil || !result.Initialization.Initialized {
+		t.Fatalf("resolved launch did not complete normally: %+v", result)
+	}
+}
+
+func TestTerminalManagerRejectsPendingResolutionAtMappingDeadline(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		timeout  time.Duration
+		resolved []int
+		cancel   bool
+	}{
+		{name: "late_zero", timeout: 150 * time.Millisecond},
+		{name: "late_one", timeout: 150 * time.Millisecond, resolved: []int{4321}},
+		{name: "exact_deadline_zero", timeout: 200 * time.Millisecond},
+		{name: "exact_deadline_one", timeout: 200 * time.Millisecond, resolved: []int{4321}},
+		{name: "cancelled_zero", timeout: 200 * time.Millisecond, cancel: true},
+		{name: "cancelled_one", timeout: 200 * time.Millisecond, resolved: []int{4321}, cancel: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "state", "sway-session")
+			client := &terminalManagerClient{id: testContextID}
+			starter := &terminalManagerStarter{}
+			manager := terminalTestManager(root, client, starter)
+			now := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
+			manager.Now = func() time.Time { return now }
+			manager.Sleep = func(delay time.Duration) { now = now.Add(delay) }
+			manager.SettleTimeout = test.timeout
+			initializations := 0
+			manager.SessionManager = testTerminalSessionManager{
+				root: "/tmp/herdr-test", configFile: "/tmp/herdr-test/config.toml",
+				initialize: func(context.Context, Context, []string) (TerminalSessionInitialization, error) {
+					initializations++
+					return TerminalSessionInitialization{Initialized: true}, nil
+				},
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			observations := 0
+			manager.FindPending = func(_ string, spec ProcessSpec) ([]int, error) {
+				observations++
+				if observations == 1 {
+					return nil, nil
+				}
+				if len(starter.specs) != 1 || !reflect.DeepEqual(spec, starter.specs[0]) {
+					t.Fatal("pending resolution changed or repeated the accepted launch")
+				}
+				if observations == 2 {
+					client.setMapped(false)
+					return []int{4321, 4322}, nil
+				}
+				if test.cancel {
+					cancel()
+				}
+				return test.resolved, nil
+			}
+
+			result, err := manager.Open(ctx, TerminalOpenRequest{
+				New: true, Adapter: TerminalAdapterAlacritty, Cwd: t.TempDir(), Focus: true,
+				Roles: []string{"codex", "shell"},
+			})
+			want := ErrTerminalWindowUnavailable
+			if test.cancel {
+				want = context.Canceled
+			}
+			if !errors.Is(err, want) || !strings.Contains(err.Error(), "remains active") {
+				t.Fatalf("late pending resolution authorized success: result=%+v err=%v", result, err)
+			}
+			if !test.cancel && !strings.Contains(err.Error(), "mapping deadline") {
+				t.Fatalf("late resolution did not report its mapping deadline: %v", err)
+			}
+			if observations != 3 || len(starter.specs) != 1 || client.focusCommands != 0 || initializations != 0 || result.Initialization != nil {
+				t.Fatalf("late resolution authorized extra effects: observations:%d starts:%d focus:%d initialization:%d result:%+v", observations, len(starter.specs), client.focusCommands, initializations, result)
+			}
+			if result.Context.ID != testContextID || !reflect.DeepEqual(result.Actions, []TerminalOpenAction{TerminalActionCreated}) {
+				t.Fatalf("late resolution reported completed window actions: %+v", result)
+			}
+			registry, loadErr := ReadRegistrySnapshot(root)
+			if loadErr != nil || len(registry.Contexts) != 1 || registry.Contexts[0].ID != testContextID || registry.Contexts[0].State != ContextActive {
+				t.Fatalf("late resolution lost the accepted launch's context: registry=%+v err=%v", registry, loadErr)
+			}
+		})
+	}
+}
+
+func TestTerminalManagerPendingAmbiguityPreservesContextWithoutEffects(t *testing.T) {
+	observationErr := errors.New("pending process observation failed")
+	for _, test := range []struct {
+		name       string
+		stop       error
+		atDeadline bool
+	}{
+		{name: "mapping_deadline", stop: ErrTerminalWindowUnavailable},
+		{name: "cancellation", stop: context.Canceled},
+		{name: "cancellation_at_mapping_deadline", stop: context.Canceled, atDeadline: true},
+		{name: "observation_failure", stop: observationErr},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "state", "sway-session")
+			client := &terminalManagerClient{id: testContextID}
+			starter := &terminalManagerStarter{}
+			manager := terminalTestManager(root, client, starter)
+			startedAt := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
+			now := startedAt
+			manager.Now = func() time.Time { return now }
+			manager.Sleep = func(delay time.Duration) { now = now.Add(delay) }
+			manager.SettleTimeout = 300 * time.Millisecond
+			initializations := 0
+			manager.SessionManager = testTerminalSessionManager{
+				root: "/tmp/herdr-test", configFile: "/tmp/herdr-test/config.toml",
+				initialize: func(context.Context, Context, []string) (TerminalSessionInitialization, error) {
+					initializations++
+					return TerminalSessionInitialization{Initialized: true}, nil
+				},
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			observations := 0
+			manager.FindPending = func(_ string, spec ProcessSpec) ([]int, error) {
+				observations++
+				if observations == 1 {
+					return nil, nil
+				}
+				if len(starter.specs) != 1 || !reflect.DeepEqual(spec, starter.specs[0]) {
+					t.Fatal("resampling changed or repeated the accepted launch")
+				}
+				if client.focusCommands != 0 || initializations != 0 {
+					t.Fatal("unresolved pending ambiguity authorized terminal effects")
+				}
+				client.setMapped(false)
+				stopObservation := 3
+				if test.atDeadline {
+					stopObservation = 4
+				}
+				if observations == stopObservation {
+					switch test.stop {
+					case context.Canceled:
+						cancel()
+					case observationErr:
+						return nil, observationErr
+					}
+				}
+				return []int{4321, 4322}, nil
+			}
+
+			result, err := manager.Open(ctx, TerminalOpenRequest{
+				New: true, Adapter: TerminalAdapterAlacritty, Cwd: t.TempDir(), Focus: true,
+				Roles: []string{"codex", "shell"},
+			})
+			if !errors.Is(err, test.stop) || !strings.Contains(err.Error(), "remains active") {
+				t.Fatalf("pending ambiguity lost its failure or recovery identity: result=%+v err=%v", result, err)
+			}
+			if test.stop == ErrTerminalWindowUnavailable && (!strings.Contains(err.Error(), "multiple pending terminal processes") ||
+				!strings.Contains(err.Error(), "mapping deadline") || now.Sub(startedAt) != manager.SettleTimeout) {
+				t.Fatalf("persistent ambiguity did not wait for the bounded mapping deadline: elapsed=%v err=%v", now.Sub(startedAt), err)
+			}
+			if observations < 3 || len(starter.specs) != 1 || client.focusCommands != 0 || initializations != 0 || result.Initialization != nil {
+				t.Fatalf("failed observation caused effects: observations:%d starts:%d focus:%d initialization:%d result:%+v", observations, len(starter.specs), client.focusCommands, initializations, result)
+			}
+			if result.Context.ID != testContextID || !reflect.DeepEqual(result.Actions, []TerminalOpenAction{TerminalActionCreated}) {
+				t.Fatalf("failed observation reported a completed window: %+v", result)
+			}
+			registry, loadErr := ReadRegistrySnapshot(root)
+			if loadErr != nil || len(registry.Contexts) != 1 || registry.Contexts[0].ID != testContextID || registry.Contexts[0].State != ContextActive {
+				t.Fatalf("accepted launch lost its saved context: registry=%+v err=%v", registry, loadErr)
+			}
+		})
+	}
+}
+
+func TestTerminalManagerRejectsPendingAmbiguityBeforeOwnStart(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state", "sway-session")
+	client := &terminalManagerClient{id: testContextID}
+	starter := &terminalManagerStarter{}
+	manager := terminalTestManager(root, client, starter)
+	observations, sleeps := 0, 0
+	manager.FindPending = func(string, ProcessSpec) ([]int, error) {
+		observations++
+		return []int{4321, 4322}, nil
+	}
+	manager.Sleep = func(time.Duration) { sleeps++ }
+
+	result, err := manager.Open(t.Context(), TerminalOpenRequest{
+		New: true, Adapter: TerminalAdapterAlacritty, Cwd: t.TempDir(), Focus: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "multiple pending terminal processes") || result.Context.ID != testContextID {
+		t.Fatalf("preexisting ambiguity was not rejected conservatively: result=%+v err=%v", result, err)
+	}
+	if observations != 1 || sleeps != 0 || len(starter.specs) != 0 || client.focusCommands != 0 {
+		t.Fatalf("preexisting ambiguity authorized retry or effects: observations:%d sleeps:%d starts:%d commands:%d", observations, sleeps, len(starter.specs), client.focusCommands)
+	}
+}
+
+func TestTerminalManagerDoesNotRestartWhenAmbiguousPendingProcessesDisappear(t *testing.T) {
+	for _, mapped := range []bool{false, true} {
+		t.Run(fmt.Sprintf("mapped_%t", mapped), func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "state", "sway-session")
+			client := &terminalManagerClient{id: testContextID}
+			starter := &terminalManagerStarter{}
+			manager := terminalTestManager(root, client, starter)
+			now := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
+			manager.Now = func() time.Time { return now }
+			manager.Sleep = func(delay time.Duration) { now = now.Add(delay) }
+			observations := 0
+			manager.FindPending = func(string, ProcessSpec) ([]int, error) {
+				observations++
+				if observations == 2 {
+					return []int{4321, 4322}, nil
+				}
+				if observations == 3 && mapped {
+					client.setMapped(false)
+				}
+				return nil, nil
+			}
+
+			result, err := manager.Open(t.Context(), TerminalOpenRequest{
+				New: true, Adapter: TerminalAdapterAlacritty, Cwd: t.TempDir(), Focus: true,
+			})
+			if mapped {
+				if err != nil || !reflect.DeepEqual(result.Actions, []TerminalOpenAction{TerminalActionCreated, TerminalActionAttached, TerminalActionFocused}) {
+					t.Fatalf("fresh exact window was not observed after ambiguity cleared: result=%+v err=%v", result, err)
+				}
+			} else {
+				if !errors.Is(err, ErrTerminalWindowUnavailable) || !strings.Contains(err.Error(), "adapter exited") || !strings.Contains(err.Error(), "remains active") {
+					t.Fatalf("disappeared adapter lost its recovery identity: result=%+v err=%v", result, err)
+				}
+				if !reflect.DeepEqual(result.Actions, []TerminalOpenAction{TerminalActionCreated}) || client.focusCommands != 0 {
+					t.Fatalf("absent window authorized terminal effects: result=%+v commands:%d", result, client.focusCommands)
+				}
+			}
+			if len(starter.specs) != 1 || observations < 3 || result.Context.ID != testContextID {
+				t.Fatalf("cleared pending observations restarted the adapter: starts:%d observations:%d result:%+v", len(starter.specs), observations, result)
+			}
+		})
+	}
+}
+
 func TestTerminalManagerRetainsContextAfterConflictingTargetWindowsDisappear(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "state", "sway-session")
 	client := &sequencedTerminalManagerClient{

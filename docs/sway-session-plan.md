@@ -403,6 +403,16 @@ state may exist despite window loss, so the context remains the recovery
 identity. Role initialization is idempotent and never restarts an agent in an
 occupied pane.
 
+After exactly one adapter start has been accepted by the current open request,
+multiple matching pending processes are resampled under the existing mapping
+deadline. No process is selected and no window focus or role initialization is
+authorized while that ambiguity remains, even if one window is already visible.
+A fresh unambiguous process observation must precede the normal stable-window
+checks. Persistent ambiguity fails explicitly and preserves the recovery context;
+ambiguity observed before this request starts an adapter remains an immediate
+error. Disappearing pending processes never authorize a second start after the
+accepted one.
+
 ## Capture and restore
 
 The daemon owns session observation, stable hidden marks, desktop presence,

@@ -462,11 +462,35 @@ func (manager TerminalManager) ensureWindow(ctx context.Context, registry Regist
 	var spec ProcessSpec
 	specReady := false
 	launched := false
+	pendingAmbiguous := false
 	focusedByManager := false
 	deadline := manager.Now().Add(manager.SettleTimeout)
 	for {
 		if err := ctx.Err(); err != nil {
 			return outcome, err
+		}
+		if pendingAmbiguous {
+			// A window alone cannot settle multiple exact process matches after
+			// our accepted start. Resolve them with a fresh, effect-free scan
+			// before observing a window which could authorize focus or attach.
+			pending, err := manager.FindPending(manager.ProcRoot, spec)
+			if err != nil {
+				return outcome, fmt.Errorf("observe pending terminal launch: %w", err)
+			}
+			if err := ctx.Err(); err != nil {
+				return outcome, err
+			}
+			if len(pending) > 1 {
+				if !manager.Now().Before(deadline) {
+					return outcome, fmt.Errorf("%w: multiple pending terminal processes %v remained ambiguous before the mapping deadline", ErrTerminalWindowUnavailable, pending)
+				}
+				manager.Sleep(100 * time.Millisecond)
+				continue
+			}
+			if !manager.Now().Before(deadline) {
+				return outcome, fmt.Errorf("%w: pending terminal process ambiguity did not resolve before the mapping deadline", ErrTerminalWindowUnavailable)
+			}
+			pendingAmbiguous = false
 		}
 		tree, err := manager.requestTree(ctx)
 		if err != nil {
@@ -537,7 +561,10 @@ func (manager TerminalManager) ensureWindow(ctx context.Context, registry Regist
 			outcome.ManagerStatePossible = true
 		}
 		if len(pending) > 1 {
-			return outcome, fmt.Errorf("multiple pending terminal processes %v", pending)
+			if !launched {
+				return outcome, fmt.Errorf("multiple pending terminal processes %v", pending)
+			}
+			pendingAmbiguous = true
 		}
 		if len(pending) == 0 {
 			if launched {
@@ -550,6 +577,9 @@ func (manager TerminalManager) ensureWindow(ctx context.Context, registry Regist
 			outcome.ManagerStatePossible = true
 		}
 		if !manager.Now().Before(deadline) {
+			if pendingAmbiguous {
+				return outcome, fmt.Errorf("%w: multiple pending terminal processes %v remained ambiguous before the mapping deadline", ErrTerminalWindowUnavailable, pending)
+			}
 			return outcome, fmt.Errorf("%w: terminal window did not appear before the mapping deadline", ErrTerminalWindowUnavailable)
 		}
 		manager.Sleep(100 * time.Millisecond)

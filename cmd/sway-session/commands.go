@@ -59,6 +59,22 @@ func executeRequestStart(ctx context.Context, arguments []string, deps dependenc
 	}
 	response, err := deps.requestStart(ctx, request)
 	if err != nil {
+		var requestDiagnostic *sessionrequest.RequestDiagnostic
+		if errors.As(err, &requestDiagnostic) {
+			if requestDiagnostic.Validate() != nil || requestDiagnostic.Workspace != request.Workspace {
+				return commandResult{}, failure("session_request", "request session start", "Session start request rejected; inspect the broker log before retrying the exact original request-start request.")
+			}
+			details := map[string]any{"workspace": requestDiagnostic.Workspace}
+			message := fmt.Sprintf("%s on workspace %d", requestDiagnostic.Message(), requestDiagnostic.Workspace)
+			if requestDiagnostic.ContextID != "" {
+				details["context_id"] = requestDiagnostic.ContextID
+				message += fmt.Sprintf(" for context %s", requestDiagnostic.ContextID)
+			}
+			return commandResult{}, failures([]diagnostic.Diagnostic{{
+				Level: diagnostic.LevelError, Code: requestDiagnostic.Code,
+				Message: message, Hint: requestDiagnostic.Hint(), Details: details,
+			}})
+		}
 		var mismatch *sessionrequest.ProtocolMismatchDiagnostic
 		if errors.As(err, &mismatch) && mismatch != nil {
 			return commandResult{}, failures([]diagnostic.Diagnostic{{

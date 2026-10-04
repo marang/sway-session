@@ -60,10 +60,13 @@ type fakeSwayRequester struct {
 	occupied         bool
 	floatingOccupied bool
 	commands         []string
+	focusedContainer int64
 	treeRequests     int
 	occupyOnTree     int
 	occupyWorkspace  int
 	onTree           func(int) error
+	transformTree    func(*swayipc.TreeNode)
+	onCommand        func(string) error
 }
 
 func (client *fakeSwayRequester) RequestContext(_ context.Context, messageType swayipc.MessageType, payload []byte) (swayipc.Message, error) {
@@ -71,8 +74,17 @@ func (client *fakeSwayRequester) RequestContext(_ context.Context, messageType s
 	case swayipc.RunCommand:
 		command := string(payload)
 		client.commands = append(client.commands, command)
-		if _, err := fmt.Sscanf(command, "workspace number %d", &client.workspace); err != nil {
+		if strings.HasPrefix(command, "[con_id=") {
+			if _, err := fmt.Sscanf(command, "[con_id=%d] focus", &client.focusedContainer); err != nil {
+				return swayipc.Message{}, err
+			}
+		} else if _, err := fmt.Sscanf(command, "workspace number %d", &client.workspace); err != nil {
 			return swayipc.Message{}, err
+		}
+		if client.onCommand != nil {
+			if err := client.onCommand(command); err != nil {
+				return swayipc.Message{}, err
+			}
 		}
 		return swayipc.Message{Type: swayipc.RunCommand, Payload: []byte(`[{"success":true}]`)}, nil
 	case swayipc.GetTree:
@@ -86,7 +98,14 @@ func (client *fakeSwayRequester) RequestContext(_ context.Context, messageType s
 			client.workspace = client.occupyWorkspace
 			client.occupied = true
 		}
-		encoded, err := json.Marshal(serviceTree(client.workspace, client.mapped, client.occupied, client.floatingOccupied))
+		tree := serviceTree(client.workspace, client.mapped, client.occupied, client.floatingOccupied)
+		if client.transformTree != nil {
+			client.transformTree(tree)
+		}
+		visitServiceTree(tree, func(node *swayipc.TreeNode) {
+			node.Focused = node.ID == client.focusedContainer
+		})
+		encoded, err := json.Marshal(tree)
 		return swayipc.Message{Type: swayipc.GetTree, Payload: encoded}, err
 	default:
 		return swayipc.Message{}, errors.New("unexpected Sway request")
@@ -174,7 +193,7 @@ func TestServiceCreatesFocusesAndRestoresOneContext(t *testing.T) {
 	if !response.Created || response.Context == nil || response.Context.ID != testContextID || response.Workspace != 7 {
 		t.Fatalf("unexpected response: %+v", response)
 	}
-	if !reflect.DeepEqual(client.commands, []string{"workspace number 7"}) || !reflect.DeepEqual(runner.calls, []sessionstate.ContextID{testContextID}) {
+	if !reflect.DeepEqual(client.commands, []string{"workspace number 7", "[con_id=6] focus"}) || !reflect.DeepEqual(runner.calls, []sessionstate.ContextID{testContextID}) {
 		t.Fatalf("unexpected effects: commands=%v restores=%v", client.commands, runner.calls)
 	}
 	activity, err := sessionstate.ReadTerminalActivitySnapshot(service.StateRoot)
@@ -294,14 +313,15 @@ func TestServiceRepeatedRequestReusesMappedContext(t *testing.T) {
 	if !reflect.DeepEqual(runner.calls, []sessionstate.ContextID{testContextID}) {
 		t.Fatalf("mapped context was restored again: %v", runner.calls)
 	}
-	if !reflect.DeepEqual(client.commands, []string{"workspace number 7", "workspace number 7"}) {
+	if !reflect.DeepEqual(client.commands, []string{"workspace number 7", "[con_id=6] focus", "[con_id=6] focus"}) {
 		t.Fatalf("unexpected focus commands: %v", client.commands)
 	}
 }
 
 func TestServiceInitializationFailureKeepsExactContextAndRetryConverges(t *testing.T) {
-	service, request, _, runner := testService(t)
+	service, request, client, runner := testService(t)
 	request.Workspace = 98
+	client.workspace, client.occupied, client.floatingOccupied = 98, true, true
 	initializer := &fakeSessionInitializer{err: errors.New("agent trust required")}
 	service.Initializer = initializer
 
@@ -460,7 +480,7 @@ func TestServiceReusesContextWithCompatibleNamedWorkspace(t *testing.T) {
 	if response.Created || response.Context == nil || response.Context.ID != contextValue.ID {
 		t.Fatalf("compatible context was not reused: %+v", response)
 	}
-	if !reflect.DeepEqual(client.commands, []string{"workspace number 7"}) || !reflect.DeepEqual(runner.calls, []sessionstate.ContextID{contextValue.ID}) {
+	if !reflect.DeepEqual(client.commands, []string{"workspace number 7", "[con_id=6] focus"}) || !reflect.DeepEqual(runner.calls, []sessionstate.ContextID{contextValue.ID}) {
 		t.Fatalf("unexpected effects: commands=%v restores=%v", client.commands, runner.calls)
 	}
 }
@@ -540,27 +560,29 @@ func registeredContext(request Request) sessionstate.Context {
 	}
 }
 
-func TestServiceRejectsOccupiedWorkspaceBeforeRegistration(t *testing.T) {
+func TestServiceRejectsAmbiguousWorkspaceBeforeRegistration(t *testing.T) {
 	service, request, client, runner := testService(t)
 	client.workspace = request.Workspace
 	client.occupied = true
-	if _, err := service.Handle(context.Background(), request); err == nil || !strings.Contains(err.Error(), "not empty") {
-		t.Fatalf("occupied workspace was accepted: %v", err)
+	client.transformTree = duplicateRequestedWorkspace(request.Workspace)
+	if _, err := service.Handle(context.Background(), request); err == nil || !strings.Contains(err.Error(), "ambiguous") {
+		t.Fatalf("ambiguous workspace was accepted: %v", err)
 	}
 	registry, loadErr := loadRegistry(service.StateRoot)
 	if loadErr != nil || len(registry.Contexts) != 0 || len(client.commands) != 0 || len(runner.calls) != 0 {
-		t.Fatalf("occupied rejection changed state: registry=%+v err=%v", registry, loadErr)
+		t.Fatalf("ambiguous rejection changed state: registry=%+v err=%v", registry, loadErr)
 	}
 }
 
-func TestServiceRollsBackNewRegistrationWhenWorkspaceBecomesOccupiedBeforeRestore(t *testing.T) {
+func TestServiceRollsBackNewRegistrationWhenWorkspaceBecomesAmbiguousBeforeRestore(t *testing.T) {
 	service, request, client, runner := testService(t)
 	service.NewContextID = func() (sessionstate.ContextID, error) {
 		client.workspace = request.Workspace
 		client.occupied = true
+		client.transformTree = duplicateRequestedWorkspace(request.Workspace)
 		return testContextID, nil
 	}
-	if _, err := service.Handle(context.Background(), request); err == nil || !strings.Contains(err.Error(), "not empty") {
+	if _, err := service.Handle(context.Background(), request); err == nil || !strings.Contains(err.Error(), "ambiguous") {
 		t.Fatalf("workspace race was accepted: %v", err)
 	}
 	registry, loadErr := loadRegistry(service.StateRoot)
@@ -576,15 +598,20 @@ func TestServiceRollsBackNewRegistrationWhenWorkspaceBecomesOccupiedBeforeRestor
 	}
 }
 
-func TestServiceKeepsReusedRegistrationWhenWorkspaceBecomesOccupiedBeforeRestore(t *testing.T) {
+func TestServiceKeepsReusedRegistrationWhenWorkspaceBecomesAmbiguousBeforeRestore(t *testing.T) {
 	service, request, client, runner := testService(t)
 	contextValue := registeredContext(request)
 	saveServiceTestRegistry(t, service.StateRoot, sessionstate.Registry{
 		Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{contextValue},
 	})
-	client.occupyOnTree = 2
-	client.occupyWorkspace = request.Workspace
-	if _, err := service.Handle(context.Background(), request); err == nil || !strings.Contains(err.Error(), "not empty") {
+	client.onTree = func(number int) error {
+		if number == 2 {
+			client.workspace = request.Workspace
+			client.transformTree = duplicateRequestedWorkspace(request.Workspace)
+		}
+		return nil
+	}
+	if _, err := service.Handle(context.Background(), request); err == nil || !strings.Contains(err.Error(), "ambiguous") {
 		t.Fatalf("workspace race was accepted: %v", err)
 	}
 	registry, loadErr := loadRegistry(service.StateRoot)
@@ -632,7 +659,7 @@ func TestServiceRejectsArchiveAfterRestoreBeforeFinalObservation(t *testing.T) {
 	}
 }
 
-func TestServiceRejectsWorkspaceOccupantAppearingDuringRestore(t *testing.T) {
+func TestServiceAllowsWorkspaceOccupantAppearingDuringRestore(t *testing.T) {
 	for _, floating := range []bool{false, true} {
 		name := "tiled"
 		if floating {
@@ -646,15 +673,15 @@ func TestServiceRejectsWorkspaceOccupantAppearingDuringRestore(t *testing.T) {
 				return nil
 			}
 
-			_, err := service.Handle(context.Background(), request)
-			if err == nil || !strings.Contains(err.Error(), "not exclusive") {
-				t.Fatalf("%s workspace occupant was accepted: %v", name, err)
+			response, err := service.Handle(context.Background(), request)
+			if err != nil || response.Context == nil || response.Context.ID != testContextID || client.focusedContainer != 6 {
+				t.Fatalf("%s workspace occupant prevented the requested start: response=%+v err=%v", name, response, err)
 			}
 		})
 	}
 }
 
-func TestServiceRejectsMappedContextOnMixedWorkspace(t *testing.T) {
+func TestServiceFocusesMappedContextOnMixedWorkspace(t *testing.T) {
 	service, request, client, runner := testService(t)
 	contextValue := registeredContext(request)
 	saveServiceTestRegistry(t, service.StateRoot, sessionstate.Registry{
@@ -664,12 +691,30 @@ func TestServiceRejectsMappedContextOnMixedWorkspace(t *testing.T) {
 	client.mapped = contextValue.ID
 	client.occupied = true
 
-	_, err := service.Handle(context.Background(), request)
-	if err == nil || !strings.Contains(err.Error(), "not exclusive") {
-		t.Fatalf("mapped context on mixed workspace was accepted: %v", err)
+	response, err := service.Handle(context.Background(), request)
+	if err != nil || response.Created || response.Context == nil || response.Context.ID != contextValue.ID {
+		t.Fatalf("mapped context on mixed workspace was rejected: response=%+v err=%v", response, err)
 	}
-	if len(client.commands) != 0 || len(runner.calls) != 0 {
-		t.Fatalf("mixed mapped workspace caused effects: commands=%v restores=%v", client.commands, runner.calls)
+	if !reflect.DeepEqual(client.commands, []string{"[con_id=6] focus"}) || len(runner.calls) != 0 {
+		t.Fatalf("mixed mapped workspace did not focus only the requested window: commands=%v restores=%v", client.commands, runner.calls)
+	}
+}
+
+func duplicateRequestedWorkspace(number int) func(*swayipc.TreeNode) {
+	return func(root *swayipc.TreeNode) {
+		root.Nodes[0].Nodes = append(root.Nodes[0].Nodes, &swayipc.TreeNode{
+			ID: 99, Type: "workspace", Name: fmt.Sprintf("%d: duplicate", number),
+		})
+	}
+}
+
+func visitServiceTree(node *swayipc.TreeNode, visit func(*swayipc.TreeNode)) {
+	visit(node)
+	for _, child := range node.Nodes {
+		visitServiceTree(child, visit)
+	}
+	for _, child := range node.FloatingNodes {
+		visitServiceTree(child, visit)
 	}
 }
 

@@ -51,7 +51,8 @@ GOTOOLCHAIN=go1.26.5 sh scripts/verify-lifecycle.sh --headless
 
 The explicit headless mode requires `go`, `sway`, `alacritty` and `sleep`; a
 missing tool fails the runner rather than silently satisfying live acceptance.
-These are development tools, not new runtime package dependencies. Each live
+The shared-workspace broker cases also require `herdr` and `bash`. These are
+development tools, not new runtime package dependencies. Each live
 fixture starts its own compositor and uses disposable XDG/config/state roots,
 an environment allowlist and workspaces 98 or higher. Cleanup signals only
 fixture-owned processes. No production daemon, Herdr server, provider session
@@ -189,6 +190,42 @@ short/structured CLI output, the rendered 80x24 TUI and stale included-file
 repair previews use the same fixtures. Inspection and rejected stale application
 must leave configuration unchanged and create no repair snippet. It is not an
 interactive keyboard, production workstation or reboot test.
+
+## Shared-workspace session-start broker (LAB-270)
+
+The deterministic service/socket regressions cover three independent contexts
+on an occupied destination, exact-window focus on reuse, concurrent distinct
+and repeated requests, nested/floating windows, workspace-number ambiguity,
+incorrect live/saved placement, duplicate identities, focus/placement changes,
+partial restore/initialization, and preservation of the original retry identity.
+Transport/CLI checks verify actionable allowlisted diagnostics, context UUID
+recovery, legacy protocol-v1 compatibility, and private-detail redaction.
+
+Run the opt-in real broker/compositor cases explicitly:
+
+```sh
+GOTOOLCHAIN=go1.26.5 SWAY_SESSION_HEADLESS_INTEGRATION=1 \
+  go test -race ./cmd/sway-session -run '^TestSessionStart.*Headless$' \
+  -count=1 -timeout=2m -v
+```
+
+The tests use private Sway, owner-only broker sockets, disposable SQLite and
+workspaces 98/99. Three distinct requests coexist with unrelated tiled and
+floating windows; concurrent exact retries preserve one registration/window
+per context and focus the selected leaf. Real Sway window events and fresh
+observations reject unrelated moves/closes. Separate named Herdr sessions
+retain their custom split directions, ratios, pane IDs, and idle interactive
+project shells on retry. Terminal resize geometry is intentionally excluded
+from the stable Herdr topology comparison.
+
+The restore launcher and empty-session initializer are injected boundaries in
+these compositor tests. Fixed logical `codex`/`shell` roles are checked, but
+authenticated Codex, the production restore CLI, AppArmor enforcement and OS
+reboot ordering are not exercised. The independent opt-in
+`TestHerdrLiveInitialization` checks the real Herdr initializer with a harmless
+Codex stand-in, including an unchanged second initialization. Keep those proof
+boundaries explicit rather than treating shell-only fixtures as real agents.
+The ordinary automated gate skips compositor/Herdr opt-ins.
 
 ## Standalone extraction checks
 

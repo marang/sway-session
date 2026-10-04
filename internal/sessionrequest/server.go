@@ -284,7 +284,7 @@ func requireCurrentUser(connection *net.UnixConn) (*unix.Ucred, error) {
 
 func (server *Server) reject(connection net.Conn, cause error) {
 	server.report(cause)
-	server.writeResponse(connection, Response{Version: ProtocolVersion, Error: encodeProtocolMismatch(cause)})
+	server.writeResponse(connection, Response{Version: ProtocolVersion, Error: encodeRequestError(cause)})
 }
 
 func (server *Server) writeResponse(connection net.Conn, response Response) {

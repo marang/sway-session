@@ -103,7 +103,7 @@ profile agent-home-guard /usr/bin/codex flags=(attach_disconnected,mediate_delet
   owner @{run}user/[0-9]*/sway-session/agent-report.sock rw,
 
   # The context-start endpoint accepts only typed context metadata and a
-  # numbered empty workspace. It does not accept pane roles or commands.
+  # numbered workspace. It does not accept pane roles or commands.
   audit deny @{run}user/[0-9]*/sway-session/session-start.sock klm,
   owner @{run}user/[0-9]*/sway-session/session-start.sock rw,
 }

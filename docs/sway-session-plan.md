@@ -603,6 +603,45 @@ retain their original wire shape and receive v2 replies; new v3 clients never
 downgrade to an older broker. Session-start v1 and stored state are unchanged.
 See [agent reporting](agent-reporting.md) for the input and compatibility contract.
 
+### Shared-workspace session starts (LAB-270)
+
+The session-start broker permits multiple independently identified terminal
+contexts on one explicitly requested numbered workspace, including unrelated
+tiled and floating occupants. Workspace occupancy is not a context identity
+or authentication boundary. LAB-88 originally limited creation to empty
+workspaces; LAB-90 extended exclusivity to reuse and final acceptance. The
+history records conservative placement and race checks, but no threat model
+in which neighboring windows require whole-workspace exclusion. The supported
+contract now verifies the requested context instead of counting all occupants.
+
+Each request retains its exact metadata, immutable context UUID, and unique
+managed leaf window. Numbered destination workspaces must be unambiguous.
+Live placement conflicts are rejected rather than silently moving an existing
+context. Saved placement is additionally checked before restoring an unmapped
+context; a mapped context's current placement takes precedence over a saved
+snapshot that may await capture. Reuse explicitly focuses the observed container ID and
+checks a fresh tree after the command; a close, replacement, duplicate,
+placement change, or lost focus prevents a successful response. A new context
+is launched through the existing trusted restore path after selecting the
+destination, and its actual placement is verified before initialization.
+Workspace selection cannot reserve compositor focus against user actions;
+incorrect placement is reported without moving neighboring windows.
+
+Requests remain serialized, with the existing lifecycle and registry locks;
+external calls still occur outside SQLite write transactions. Partial launch
+or initialization failures retain the registration for an exact retry. Herdr
+initialization remains scoped to the named session and changes only a proven
+empty idle shell. Existing sessions and their pane layouts are left intact.
+
+Owner-only socket/state permissions, peer credentials, cwd validation, trusted
+system executable resolution, message bounds, and the fixed command/role
+vocabulary are unchanged. Safe, allowlisted rejection reasons use the existing
+protocol-v1 error string and expose no private paths, session names, titles,
+registry payloads, or arbitrary child-process errors. Stored schemas and the
+request/response fields do not change; older clients retain generic rejection
+handling. This change does not strengthen the separate AppArmor confinement
+boundary described below.
+
 The included `agent-home-guard` AppArmor template is an optional agent
 hardening measure, not a sway-session runtime requirement. Its ready-to-use
 example attaches to Codex; a different agent needs its own profile name and

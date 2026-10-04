@@ -17,7 +17,7 @@ export GOTOOLCHAIN="${GOTOOLCHAIN:-go1.26.5}"
 export SWAY_SESSION_HEADLESS_INTEGRATION=0
 
 if [ "$headless" -eq 1 ]; then
-  for tool in go sway alacritty sleep; do
+  for tool in go sway alacritty sleep herdr bash; do
     if ! command -v "$tool" >/dev/null 2>&1; then
       echo "required private-compositor tool unavailable: $tool" >&2
       exit 1

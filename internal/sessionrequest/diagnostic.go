@@ -87,7 +87,7 @@ func (diagnostic *RequestDiagnostic) Hint() string {
 	const retry = " Retry the exact original request-start request, keeping --session, --cwd, --label, --provider and --workspace unchanged; use the original working directory if --cwd was omitted."
 	switch diagnostic.Code {
 	case DiagnosticWorkspaceAmbiguous:
-		return "Resolve duplicate numbered workspaces and unrelated windows on the requested workspace." + retry
+		return "Resolve duplicate numbered workspace names; other windows on the requested workspace are allowed." + retry
 	case DiagnosticWorkspaceConflict:
 		return "Inspect the context's current and saved workspace placement; resolve the conflict." + retry
 	case DiagnosticWindowAmbiguous:

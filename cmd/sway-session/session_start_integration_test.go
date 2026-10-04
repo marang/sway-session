@@ -101,6 +101,9 @@ func TestSessionStartSharedWorkspaceHeadless(t *testing.T) {
 				t.Fatalf("requests did not leave exactly three registered contexts: %+v, %v", registry, err)
 			}
 			f.assertHerdrLayouts(before)
+			if herdr {
+				f.assertHerdrShells()
+			}
 			t.Log("three exact identities created once under repeated/distinct concurrent requests; requested leaves refocused; unrelated tiled/floating windows preserved")
 		})
 	}
@@ -109,6 +112,14 @@ func TestSessionStartSharedWorkspaceHeadless(t *testing.T) {
 // Seeding the existing identity separately makes the mapped-context rejection
 // observable even before creation on an occupied workspace has been fixed.
 func TestSessionStartReopenHeadless(t *testing.T) {
+	for _, alreadyMapped := range []bool{false, true} {
+		t.Run(fmt.Sprintf("already_mapped=%t", alreadyMapped), func(t *testing.T) {
+			testSessionStartReopenHeadless(t, alreadyMapped)
+		})
+	}
+}
+
+func testSessionStartReopenHeadless(t *testing.T, alreadyMapped bool) {
 	f := newSessionStartHeadless(t, false)
 	current := sessionstate.Context{
 		ID: "27000000-0000-4270-8270-000000000001", Label: f.requests[0].Label,
@@ -120,11 +131,17 @@ func TestSessionStartReopenHeadless(t *testing.T) {
 	if err := sessionstate.RegistryStoreFor(f.h.state).Save(sessionstate.Registry{Version: sessionstate.ContextsSchemaVersion, Contexts: []sessionstate.Context{current}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.Restore(f.h.ctx, current.ID); err != nil {
-		t.Fatal(err)
+	if alreadyMapped {
+		if err := f.Restore(f.h.ctx, current.ID); err != nil {
+			t.Fatal(err)
+		}
 	}
 	unrelated := f.unrelatedWindows()
 	defer f.assertUnrelated(unrelated)
+	response := f.send(f.requests[0])
+	if response.Created || !reflect.DeepEqual(response.Context, &current) {
+		t.Fatalf("missing/mapped active context was not reopened with its original identity: %+v", response)
+	}
 	f.assertReopen(f.requests[0], current, unrelated[0].ID)
 	f.assertReopen(f.requests[0], current, unrelated[1].ID)
 	f.assertOneWindow(current.ID)
@@ -206,7 +223,7 @@ func newSessionStartHeadless(t *testing.T, herdr bool) *sessionStartHeadless {
 	}
 	for _, tool := range tools {
 		if _, err := exec.LookPath(tool); err != nil {
-			t.Skipf("private broker acceptance requires %s: %v", tool, err)
+			t.Fatalf("private broker acceptance requires %s: %v", tool, err)
 		}
 	}
 	h := newRestoreCleanupHeadless(t)

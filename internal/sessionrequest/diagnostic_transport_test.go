@@ -140,6 +140,23 @@ func TestServerPartialInitializationRecoveryKeepsContextID(t *testing.T) {
 	}
 }
 
+func TestSendRejectsDiagnosticForAnotherRequestedWorkspace(t *testing.T) {
+	request := testRequest(t)
+	socketPath := diagnosticTestSocket(t)
+	server, err := StartServer(socketPath, func(context.Context, Request) (Response, error) {
+		return Response{}, &RequestDiagnostic{Code: DiagnosticWorkspaceConflict, ContextID: testContextID, Workspace: 98}
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	_, err = Send(t.Context(), socketPath, request)
+	var diagnostic *RequestDiagnostic
+	if err == nil || errors.As(err, &diagnostic) || err.Error() != "session start request rejected" {
+		t.Fatalf("diagnostic for a different request was accepted: %v", err)
+	}
+}
+
 func TestServerInvalidRequestDiagnosticsStayGeneric(t *testing.T) {
 	for name, rejection := range map[string]error{
 		"unknown":         &RequestDiagnostic{Code: "private unknown reason", ContextID: testContextID, Workspace: 98},

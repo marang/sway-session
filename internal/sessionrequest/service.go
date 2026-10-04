@@ -153,10 +153,11 @@ func (service *Service) Handle(ctx context.Context, request Request) (Response, 
 		if current, found, matchErr := matchingContext(registry, request); matchErr != nil {
 			return matchErr
 		} else if found {
-			if window, mapped, observeErr := observeRequestedContext(tree, registry, current.ID); observeErr != nil {
+			contextValue = current
+			if window, mapped, observeErr := observeRequestedContext(tree, registry, current.ID, request.Workspace); observeErr != nil {
 				return observeErr
 			} else if mapped {
-				response, focusErr := service.focusMappedActiveContext(ctx, request, client, window.Workspace)
+				response, focusErr := service.focusMappedActiveContext(ctx, request, client, current.ID, window)
 				if focusErr != nil {
 					return focusErr
 				}
@@ -167,8 +168,8 @@ func (service *Service) Handle(ctx context.Context, request Request) (Response, 
 				return prepareErr
 			}
 		}
-		if prepareErr := requireWorkspaceEmpty(tree, request.Workspace); prepareErr != nil {
-			return prepareErr
+		if prepareErr := requireWorkspaceUnambiguous(tree, request.Workspace); prepareErr != nil {
+			return withDiagnosticContext(prepareErr, contextValue.ID)
 		}
 		contextValue, _, created, prepareErr = service.ensureContext(ctx, request)
 		if prepareErr != nil {
@@ -180,6 +181,9 @@ func (service *Service) Handle(ctx context.Context, request Request) (Response, 
 			}
 		}
 		rollback := func(cause error) error {
+			if !created {
+				cause = withDiagnosticContext(cause, contextValue.ID)
+			}
 			_, rollbackErr := rollbackCreatedRegistration(service.StateRoot, request, contextValue, created, cause)
 			return rollbackErr
 		}
@@ -187,7 +191,7 @@ func (service *Service) Handle(ctx context.Context, request Request) (Response, 
 		if prepareErr != nil {
 			return rollback(prepareErr)
 		}
-		if prepareErr := requireWorkspaceEmpty(tree, request.Workspace); prepareErr != nil {
+		if prepareErr := requireWorkspaceUnambiguous(tree, request.Workspace); prepareErr != nil {
 			return rollback(prepareErr)
 		}
 		if prepareErr := focusWorkspace(ctx, client, request.Workspace); prepareErr != nil {
@@ -197,7 +201,7 @@ func (service *Service) Handle(ctx context.Context, request Request) (Response, 
 		if prepareErr != nil {
 			return rollback(prepareErr)
 		}
-		if prepareErr := requireWorkspaceEmpty(tree, request.Workspace); prepareErr != nil {
+		if prepareErr := requireWorkspaceUnambiguous(tree, request.Workspace); prepareErr != nil {
 			return rollback(prepareErr)
 		}
 		return nil
@@ -209,7 +213,7 @@ func (service *Service) Handle(ctx context.Context, request Request) (Response, 
 		return service.initializeResponse(ctx, *focusedResponse, nil)
 	}
 	if err := service.Restore.Restore(ctx, contextValue.ID); err != nil {
-		return Response{}, err
+		return Response{}, &RequestDiagnostic{Code: DiagnosticRestoreFailed, ContextID: contextValue.ID, Workspace: request.Workspace, Cause: err}
 	}
 	response, finalizeErr := service.finalizeRestoredContext(ctx, request, client, contextValue.ID, created)
 	return service.initializeResponse(ctx, response, finalizeErr)
@@ -220,42 +224,55 @@ func (service *Service) initializeResponse(ctx context.Context, response Respons
 		return response, prior
 	}
 	if err := service.Initializer.Initialize(ctx, *response.Context); err != nil {
-		return response, fmt.Errorf("initialize requested terminal session: %w", protocolMismatchAfterRegistration(response.Context.ID, err))
+		cause := protocolMismatchAfterRegistration(response.Context.ID, err)
+		var mismatch *ProtocolMismatchDiagnostic
+		if errors.As(cause, &mismatch) {
+			return response, fmt.Errorf("initialize requested terminal session: %w", cause)
+		}
+		return response, &RequestDiagnostic{Code: DiagnosticInitializationFailed, ContextID: response.Context.ID, Workspace: response.Workspace, Cause: cause}
 	}
 	return response, nil
 }
 
-func (service *Service) focusMappedActiveContext(ctx context.Context, request Request, client SwayRequester, observedWorkspace string) (Response, error) {
-	if !workspaceNameHasNumber(observedWorkspace, request.Workspace) {
-		return Response{}, fmt.Errorf("context is already mapped on workspace %q", observedWorkspace)
+func (service *Service) focusMappedActiveContext(ctx context.Context, request Request, client SwayRequester, expectedID sessionstate.ContextID, observed sessionstate.ManagedWindow) (Response, error) {
+	if !workspaceNameHasNumber(observed.Workspace, request.Workspace) {
+		return Response{}, &RequestDiagnostic{Code: DiagnosticWorkspaceConflict, ContextID: expectedID, Workspace: request.Workspace,
+			Cause: fmt.Errorf("context is already mapped on workspace %q", observed.Workspace)}
 	}
 	var response Response
 	err := sessionstate.InspectRegistryLockedContext(ctx, service.StateRoot, func(registry sessionstate.Registry) error {
 		contextValue, found, err := matchingContext(registry, request)
 		if err != nil {
-			return err
+			return &RequestDiagnostic{Code: DiagnosticContextChanged, ContextID: expectedID, Workspace: request.Workspace, Cause: err}
 		}
-		if !found {
-			return errors.New("matching context disappeared before focus")
+		if !found || contextValue.ID != expectedID {
+			return &RequestDiagnostic{Code: DiagnosticContextChanged, ContextID: expectedID, Workspace: request.Workspace,
+				Cause: errors.New("matching context disappeared before focus")}
 		}
 		tree, err := requestTree(ctx, client)
 		if err != nil {
 			return err
 		}
-		window, mapped, err := observeRequestedContext(tree, registry, contextValue.ID)
+		window, mapped, err := observeRequestedContext(tree, registry, contextValue.ID, request.Workspace)
 		if err != nil {
 			return err
 		}
 		if !mapped {
-			return errors.New("matching context disappeared before focus")
+			return &RequestDiagnostic{Code: DiagnosticContextChanged, ContextID: expectedID, Workspace: request.Workspace,
+				Cause: errors.New("matching context disappeared before focus")}
+		}
+		if window.ContainerID != observed.ContainerID {
+			return &RequestDiagnostic{Code: DiagnosticContextChanged, ContextID: expectedID, Workspace: request.Workspace,
+				Cause: errors.New("matching context window changed before focus")}
 		}
 		if !workspaceNameHasNumber(window.Workspace, request.Workspace) {
-			return fmt.Errorf("context is already mapped on workspace %q", window.Workspace)
+			return &RequestDiagnostic{Code: DiagnosticWorkspaceConflict, ContextID: expectedID, Workspace: request.Workspace,
+				Cause: fmt.Errorf("context is already mapped on workspace %q", window.Workspace)}
 		}
-		if err := requireWorkspaceContainsOnlyWindow(tree, request.Workspace, window.ContainerID); err != nil {
-			return err
+		if err := requireWorkspaceContainsWindow(tree, request.Workspace, window.ContainerID); err != nil {
+			return withDiagnosticContext(err, expectedID)
 		}
-		if err := focusWorkspace(ctx, client, request.Workspace); err != nil {
+		if err := focusAndVerifyWindow(ctx, client, registry, contextValue.ID, request.Workspace, window); err != nil {
 			return err
 		}
 		response = acceptedResponse(contextValue, request.Workspace, false)
@@ -269,26 +286,32 @@ func (service *Service) finalizeRestoredContext(ctx context.Context, request Req
 	err := sessionstate.InspectRegistryLockedContext(ctx, service.StateRoot, func(registry sessionstate.Registry) error {
 		contextValue, found, err := matchingContext(registry, request)
 		if err != nil {
-			return err
+			return &RequestDiagnostic{Code: DiagnosticContextChanged, ContextID: expectedID, Workspace: request.Workspace, Cause: err}
 		}
 		if !found || contextValue.ID != expectedID {
-			return errors.New("matching context disappeared after restore")
+			return &RequestDiagnostic{Code: DiagnosticContextChanged, ContextID: expectedID, Workspace: request.Workspace,
+				Cause: errors.New("matching context disappeared after restore")}
 		}
 		tree, err := requestTree(ctx, client)
 		if err != nil {
 			return err
 		}
-		window, mapped, err := observeRequestedContext(tree, registry, contextValue.ID)
+		window, mapped, err := observeRequestedContext(tree, registry, contextValue.ID, request.Workspace)
 		if err != nil {
 			return err
 		}
 		if !mapped {
-			return errors.New("restored context did not map before the broker deadline")
+			return &RequestDiagnostic{Code: DiagnosticMappingPending, ContextID: expectedID, Workspace: request.Workspace,
+				Cause: errors.New("restored context did not map before the broker deadline")}
 		}
 		if !workspaceNameHasNumber(window.Workspace, request.Workspace) {
-			return fmt.Errorf("restored context mapped on workspace %q instead of requested workspace %d", window.Workspace, request.Workspace)
+			return &RequestDiagnostic{Code: DiagnosticWorkspaceConflict, ContextID: expectedID, Workspace: request.Workspace,
+				Cause: fmt.Errorf("restored context mapped on workspace %q instead of requested workspace %d", window.Workspace, request.Workspace)}
 		}
-		if err := requireWorkspaceContainsOnlyWindow(tree, request.Workspace, window.ContainerID); err != nil {
+		if err := requireWorkspaceContainsWindow(tree, request.Workspace, window.ContainerID); err != nil {
+			return withDiagnosticContext(err, expectedID)
+		}
+		if err := focusAndVerifyWindow(ctx, client, registry, contextValue.ID, request.Workspace, window); err != nil {
 			return err
 		}
 		response = acceptedResponse(contextValue, request.Workspace, created)
@@ -310,7 +333,8 @@ func requireCompatibleSavedWorkspace(ctx context.Context, root string, id sessio
 			continue
 		}
 		if !workspaceNameHasNumber(workspace.Name, requested) {
-			return fmt.Errorf("context %q has saved placement on workspace %q, conflicting with requested workspace %d", id, workspace.Name, requested)
+			return &RequestDiagnostic{Code: DiagnosticWorkspaceConflict, ContextID: id, Workspace: requested,
+				Cause: fmt.Errorf("context %q has saved placement on workspace %q, conflicting with requested workspace %d", id, workspace.Name, requested)}
 		}
 		return nil
 	}
@@ -503,83 +527,81 @@ func requestTree(ctx context.Context, client SwayRequester) (*swayipc.TreeNode, 
 	return &root, nil
 }
 
-func observeRequestedContext(root *swayipc.TreeNode, registry sessionstate.Registry, id sessionstate.ContextID) (sessionstate.ManagedWindow, bool, error) {
+func observeRequestedContext(root *swayipc.TreeNode, registry sessionstate.Registry, id sessionstate.ContextID, workspace int) (sessionstate.ManagedWindow, bool, error) {
 	windows, issues, err := sessionstate.ObserveManagedWindowsIsolated(root, registry)
 	if err != nil {
 		return sessionstate.ManagedWindow{}, false, fmt.Errorf("observe managed windows: %w", err)
 	}
 	for _, issue := range issues {
 		if issue.ContextID == id {
-			return sessionstate.ManagedWindow{}, false, issue
+			return sessionstate.ManagedWindow{}, false, &RequestDiagnostic{Code: DiagnosticWindowAmbiguous, ContextID: id, Workspace: workspace, Cause: issue}
 		}
 	}
 	window, found := windows[id]
 	return window, found, nil
 }
 
-func requireWorkspaceEmpty(root *swayipc.TreeNode, number int) error {
-	var matches []*swayipc.TreeNode
-	var walk func(*swayipc.TreeNode)
-	walk = func(node *swayipc.TreeNode) {
+// Occupancy is not an identity boundary. Only ambiguous numbered destinations
+// prevent a request from choosing a workspace safely.
+func requestedWorkspace(root *swayipc.TreeNode, number int) (*swayipc.TreeNode, error) {
+	var selected *swayipc.TreeNode
+	var walk func(*swayipc.TreeNode) error
+	walk = func(node *swayipc.TreeNode) error {
 		if node == nil {
-			return
+			return errors.New("sway tree contains an invalid nil node")
 		}
 		if node.Type == "workspace" && workspaceNameHasNumber(node.Name, number) {
-			matches = append(matches, node)
+			if selected != nil {
+				return &RequestDiagnostic{Code: DiagnosticWorkspaceAmbiguous, Workspace: number,
+					Cause: fmt.Errorf("workspace number %d is ambiguous", number)}
+			}
+			selected = node
 		}
 		for _, child := range node.Nodes {
-			walk(child)
+			if err := walk(child); err != nil {
+				return err
+			}
 		}
 		for _, child := range node.FloatingNodes {
-			walk(child)
+			if err := walk(child); err != nil {
+				return err
+			}
 		}
+		return nil
 	}
-	walk(root)
-	if len(matches) > 1 {
-		return fmt.Errorf("workspace number %d is ambiguous", number)
+	if err := walk(root); err != nil {
+		return nil, err
 	}
-	if len(matches) == 1 && (len(matches[0].Nodes) != 0 || len(matches[0].FloatingNodes) != 0) {
-		return fmt.Errorf("workspace %q is not empty", matches[0].Name)
-	}
-	return nil
+	return selected, nil
 }
 
-func requireWorkspaceContainsOnlyWindow(root *swayipc.TreeNode, number int, containerID int64) error {
+func requireWorkspaceUnambiguous(root *swayipc.TreeNode, number int) error {
+	_, err := requestedWorkspace(root, number)
+	return err
+}
+
+func requireWorkspaceContainsWindow(root *swayipc.TreeNode, number int, containerID int64) error {
 	if containerID <= 0 {
 		return errors.New("requested context has an invalid Sway container ID")
 	}
-	var matches []*swayipc.TreeNode
-	var findWorkspaces func(*swayipc.TreeNode)
-	findWorkspaces = func(node *swayipc.TreeNode) {
-		if node == nil {
-			return
-		}
-		if node.Type == "workspace" && workspaceNameHasNumber(node.Name, number) {
-			matches = append(matches, node)
-		}
-		for _, child := range node.Nodes {
-			findWorkspaces(child)
-		}
-		for _, child := range node.FloatingNodes {
-			findWorkspaces(child)
-		}
+	workspace, err := requestedWorkspace(root, number)
+	if err != nil {
+		return err
 	}
-	findWorkspaces(root)
-	if len(matches) == 0 {
+	if workspace == nil {
 		return fmt.Errorf("workspace number %d disappeared after restore", number)
 	}
-	if len(matches) > 1 {
-		return fmt.Errorf("workspace number %d is ambiguous", number)
-	}
 
-	leafIDs := make([]int64, 0, 2)
+	matches := 0
 	var collectLeaves func(*swayipc.TreeNode) error
 	collectLeaves = func(node *swayipc.TreeNode) error {
 		if node == nil {
 			return errors.New("workspace contains an invalid nil node")
 		}
 		if len(node.Nodes) == 0 && len(node.FloatingNodes) == 0 {
-			leafIDs = append(leafIDs, node.ID)
+			if node.ID == containerID {
+				matches++
+			}
 			return nil
 		}
 		for _, child := range node.Nodes {
@@ -594,18 +616,18 @@ func requireWorkspaceContainsOnlyWindow(root *swayipc.TreeNode, number int, cont
 		}
 		return nil
 	}
-	for _, child := range matches[0].Nodes {
+	for _, child := range workspace.Nodes {
 		if err := collectLeaves(child); err != nil {
 			return err
 		}
 	}
-	for _, child := range matches[0].FloatingNodes {
+	for _, child := range workspace.FloatingNodes {
 		if err := collectLeaves(child); err != nil {
 			return err
 		}
 	}
-	if len(leafIDs) != 1 || leafIDs[0] != containerID {
-		return fmt.Errorf("workspace %q is not exclusive to the requested context", matches[0].Name)
+	if matches != 1 {
+		return errors.New("requested context window is missing or ambiguous on the requested workspace")
 	}
 	return nil
 }
@@ -628,4 +650,78 @@ func focusWorkspace(ctx context.Context, client SwayRequester, number int) error
 		return fmt.Errorf("focus requested workspace: %w", err)
 	}
 	return nil
+}
+
+func focusWindow(ctx context.Context, client SwayRequester, containerID int64) error {
+	if containerID <= 0 {
+		return errors.New("requested context has an invalid Sway container ID")
+	}
+	message, err := client.RequestContext(ctx, swayipc.RunCommand, []byte(fmt.Sprintf("[con_id=%d] focus", containerID)))
+	if err != nil {
+		return fmt.Errorf("focus requested context window: %w", err)
+	}
+	if err := swayipc.CheckRunCommandResponse(message); err != nil {
+		return fmt.Errorf("focus requested context window: %w", err)
+	}
+	return nil
+}
+
+func focusAndVerifyWindow(ctx context.Context, client SwayRequester, registry sessionstate.Registry, id sessionstate.ContextID, workspace int, expected sessionstate.ManagedWindow) error {
+	if err := focusWindow(ctx, client, expected.ContainerID); err != nil {
+		return err
+	}
+	// A successful criteria command can match no window. Reobserve after the
+	// effect so close, replacement, duplicate identity and user-move races do
+	// not turn a stale container ID into a successful broker response.
+	tree, err := requestTree(ctx, client)
+	if err != nil {
+		return err
+	}
+	window, mapped, err := observeRequestedContext(tree, registry, id, workspace)
+	if err != nil {
+		return err
+	}
+	if !mapped || window.ContainerID != expected.ContainerID {
+		return &RequestDiagnostic{Code: DiagnosticContextChanged, ContextID: id, Workspace: workspace,
+			Cause: errors.New("requested context window changed during focus")}
+	}
+	if !workspaceNameHasNumber(window.Workspace, workspace) {
+		return &RequestDiagnostic{Code: DiagnosticWorkspaceConflict, ContextID: id, Workspace: workspace,
+			Cause: errors.New("requested context window left the requested workspace during focus")}
+	}
+	if err := requireWorkspaceContainsWindow(tree, workspace, window.ContainerID); err != nil {
+		return withDiagnosticContext(err, id)
+	}
+	focused := false
+	var walk func(*swayipc.TreeNode)
+	walk = func(node *swayipc.TreeNode) {
+		if node.ID == window.ContainerID {
+			focused = node.Focused
+		}
+		for _, child := range node.Nodes {
+			walk(child)
+		}
+		for _, child := range node.FloatingNodes {
+			walk(child)
+		}
+	}
+	walk(tree)
+	if !focused {
+		return &RequestDiagnostic{Code: DiagnosticContextChanged, ContextID: id, Workspace: workspace,
+			Cause: errors.New("requested context window did not retain focus")}
+	}
+	return nil
+}
+
+// Workspace resolution can fail before any context exists. At a caller that
+// retains a registration, include its known UUID without changing the reason
+// or losing the internal cause. Do not select one branch of a joined failure.
+func withDiagnosticContext(err error, id sessionstate.ContextID) error {
+	diagnostic, ok := err.(*RequestDiagnostic)
+	if !ok || diagnostic.ContextID != "" || id.Validate() != nil {
+		return err
+	}
+	copy := *diagnostic
+	copy.ContextID = id
+	return &copy
 }

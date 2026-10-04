@@ -700,6 +700,24 @@ sway-session only validates and forwards the association.
   --session lab-119 --cwd "$PWD" --label LAB-119 --workspace 98
 ~~~
 
+The requested workspace can already contain other windows. Use a distinct,
+stable session name for each independent work context; several contexts can
+share the same numbered workspace. Repeating the exact request reuses its
+context UUID and focuses that context's window, without restarting an existing
+agent or changing its Herdr pane layout. The broker initializes only a session
+proven to contain one empty idle shell, using the fixed Codex-plus-shell layout.
+
+An ambiguous workspace number, duplicate context windows, or a context whose
+live placement conflicts with the requested workspace is refused. Before
+restoring an unmapped context, conflicting saved placement is also refused;
+an already mapped context is checked against its current placement.
+The broker does not move an existing context to make the request succeed.
+After a launch or initialization failure, keep the existing context and retry
+the original request only after resolving the reported cause; do not invent a
+new session name. The broker/daemon must include shared-workspace support;
+older daemons still require an exclusive workspace. Existing protocol-v1 CLIs
+remain compatible, while the newer CLI adds actionable rejection diagnostics.
+
 An agent hook running inside a managed Herdr pane can report its session using
 strict JSON on stdin:
 

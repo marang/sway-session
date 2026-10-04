@@ -61,7 +61,7 @@ func executeRequestStart(ctx context.Context, arguments []string, deps dependenc
 	if err != nil {
 		var requestDiagnostic *sessionrequest.RequestDiagnostic
 		if errors.As(err, &requestDiagnostic) {
-			if requestDiagnostic.Validate() != nil {
+			if requestDiagnostic.Validate() != nil || requestDiagnostic.Workspace != request.Workspace {
 				return commandResult{}, failure("session_request", "request session start", "Session start request rejected; inspect the broker log before retrying the exact original request-start request.")
 			}
 			details := map[string]any{"workspace": requestDiagnostic.Workspace}

@@ -64,6 +64,9 @@ func Send(ctx context.Context, socketPath string, request Request) (Response, er
 		return Response{}, fmt.Errorf("unsupported session start response version %d", response.Version)
 	}
 	if !response.OK {
+		if diagnostic, recognized := decodeRequestDiagnostic(response.Error); recognized {
+			return Response{}, diagnostic
+		}
 		if diagnostic, recognized := decodeProtocolMismatch(response.Error); recognized {
 			return Response{}, diagnostic
 		}

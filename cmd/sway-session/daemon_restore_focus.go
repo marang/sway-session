@@ -118,7 +118,7 @@ func (runtime *sessionRuntime) observeRestoreMappingFocus(root *Node, registry s
 // A newly mapped window can emit focus before commands issued by the ensuing
 // reconciliation. Reserve an ordering boundary at window::new, but authorize
 // no focus until a fresh tree identifies a saved restore candidate or an
-// unrelated view whose mapping can interrupt reconstruction.
+// unrelated view whose automatic mapping must not cancel reconstruction.
 func (runtime *sessionRuntime) observeMappingFocus(node *Node) {
 	if node == nil || node.ID <= 0 || runtime.restoreCancelled || len(runtime.desired.Workspaces)+len(runtime.desired.Scratchpad) == 0 {
 		return
@@ -234,11 +234,6 @@ func (runtime *sessionRuntime) runAttributedCommandFocus(containerID int64, comm
 }
 
 func (runtime *sessionRuntime) expireRestoreFocus(barrier uint64) {
-	for id, interruption := range runtime.restoreInterruptions {
-		if !interruption.active && interruption.sequence <= barrier {
-			delete(runtime.restoreInterruptions, id)
-		}
-	}
 	for id, mapping := range runtime.pendingMappingFocus {
 		if mapping.sequence <= barrier {
 			delete(runtime.pendingMappingFocus, id)
@@ -268,10 +263,6 @@ func (runtime *sessionRuntime) consumeRestoreFocus(event swayipc.Event) bool {
 			if expected.mapping && expected.epoch == runtime.eventStreamEpoch &&
 				(event.StreamEpoch == 0 || event.StreamEpoch == expected.epoch) &&
 				expected.events[0].container == event.Container.ID {
-				if interruption, exists := runtime.restoreInterruptions[event.Container.ID]; exists && interruption.epoch == expected.epoch {
-					interruption.active = true
-					runtime.restoreInterruptions[event.Container.ID] = interruption
-				}
 				runtime.expectedFocus = slices.Delete(runtime.expectedFocus, index, index+1)
 				return true
 			}

@@ -61,6 +61,7 @@ func (runtime *sessionRuntime) observeStartupApplicationLayout(root *Node) {
 	visit(root)
 	observations := make(map[string]*startupApplicationLayout)
 	projections := make(map[*startupApplicationLayout]*startupApplicationLayout)
+	baselines := make(map[*startupApplicationLayout]*startupApplicationLayout)
 	excluded := runtime.lifecycleBlockedWorkspaces()
 	for name := range runtime.restoreSuspended {
 		excluded[name] = struct{}{}
@@ -79,7 +80,7 @@ func (runtime *sessionRuntime) observeStartupApplicationLayout(root *Node) {
 		}
 		current := observations[name]
 		if current == nil {
-			current = startupApplicationLayoutFingerprint(workspaces[name], nil)
+			current = runtime.startupLayoutWithoutForeignWindows(workspaces[name], nil)
 			observations[name] = current
 		}
 		previous := pending.observation
@@ -91,11 +92,16 @@ func (runtime *sessionRuntime) observeStartupApplicationLayout(root *Node) {
 			// startup gate and with the same window set.
 			survivors := projections[previous]
 			if survivors == nil {
-				survivors = startupApplicationLayoutFingerprint(workspaces[name], previous.windows)
+				survivors = runtime.startupLayoutWithoutForeignWindows(workspaces[name], previous.windows)
 				projections[previous] = survivors
+				// GET_TREE can contain a foreign view before its queued new
+				// event. Apply its newly established exclusion to both sides
+				// without discarding simultaneous saved-window layout edits.
+				baselines[previous] = runtime.projectStartupForeignWindows(previous)
 			}
-			if !slices.Equal(previous.structure, survivors.structure) ||
-				runtime.startupComplete && len(previous.windows) == len(current.windows) && !slices.Equal(previous.geometry, current.geometry) {
+			baseline := baselines[previous]
+			if !slices.Equal(baseline.structure, survivors.structure) ||
+				runtime.startupComplete && len(previous.windows) == len(current.windows) && !slices.Equal(baseline.geometry, current.geometry) {
 				runtime.cancelConflictingRestore()
 				return
 			}
@@ -103,6 +109,51 @@ func (runtime *sessionRuntime) observeStartupApplicationLayout(root *Node) {
 		pending.observation = current
 		runtime.startupApplications[id] = pending
 	}
+}
+
+// Foreign view lifecycle is not a change to the saved windows' layout. Retain
+// the full view set for the existing mapping/geometry-settling guard, while
+// comparing structure and geometry only after projecting those views out.
+func (runtime *sessionRuntime) startupLayoutWithoutForeignWindows(root *Node, keep map[int64]struct{}) *startupApplicationLayout {
+	return runtime.projectStartupForeignWindows(startupApplicationLayoutFingerprint(root, keep))
+}
+
+// Project the immutable fingerprint too: newly identified foreign views may
+// already be present in an earlier observation. End markers retain enough tree
+// structure to prune empty parents together with their excluded descendants.
+func (runtime *sessionRuntime) projectStartupForeignWindows(observed *startupApplicationLayout) *startupApplicationLayout {
+	if len(runtime.restoreForeignFocus) == 0 {
+		return observed
+	}
+	filtered := &startupApplicationLayout{windows: observed.windows}
+	structureIndex, geometryIndex := 0, 0
+	var visit func() bool
+	visit = func() bool {
+		node := observed.structure[structureIndex]
+		geometry := observed.geometry[geometryIndex]
+		structureIndex++
+		geometryIndex++
+		structureStart, geometryStart := len(filtered.structure), len(filtered.geometry)
+		filtered.structure = append(filtered.structure, node)
+		filtered.geometry = append(filtered.geometry, geometry)
+		_, present := observed.windows[node.id]
+		for !observed.structure[structureIndex].end {
+			present = visit() || present
+		}
+		structureIndex++
+		_, foreign := runtime.restoreForeignFocus[node.id]
+		if foreign || !present {
+			filtered.structure = filtered.structure[:structureStart]
+			filtered.geometry = filtered.geometry[:geometryStart]
+			return false
+		}
+		filtered.structure = append(filtered.structure, startupApplicationStructure{end: true})
+		return true
+	}
+	if len(observed.structure) != 0 {
+		visit()
+	}
+	return filtered
 }
 
 func startupApplicationLayoutFingerprint(root *Node, keep map[int64]struct{}) *startupApplicationLayout {

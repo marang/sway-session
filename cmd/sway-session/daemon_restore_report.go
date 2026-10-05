@@ -279,10 +279,6 @@ func (runtime *sessionRuntime) observeRestoreReportWithUpdater(root *Node, regis
 			return errors.Join(append(reportErrors, err)...)
 		}
 		record := pending[(start+offset)%len(pending)]
-		timeoutStart := record.StartedAt
-		if runtime.restoreResumeAt.After(timeoutStart) {
-			timeoutStart = runtime.restoreResumeAt
-		}
 		update := sessionstate.RestoreOutcomeUpdate{UpdatedAt: now.UTC(), OwnerRunID: runtime.restoreRunID, Status: "pending", Reason: record.Reason}
 		layoutRetryReady := false
 		item, exists := current[record.ContextID]
@@ -339,7 +335,7 @@ func (runtime *sessionRuntime) observeRestoreReportWithUpdater(root *Node, regis
 			}
 			if (!record.Requested.Window || mapped) && (!record.Requested.Placement || update.PlacementApplied) && (!record.Requested.Layout || update.LayoutApplied) {
 				update.Status, update.Reason = "completed", "restore_complete"
-			} else if !now.Before(timeoutStart.Add(restoreReportTimeout)) {
+			} else if !now.Before(record.StartedAt.Add(restoreReportTimeout)) {
 				update.Status = "failed"
 				switch {
 				case !mapped:

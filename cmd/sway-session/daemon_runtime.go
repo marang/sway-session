@@ -125,13 +125,9 @@ type sessionRuntime struct {
 	expectedFocus                []restoreFocusExpectation
 	pendingMappingFocus          map[int64]restoreMappingFocus
 	mappingCandidates            map[int64]restoreMappingCandidate
-	restoreInterruptions         map[int64]restoreInterruption
-	restoreInterruptionPaused    bool
-	restoreResumeAt              time.Time
-	restoreInterruptionLayout    map[string]*startupApplicationLayout
+	restoreForeignFocus          map[int64]restoreForeignFocus
 	restoreCancelled             bool
 	restoreCancellationReason    string
-	restoreCaptureUncertain      bool
 	nextMoveSequence             uint64
 	eventStreamReady             bool
 	eventStreamEpoch             uint64
@@ -387,7 +383,7 @@ func (runtime *sessionRuntime) HandleEvent(event swayipc.Event, now time.Time) {
 		runtime.expectedFocus = nil
 		clear(runtime.pendingMappingFocus)
 		clear(runtime.mappingCandidates)
-		clear(runtime.restoreInterruptions)
+		clear(runtime.restoreForeignFocus)
 		runtime.eventStreamReady = false
 		clear(runtime.observedTerminals)
 		clear(runtime.pendingTerminalClose)
@@ -407,7 +403,7 @@ func (runtime *sessionRuntime) HandleEvent(event swayipc.Event, now time.Time) {
 		runtime.expectedFocus = nil
 		clear(runtime.pendingMappingFocus)
 		clear(runtime.mappingCandidates)
-		clear(runtime.restoreInterruptions)
+		clear(runtime.restoreForeignFocus)
 		clear(runtime.observedTerminals)
 		clear(runtime.pendingTerminalClose)
 		runtime.terminalCloseDeadline = time.Time{}
@@ -430,7 +426,7 @@ func (runtime *sessionRuntime) HandleEvent(event swayipc.Event, now time.Time) {
 		runtime.expectedFocus = nil
 		clear(runtime.pendingMappingFocus)
 		clear(runtime.mappingCandidates)
-		clear(runtime.restoreInterruptions)
+		clear(runtime.restoreForeignFocus)
 		clear(runtime.observedTerminals)
 		clear(runtime.pendingTerminalClose)
 		runtime.terminalCloseDeadline = time.Time{}
@@ -442,6 +438,11 @@ func (runtime *sessionRuntime) HandleEvent(event swayipc.Event, now time.Time) {
 			runtime.cancelUncertainRestore()
 		}
 		runtime.eventStreamReady = false
+		return
+	}
+	// The producer publishes connection loss before queued events reach this
+	// consumer. Those stale events cannot establish new user intent.
+	if runtime.requireCurrentEventStream() != nil {
 		return
 	}
 	if event.Type == swayipc.EventTick {
@@ -461,13 +462,15 @@ func (runtime *sessionRuntime) HandleEvent(event swayipc.Event, now time.Time) {
 	if event.Type == swayipc.EventBinding || interactiveFocus {
 		if event.Type == swayipc.EventWindow && event.Change == "focus" {
 			runtime.queueTerminalFocus(event.Container, now)
+			for id, foreign := range runtime.restoreForeignFocus {
+				foreign.focused = event.Container != nil && event.Container.ID == id
+				runtime.restoreForeignFocus[id] = foreign
+			}
 		}
 		if interactiveFocus && runtime.consumeRestoreFocus(event) {
 			return
 		}
-		if interactiveFocus && runtime.restoreCaptureUncertain {
-			// After losing a paused stream, focus may still be automatic.
-			// A binding, rather than uncertain focus, releases capture.
+		if runtime.isForeignWindowEvent(event) {
 			return
 		}
 		runtime.cancelConflictingRestore()
@@ -477,7 +480,7 @@ func (runtime *sessionRuntime) HandleEvent(event swayipc.Event, now time.Time) {
 		return
 	}
 	if event.Change == "close" {
-		if runtime.consumeInterruptionClose(event) {
+		if runtime.consumeForeignWindowClose(event) {
 			delete(runtime.mappingCandidates, event.Container.ID)
 			delete(runtime.pendingMappingFocus, event.Container.ID)
 			return
@@ -489,6 +492,9 @@ func (runtime *sessionRuntime) HandleEvent(event swayipc.Event, now time.Time) {
 		runtime.queueTerminalClose(event.Container, now)
 	}
 	if event.Change == "move" && event.Container != nil && runtime.consumeExpectedMove(event.Container.ID) {
+		return
+	}
+	if event.Change == "move" && runtime.consumeForeignWindowMove(event) {
 		return
 	}
 	if runtime.restoreMayConflictWithUserIntent() || !runtime.restoreCancelled && len(runtime.desired.Scratchpad) != 0 {
@@ -567,28 +573,29 @@ func (runtime *sessionRuntime) requireCurrentEventStream() error {
 }
 
 func (runtime *sessionRuntime) cancelConflictingRestore() {
-	runtime.cancelRestore("user_cancelled", false)
+	if runtime.requireCurrentEventStream() != nil {
+		return
+	}
+	runtime.cancelRestore("user_cancelled")
 }
 
 func (runtime *sessionRuntime) cancelUncertainRestore() {
-	runtime.cancelRestore("observation_unavailable", runtime.restoreInterruptionPaused || runtime.restoreCaptureUncertain)
+	runtime.cancelRestore("observation_unavailable")
 }
 
-func (runtime *sessionRuntime) cancelRestore(reason string, preserveCapture bool) {
+func (runtime *sessionRuntime) cancelRestore(reason string) {
 	runtime.restoreReportErr = errors.Join(runtime.restoreReportErr, runtime.interruptRestoreReport(reason))
 	runtime.restoreCancellationReason = reason
-	runtime.restoreCaptureUncertain = preserveCapture
 	runtime.expectedFocus = nil
 	clear(runtime.pendingMappingFocus)
 	clear(runtime.mappingCandidates)
-	clear(runtime.restoreInterruptions)
-	runtime.restoreInterruptionLayout = nil
+	clear(runtime.restoreForeignFocus)
 	runtime.restoreCancelled = true
 	clear(runtime.startupApplications)
 	// Cancelling reconstruction must not discard ownership of staging effects.
 	// Cleanup proceeds separately, even through later focus or binding events.
 	runtime.restoreCleanupPending = runtime.restoreCleanup.Pending() || runtime.restoreRecoveryPending || runtime.restoreCleanupPending
-	if (preserveCapture || runtime.restoreCleanupPending) && runtime.debouncer != nil {
+	if runtime.restoreCleanupPending && runtime.debouncer != nil {
 		runtime.debouncer.Cancel()
 	}
 	runtime.originalFocusDone = true
@@ -779,11 +786,7 @@ func (runtime *sessionRuntime) reconcileObserved(root *Node, now time.Time, obse
 		degraded = append(degraded, reportErr)
 	}
 	runtime.observeDeadline = now.Add(sessionObservationDelay)
-	if runtime.restoreInterrupted(root, now) {
-		// A newly mapped foreign window may be requesting authentication.
-		// Keep both the retryable restore and its durable intent untouched.
-		return false, nil
-	}
+	runtime.observeForeignWindowFocus(root)
 	if reportErr := runtime.observeRestoreReport(root, registry, now); reportErr != nil {
 		degraded = append(degraded, reportErr)
 	}
@@ -940,12 +943,6 @@ func (runtime *sessionRuntime) reconcileObserved(root *Node, now time.Time, obse
 				captureRegistry.Contexts[index].Lifecycle = nil
 			}
 		}
-	}
-	if runtime.restoreCaptureUncertain {
-		// Preserve saved intent without blocking lifecycle observations,
-		// adoption or the independent cleanup of owned staging effects.
-		runtime.debouncer.Cancel()
-		return false, nil
 	}
 	captured, err := sessionstate.CaptureLayout(root, captureRegistry)
 	if err != nil {

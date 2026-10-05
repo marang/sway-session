@@ -1,8 +1,10 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -26,6 +28,18 @@ func TestSessionRuntimeStartupPromptHeadless(t *testing.T) {
 		}
 	}
 	h := newRestoreCleanupHeadless(t)
+	configPath := filepath.Join(h.root, "config", "sway.conf")
+	configBytes, configErr := os.ReadFile(configPath)
+	if configErr != nil {
+		t.Fatal(configErr)
+	}
+	// Keep the unrelated dialog focused while saved test windows map. The
+	// daemon must reconstruct them without waiting for a focus change.
+	configBytes = append(configBytes, []byte("\nno_focus [app_id=\"^"+strings.ReplaceAll(sessionstate.AppIDPrefix, ".", "[.]")+"\"]\n")...)
+	if err := os.WriteFile(configPath, configBytes, 0600); err != nil {
+		t.Fatal(err)
+	}
+	h.command("reload")
 	ids := []sessionstate.ContextID{testManagedContextID, restoreReportSecondID}
 	registry := sessionRegistryIDs(ids...)
 	for index := range registry.Contexts {
@@ -113,38 +127,21 @@ func TestSessionRuntimeStartupPromptHeadless(t *testing.T) {
 				newEvents, focusEvents, runtime.restoreCancelled, runtime.startupComplete, outcome, requester.commands)
 		}
 	}
-	// Advance the timer observation past settling without a wall-clock sleep.
-	// A still-focused interruption must not consume or overwrite saved intent.
-	now = now.Add(2 * restoreReportTimeout)
+	// Missing saved windows retain their intent through normal startup capture.
+	// The unrelated dialog adds no pause or deadline to the runtime.
+	now = now.Add(8 * time.Second)
 	if _, err := runtime.Reconcile(h.tree(), now); err != nil {
 		t.Fatal(err)
-	}
-	if deadline, scheduled := runtime.Deadline(); scheduled && !deadline.After(now) {
-		t.Fatal("paused restoration retained an expired deadline and would spin the daemon timer")
 	}
 	if err := runtime.Flush(now.Add(sessionSnapshotDebounce)); err != nil {
 		t.Fatal(err)
 	}
-	var pausedSnapshot sessionstate.LayoutSnapshot
-	if err := sessionstate.LayoutStoreFor(h.state).LoadInto(&pausedSnapshot); err != nil {
+	var waitingSnapshot sessionstate.LayoutSnapshot
+	if err := sessionstate.LayoutStoreFor(h.state).LoadInto(&waitingSnapshot); err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(pausedSnapshot, desired) || focusedContainerID(h.tree()) != promptID || len(requester.commands) != 0 {
-		t.Fatalf("active prompt lost saved intent or focus after startup deadline: saved=%+v focus=%d commands=%q", pausedSnapshot, focusedContainerID(h.tree()), requester.commands)
-	}
-	if err := syscall.Kill(-prompt.Process.Pid, syscall.SIGTERM); err != nil {
-		t.Fatal(err)
-	}
-	h.until("private prompt close", func() bool { return findContainerByID(h.tree(), promptID) == nil })
-	drainRestoreFocusDaemonEvents(t, h, handle)
-	if closeEvents != 1 || refocusEvents == 0 || focusedContainerID(h.tree()) != baselineID {
-		t.Fatalf("real prompt close/refocus events missing: close=%d refocus=%d focus=%d want=%d", closeEvents, refocusEvents, focusedContainerID(h.tree()), baselineID)
-	}
-	for _, id := range ids {
-		outcome := restoreReportOutcome(t, runtime, "automatic", id)
-		if outcome.Reason == "user_cancelled" || outcome.Status == "interrupted" || runtime.restoreCancelled {
-			t.Fatalf("automatic prompt close/refocus permanently cancelled pending startup restore: close=%d refocus=%d cancelled=%t outcome=%+v; commands=%q", closeEvents, refocusEvents, runtime.restoreCancelled, outcome, requester.commands)
-		}
+	if !reflect.DeepEqual(waitingSnapshot, desired) || focusedContainerID(h.tree()) != promptID || len(requester.commands) != 0 {
+		t.Fatalf("missing windows lost saved intent before startup settling: saved=%+v focus=%d commands=%q", waitingSnapshot, focusedContainerID(h.tree()), requester.commands)
 	}
 	owned := make([]int64, len(ids))
 	for index, id := range ids {
@@ -167,7 +164,7 @@ func TestSessionRuntimeStartupPromptHeadless(t *testing.T) {
 		}
 	}
 	if settled != 4 {
-		t.Fatalf("startup restore did not settle after prompt close and registered terminal arrival: complete=%t progress=%+v late=%t cleanup=%t deadline=%s now=%s commands=%q", runtime.startupComplete, runtime.restoreProgress, runtime.lateRestorePending, runtime.restoreCleanupPending, runtime.startupDeadline, now, requester.commands)
+		t.Fatalf("saved windows did not restore while the unrelated dialog remained open: complete=%t progress=%+v late=%t cleanup=%t deadline=%s now=%s commands=%q", runtime.startupComplete, runtime.restoreProgress, runtime.lateRestorePending, runtime.restoreCleanupPending, runtime.startupDeadline, now, requester.commands)
 	}
 	tree := h.tree()
 	node := restoreCleanupNamedWorkspace(tree, "99")
@@ -191,6 +188,20 @@ func TestSessionRuntimeStartupPromptHeadless(t *testing.T) {
 		t.Fatal("startup restore moved the unrelated preexisting view")
 	}
 	assertRestoreFocusNoTemporaryState(t, tree)
+	if err := syscall.Kill(-prompt.Process.Pid, syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	h.until("private prompt close", func() bool { return findContainerByID(h.tree(), promptID) == nil })
+	drainRestoreFocusDaemonEvents(t, h, handle)
+	if closeEvents != 1 || refocusEvents == 0 || focusedContainerID(h.tree()) != baselineID {
+		t.Fatalf("real prompt close/refocus events missing: close=%d refocus=%d focus=%d want=%d", closeEvents, refocusEvents, focusedContainerID(h.tree()), baselineID)
+	}
+	for _, id := range ids {
+		outcome := restoreReportOutcome(t, runtime, "automatic", id)
+		if outcome.Reason == "user_cancelled" || outcome.Status == "interrupted" || runtime.restoreCancelled {
+			t.Fatalf("automatic prompt close/refocus permanently cancelled pending startup restore: close=%d refocus=%d cancelled=%t outcome=%+v; commands=%q", closeEvents, refocusEvents, runtime.restoreCancelled, outcome, requester.commands)
+		}
+	}
 	if err := runtime.Flush(now.Add(sessionSnapshotDebounce)); err != nil {
 		t.Fatal(err)
 	}
@@ -207,5 +218,80 @@ func TestSessionRuntimeStartupPromptHeadless(t *testing.T) {
 			t.Fatalf("post-prompt saved child %d lost saved identity/order: %+v", index, child)
 		}
 	}
-	t.Logf("real prompt lifecycle events: new=%d focus=%d close=%d refocus=%d; saved terminals restored tabbed on99", newEvents, focusEvents, closeEvents, refocusEvents)
+	t.Logf("restore completed before prompt closure; real lifecycle events: new=%d focus=%d close=%d refocus=%d; saved terminals restored tabbed on99", newEvents, focusEvents, closeEvents, refocusEvents)
+}
+
+func TestSessionRuntimeForeignMoveHeadless(t *testing.T) {
+	if os.Getenv("SWAY_SESSION_HEADLESS_INTEGRATION") != "1" {
+		t.Skip("requires private headless compositor")
+	}
+	h := newRestoreCleanupHeadless(t)
+	ids := []sessionstate.ContextID{testManagedContextID, restoreReportSecondID}
+	registry := sessionRegistryIDs(ids...)
+	for index := range registry.Contexts {
+		registry.Contexts[index].Launcher.Cwd = h.root
+	}
+	if err := sessionstate.RegistryStoreFor(h.state).Save(registry); err != nil {
+		t.Fatal(err)
+	}
+	desired := exactDaemonSnapshot("98", ids...)
+	desired.Workspaces[0].Tiling.Layout = sessionstate.LayoutTabbed
+	if err := sessionstate.LayoutStoreFor(h.state).Save(desired); err != nil {
+		t.Fatal(err)
+	}
+	savedID := h.terminal(ids[0])
+	requester := &restoreCleanupRealRequester{Client: h.client}
+	state := &swayipc.EventStreamState{}
+	now := time.Now()
+	runtime, err := newSessionRuntimeWithOptions(requester, sessionRuntimeOptions{
+		Context: h.ctx, Root: h.state, EventStreamState: state,
+		StartedAt: now, Now: func() time.Time { return now }, CompositorID: strings.Repeat("a", 64),
+		ApplicationRestore: sessionstate.ApplicationRestoreOptions{
+			AdoptionGrace: time.Second, CloseGrace: time.Second, LaunchTimeout: time.Second, MaxConcurrent: 1,
+		},
+		IndicatorCatalog: func() (sessionstate.DesktopCatalog, error) { return sessionstate.DesktopCatalog{}, nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.subscribe(runtime, state)
+	reconcile := func() {
+		for range 4 {
+			refresh, err := runtime.Reconcile(h.tree(), now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !refresh {
+				return
+			}
+		}
+	}
+	var events []string
+	handle := func(event swayipc.Event) {
+		if event.Type == swayipc.EventWindow && event.Container != nil {
+			events = append(events, fmt.Sprintf("%s(%d)", event.Change, event.Container.ID))
+		}
+		runtime.HandleEvent(event, now)
+		if event.AffectsSessionLayout() {
+			reconcile()
+		}
+	}
+	reconcile()
+	drainRestoreFocusDaemonEvents(t, h, handle)
+	_, promptID := startupPromptWindow(t, h, "diagnostic-secrets-prompt")
+	drainRestoreFocusDaemonEvents(t, h, handle)
+	if runtime.restoreCancelled || focusedContainerID(h.tree()) != promptID {
+		t.Fatalf("fixture failed before foreign move: cancelled=%t focus=%d events=%v", runtime.restoreCancelled, focusedContainerID(h.tree()), events)
+	}
+	events = nil
+	h.command(fmt.Sprintf("[con_id=%d] move container to workspace 99", promptID))
+	drainRestoreFocusDaemonEvents(t, h, handle)
+	if focusedContainerID(h.tree()) != savedID || runtime.restoreCancelled {
+		t.Fatalf("foreign move's automatic source refocus cancelled saved reconstruction: cancelled=%t focus=%d want=%d events=%v", runtime.restoreCancelled, focusedContainerID(h.tree()), savedID, events)
+	}
+	// The return-focus allowance is exact and expires at the barrier.
+	runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "focus", Container: findContainerByID(h.tree(), savedID)}, now)
+	if !runtime.restoreCancelled {
+		t.Fatal("a subsequent saved-window focus was mistaken for automatic return focus")
+	}
 }

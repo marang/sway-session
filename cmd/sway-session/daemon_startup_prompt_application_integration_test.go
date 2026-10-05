@@ -17,8 +17,9 @@ import (
 )
 
 // The two desktop windows are Alacritty surrogates with distinct ordinary app
-// identities. Launch requests are recorded; no browser, messaging application,
-// desktop launcher, login compositor or secrets service participates.
+// identities. Both apps and saved terminal groups must restore while the
+// unregistered prompt is still open. Launch requests are recorded; no browser,
+// messaging application, desktop launcher or secrets service participates.
 func TestSessionRuntimeStartupPromptApplicationHeadless(t *testing.T) {
 	if os.Getenv("SWAY_SESSION_HEADLESS_INTEGRATION") != "1" {
 		t.Skip("set SWAY_SESSION_HEADLESS_INTEGRATION=1 for private Sway/Alacritty integration")
@@ -70,8 +71,8 @@ func TestSessionRuntimeStartupPromptApplicationHeadless(t *testing.T) {
 	if err := sessionstate.LayoutStoreFor(h.state).Save(desired); err != nil {
 		t.Fatal(err)
 	}
-	// A preexisting unmanaged view receives automatic focus when the prompt
-	// closes. It is fixture setup before the runtime subscribes to Sway.
+	// A preexisting unmanaged view supplies a baseline on the source workspace.
+	// It is fixture setup before the runtime subscribes to Sway.
 	_, baselineID := startupPromptWindow(t, h, "diagnostic-existing-view")
 	requester := &restoreCleanupRealRequester{Client: h.client}
 	launcher := &recordingApplicationLauncher{}
@@ -147,32 +148,24 @@ func TestSessionRuntimeStartupPromptApplicationHeadless(t *testing.T) {
 	if focusedContainerID(h.tree()) != promptID || runtime.startupComplete {
 		t.Fatal("prompt must hold focus while saved applications and terminals are missing")
 	}
-	now = now.Add(61 * time.Second)
+	now = now.Add(4 * time.Second)
 	reconcile()
 	drain()
 	if err := runtime.Flush(now); err != nil {
 		t.Fatal(err)
 	}
-	var paused sessionstate.LayoutSnapshot
-	if err := sessionstate.LayoutStoreFor(h.state).LoadInto(&paused); err != nil {
+	var waiting sessionstate.LayoutSnapshot
+	if err := sessionstate.LayoutStoreFor(h.state).LoadInto(&waiting); err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(paused, desired) || focusedContainerID(h.tree()) != promptID || len(requester.commands) != 0 || launcher.starts != 2 {
-		t.Fatalf("prolonged prompt pause lost saved intent/focus or repeated launch: saved=%+v focus=%d commands=%q launches=%d", paused, focusedContainerID(h.tree()), requester.commands, launcher.starts)
+	if !reflect.DeepEqual(waiting, desired) || launcher.starts != 2 {
+		t.Fatalf("waiting for delayed saved windows lost saved intent or repeated launch: saved=%+v launches=%d", waiting, launcher.starts)
 	}
 	for _, item := range registry.Contexts {
 		outcome := restoreReportOutcome(t, runtime, "automatic", item.ID)
 		if outcome.Status != "pending" || outcome.Reason == "user_cancelled" {
-			t.Fatalf("prolonged prompt pause consumed pending report: %+v", outcome)
+			t.Fatalf("waiting for delayed saved windows consumed pending report: %+v", outcome)
 		}
-	}
-	if err := syscall.Kill(-prompt.Process.Pid, syscall.SIGTERM); err != nil {
-		t.Fatal(err)
-	}
-	h.until("surrogate prompt close", func() bool { return findContainerByID(h.tree(), promptID) == nil })
-	drain()
-	if focusedContainerID(h.tree()) != baselineID || closeEvents != 1 {
-		t.Fatalf("prompt did not automatically return focus: focus=%d want=%d close=%d", focusedContainerID(h.tree()), baselineID, closeEvents)
 	}
 	applicationWindows := make([]int64, len(appIDs))
 	for index, identity := range appIdentities {
@@ -203,7 +196,7 @@ func TestSessionRuntimeStartupPromptApplicationHeadless(t *testing.T) {
 	}
 	tree := h.tree()
 	if settled != 4 {
-		t.Fatalf("application/terminal restore did not settle after prolonged prompt: complete=%t progress=%+v late=%t commands=%q", runtime.startupComplete, runtime.restoreProgress, runtime.lateRestorePending, requester.commands)
+		t.Fatalf("application/terminal restore did not settle with prompt still open: complete=%t progress=%+v late=%t commands=%q", runtime.startupComplete, runtime.restoreProgress, runtime.lateRestorePending, requester.commands)
 	}
 	for index, id := range applicationWindows {
 		if workspace := restoreCleanupWorkspace(tree, id); workspace != "99" {
@@ -229,8 +222,11 @@ func TestSessionRuntimeStartupPromptApplicationHeadless(t *testing.T) {
 	for _, item := range registry.Contexts {
 		outcome := restoreReportOutcome(t, runtime, "automatic", item.ID)
 		if outcome.Status != "completed" || !outcome.WindowMapped || !outcome.PlacementApplied || outcome.Requested.Layout && !outcome.LayoutApplied {
-			t.Fatalf("post-prompt application/terminal report did not complete: %+v", outcome)
+			t.Fatalf("application/terminal report did not complete with prompt still open: %+v", outcome)
 		}
+	}
+	if findContainerByID(tree, promptID) == nil || restoreCleanupWorkspace(tree, promptID) != "98" || closeEvents != 0 {
+		t.Fatalf("prompt did not remain open on98 through completed restoration: present=%t workspace=%q close=%d", findContainerByID(tree, promptID) != nil, restoreCleanupWorkspace(tree, promptID), closeEvents)
 	}
 	if launcher.starts != 2 || restoreCleanupWorkspace(tree, baselineID) != "98" {
 		t.Fatalf("restore repeated app launch or moved baseline: launches=%d baselineworkspace=%s", launcher.starts, restoreCleanupWorkspace(tree, baselineID))
@@ -254,7 +250,23 @@ func TestSessionRuntimeStartupPromptApplicationHeadless(t *testing.T) {
 			}
 		}
 	}
-	t.Logf("prompt paused 61s; real new=%d focus=%d close=%d; two desktop surrogates restored99, terminal tabs100/101", newEvents, focusEvents, closeEvents)
+	// Close only after placement, exact tab structure, reports and durable
+	// capture prove that the open prompt introduced no restore dependency.
+	if err := syscall.Kill(-prompt.Process.Pid, syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	h.until("surrogate prompt close", func() bool { return findContainerByID(h.tree(), promptID) == nil })
+	drain()
+	if closeEvents != 1 || restoreCleanupWorkspace(h.tree(), baselineID) != "98" {
+		t.Fatalf("completed restore lost prompt close evidence or baseline: close=%d baselineworkspace=%s", closeEvents, restoreCleanupWorkspace(h.tree(), baselineID))
+	}
+	for _, item := range registry.Contexts {
+		outcome := restoreReportOutcome(t, runtime, "automatic", item.ID)
+		if outcome.Status != "completed" || outcome.Reason == "user_cancelled" {
+			t.Fatalf("prompt close changed completed restore report: %+v", outcome)
+		}
+	}
+	t.Logf("open dialog added no restore dependency; real new=%d focus=%d close=%d; two desktop surrogates restored99, terminal tabs100/101 before dialog close", newEvents, focusEvents, closeEvents)
 }
 
 func startupPromptWindow(t *testing.T, h *restoreCleanupHeadless, identity string) (*exec.Cmd, int64) {

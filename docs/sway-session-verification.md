@@ -535,8 +535,9 @@ not gain a new startup allowance merely by reopening.
 Sway IPC provides no focus-event origin token. Exact matching between command
 and barrier is therefore a bounded inference: a concurrent user action with
 the identical transition cannot be distinguished by these fields alone.
-Bindings and unmatched focus events always cancel conflicting reconstruction.
-There is no time-based focus suppression window.
+Bindings and unattributed focus events cancel conflicting reconstruction; the
+new unrelated-view exemption is described below. There is no time-based focus
+suppression window.
 
 Run the full event-driven regression using a private compositor:
 
@@ -559,55 +560,52 @@ expired and generation-mismatched events, command failures, nested focus
 stacks, and fullscreen transitions. These are isolated compositor checks, not
 evidence that a production reboot has passed.
 
-### Startup interrupted by an unrelated dialog (LAB-275)
+### Startup focus from an unrelated dialog (LAB-275)
 
-A newly mapped unrelated view can take focus automatically while startup
-restoration is incomplete. Its exact container gets one mapping-focus
-allowance within the existing stream epoch and tick barrier. A fresh tree must
-show a real view without a persistent session identity; existing unrelated
-windows and malformed or ambiguous managed identities gain no exception.
-This uses compositor lifecycle evidence, not a keyring title or app-ID list.
+Saved windows restore to their saved workspaces and layouts while an unrelated
+password dialog remains open. The dialog is not a saved restore target. Its
+mapping, repeated focus, movement and closure do not pause reconstruction,
+renew startup/report deadlines or add a separate capture guard.
 
-While that view has focus, the runtime pauses reconstruction and cancels
-pending capture so an incomplete live layout cannot replace saved intent.
-Startup/report deadlines resume with a fresh bounded observation period;
-the original report attempt and start time remain unchanged. When the view
-closes, only the observed focus-stack successor gets one bounded return-focus
-allowance. A saved window's own mapping may also resume restoration while
-the unrelated view remains open but unfocused.
+A fresh tree identifies each newly mapped unregistered view before granting
+this exemption. Existing unrelated windows, active registered application
+windows and malformed or ambiguous persistent identities gain no exception. Becoming
+a registered window revokes an earlier exemption. This uses compositor
+lifecycle evidence, not a keyring title or app-ID list. On close or movement,
+only the observed surviving source focus-stack successor gets one return-focus
+allowance
+within the existing stream epoch and tick barrier. Queued consecutive closes
+retain their observed successor order.
 
-Bindings, unrelated focus/workspace changes, moves and changes to the surviving
-saved-workspace layout still supersede restoration. The surviving layout is
-checked during the pause and immediately before resuming, including eventless
-IPC edits just before closure. Stream loss interrupts with
-`observation_unavailable`, not `user_cancelled`. If loss happens during the
-pause, capture keeps the old snapshot until an explicit Sway binding establishes
-new user intent; an uncertain automatic focus or closure cannot release it.
-Lifecycle observation and cleanup of owned staging effects continue independently
-of this capture guard. Manual IPC/mouse actions alone cannot release the guard
-after stream loss; this conservative limit applies only to uncertain capture.
-The same new-window focus transition caused manually is indistinguishable
-from automatic mapping in Sway IPC and shares this narrow allowance.
+The late-application layout observer compares saved-window structure without
+these views, including when GET_TREE sees a mapped view before its queued
+window::new event. Genuine binding, saved-window focus/move/close, unmatched
+workspace focus and saved-workspace layout/resize changes still supersede
+reconstruction. A manual focus of the same unrelated view cannot be
+distinguished from automatic dialog focus in Sway IPC and shares its exemption.
+Stream loss interrupts with `observation_unavailable`; it must not be reported
+as `user_cancelled`. Existing startup capture protection and late-application
+restore retain saved intent while registered windows are still missing.
 
 Run the isolated regressions, or the complete lifecycle runner above:
 
 ```sh
 GOTOOLCHAIN=go1.26.5 SWAY_SESSION_HEADLESS_INTEGRATION=1 \
   go test -race ./cmd/sway-session \
-  -run '^TestSessionRuntime(Prompt|StartupPrompt)' -count=1 -v
+  -run '^TestSessionRuntime(Foreign|StartupPrompt)' -count=1 -v
 GOTOOLCHAIN=go1.26.5 go test ./internal/session \
   -run '^TestCaptureLayoutStartupPrompt' -count=1 -v
 ```
 
-The private-Sway cases observe real new/focus/close/refocus events and verify
-saved terminal tabs and placement after a long injected-clock interruption.
-The application case uses two distinct synthetic application identities and
-four terminals on workspaces 98–101; it verifies delayed mapping, placement,
-tabbed layouts, outcome reports and durable capture. These are authentication
-dialog and desktop-app surrogates, not a real GCR unlock, Chrome/Slack run or
-production reboot. Separate capture tests show that a floating foreign prompt
-preserves a reconstructible terminal group; a mixed unmanaged tiling sibling
-retains the existing workspace-local `placement_only` policy.
+The private-Sway cases observe real new/focus/close/refocus events. The terminal
+case verifies saved tabs before the unrelated view closes. The application
+case uses two distinct synthetic application identities and four terminals on
+workspaces 98–101; it verifies delayed mapping, placement, tabbed layouts,
+outcome reports and durable capture before the unrelated view closes. These
+are authentication-dialog and desktop-app surrogates, not a real GCR unlock,
+Chrome/Slack run or production reboot. Separate capture tests show that a floating foreign prompt preserves a
+reconstructible terminal group; a mixed unmanaged tiling sibling retains the
+existing workspace-local `placement_only` policy.
 
 Installation on the affected workstation remains a coordinated user action.
 Before changing the package, retain the previous verified package and create

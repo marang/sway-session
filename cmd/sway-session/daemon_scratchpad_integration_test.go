@@ -186,9 +186,9 @@ func TestSessionRuntimeScratchpadHeadless(t *testing.T) {
 						t.Fatalf("restore pass %d: %v; commands=%q", pass, err, requester.commands)
 					}
 					observed := h.tree()
-					// The daemon identifies mapped windows from a fresh tree before
-					// dispatching their queued new/focus events. Keep that ordering.
-					if err := runtime.observeRestoreMappingFocus(observed, registry); err != nil {
+					// Newly mapped saved scratchpad windows must be identifiable
+					// from a fresh tree without needing their queued new events.
+					if _, err := runtime.observeRestoreWindows(observed, registry); err != nil {
 						t.Fatal(err)
 					}
 					focusBefore := fmt.Sprintf("%+v", runtime.expectedFocus)

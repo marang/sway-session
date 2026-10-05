@@ -289,9 +289,15 @@ func TestSessionRuntimeForeignMoveHeadless(t *testing.T) {
 	if focusedContainerID(h.tree()) != savedID || runtime.restoreCancelled {
 		t.Fatalf("foreign move's automatic source refocus cancelled saved reconstruction: cancelled=%t focus=%d want=%d events=%v", runtime.restoreCancelled, focusedContainerID(h.tree()), savedID, events)
 	}
-	// The return-focus allowance is exact and expires at the barrier.
+	// Window focus remains irrelevant after the automatic return. A genuine
+	// move of the saved window must still cancel the pending tab reconstruction.
 	runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "focus", Container: findContainerByID(h.tree(), savedID)}, now)
+	if runtime.restoreCancelled {
+		t.Fatal("a subsequent saved-window focus cancelled restoration")
+	}
+	h.command(fmt.Sprintf("[con_id=%d] move container to workspace 100", savedID))
+	drainRestoreFocusDaemonEvents(t, h, handle)
 	if !runtime.restoreCancelled {
-		t.Fatal("a subsequent saved-window focus was mistaken for automatic return focus")
+		t.Fatal("a subsequent saved-window move did not cancel pending reconstruction")
 	}
 }

@@ -955,8 +955,12 @@ func TestPendingExplicitRestoreDoesNotStealNewMappingFocus(t *testing.T) {
 				t.Fatal("pending restore report lost the saved tabbed target")
 			}
 			runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "focus", Container: leaf}, now)
+			if runtime.restoreCancelled {
+				t.Fatal("repeated window focus cancelled saved placement")
+			}
+			runtime.HandleEvent(swayipc.Event{Type: swayipc.EventBinding}, now)
 			if !runtime.restoreCancelled {
-				t.Fatal("the report enabled a second mapping-focus allowance")
+				t.Fatal("the pending report hid a real user binding")
 			}
 		})
 	}

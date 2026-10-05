@@ -22,7 +22,9 @@ marks, sockets, environment variables, application IDs, or wire protocols.
   restoring application-private state.
 - Preserve one stable context UUID across capture, archive, activation,
   terminal recovery, and exact deletion.
-- Treat live user focus and layout changes as higher priority than automation.
+- Treat user bindings, workspace switches and saved-window placement/layout
+  changes as higher priority than automation; window focus alone does not
+  cancel saved placement.
 - Bound every compositor reconciliation pass without limiting registry size.
 - Keep state private, typed, versioned, and recoverable after ambiguous effects.
 - Remain fully independent of any title-animation process.
@@ -282,20 +284,20 @@ never read as lifecycle authority or desired layout. A fresh explicit attempt
 may rearm the existing daemon layout algorithm only after current policy and
 identity checks, an already marked live window or application anchor, and an
 exact match with the currently saved layout. Newly mapped unmarked windows first
-pass through normal adoption so their automatic focus remains attributable;
+pass through normal adoption before structural restoration;
 report observation must not preempt that adoption. A historical
 record cannot supply a layout to replay. Application launch retries clear a
 coordinator guard only after a newer explicit request, fresh policy/identity
 and absence checks, and this daemon's definitive rejection of the matching
 launch attempt. Accepted or ambiguous launches retain their guards across
 restart. A candidate guard removal is persisted before coordinator adoption.
-Mapping-focus identity is observed from the complete current tree and fresh
-lifecycle-filtered registry before effect locks. The one-shot login restore can
-hold the registry lock while terminals map; application reconciliation timing
-out must not make those automatic focus events look like user cancellation.
-This observation grants only the existing exact-container, epoch/tick-bounded
-focus allowance. It neither authorizes commands nor makes contexts eligible.
-Actual adoption and structural effects retain their lifecycle guards.
+Window focus alone does not cancel saved placement, including automatic map
+and return focus or a manual click. No mapping-focus allowance or foreign-window
+history is needed. Layout observation positively selects eligible registered
+terminals and unambiguous application anchors from the current tree and registry;
+it neither authorizes commands nor changes eligibility. Move/close intent is
+validated from the event payload against saved eligible contexts. Actual adoption
+and structural effects retain their lifecycle guards.
 History writes are short
 transactions around observations and effects, not transactions containing those
 effects. Missing optional tables mean no history, and read-only access does not

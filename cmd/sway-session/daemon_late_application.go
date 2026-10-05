@@ -1,6 +1,7 @@
 package main
 
 import (
+	"maps"
 	"slices"
 
 	sessionstate "github.com/marang/sway-session/internal/session"
@@ -19,6 +20,7 @@ type startupApplication struct {
 // GET_TREE pointers, titles, marks, or focus history.
 type startupApplicationLayout struct {
 	windows   map[int64]struct{}
+	viewCount int
 	structure []startupApplicationStructure
 	geometry  []startupApplicationGeometry
 }
@@ -37,10 +39,59 @@ type startupApplicationGeometry struct {
 	hasPercent bool
 }
 
+// Observe the windows eligible for persistence before lifecycle effect locks.
+// Desktop anchors can be identifiable before adoption adds their context mark.
+func (runtime *sessionRuntime) observeRestoreWindows(root *Node, registry sessionstate.Registry) (map[int64]struct{}, error) {
+	owned := make(map[int64]struct{})
+	if runtime.restoreCancelled || len(runtime.desired.Workspaces)+len(runtime.desired.Scratchpad) == 0 {
+		return owned, nil
+	}
+	windows, issues, err := sessionstate.ObserveManagedWindowsIsolated(root, registry)
+	if err != nil {
+		return nil, err
+	}
+	groups, err := sessionstate.ObserveApplicationGroupsForCapture(root, registry)
+	if err != nil {
+		return nil, err
+	}
+	unsafe := make(map[sessionstate.ContextID]struct{}, len(issues))
+	for _, issue := range issues {
+		unsafe[issue.ContextID] = struct{}{}
+	}
+	counts := make(map[int64]int)
+	var countNodes func(*Node)
+	countNodes = func(node *Node) {
+		counts[node.ID]++
+		for _, children := range [][]*Node{node.Nodes, node.FloatingNodes} {
+			for _, child := range children {
+				countNodes(child)
+			}
+		}
+	}
+	countNodes(root)
+	for _, item := range registry.Contexts {
+		if !sessionstate.EvaluateRestorePolicy(item).Eligible {
+			continue
+		}
+		if _, invalid := unsafe[item.ID]; invalid {
+			continue
+		}
+		if item.App != nil {
+			group := groups[item.ID]
+			if !group.Ambiguous && group.Anchor != nil && counts[group.Anchor.ContainerID] == 1 {
+				owned[group.Anchor.ContainerID] = struct{}{}
+			}
+		} else if window, exists := windows[item.ID]; exists && counts[window.ContainerID] == 1 {
+			owned[window.ContainerID] = struct{}{}
+		}
+	}
+	return owned, nil
+}
+
 // Observe before application adoption so even an eventless IPC layout/resize
 // command cancels reconstruction. During our own reconstruction, observations
 // establish a fresh baseline instead of mistaking our effects for user input.
-func (runtime *sessionRuntime) observeStartupApplicationLayout(root *Node) {
+func (runtime *sessionRuntime) observeStartupApplicationLayout(root *Node, ownedIDs map[int64]struct{}) {
 	if len(runtime.startupApplications) == 0 {
 		return
 	}
@@ -61,7 +112,6 @@ func (runtime *sessionRuntime) observeStartupApplicationLayout(root *Node) {
 	visit(root)
 	observations := make(map[string]*startupApplicationLayout)
 	projections := make(map[*startupApplicationLayout]*startupApplicationLayout)
-	baselines := make(map[*startupApplicationLayout]*startupApplicationLayout)
 	excluded := runtime.lifecycleBlockedWorkspaces()
 	for name := range runtime.restoreSuspended {
 		excluded[name] = struct{}{}
@@ -80,28 +130,23 @@ func (runtime *sessionRuntime) observeStartupApplicationLayout(root *Node) {
 		}
 		current := observations[name]
 		if current == nil {
-			current = runtime.startupLayoutWithoutForeignWindows(workspaces[name], nil)
+			current = startupApplicationLayoutFingerprint(workspaces[name], ownedIDs, nil)
 			observations[name] = current
 		}
 		previous := pending.observation
 		if previous != nil && runtime.restoreProgress == nil &&
 			!runtime.lateRestorePending && !(runtime.restoreCleanupPending && runtime.restoreCleanup.PendingExcluding(excluded)) {
-			// New views legitimately resize existing siblings. Compare structure
-			// after projecting them out. Initial client/decorations geometry can
-			// settle without another map, so compare rectangles only after the
-			// startup gate and with the same window set.
+			// Compare only previously owned views for structural changes. Any
+			// mapped sibling can resize them, so compare geometry only after
+			// startup, with unchanged ownership and the same total view count.
 			survivors := projections[previous]
 			if survivors == nil {
-				survivors = runtime.startupLayoutWithoutForeignWindows(workspaces[name], previous.windows)
+				survivors = startupApplicationLayoutFingerprint(workspaces[name], ownedIDs, previous.windows)
 				projections[previous] = survivors
-				// GET_TREE can contain a foreign view before its queued new
-				// event. Apply its newly established exclusion to both sides
-				// without discarding simultaneous saved-window layout edits.
-				baselines[previous] = runtime.projectStartupForeignWindows(previous)
 			}
-			baseline := baselines[previous]
-			if !slices.Equal(baseline.structure, survivors.structure) ||
-				runtime.startupComplete && len(previous.windows) == len(current.windows) && !slices.Equal(baseline.geometry, current.geometry) {
+			sameViews := previous.viewCount == current.viewCount && maps.Equal(previous.windows, current.windows)
+			if !slices.Equal(previous.structure, survivors.structure) ||
+				runtime.startupComplete && sameViews && !slices.Equal(previous.geometry, current.geometry) {
 				runtime.cancelConflictingRestore()
 				return
 			}
@@ -111,52 +156,9 @@ func (runtime *sessionRuntime) observeStartupApplicationLayout(root *Node) {
 	}
 }
 
-// Foreign view lifecycle is not a change to the saved windows' layout. Retain
-// the full view set for the existing mapping/geometry-settling guard, while
-// comparing structure and geometry only after projecting those views out.
-func (runtime *sessionRuntime) startupLayoutWithoutForeignWindows(root *Node, keep map[int64]struct{}) *startupApplicationLayout {
-	return runtime.projectStartupForeignWindows(startupApplicationLayoutFingerprint(root, keep))
-}
-
-// Project the immutable fingerprint too: newly identified foreign views may
-// already be present in an earlier observation. End markers retain enough tree
-// structure to prune empty parents together with their excluded descendants.
-func (runtime *sessionRuntime) projectStartupForeignWindows(observed *startupApplicationLayout) *startupApplicationLayout {
-	if len(runtime.restoreForeignFocus) == 0 {
-		return observed
-	}
-	filtered := &startupApplicationLayout{windows: observed.windows}
-	structureIndex, geometryIndex := 0, 0
-	var visit func() bool
-	visit = func() bool {
-		node := observed.structure[structureIndex]
-		geometry := observed.geometry[geometryIndex]
-		structureIndex++
-		geometryIndex++
-		structureStart, geometryStart := len(filtered.structure), len(filtered.geometry)
-		filtered.structure = append(filtered.structure, node)
-		filtered.geometry = append(filtered.geometry, geometry)
-		_, present := observed.windows[node.id]
-		for !observed.structure[structureIndex].end {
-			present = visit() || present
-		}
-		structureIndex++
-		_, foreign := runtime.restoreForeignFocus[node.id]
-		if foreign || !present {
-			filtered.structure = filtered.structure[:structureStart]
-			filtered.geometry = filtered.geometry[:geometryStart]
-			return false
-		}
-		filtered.structure = append(filtered.structure, startupApplicationStructure{end: true})
-		return true
-	}
-	if len(observed.structure) != 0 {
-		visit()
-	}
-	return filtered
-}
-
-func startupApplicationLayoutFingerprint(root *Node, keep map[int64]struct{}) *startupApplicationLayout {
+// A nil ownedIDs preserves the complete-tree comparison used by lifecycle
+// suspension. Startup supplies its freshly validated positive selection.
+func startupApplicationLayoutFingerprint(root *Node, ownedIDs, keep map[int64]struct{}) *startupApplicationLayout {
 	result := &startupApplicationLayout{windows: make(map[int64]struct{})}
 	var visit func(*Node, bool) bool
 	visit = func(node *Node, floating bool) bool {
@@ -164,9 +166,17 @@ func startupApplicationLayoutFingerprint(root *Node, keep map[int64]struct{}) *s
 			return false
 		}
 		view := node.AppID != nil || node.Window != nil
-		if view && keep != nil {
-			if _, exists := keep[node.ID]; !exists {
-				return false
+		if view {
+			result.viewCount++
+			if ownedIDs != nil {
+				if _, owned := ownedIDs[node.ID]; !owned {
+					return false
+				}
+			}
+			if keep != nil {
+				if _, retained := keep[node.ID]; !retained {
+					return false
+				}
 			}
 		}
 		structureStart, geometryStart := len(result.structure), len(result.geometry)

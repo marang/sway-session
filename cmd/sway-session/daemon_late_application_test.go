@@ -82,14 +82,16 @@ func TestSessionRuntimeDelayedStartupApplicationRearmsLayout(t *testing.T) {
 }
 
 func TestSessionRuntimeDelayedApplicationPreservesInterveningIntent(t *testing.T) {
-	for _, name := range []string{"binding", "focus", "move", "close", "disconnect", "desired-closed", "archived", "identity-changed", "already-marked", "ambiguous-then-unique"} {
+	for _, name := range []string{"binding", "workspace-focus", "move", "close", "disconnect", "desired-closed", "archived", "identity-changed", "already-marked", "ambiguous-then-unique"} {
 		t.Run(name, func(t *testing.T) {
 			runtime, requester, app, terminal, window, start := delayedApplicationScenario(t)
 			now := start.Add(11 * time.Second)
 			switch name {
 			case "binding":
 				runtime.HandleEvent(swayipc.Event{Type: swayipc.EventBinding}, now)
-			case "focus", "move", "close":
+			case "workspace-focus":
+				runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWorkspace, Change: "focus", Old: &Node{ID: 3}, Current: &Node{ID: 4}}, now)
+			case "move", "close":
 				runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: name, Container: terminal}, now)
 			case "disconnect":
 				runtime.HandleEvent(swayipc.Event{Type: swayipc.EventStream, Change: "ready", StreamEpoch: 1}, now)

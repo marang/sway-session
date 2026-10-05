@@ -11,7 +11,7 @@ import (
 // Sway focus events have no command-origin token. Match only a predicted,
 // ordered transition, within the command's stream epoch and tick barrier.
 // A coincident user action with the identical tuple is not distinguishable by
-// IPC; bindings and every unmatched transition always retain precedence.
+// IPC; bindings and unmatched workspace transitions retain precedence.
 type restoreFocusEvent struct {
 	kind                 swayipc.EventType
 	container, old, next int64
@@ -23,167 +23,7 @@ type restoreFocusEvent struct {
 type restoreFocusExpectation struct {
 	sequence, epoch uint64
 	afterMove       bool
-	mapping         bool
 	events          []restoreFocusEvent
-}
-
-type restoreMappingFocus struct {
-	sequence, epoch uint64
-}
-
-type restoreMappingCandidate struct {
-	contextID  sessionstate.ContextID
-	attributed bool
-}
-
-// Identity observation must precede effect locks: login's one-shot restore
-// can hold the registry lock while its terminals map. Waiting for application
-// reconciliation or mark dispatch would misclassify their queued map focus.
-// This grants only the exact new window's bounded focus allowance; it neither
-// makes a context restore-eligible nor bypasses any lifecycle effect guard.
-func (runtime *sessionRuntime) observeRestoreMappingFocus(root *Node, registry sessionstate.Registry) error {
-	if runtime.restoreCancelled || len(runtime.desired.Workspaces)+len(runtime.desired.Scratchpad) == 0 {
-		return nil
-	}
-	windows, issues, err := sessionstate.ObserveManagedWindowsIsolated(root, registry)
-	if err != nil {
-		return err
-	}
-	groups, err := sessionstate.ObserveApplicationGroupsForCapture(root, registry)
-	if err != nil {
-		return err
-	}
-	unsafe := make(map[sessionstate.ContextID]struct{}, len(issues))
-	for _, issue := range issues {
-		unsafe[issue.ContextID] = struct{}{}
-	}
-	nodes := make(map[int64]*Node)
-	var indexNodes func(*Node)
-	indexNodes = func(node *Node) {
-		if node.ID > 0 {
-			if _, duplicate := nodes[node.ID]; duplicate {
-				nodes[node.ID] = nil
-			} else {
-				nodes[node.ID] = node
-			}
-		}
-		for _, children := range [][]*Node{node.Nodes, node.FloatingNodes} {
-			for _, child := range children {
-				indexNodes(child)
-			}
-		}
-	}
-	indexNodes(root)
-	for _, item := range registry.Contexts {
-		if !sessionstate.EvaluateRestorePolicy(item).Eligible {
-			continue
-		}
-		if _, invalid := unsafe[item.ID]; invalid {
-			continue
-		}
-		if _, alreadyEligible := runtime.restoreEligible[item.ID]; alreadyEligible {
-			continue
-		}
-		if item.App != nil {
-			group := groups[item.ID]
-			if !group.Ambiguous && group.Anchor != nil && !group.AnchorMarked && nodes[group.Anchor.ContainerID] != nil {
-				runtime.attributeMappingFocus(group.Anchor.ContainerID, item.ID)
-			}
-			continue
-		}
-		if window, exists := windows[item.ID]; exists {
-			node := nodes[window.ContainerID]
-			mark, err := item.ID.Mark()
-			if err != nil {
-				return err
-			}
-			if node != nil && !slices.Contains(node.Marks, mark) {
-				runtime.attributeMappingFocus(window.ContainerID, item.ID)
-			}
-		}
-	}
-	known := make(map[int64]struct{})
-	for _, window := range windows {
-		known[window.ContainerID] = struct{}{}
-	}
-	for _, group := range groups {
-		for _, window := range group.Windows {
-			known[window.ContainerID] = struct{}{}
-		}
-	}
-	runtime.observeUnregisteredMappingFocus(root, nodes, known)
-	return nil
-}
-
-// A newly mapped window can emit focus before commands issued by the ensuing
-// reconciliation. Reserve an ordering boundary at window::new, but authorize
-// no focus until a fresh tree identifies a saved restore candidate or an
-// unrelated view whose automatic mapping must not cancel reconstruction.
-func (runtime *sessionRuntime) observeMappingFocus(node *Node) {
-	if node == nil || node.ID <= 0 || runtime.restoreCancelled || len(runtime.desired.Workspaces)+len(runtime.desired.Scratchpad) == 0 {
-		return
-	}
-	if len(runtime.pendingMappingFocus) >= 64 {
-		runtime.cancelConflictingRestore()
-		return
-	}
-	if runtime.pendingMappingFocus == nil {
-		runtime.pendingMappingFocus = make(map[int64]restoreMappingFocus)
-	}
-	runtime.nextMoveSequence++
-	sequence := runtime.nextMoveSequence
-	runtime.pendingMappingFocus[node.ID] = restoreMappingFocus{sequence: sequence, epoch: runtime.eventStreamEpoch}
-	if err := runtime.sendMoveBarrier(sequence); err != nil {
-		runtime.cancelConflictingRestore()
-		return
-	}
-	// A fresh GET_TREE can observe and adopt several windows before their
-	// queued window::new events arrive. Reuse only that exact container's
-	// validated adoption; never infer identity from the event alone.
-	if candidate, exists := runtime.mappingCandidates[node.ID]; exists {
-		runtime.attributeMappingFocus(node.ID, candidate.contextID)
-	}
-}
-
-func (runtime *sessionRuntime) attributeMappingFocus(containerID int64, id sessionstate.ContextID) {
-	if runtime.restoreCancelled {
-		return
-	}
-	_, savedWorkspace := snapshotContextWorkspace(runtime.desired, id)
-	_, savedScratchpad := savedScratchpadPlacement(runtime.desired, id)
-	if !savedWorkspace && !savedScratchpad {
-		return
-	}
-	candidate, adopted := runtime.mappingCandidates[containerID]
-	if !adopted {
-		if _, alreadySeen := runtime.restoreEligible[id]; alreadySeen {
-			return
-		}
-		if runtime.mappingCandidates == nil {
-			runtime.mappingCandidates = make(map[int64]restoreMappingCandidate)
-		}
-		candidate = restoreMappingCandidate{contextID: id}
-		runtime.mappingCandidates[containerID] = candidate
-	}
-	if candidate.contextID != id || candidate.attributed {
-		return
-	}
-	mapping, exists := runtime.pendingMappingFocus[containerID]
-	if !exists || mapping.epoch != runtime.eventStreamEpoch {
-		return
-	}
-	delete(runtime.pendingMappingFocus, containerID)
-	if len(runtime.expectedFocus) >= 64 {
-		runtime.cancelConflictingRestore()
-		return
-	}
-	candidate.attributed = true
-	runtime.mappingCandidates[containerID] = candidate
-	expectation := restoreFocusExpectation{
-		sequence: mapping.sequence, epoch: mapping.epoch, mapping: true,
-		events: []restoreFocusEvent{{kind: swayipc.EventWindow, container: containerID}},
-	}
-	runtime.expectedFocus = append(runtime.expectedFocus, expectation)
 }
 
 func (runtime *sessionRuntime) runAttributedCommand(root *Node, action sessionstate.RestoreAction, command string, move bool) error {
@@ -234,11 +74,6 @@ func (runtime *sessionRuntime) runAttributedCommandFocus(containerID int64, comm
 }
 
 func (runtime *sessionRuntime) expireRestoreFocus(barrier uint64) {
-	for id, mapping := range runtime.pendingMappingFocus {
-		if mapping.sequence <= barrier {
-			delete(runtime.pendingMappingFocus, id)
-		}
-	}
 	runtime.expectedFocus = slices.DeleteFunc(runtime.expectedFocus, func(e restoreFocusExpectation) bool {
 		return e.sequence <= barrier
 	})
@@ -254,25 +89,7 @@ func (runtime *sessionRuntime) consumeRestoreFocus(event swayipc.Event) bool {
 	if len(runtime.expectedFocus) == 0 {
 		return false
 	}
-	// The compositor may have mapped B before commands triggered by new(A),
-	// while new(B) is still queued. Its map-focus then precedes those command
-	// events despite its barrier being issued later. Mapping allowances match
-	// only their exact validated new window; command effects stay ordered.
-	if event.Type == swayipc.EventWindow && event.Container != nil {
-		for index, expected := range runtime.expectedFocus {
-			if expected.mapping && expected.epoch == runtime.eventStreamEpoch &&
-				(event.StreamEpoch == 0 || event.StreamEpoch == expected.epoch) &&
-				expected.events[0].container == event.Container.ID {
-				runtime.expectedFocus = slices.Delete(runtime.expectedFocus, index, index+1)
-				return true
-			}
-		}
-	}
-	index := slices.IndexFunc(runtime.expectedFocus, func(e restoreFocusExpectation) bool { return !e.mapping })
-	if index < 0 {
-		return false
-	}
-	expected := &runtime.expectedFocus[index]
+	expected := &runtime.expectedFocus[0]
 	if expected.afterMove || expected.epoch != runtime.eventStreamEpoch ||
 		event.StreamEpoch != 0 && event.StreamEpoch != expected.epoch {
 		return false
@@ -290,7 +107,7 @@ func (runtime *sessionRuntime) consumeRestoreFocus(event swayipc.Event) bool {
 	}
 	expected.events = expected.events[1:]
 	if len(expected.events) == 0 {
-		runtime.expectedFocus = slices.Delete(runtime.expectedFocus, index, index+1)
+		runtime.expectedFocus = runtime.expectedFocus[1:]
 	}
 	return true
 }

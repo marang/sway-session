@@ -68,7 +68,7 @@ func TestSessionRuntimeForeignViewBecomingManagedRetainsCloseIntent(t *testing.T
 	runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "focus", Container: view}, now)
 	compositor.drain(runtime, now)
 	// A fresh validated identity changes which lifecycle owns this window.
-	// Its later close must no longer be exempt as an unrelated dialog.
+	// Its later close must preserve the user's saved-window intent.
 	id := sessionstate.ContextID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
 	identity, _ = id.AppID()
 	if _, err := runtime.Reconcile(compositor.root, now); err != nil {
@@ -81,7 +81,7 @@ func TestSessionRuntimeForeignViewBecomingManagedRetainsCloseIntent(t *testing.T
 }
 
 func TestSessionRuntimeForeignActivityDoesNotCancelSavedTargets(t *testing.T) {
-	for _, change := range []string{"focus", "move", "binding", "saved_focus"} {
+	for _, change := range []string{"focus", "move", "close", "binding", "saved_focus", "workspace_focus"} {
 		t.Run(change, func(t *testing.T) {
 			runtime, compositor, first, now := newMappingFocusScenario(t)
 			runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "new", Container: first}, now)
@@ -108,8 +108,11 @@ func TestSessionRuntimeForeignActivityDoesNotCancelSavedTargets(t *testing.T) {
 			if change == "saved_focus" {
 				event.Change, event.Container = "focus", first
 			}
+			if change == "workspace_focus" {
+				event = swayipc.Event{Type: swayipc.EventWorkspace, Change: "focus", Old: &Node{ID: 3}, Current: &Node{ID: 4}}
+			}
 			runtime.HandleEvent(event, now)
-			wantCancelled := change == "binding" || change == "saved_focus"
+			wantCancelled := change == "binding" || change == "workspace_focus"
 			if runtime.restoreCancelled != wantCancelled {
 				t.Fatalf("activity %s cancelled=%t, want %t", change, runtime.restoreCancelled, wantCancelled)
 			}
@@ -256,8 +259,13 @@ func TestSessionRuntimeForeignQueuedEventAfterStreamLoss(t *testing.T) {
 			// already in the queue must not invent manual user intent.
 			guard.epoch, guard.connected = 2, false
 			runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: change, Container: prompt}, now)
-			if !runtime.restoreCancelled || runtime.restoreCancellationReason != "observation_unavailable" {
-				t.Fatalf("synchronous stream loss was attributed to queued foreign activity: cancelled=%t reason=%q", runtime.restoreCancelled, runtime.restoreCancellationReason)
+			id, err := sessionstate.ParseAppID(*terminal.AppID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			outcome := restoreReportOutcome(t, runtime, "automatic", id)
+			if !runtime.restoreCancelled || outcome.Reason != "observation_unavailable" {
+				t.Fatalf("synchronous stream loss was attributed to queued foreign activity: cancelled=%t outcome=%+v", runtime.restoreCancelled, outcome)
 			}
 		})
 	}

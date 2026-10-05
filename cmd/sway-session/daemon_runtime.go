@@ -123,9 +123,6 @@ type sessionRuntime struct {
 	placementCursor              *sessionstate.PlacementAction
 	expectedMoves                map[int64][]uint64
 	expectedFocus                []restoreFocusExpectation
-	pendingMappingFocus          map[int64]restoreMappingFocus
-	mappingCandidates            map[int64]restoreMappingCandidate
-	restoreForeignFocus          map[int64]restoreForeignFocus
 	restoreCancelled             bool
 	restoreCancellationReason    string
 	nextMoveSequence             uint64
@@ -372,8 +369,8 @@ func (runtime *sessionRuntime) ReconcileIndicators(root *Node) (bool, error) {
 }
 
 // HandleEvent records live user intent before the next tree reconciliation.
-// Binding, focus, close, and non-daemon move activity supersede conflicting
-// startup reconstruction; application launch/adoption remains independent.
+// Bindings, workspace switches and changes to saved windows supersede
+// conflicting startup reconstruction. Window focus alone leaves placement intact.
 func (runtime *sessionRuntime) HandleEvent(event swayipc.Event, now time.Time) {
 	if runtime == nil || runtime.shutdown {
 		return
@@ -381,9 +378,6 @@ func (runtime *sessionRuntime) HandleEvent(event swayipc.Event, now time.Time) {
 	if event.Type == swayipc.EventShutdown {
 		runtime.resetApplicationCloseObservations()
 		runtime.expectedFocus = nil
-		clear(runtime.pendingMappingFocus)
-		clear(runtime.mappingCandidates)
-		clear(runtime.restoreForeignFocus)
 		runtime.eventStreamReady = false
 		clear(runtime.observedTerminals)
 		clear(runtime.pendingTerminalClose)
@@ -401,9 +395,6 @@ func (runtime *sessionRuntime) HandleEvent(event swayipc.Event, now time.Time) {
 		// the fresh tree instead of consuming later user intent.
 		clear(runtime.expectedMoves)
 		runtime.expectedFocus = nil
-		clear(runtime.pendingMappingFocus)
-		clear(runtime.mappingCandidates)
-		clear(runtime.restoreForeignFocus)
 		clear(runtime.observedTerminals)
 		clear(runtime.pendingTerminalClose)
 		runtime.terminalCloseDeadline = time.Time{}
@@ -424,9 +415,6 @@ func (runtime *sessionRuntime) HandleEvent(event swayipc.Event, now time.Time) {
 		runtime.resetApplicationCloseObservations()
 		clear(runtime.expectedMoves)
 		runtime.expectedFocus = nil
-		clear(runtime.pendingMappingFocus)
-		clear(runtime.mappingCandidates)
-		clear(runtime.restoreForeignFocus)
 		clear(runtime.observedTerminals)
 		clear(runtime.pendingTerminalClose)
 		runtime.terminalCloseDeadline = time.Time{}
@@ -452,25 +440,15 @@ func (runtime *sessionRuntime) HandleEvent(event swayipc.Event, now time.Time) {
 		}
 		return
 	}
-	if event.Type == swayipc.EventWindow && event.Change == "new" {
-		runtime.observeMappingFocus(event.Container)
+	if event.Type == swayipc.EventWindow && event.Change == "focus" {
+		runtime.queueTerminalFocus(event.Container, now)
+		// Focus does not change saved placement. Consume command feedback
+		// only to keep later workspace transitions ordered.
+		runtime.consumeRestoreFocus(event)
 		return
 	}
-	interactiveFocus :=
-		event.Type == swayipc.EventWindow && event.Change == "focus" ||
-			event.Type == swayipc.EventWorkspace && event.Change == "focus"
-	if event.Type == swayipc.EventBinding || interactiveFocus {
-		if event.Type == swayipc.EventWindow && event.Change == "focus" {
-			runtime.queueTerminalFocus(event.Container, now)
-			for id, foreign := range runtime.restoreForeignFocus {
-				foreign.focused = event.Container != nil && event.Container.ID == id
-				runtime.restoreForeignFocus[id] = foreign
-			}
-		}
-		if interactiveFocus && runtime.consumeRestoreFocus(event) {
-			return
-		}
-		if runtime.isForeignWindowEvent(event) {
+	if event.Type == swayipc.EventBinding || event.Type == swayipc.EventWorkspace && event.Change == "focus" {
+		if event.Type == swayipc.EventWorkspace && runtime.consumeRestoreFocus(event) {
 			return
 		}
 		runtime.cancelConflictingRestore()
@@ -480,26 +458,42 @@ func (runtime *sessionRuntime) HandleEvent(event swayipc.Event, now time.Time) {
 		return
 	}
 	if event.Change == "close" {
-		if runtime.consumeForeignWindowClose(event) {
-			delete(runtime.mappingCandidates, event.Container.ID)
-			delete(runtime.pendingMappingFocus, event.Container.ID)
-			return
-		}
-		if event.Container != nil {
-			delete(runtime.mappingCandidates, event.Container.ID)
-			delete(runtime.pendingMappingFocus, event.Container.ID)
-		}
 		runtime.queueTerminalClose(event.Container, now)
 	}
 	if event.Change == "move" && event.Container != nil && runtime.consumeExpectedMove(event.Container.ID) {
 		return
 	}
-	if event.Change == "move" && runtime.consumeForeignWindowMove(event) {
-		return
-	}
 	if runtime.restoreMayConflictWithUserIntent() || !runtime.restoreCancelled && len(runtime.desired.Scratchpad) != 0 {
-		runtime.cancelConflictingRestore()
+		if relevant, err := runtime.restoreWindowEventRelevant(event.Container); err != nil {
+			runtime.cancelUncertainRestore()
+		} else if relevant {
+			runtime.cancelConflictingRestore()
+		}
 	}
+}
+
+// Events carry the closed or moved subtree even if the next GET_TREE already
+// lacks it. Validate only positive registered identities, without a view cache.
+func (runtime *sessionRuntime) restoreWindowEventRelevant(node *Node) (bool, error) {
+	id, registered, err := sessionstate.ObserveRegisteredWindowContext(node, runtime.registry)
+	if err != nil {
+		return false, err
+	}
+	if registered {
+		_, workspace := snapshotContextWorkspace(runtime.desired, id)
+		_, scratchpad := savedScratchpadPlacement(runtime.desired, id)
+		if workspace || scratchpad {
+			return true, nil
+		}
+	}
+	for _, children := range [][]*Node{node.Nodes, node.FloatingNodes} {
+		for _, child := range children {
+			if relevant, err := runtime.restoreWindowEventRelevant(child); relevant || err != nil {
+				return relevant, err
+			}
+		}
+	}
+	return false, nil
 }
 
 func (runtime *sessionRuntime) queueTerminalFocus(node *Node, observedAt time.Time) {
@@ -587,9 +581,6 @@ func (runtime *sessionRuntime) cancelRestore(reason string) {
 	runtime.restoreReportErr = errors.Join(runtime.restoreReportErr, runtime.interruptRestoreReport(reason))
 	runtime.restoreCancellationReason = reason
 	runtime.expectedFocus = nil
-	clear(runtime.pendingMappingFocus)
-	clear(runtime.mappingCandidates)
-	clear(runtime.restoreForeignFocus)
 	runtime.restoreCancelled = true
 	clear(runtime.startupApplications)
 	// Cancelling reconstruction must not discard ownership of staging effects.
@@ -770,7 +761,8 @@ func (runtime *sessionRuntime) reconcileObserved(root *Node, now time.Time, obse
 		runtime.observeDeadline = now.Add(sessionStartupRetryDelay)
 		return false, err
 	}
-	if err := runtime.observeRestoreMappingFocus(root, registry); err != nil {
+	owned, err := runtime.observeRestoreWindows(root, registry)
+	if err != nil {
 		runtime.resetApplicationCloseObservations()
 		return false, err
 	}
@@ -786,7 +778,6 @@ func (runtime *sessionRuntime) reconcileObserved(root *Node, now time.Time, obse
 		degraded = append(degraded, reportErr)
 	}
 	runtime.observeDeadline = now.Add(sessionObservationDelay)
-	runtime.observeForeignWindowFocus(root)
 	if reportErr := runtime.observeRestoreReport(root, registry, now); reportErr != nil {
 		degraded = append(degraded, reportErr)
 	}
@@ -847,7 +838,7 @@ func (runtime *sessionRuntime) reconcileObserved(root *Node, now time.Time, obse
 	// persistent registry exists so those changes still reach the debouncer.
 	// The missing-registry branch above schedules a separate discovery tick.
 	runtime.observeDeadline = now.Add(sessionObservationDelay)
-	runtime.observeStartupApplicationLayout(root)
+	runtime.observeStartupApplicationLayout(root, owned)
 	applicationRefresh, registry, applicationDegraded, applicationErr := runtime.reconcileObservedApplications(root, registry, now, observation)
 	if applicationDegraded != nil {
 		degraded = append(degraded, applicationDegraded)
@@ -894,7 +885,6 @@ func (runtime *sessionRuntime) reconcileObserved(root *Node, now time.Time, obse
 			// sending the mark command so an ambiguous response cannot make the
 			// subsequent marked observation look like a pre-existing window.
 			_, alreadyEligible := runtime.restoreEligible[action.ContextID]
-			runtime.attributeMappingFocus(action.ContainerID, action.ContextID)
 			if action.Kind == sessionstate.PlacementAddMark {
 				runtime.restoreEligible[action.ContextID] = struct{}{}
 				if runtime.startupComplete && !alreadyEligible {
@@ -1121,7 +1111,6 @@ func (runtime *sessionRuntime) reconcileObservedApplications(root *Node, registr
 				continue
 			}
 			_, alreadyEligible := runtime.restoreEligible[action.ContextID]
-			runtime.attributeMappingFocus(action.ContainerID, action.ContextID)
 			_, startupApplication := runtime.startupApplications[action.ContextID]
 			if action.Kind == sessionstate.PlacementAddMark && (!runtime.startupComplete || startupApplication) {
 				runtime.restoreEligible[action.ContextID] = struct{}{}

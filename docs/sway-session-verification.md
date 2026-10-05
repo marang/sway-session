@@ -522,7 +522,7 @@ tree before a second move, so it never predicts from an already changed focus
 stack. Missing focus-stack evidence does not allow arbitrary focus changes.
 
 Cold startup is tested with the daemon subscribed before terminals map.
-`window::new` reserves a bounded epoch/tick record; only validated placement
+`window::new` reserves a bounded epoch/tick record; validated placement
 of a saved active context authorizes its one automatic mapping-focus event.
 The exact adopted container is remembered because GET_TREE can observe and
 mark a window before its queued new event is processed. The mapping allowance
@@ -558,6 +558,71 @@ focus feedback. Unit regressions cover delayed, duplicate, out-of-order,
 expired and generation-mismatched events, command failures, nested focus
 stacks, and fullscreen transitions. These are isolated compositor checks, not
 evidence that a production reboot has passed.
+
+### Startup interrupted by an unrelated dialog (LAB-275)
+
+A newly mapped unrelated view can take focus automatically while startup
+restoration is incomplete. Its exact container gets one mapping-focus
+allowance within the existing stream epoch and tick barrier. A fresh tree must
+show a real view without a persistent session identity; existing unrelated
+windows and malformed or ambiguous managed identities gain no exception.
+This uses compositor lifecycle evidence, not a keyring title or app-ID list.
+
+While that view has focus, the runtime pauses reconstruction and cancels
+pending capture so an incomplete live layout cannot replace saved intent.
+Startup/report deadlines resume with a fresh bounded observation period;
+the original report attempt and start time remain unchanged. When the view
+closes, only the observed focus-stack successor gets one bounded return-focus
+allowance. A saved window's own mapping may also resume restoration while
+the unrelated view remains open but unfocused.
+
+Bindings, unrelated focus/workspace changes, moves and changes to the surviving
+saved-workspace layout still supersede restoration. The surviving layout is
+checked during the pause and immediately before resuming, including eventless
+IPC edits just before closure. Stream loss interrupts with
+`observation_unavailable`, not `user_cancelled`. If loss happens during the
+pause, capture keeps the old snapshot until an explicit Sway binding establishes
+new user intent; an uncertain automatic focus or closure cannot release it.
+Lifecycle observation and cleanup of owned staging effects continue independently
+of this capture guard. Manual IPC/mouse actions alone cannot release the guard
+after stream loss; this conservative limit applies only to uncertain capture.
+The same new-window focus transition caused manually is indistinguishable
+from automatic mapping in Sway IPC and shares this narrow allowance.
+
+Run the isolated regressions, or the complete lifecycle runner above:
+
+```sh
+GOTOOLCHAIN=go1.26.5 SWAY_SESSION_HEADLESS_INTEGRATION=1 \
+  go test -race ./cmd/sway-session \
+  -run '^TestSessionRuntime(Prompt|StartupPrompt)' -count=1 -v
+GOTOOLCHAIN=go1.26.5 go test ./internal/session \
+  -run '^TestCaptureLayoutStartupPrompt' -count=1 -v
+```
+
+The private-Sway cases observe real new/focus/close/refocus events and verify
+saved terminal tabs and placement after a long injected-clock interruption.
+The application case uses two distinct synthetic application identities and
+four terminals on workspaces 98–101; it verifies delayed mapping, placement,
+tabbed layouts, outcome reports and durable capture. These are authentication
+dialog and desktop-app surrogates, not a real GCR unlock, Chrome/Slack run or
+production reboot. Separate capture tests show that a floating foreign prompt
+preserves a reconstructible terminal group; a mixed unmanaged tiling sibling
+retains the existing workspace-local `placement_only` policy.
+
+Installation on the affected workstation remains a coordinated user action.
+Before changing the package, retain the previous verified package and create
+an owner-only metadata backup with `sway-session state backup --output PATH`
+using an absolute, unused destination. A backup preserves current metadata;
+it cannot recover an earlier layout that has already been overwritten. Install
+the reviewed package through the package manager, then stop only the identified
+sway-session daemon and start the replacement through the established session
+launcher. Replacing the executable alone does not update a running daemon.
+Preserve the terminal adapters, foreground agents and registered contexts.
+Rollback installs the retained package with `pacman -U PATH` and uses the same
+controlled daemon restart. Metadata recovery is a separate decision: first
+preview `sway-session state recover --from PATH`; apply only with stopped
+writers and explicit `--yes`. Do not copy live SQLite/WAL files or manually
+rewrite layout tables. See the README's state backup/recovery procedure.
 
 ### Terminal close intent
 

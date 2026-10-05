@@ -38,7 +38,7 @@ go test -race -p 1 ./internal/shutdownwatch ./internal/swayipc \
 if [ "$headless" -eq 1 ]; then
   printf '%s\n' 'Lifecycle matrix: real private Sway IPC/processes, workspaces 98+'
   SWAY_SESSION_HEADLESS_INTEGRATION=1 go test -race -p 1 ./cmd/sway-session \
-    -run '^Test(ApplicationAdoptionDaemonRestartHeadless|SessionRuntime(Scratchpad|RestoreFocus|RestoreColdStartFocus|RestoreCleanup|LayoutShapes|LateApplication|ApplicationLaunch)Headless|FollowApplicationShutdownHeadless|LifecycleHeadlessApplicationRecovery|DaemonExecutableReplacementPreservesWorkHeadless|TerminalLifecycle.*Headless|SessionStart.*Headless)$' \
+    -run '^Test(ApplicationAdoptionDaemonRestartHeadless|SessionRuntime(Scratchpad|RestoreFocus|RestoreColdStartFocus|RestoreCleanup|LayoutShapes|LateApplication|ApplicationLaunch|StartupPrompt|StartupPromptApplication)Headless|FollowApplicationShutdownHeadless|LifecycleHeadlessApplicationRecovery|DaemonExecutableReplacementPreservesWorkHeadless|TerminalLifecycle.*Headless|SessionStart.*Headless)$' \
     -count=1 -timeout=10m -v
 else
   printf '%s\n' 'Private compositor: not run (use --headless)'

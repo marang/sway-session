@@ -511,32 +511,30 @@ test runs skip it; a private compositor test is not evidence of a real reboot.
 
 ### Restore-generated focus events
 
-The runtime predicts narrow focus transitions from the fresh tree and its
-focus stacks for staging/placement moves, cross-workspace moves to a mark,
-explicit focus, and fullscreen activation. A move-induced successor focus is
-accepted only after the corresponding expected move event. Workspace and
-window focus events must match in order; each allowance is consumed once and
+The runtime matches its command-generated focus feedback from the fresh tree
+and focus stacks for staging/placement moves, explicit focus, and fullscreen
+activation. Move-induced feedback is consumed only after the corresponding
+expected move event. Expected workspace and window feedback is ordered; each
+expectation is consumed once and
 expires at that command's tick barrier. Stream generation changes, command
 failures, and cancellation invalidate allowances. Placement yields for a new
 tree before a second move, so it never predicts from an already changed focus
-stack. Missing focus-stack evidence does not allow arbitrary focus changes.
+stack. Missing focus-stack evidence cannot justify an arbitrary workspace switch.
 
 Cold startup is tested with the daemon subscribed before terminals map.
-`window::new` reserves a bounded epoch/tick record; only validated placement
-of a saved active context authorizes its one automatic mapping-focus event.
-The exact adopted container is remembered because GET_TREE can observe and
-mark a window before its queued new event is processed. The mapping allowance
-precedes subsequent command effects and expires at its own barrier. Closing a
-window, losing the stream, or cancelling restoration invalidates these facts.
-An explicit cancellation also prevents later window adoption from restarting
-structural restoration in the same daemon lifetime. Already seen contexts do
-not gain a new startup allowance merely by reopening.
+Window focus alone does not cancel saved placement, whether it comes from
+mapping, a manual click or automatic refocus after another window closes.
+Mapping needs no focus allowance, remembered container or separate tick.
+An explicit cancellation still prevents later window adoption from restarting
+structural restoration in the same daemon lifetime.
 
 Sway IPC provides no focus-event origin token. Exact matching between command
 and barrier is therefore a bounded inference: a concurrent user action with
 the identical transition cannot be distinguished by these fields alone.
-Bindings and unmatched focus events always cancel conflicting reconstruction.
-There is no time-based focus suppression window.
+Bindings and unattributed workspace focus events cancel conflicting
+reconstruction. Window command feedback is consumed only to maintain ordered
+workspace attribution; unmatched window focus is harmless. There is no
+time-based focus suppression window.
 
 Run the full event-driven regression using a private compositor:
 
@@ -558,6 +556,72 @@ focus feedback. Unit regressions cover delayed, duplicate, out-of-order,
 expired and generation-mismatched events, command failures, nested focus
 stacks, and fullscreen transitions. These are isolated compositor checks, not
 evidence that a production reboot has passed.
+
+### Startup focus from an unrelated dialog (LAB-275)
+
+Saved windows restore to their saved workspaces and layouts while an unrelated
+password dialog remains open. The dialog is not a saved restore target. Its
+mapping, repeated focus, movement and closure do not pause reconstruction,
+renew startup/report deadlines or add a separate capture guard.
+
+Move and close events affect startup intent only when their payload identifies
+a restore-eligible registered context present in the saved layout. The same
+identity validators recognize terminal marks/stable IDs and native desktop
+identities before adoption. Closed windows need no remembered live-tree entry.
+Unrelated windows, including preexisting dialogs, are ignored without a
+foreign-window list, focus history, return-focus exception or provider list.
+Malformed or ambiguous registered identity evidence interrupts with
+`observation_unavailable` rather than guessing ownership.
+
+The late-application layout observer selects restore-eligible registered
+terminals and unambiguous desktop-application anchors directly from the fresh
+identity observation, including anchors not yet marked by adoption. Unrelated
+views never enter the compared structure or geometry, even if they existed
+before startup and disappear without any new/close event. Ancestors containing
+selected views retain their layout structure. The total view count is used only
+to avoid interpreting automatic sibling resizing during mapping or closure as
+a user resize; geometry comparison also requires an unchanged selected window
+set. Bindings, saved-window move/close, unmatched workspace focus and
+saved-workspace layout/resize changes still supersede reconstruction. A manual
+click which only changes window focus lets reconstruction continue too.
+Stream loss interrupts with `observation_unavailable`; it must not be reported
+as `user_cancelled`. Existing startup capture protection and late-application
+restore retain saved intent while registered windows are still missing.
+
+Run the isolated regressions, or the complete lifecycle runner above:
+
+```sh
+GOTOOLCHAIN=go1.26.5 SWAY_SESSION_HEADLESS_INTEGRATION=1 \
+  go test -race ./cmd/sway-session \
+  -run '^TestSessionRuntime(Foreign|PreexistingForeign|LateApplicationIdentitySettlement|WindowChangesOnly|StartupPrompt)' -count=1 -v
+GOTOOLCHAIN=go1.26.5 go test ./internal/session \
+  -run '^TestCaptureLayoutStartupPrompt' -count=1 -v
+```
+
+The private-Sway cases observe real new/focus/close/refocus events. The terminal
+case verifies saved tabs before the unrelated view closes. The application
+case uses two distinct synthetic application identities and four terminals on
+workspaces 98–101; it verifies delayed mapping, placement, tabbed layouts,
+outcome reports and durable capture before the unrelated view closes. These
+are authentication-dialog and desktop-app surrogates, not a real GCR unlock,
+Chrome/Slack run or production reboot. Separate capture tests show that a floating foreign prompt preserves a
+reconstructible terminal group; a mixed unmanaged tiling sibling retains the
+existing workspace-local `placement_only` policy.
+
+Installation on the affected workstation remains a coordinated user action.
+Before changing the package, retain the previous verified package and create
+an owner-only metadata backup with `sway-session state backup --output PATH`
+using an absolute, unused destination. A backup preserves current metadata;
+it cannot recover an earlier layout that has already been overwritten. Install
+the reviewed package through the package manager, then stop only the identified
+sway-session daemon and start the replacement through the established session
+launcher. Replacing the executable alone does not update a running daemon.
+Preserve the terminal adapters, foreground agents and registered contexts.
+Rollback installs the retained package with `pacman -U PATH` and uses the same
+controlled daemon restart. Metadata recovery is a separate decision: first
+preview `sway-session state recover --from PATH`; apply only with stopped
+writers and explicit `--yes`. Do not copy live SQLite/WAL files or manually
+rewrite layout tables. See the README's state backup/recovery procedure.
 
 ### Terminal close intent
 
@@ -739,7 +803,8 @@ an unrelated registration.
 5. Queue a missing desired app and verify launch intent is durable before
    process start; daemon restart must not duplicate it in one compositor
    session.
-6. Confirm a user focus or move invalidates stale automatic work.
+6. Confirm a user binding, workspace switch or saved-window move invalidates
+   stale automatic work; a click that only changes window focus lets it continue.
 
 Treat Chrome, Slack, and similar application-internal restoration as app-owned.
 Registered application anchors also support typed scratchpad placement. Native Wayland parent/type limits in Sway

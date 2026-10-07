@@ -134,7 +134,7 @@ func TestSessionRuntimeUserActivityCancelsConflictingRestoreAndFocusReset(t *tes
 	}
 }
 
-func TestSessionRuntimeFocusActivityCancelsConflictingRestore(t *testing.T) {
+func TestSessionRuntimeOnlyWorkspaceFocusCancelsConflictingRestore(t *testing.T) {
 	for _, event := range []swayipc.Event{
 		{Type: swayipc.EventWindow, Change: "focus"},
 		{Type: swayipc.EventWorkspace, Change: "focus"},
@@ -149,8 +149,9 @@ func TestSessionRuntimeFocusActivityCancelsConflictingRestore(t *testing.T) {
 
 		runtime.HandleEvent(event, time.Now())
 
-		if runtime.restoreProgress != nil || !runtime.originalFocusDone || !runtime.startupComplete {
-			t.Fatalf("%s focus did not cancel conflicting restore state: %+v", event.Type, runtime)
+		wantCancelled := event.Type == swayipc.EventWorkspace
+		if runtime.restoreCancelled != wantCancelled || (runtime.restoreProgress == nil) != wantCancelled || runtime.originalFocusDone != wantCancelled || runtime.startupComplete != wantCancelled {
+			t.Fatalf("%s focus changed restore state incorrectly: %+v", event.Type, runtime)
 		}
 	}
 }
@@ -331,9 +332,12 @@ func TestSessionRuntimeDelayedExpectedMovePreservesRestoreThenNextMoveCancels(t 
 		restoreProgress: &sessionstate.RestoreProgress{Workspace: "98: apps", Phase: sessionstate.RestoreBuild},
 		restoreExcluded: map[string]struct{}{},
 	}
+	runtime.registry = sessionRegistry(testManagedContextID)
+	runtime.desired = runtime.persisted
+	window := managedDaemonLeaf(t, 41, testManagedContextID)
 	runtime.expectMove(41)
 
-	runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "move", Container: &Node{ID: 41}}, now.Add(time.Hour))
+	runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "move", Container: window}, now.Add(time.Hour))
 
 	if runtime.restoreProgress == nil {
 		t.Fatal("delayed daemon move was mistaken for later user intent")
@@ -342,7 +346,7 @@ func TestSessionRuntimeDelayedExpectedMovePreservesRestoreThenNextMoveCancels(t 
 		t.Fatalf("consumed daemon move remained pending: %+v", runtime.expectedMoves)
 	}
 
-	runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "move", Container: &Node{ID: 41}}, now.Add(2*time.Hour))
+	runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "move", Container: window}, now.Add(2*time.Hour))
 
 	if runtime.restoreProgress != nil {
 		t.Fatal("move after the daemon-generated event did not cancel restore")
@@ -486,6 +490,8 @@ func TestSessionRuntimeNoOpMoveBarrierExpiresAttributionBeforeLaterUserMove(t *t
 		restoreProgress: &sessionstate.RestoreProgress{Workspace: "98: apps", Phase: sessionstate.RestoreBuild},
 		restoreExcluded: map[string]struct{}{},
 	}
+	runtime.registry = sessionRegistry(testManagedContextID)
+	runtime.desired = runtime.persisted
 
 	if err := runtime.applyPlacementAction(nil, sessionstate.PlacementAction{
 		Kind:        sessionstate.PlacementMoveWorkspace,
@@ -507,7 +513,7 @@ func TestSessionRuntimeNoOpMoveBarrierExpiresAttributionBeforeLaterUserMove(t *t
 		t.Fatalf("no-op move remained attributed after barrier: %+v", runtime.expectedMoves)
 	}
 
-	runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "move", Container: &Node{ID: 41}}, time.Now())
+	runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "move", Container: managedDaemonLeaf(t, 41, testManagedContextID)}, time.Now())
 	if runtime.restoreProgress != nil {
 		t.Fatal("later user move was hidden by no-op daemon move")
 	}

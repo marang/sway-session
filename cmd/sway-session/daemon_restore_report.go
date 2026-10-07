@@ -161,6 +161,9 @@ func (runtime *sessionRuntime) seedRestoreReport(registry sessionstate.Registry,
 				}
 			} else if runtime.restoreCancelled {
 				record.Status, record.Reason = "interrupted", "user_cancelled"
+				if runtime.restoreCancellationReason != "" {
+					record.Reason = runtime.restoreCancellationReason
+				}
 			}
 			runtime.restoreReportSeedRecords = append(runtime.restoreReportSeedRecords, record)
 		}

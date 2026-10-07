@@ -215,7 +215,7 @@ func (runtime *sessionRuntime) suspendLifecycleRestore(root *Node) {
 	visit(root)
 	for name, suspended := range runtime.restoreSuspended {
 		workspace := workspaces[name]
-		current := startupApplicationLayoutFingerprint(workspace, nil)
+		current := startupApplicationLayoutFingerprint(workspace, nil, nil)
 		if previous := suspended.observation; previous != nil {
 			// The view projection omits empty workspaces, but their layout may
 			// still change while all owned windows are temporarily in staging.
@@ -225,7 +225,7 @@ func (runtime *sessionRuntime) suspendLifecycleRestore(root *Node) {
 			}
 			// Normal mapping may resize existing siblings. Compare their
 			// projected structure, and geometry only with the same window set.
-			survivors := startupApplicationLayoutFingerprint(workspaces[name], previous.windows)
+			survivors := startupApplicationLayoutFingerprint(workspaces[name], nil, previous.windows)
 			if !slices.Equal(previous.structure, survivors.structure) ||
 				len(previous.windows) == len(current.windows) && !slices.Equal(previous.geometry, current.geometry) {
 				runtime.cancelConflictingRestore()

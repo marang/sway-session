@@ -144,25 +144,27 @@ func TestSessionRuntimeOwnExplicitFocusConsumesWorkspaceThenWindow(t *testing.T)
 	}
 	runtime.HandleEvent(swayipc.Event{Type: swayipc.EventTick, Payload: requester.barriers[0]}, now)
 	runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "focus", Container: &Node{ID: 43}}, now)
+	if runtime.restoreProgress == nil {
+		t.Fatal("window focus outside the command cancelled restore")
+	}
+	runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWorkspace, Change: "focus", Old: &Node{ID: 3}, Current: &Node{ID: 4}}, now)
 	if runtime.restoreProgress != nil {
-		t.Fatal("repeated focus outside the command was swallowed")
+		t.Fatal("workspace focus outside the command was swallowed")
 	}
 }
 
 func TestSessionRuntimeFocusAttributionDoesNotHideUserIntent(t *testing.T) {
-	for _, name := range []string{"binding", "other-window", "wrong-workspace", "reordered-window", "expired", "reconnect", "epoch-change", "duplicate"} {
+	for _, name := range []string{"binding", "wrong-workspace", "expired", "reconnect", "epoch-change", "duplicate"} {
 		t.Run(name, func(t *testing.T) {
 			runtime, requester, root := newFocusCommandScenario(t)
 			if err := runtime.applyRestoreAction(root, sessionstate.RestoreAction{Kind: sessionstate.RestoreFocus, ContainerID: 43}); err != nil {
 				t.Fatal(err)
 			}
 			now := time.Now()
-			event := swayipc.Event{Type: swayipc.EventWindow, Change: "focus", Container: &Node{ID: 43}}
+			event := swayipc.Event{Type: swayipc.EventWorkspace, Change: "focus", Old: &Node{ID: 3}, Current: &Node{ID: 4}}
 			switch name {
 			case "binding":
 				event = swayipc.Event{Type: swayipc.EventBinding}
-			case "other-window":
-				event.Container.ID = 42
 			case "wrong-workspace":
 				event = swayipc.Event{Type: swayipc.EventWorkspace, Change: "focus", Old: &Node{ID: 3}, Current: &Node{ID: 5}}
 			case "expired":
@@ -177,6 +179,7 @@ func TestSessionRuntimeFocusAttributionDoesNotHideUserIntent(t *testing.T) {
 			case "duplicate":
 				workspace := swayipc.Event{Type: swayipc.EventWorkspace, Change: "focus", Old: &Node{ID: 3}, Current: &Node{ID: 4}}
 				runtime.HandleEvent(workspace, now)
+				runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "focus", Container: &Node{ID: 43}}, now)
 				event = workspace
 			}
 			runtime.HandleEvent(event, now)
@@ -192,9 +195,12 @@ func TestSessionRuntimeStagingFocusRequiresPrecedingOwnMove(t *testing.T) {
 	if err := runtime.applyRestoreAction(root, sessionstate.RestoreAction{Kind: sessionstate.RestoreMoveWorkspace, ContainerID: 41, Target: sessionstate.RestoreStagingWorkspace}); err != nil {
 		t.Fatal(err)
 	}
-	runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "focus", Container: &Node{ID: 42}}, time.Now())
-	if runtime.restoreProgress != nil {
+	focus := swayipc.Event{Type: swayipc.EventWindow, Change: "focus", Container: &Node{ID: 42}}
+	if runtime.consumeRestoreFocus(focus) {
 		t.Fatal("focus arriving before the own move event was attributed to it")
+	}
+	if !runtime.consumeExpectedMove(41) || !runtime.consumeRestoreFocus(focus) {
+		t.Fatal("ordered own move did not release its predicted focus")
 	}
 }
 
@@ -225,13 +231,19 @@ func TestSessionRuntimeFocusUsesNestedFocusStackRatherThanChildOrder(t *testing.
 	}
 	now := time.Now()
 	runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "move", Container: &Node{ID: 41}}, now)
-	runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "focus", Container: &Node{ID: 46}}, now)
-	if runtime.restoreProgress == nil {
+	if !runtime.consumeRestoreFocus(swayipc.Event{Type: swayipc.EventWindow, Change: "focus", Container: &Node{ID: 46}}) {
 		t.Fatal("nested focus-stack successor was not attributed")
 	}
+	if runtime.consumeRestoreFocus(swayipc.Event{Type: swayipc.EventWindow, Change: "focus", Container: &Node{ID: 45}}) {
+		t.Fatal("subsequent nested focus consumed an unrelated command allowance")
+	}
 	runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "focus", Container: &Node{ID: 45}}, now)
+	if runtime.restoreProgress == nil {
+		t.Fatal("window focus alone cancelled remaining restore")
+	}
+	runtime.HandleEvent(swayipc.Event{Type: swayipc.EventBinding}, now)
 	if runtime.restoreProgress != nil {
-		t.Fatal("subsequent independent nested focus was swallowed")
+		t.Fatal("subsequent user binding was swallowed")
 	}
 }
 
@@ -258,8 +270,12 @@ func TestSessionRuntimeFullscreenFocusIsBoundedByBarrier(t *testing.T) {
 		}
 		runtime.HandleEvent(swayipc.Event{Type: swayipc.EventTick, Payload: requester.barriers[0]}, now)
 		runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "focus", Container: &Node{ID: 41}}, now)
+		if runtime.restoreProgress == nil {
+			t.Fatal("fullscreen followed by window focus cancelled remaining restore")
+		}
+		runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWorkspace, Change: "focus", Old: &Node{ID: 3}, Current: &Node{ID: 4}}, now)
 		if runtime.restoreProgress != nil {
-			t.Fatal("fullscreen swallowed later user focus")
+			t.Fatal("fullscreen swallowed later workspace focus")
 		}
 	}
 }
@@ -315,10 +331,15 @@ func TestSessionRuntimeGlobalFullscreenGroupKeepsRemainingRestore(t *testing.T) 
 	if len(requester.barriers) != 1 {
 		t.Fatal("fullscreen group focus has no ordering barrier")
 	}
-	// No speculative descendant allowance may hide independent user focus.
+	// Descendant window focus alone remains irrelevant. A new workspace
+	// transition must still override the finished command's allowance.
 	runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "focus", Container: &Node{ID: 43}}, now)
+	if runtime.restoreProgress == nil {
+		t.Fatal("fullscreen group descendant focus cancelled remaining restore")
+	}
+	runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWorkspace, Change: "focus", Old: &Node{ID: 4}, Current: &Node{ID: 3}}, now)
 	if runtime.restoreProgress != nil {
-		t.Fatal("fullscreen group hid an unrelated descendant focus")
+		t.Fatal("fullscreen group hid a later workspace transition")
 	}
 }
 
@@ -433,7 +454,7 @@ func TestSessionRuntimeMappingFocusSurvivesConcurrentCLIRestoreLock(t *testing.T
 	}
 }
 
-func TestSessionRuntimeMappingObservedBeforeItsQueuedNewEvent(t *testing.T) {
+func TestSessionRuntimeQueuedAndRepeatedWindowFocusKeepsRestoreAlive(t *testing.T) {
 	runtime, c, first, now := newMappingFocusScenario(t)
 	second := managedDaemonLeaf(t, 42, "6ba7b810-9dad-11d1-80b4-00c04fd430c8")
 	second.Marks = nil
@@ -445,31 +466,22 @@ func TestSessionRuntimeMappingObservedBeforeItsQueuedNewEvent(t *testing.T) {
 		t.Fatal(err)
 	}
 	runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "focus", Container: first}, now)
-	first.Focused, second.Focused = false, true
-	requester := &recordingRequester{}
-	runtime.client = requester
-	// This command's events queue after B's map focus, even though its tick
-	// is issued before the daemon receives new(B).
-	if err := runtime.applyRestoreAction(c.root, sessionstate.RestoreAction{Kind: sessionstate.RestoreFocus, ContainerID: first.ID}); err != nil {
-		t.Fatal(err)
-	}
+	c.drain(runtime, now)
 	runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "new", Container: second}, now)
-	runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "focus", Container: second}, now)
-	if runtime.restoreCancelled {
-		t.Fatal("already adopted window's queued mapping focus was blocked by a later command expectation")
+	for _, leaf := range []*Node{second, first, second} {
+		runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "focus", Container: leaf}, now)
+		if runtime.restoreCancelled {
+			t.Fatal("queued or repeated saved-window focus cancelled restoration")
+		}
 	}
-	runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "focus", Container: first}, now)
-	if runtime.restoreCancelled {
-		t.Fatal("mapping focus consumed the later command's separate allowance")
-	}
-	runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "focus", Container: second}, now)
+	runtime.HandleEvent(swayipc.Event{Type: swayipc.EventBinding}, now)
 	if !runtime.restoreCancelled {
-		t.Fatal("duplicate mapping focus hid user activity")
+		t.Fatal("window focus hid a subsequent binding")
 	}
 }
 
-func TestSessionRuntimeMappingFocusBeyondPlacementBatch(t *testing.T) {
-	runtime, c, leaf, now := newMappingFocusScenario(t)
+func TestSessionRuntimeRestoreWindowObservationBeyondPlacementBatch(t *testing.T) {
+	runtime, c, leaf, _ := newMappingFocusScenario(t)
 	registry := runtime.registry
 	for index := range 260 {
 		id := sessionstate.ContextID(fmt.Sprintf("00000000-0000-4000-8000-%012d", index))
@@ -487,20 +499,22 @@ func TestSessionRuntimeMappingFocusBeyondPlacementBatch(t *testing.T) {
 	if slices.ContainsFunc(actions, func(action sessionstate.PlacementAction) bool { return action.ContainerID == leaf.ID }) {
 		t.Fatal("fixture did not place the saved mapping beyond the bounded command batch")
 	}
-	runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "new", Container: leaf}, now)
-	if err := runtime.observeRestoreMappingFocus(c.root, registry); err != nil {
+	owned, err := runtime.observeRestoreWindows(c.root, registry)
+	if err != nil {
 		t.Fatal(err)
 	}
-	runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "focus", Container: leaf}, now)
-	if runtime.restoreCancelled || len(runtime.restoreEligible) != 0 || len(c.commands) != 0 {
-		t.Fatal("full-tree identity observation lost a mapping beyond the command batch or performed effects")
+	if _, exists := owned[leaf.ID]; !exists || len(owned) != 261 {
+		t.Fatal("full-tree ownership observation omitted registered views beyond the command batch")
+	}
+	if len(runtime.restoreEligible) != 0 || len(c.commands) != 0 {
+		t.Fatal("read-only ownership observation adopted windows or performed effects")
 	}
 }
 
-func TestSessionRuntimeEarlyMappingObservationRejectsUnsafeIdentity(t *testing.T) {
-	for _, name := range []string{"archived", "ambiguous", "marked", "reopened", "unsaved"} {
+func TestSessionRuntimeRestoreWindowObservationUsesRegisteredOwnership(t *testing.T) {
+	for _, name := range []string{"active", "archived", "ambiguous", "marked", "reopened", "unsaved", "unregistered"} {
 		t.Run(name, func(t *testing.T) {
-			runtime, c, leaf, now := newMappingFocusScenario(t)
+			runtime, c, leaf, _ := newMappingFocusScenario(t)
 			registry := runtime.registry
 			switch name {
 			case "archived":
@@ -519,21 +533,29 @@ func TestSessionRuntimeEarlyMappingObservationRejectsUnsafeIdentity(t *testing.T
 				runtime.restoreEligible[testManagedContextID] = struct{}{}
 			case "unsaved":
 				runtime.desired = exactDaemonSnapshot("98", registry.Contexts[1].ID)
+			case "unregistered":
+				identity := "org.example.Unregistered"
+				leaf.AppID = &identity
 			}
-			runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "new", Container: leaf}, now)
-			if err := runtime.observeRestoreMappingFocus(c.root, registry); err != nil {
+			before := len(c.commands)
+			owned, err := runtime.observeRestoreWindows(c.root, registry)
+			if err != nil {
 				t.Fatal(err)
 			}
-			runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "focus", Container: leaf}, now)
-			if !runtime.restoreCancelled {
-				t.Fatal("early identity observation authorized unsafe mapping focus")
+			_, present := owned[leaf.ID]
+			wantOwned := name != "archived" && name != "ambiguous" && name != "unregistered"
+			if present != wantOwned {
+				t.Fatalf("ownership %s selected=%t, want %t", name, present, wantOwned)
+			}
+			if len(c.commands) != before || runtime.restoreCancelled {
+				t.Fatal("ownership observation issued effects or cancelled restore")
 			}
 		})
 	}
 }
 
-func TestSessionRuntimeEarlyMappingObservationRejectsApplicationParentMark(t *testing.T) {
-	runtime, _, _, item, now := testApplicationRuntime(t)
+func TestSessionRuntimeRestoreWindowObservationRejectsApplicationParentMark(t *testing.T) {
+	runtime, _, _, item, _ := testApplicationRuntime(t)
 	leaf := applicationLaunchWindow(item, 41)
 	mark, err := item.ID.Mark()
 	if err != nil {
@@ -549,46 +571,75 @@ func TestSessionRuntimeEarlyMappingObservationRejectsApplicationParentMark(t *te
 	if err != nil || len(issues) != 1 || issues[0].ContextID != item.ID {
 		t.Fatalf("fixture must reject the context mark on its layout parent: %+v err=%v", issues, err)
 	}
-	runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "new", Container: leaf}, now)
-	if err := runtime.observeRestoreMappingFocus(tree, runtime.registry); err != nil {
+	owned, err := runtime.observeRestoreWindows(tree, runtime.registry)
+	if err != nil {
 		t.Fatal(err)
 	}
-	runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "focus", Container: leaf}, now)
-	if !runtime.restoreCancelled {
-		t.Fatal("application-only observation hid a malformed managed identity")
+	if _, exists := owned[leaf.ID]; exists {
+		t.Fatal("application anchor selection hid a malformed managed parent identity")
 	}
 }
 
-func TestSessionRuntimeMappingFocusStillHonorsIndependentUserIntent(t *testing.T) {
-	for _, name := range []string{"binding-before-map", "binding-after-adoption", "expired-focus", "expired-adoption", "unknown-window", "reopened-context"} {
+func TestSessionRuntimeRestoreWindowObservationSelectsApplicationAnchor(t *testing.T) {
+	for _, name := range []string{"unique-unmarked", "marked-with-secondary", "ambiguous", "archived", "desired-closed"} {
+		t.Run(name, func(t *testing.T) {
+			runtime, _, _, app, _ := testApplicationRuntime(t)
+			leaf := applicationLaunchWindow(app, 41)
+			root := daemonTree("98", leaf)
+			switch name {
+			case "marked-with-secondary":
+				mark, _ := app.ID.Mark()
+				leaf.Marks = []string{mark}
+				root.Nodes[0].Nodes[0].Nodes = append(root.Nodes[0].Nodes[0].Nodes, applicationLaunchWindow(app, 42))
+			case "ambiguous":
+				root.Nodes[0].Nodes[0].Nodes = append(root.Nodes[0].Nodes[0].Nodes, applicationLaunchWindow(app, 42))
+			case "archived":
+				runtime.registry.Contexts[0].State = sessionstate.ContextArchived
+			case "desired-closed":
+				runtime.registry.Contexts[0].App.DesiredOpen = false
+			}
+			owned, err := runtime.observeRestoreWindows(root, runtime.registry)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantOwned := name == "unique-unmarked" || name == "marked-with-secondary"
+			wantCount := 0
+			if wantOwned {
+				wantCount = 1
+			}
+			_, present := owned[leaf.ID]
+			if present != wantOwned || len(owned) != wantCount {
+				t.Fatalf("application ownership %s selected %v, want one anchor=%t", name, owned, wantOwned)
+			}
+		})
+	}
+}
+
+func TestSessionRuntimeMappedWindowsStillHonorIndependentUserIntent(t *testing.T) {
+	for _, name := range []string{"binding-before-map", "binding-after-adoption", "workspace-focus", "saved-move", "saved-close"} {
 		t.Run(name, func(t *testing.T) {
 			runtime, c, leaf, now := newMappingFocusScenario(t)
 			if name == "binding-before-map" {
 				runtime.HandleEvent(swayipc.Event{Type: swayipc.EventBinding}, now)
 			}
-			if name == "unknown-window" {
-				leaf.AppID = nil
-			}
-			if name == "reopened-context" {
-				runtime.restoreEligible[testManagedContextID] = struct{}{}
-				runtime.startupComplete = true
-			}
 			runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "new", Container: leaf}, now)
-			if name == "expired-adoption" {
-				c.drain(runtime, now)
-			}
 			if _, err := runtime.Reconcile(c.root, now); err != nil {
 				t.Fatal(err)
 			}
-			if name == "binding-after-adoption" {
+			c.drain(runtime, now)
+			switch name {
+			case "binding-after-adoption":
 				runtime.HandleEvent(swayipc.Event{Type: swayipc.EventBinding}, now)
-			}
-			if name == "expired-focus" {
-				c.drain(runtime, now)
+			case "workspace-focus":
+				runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWorkspace, Change: "focus", Old: &Node{ID: 3}, Current: &Node{ID: 4}}, now)
+			case "saved-move":
+				runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "move", Container: leaf}, now)
+			case "saved-close":
+				runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "close", Container: leaf}, now)
 			}
 			runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "focus", Container: leaf}, now)
 			if !runtime.restoreCancelled || runtime.restoreProgress != nil || runtime.lateRestorePending {
-				t.Fatal("map attribution hid independent user intent or revived cancelled restoration")
+				t.Fatal("window mapping/focus hid independent user intent or revived cancelled restoration")
 			}
 			// A later saved window may still be placed/marked, but its adoption
 			// must not restart structural work after the user's cancellation.

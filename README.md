@@ -98,8 +98,9 @@ sequenceDiagram
 
 Each reconciliation pass does a bounded amount of work and resumes from a
 fresh observation. These limits keep the event loop responsive without imposing
-a total context-count cap. Live user focus and layout changes take priority
-over automatic restoration, and placement requires an unambiguous window
+a total context-count cap. User bindings, workspace switches and saved-window
+placement/layout changes take priority over automatic restoration. Window focus
+alone lets saved placement continue, and placement requires an unambiguous window
 identity.
 
 SQLite transactions are short and never include Sway, Herdr, process or

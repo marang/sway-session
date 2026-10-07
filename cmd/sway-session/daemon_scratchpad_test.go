@@ -151,8 +151,12 @@ func TestSessionRuntimeScratchpadShowAttributesOrderedEvents(t *testing.T) {
 			}
 			runtime.HandleEvent(swayipc.Event{Type: swayipc.EventTick, Payload: requester.barriers[0]}, now)
 			runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "focus", Container: &Node{ID: 42}}, now)
+			if runtime.restoreCancelled {
+				t.Fatal("a later window focus cancelled scratchpad restore")
+			}
+			runtime.HandleEvent(swayipc.Event{Type: swayipc.EventBinding}, now)
 			if !runtime.restoreCancelled {
-				t.Fatal("a later independent focus was swallowed")
+				t.Fatal("a later user binding was swallowed")
 			}
 		})
 	}
@@ -288,7 +292,7 @@ func TestSessionRuntimeScratchpadShowUncertainResponseNeedsObservation(t *testin
 }
 
 func TestSessionRuntimeScratchpadShowUserActivityWins(t *testing.T) {
-	for _, name := range []string{"binding", "unmatched-focus", "reordered-focus", "return-before-move", "wrong-workspace-name", "expired", "epoch-change"} {
+	for _, name := range []string{"binding", "unmatched-workspace", "reordered-workspace", "return-before-move", "wrong-workspace-name", "expired", "epoch-change"} {
 		t.Run(name, func(t *testing.T) {
 			runtime, requester, root, action := newScratchpadShowScenario(t)
 			if name == "wrong-workspace-name" {
@@ -306,10 +310,10 @@ func TestSessionRuntimeScratchpadShowUserActivityWins(t *testing.T) {
 			switch name {
 			case "binding":
 				event = swayipc.Event{Type: swayipc.EventBinding}
-			case "unmatched-focus":
-				event = swayipc.Event{Type: swayipc.EventWindow, Change: "focus", Container: &Node{ID: 44}}
-			case "reordered-focus":
-				event = observedScratchpadFocus(before[len(before)-1])
+			case "unmatched-workspace":
+				event = swayipc.Event{Type: swayipc.EventWorkspace, Change: "focus", Old: &Node{ID: 3}, Current: &Node{ID: 5}}
+			case "reordered-workspace":
+				event = observedScratchpadFocus(after[0])
 			case "return-before-move":
 				for _, prediction := range before {
 					runtime.HandleEvent(observedScratchpadFocus(prediction), now)
@@ -330,14 +334,13 @@ func TestSessionRuntimeScratchpadShowUserActivityWins(t *testing.T) {
 	}
 }
 
-func TestSessionRuntimeScratchpadMappingFocusUsesSavedMembership(t *testing.T) {
+func TestSessionRuntimeScratchpadOwnershipUsesSavedMembership(t *testing.T) {
 	runtime, _, root, action := newScratchpadShowScenario(t)
-	runtime.observeMappingFocus(&Node{ID: action.ContainerID})
-	if err := runtime.observeRestoreMappingFocus(root, runtime.registry); err != nil {
+	owned, err := runtime.observeRestoreWindows(root, runtime.registry)
+	if err != nil {
 		t.Fatal(err)
 	}
-	runtime.HandleEvent(swayipc.Event{Type: swayipc.EventWindow, Change: "focus", Container: &Node{ID: action.ContainerID}}, time.Now())
-	if runtime.restoreCancelled {
-		t.Fatal("scratchpad-only saved context's mapping focus cancelled restore")
+	if _, exists := owned[action.ContainerID]; !exists || len(owned) != 1 {
+		t.Fatalf("scratchpad-only saved context is absent from owned observation: %v", owned)
 	}
 }

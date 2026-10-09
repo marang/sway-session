@@ -67,6 +67,33 @@ focused repair-safety race tests also passed at the final product source.
 | Complete narrow guidance | Adoption limits, profile limits, first-start commands, next-session/reload distinction, result/backup and recheck feedback stay reachable by paging; error recovery and cancel/quit controls remain visible. | Actual PTYs at 80×24/48×16 plus bounded rendering tests | Passed |
 | No runtime effects from Doctor | An inert private `exec_always` observer records only initial compositor startup throughout the CLI/TUI matrix. No additional load occurs, and no sway-session runtime or session-state directory appears. | Real private Sway trace and filesystem checks | Passed |
 
+## Current acceptance after review corrections
+
+The corrected product source is
+`3c1dc2611a4118e324fa71e531447be79b9e5eca`. Its executing candidate reports
+`dev`, that commit and `modified=false`; its SHA-256 is
+`38d886e3b7a564fbc8364ea41e318dc6f61660c8b1cbfecb84833192daf8e9b4`.
+It was built with Go 1.26.5, CGO disabled, the repository's build flags and an
+explicit matching build stamp, directly into a disposable directory outside
+this checkout. This documentation update changes no product source.
+
+At that revision, the complete canonical `make verify` passed, including
+Bash/Zsh/Fish completions and the private packaging fixtures. All 24 actual
+CLI/PTY scenarios and all nine private-Sway Go subcases passed again. A
+10-second, two-worker `FuzzLiteralDirectInclude` run passed 92,873 executions.
+Additional actual-CLI/native-Sway probes verified the five corrected families:
+indented-comment continuations, lost block framing after oversized lines,
+include block heads with a following physical brace, escaped whitespace before
+braces, and Unicode whitespace belonging to a distinct filename. These probes
+used only disposable sources and the same isolated compositor boundary.
+
+Committed regression tests check both literal evidence and its repair
+consequences: required adoption, refused unsafe append, preserved source bytes,
+and profile changes that touch only the intended files. Non-ASCII filename
+bytes remain literal; quoted Unicode directory names remain supported.
+Review conclusions and PR/merge approval are separate gates from this
+behavioral evidence. The initial artifact above remains historical evidence.
+
 ## Reproduce
 
 Build a candidate whose basename is `sway-session`; the repair engine deliberately

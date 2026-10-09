@@ -204,7 +204,7 @@ func SelectRestoreWorkspace(
 			}
 			continue
 		}
-		if workspaceHasSingletonGroup(workspace) {
+		if workspaceHasSingletonGroup(workspace) && !workspaceIsSingleTab(workspace) {
 			selection.Degradations = append(selection.Degradations, restoreDegradation(
 				current,
 				"single-child layout groups cannot be reconstructed reliably with runtime Sway commands",
@@ -968,6 +968,19 @@ func planDesiredStructure(observation *restoreObservation, workspace string, des
 			return nil, fmt.Errorf("restore anchor context %q is missing", anchorID)
 		}
 		candidate := observation.parents[anchor]
+		// Sway splits a lone workspace child by changing the workspace's axis,
+		// leaving no real parent for captured proportions. A targeted tab layout
+		// creates the actual one-child container in one observable action.
+		if path == "t" && layoutIsSingleTab(desired) && candidate != nil &&
+			candidate.Type == "workspace" && len(candidate.Nodes) == 1 && candidate.Nodes[0] == anchor {
+			return &RestoreAction{
+				Kind:        RestoreSetLayout,
+				Workspace:   workspace,
+				ContainerID: anchor.ID,
+				Layout:      LayoutTabbed,
+				Structural:  true,
+			}, nil
+		}
 		if candidate != nil && candidate.Type != "workspace" &&
 			isSubset(observation.managedDescendants(candidate), desiredIDs) &&
 			!nodeHasRestoreMark(candidate) {
@@ -1264,6 +1277,17 @@ func containsContextID(ids []ContextID, wanted ContextID) bool {
 		}
 	}
 	return false
+}
+
+// Only the top-level single tab with a leaf child has a proven reconstruction
+// action. Other singleton and floating-group shapes retain their safe boundary.
+func workspaceIsSingleTab(workspace WorkspaceLayout) bool {
+	return workspace.Tiling != nil && len(workspace.Floating) == 0 && layoutIsSingleTab(*workspace.Tiling)
+}
+
+func layoutIsSingleTab(node LayoutNode) bool {
+	return node.ContextID == nil && node.Layout == LayoutTabbed &&
+		len(node.Children) == 1 && node.Children[0].ContextID != nil
 }
 
 func workspaceHasSingletonGroup(workspace WorkspaceLayout) bool {

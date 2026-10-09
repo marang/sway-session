@@ -155,12 +155,12 @@ func TestSelectRestoreWorkspaceDegradesExtraManagedContext(t *testing.T) {
 	}
 }
 
-func TestSelectRestoreWorkspaceDegradesSingletonGroup(t *testing.T) {
+func TestSelectRestoreWorkspaceDegradesUnsupportedSingletonGroup(t *testing.T) {
 	desired := WorkspaceLayout{
 		Name:        "2",
 		RestoreMode: WorkspaceRestoreLayout,
 		Tiling: &LayoutNode{
-			Layout:   LayoutTabbed,
+			Layout:   LayoutSplitVertical,
 			Children: []LayoutNode{{ContextID: contextIDPointer(testContextID)}},
 		},
 	}

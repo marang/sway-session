@@ -144,8 +144,8 @@ else
 		exit 1
 	}
 fi
-require_fixed .github/workflows/aur.yml 'sed -i "s/^sha256sums=.*/sha256sums=('
-require_fixed .github/workflows/aur.yml "if grep -F 'SKIP' PKGBUILD"
+require_fixed .github/workflows/publish-aur.yml 'sed -i "s/^sha256sums=.*/sha256sums=('
+require_fixed .github/workflows/publish-aur.yml "if grep -F 'SKIP' PKGBUILD"
 # Exercise the release substitution, including comments: the workflow's
 # fail-closed guard scans the complete recipe, not just the checksum field.
 release_test_sum=$(printf '%s' 'packaging regression fixture' | sha256sum | cut -d' ' -f1)
@@ -154,22 +154,24 @@ if printf '%s\n' "$release_recipe" | grep -F 'SKIP' >/dev/null; then
 	echo 'Release checksum substitution leaves a recipe rejected by the AUR guard.' >&2
 	exit 1
 fi
-require_fixed .github/workflows/aur.yml 'PKGNAME: sway-session'
-require_fixed .github/workflows/aur.yml 'AUR_REPO: sway-session'
-reject_fixed .github/workflows/aur.yml 'sway-title-animator'
-require_fixed .github/workflows/aur.yml 'show-ref --verify --quiet "refs/tags/$VERSION"'
-require_fixed .github/workflows/aur.yml 'rev-parse HEAD'
-require_fixed .github/workflows/aur.yml 'merge-base --is-ancestor "$tag_commit" origin/main'
-require_fixed .github/workflows/aur.yml 'curl -fsSL "$tarball" | sha256sum'
-require_fixed .github/workflows/aur.yml 'makepkg --syncdeps --cleanbuild --clean --noconfirm'
-require_fixed .github/workflows/aur.yml 'makepkg --printsrcinfo'
-require_fixed .github/workflows/aur.yml 'aur.archlinux.org ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEuBKrPzbawxA/k2g6NcyV5jmqwJ2s+zpgZGZ7tpLIcN'
-require_fixed .github/workflows/aur.yml 'SHA256:RFzBCUItH9LZS0cKB5UE6ceAYhBD5C8GeOBip8Z11+4'
-require_fixed .github/workflows/aur.yml 'secrets.RELEASE_SYNC_TOKEN'
-require_fixed .github/workflows/aur.yml '--force-with-lease='
-require_fixed .github/workflows/aur.yml 'gh pr close "$pr_url"'
-require_fixed .github/workflows/release.yml 'merge-base --is-ancestor "$GITHUB_SHA" origin/main'
-require_fixed .github/workflows/ci.yml 'sudo apt-get update && sudo apt-get install --yes fish jq zsh'
+require_fixed .github/workflows/publish-aur.yml 'PKGNAME: sway-session'
+require_fixed .github/workflows/publish-aur.yml 'AUR_REPO: sway-session'
+reject_fixed .github/workflows/publish-aur.yml 'sway-title-animator'
+require_fixed .github/workflows/publish-aur.yml 'show-ref --verify --quiet "refs/tags/$VERSION"'
+require_fixed .github/workflows/publish-aur.yml 'rev-parse HEAD'
+require_fixed .github/workflows/publish-aur.yml 'merge-base --is-ancestor "$tag_commit" origin/main'
+require_fixed .github/workflows/publish-aur.yml 'curl -fsSL "$tarball" | sha256sum'
+require_fixed .github/workflows/publish-aur.yml 'makepkg --syncdeps --cleanbuild --clean --noconfirm'
+require_fixed .github/workflows/publish-aur.yml 'makepkg --printsrcinfo'
+require_fixed .github/workflows/publish-aur.yml 'aur.archlinux.org ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEuBKrPzbawxA/k2g6NcyV5jmqwJ2s+zpgZGZ7tpLIcN'
+require_fixed .github/workflows/publish-aur.yml 'SHA256:RFzBCUItH9LZS0cKB5UE6ceAYhBD5C8GeOBip8Z11+4'
+require_fixed .github/workflows/publish-aur.yml 'secrets.RELEASE_SYNC_TOKEN'
+require_fixed .github/workflows/publish-aur.yml '--force-with-lease='
+require_fixed .github/workflows/publish-aur.yml 'gh pr close "$pr_url"'
+require_fixed .github/workflows/publish-release.yml 'run: sh scripts/resolve-release-tag.sh "$RELEASE_TAG" "$RELEASE_COMMIT"'
+require_fixed scripts/resolve-release-tag.sh 'merge-base --is-ancestor "$tag_commit" "$main_commit"'
+require_fixed .github/workflows/ci.yml 'uses: ./.github/workflows/verify.yml'
+require_fixed .github/workflows/verify.yml 'sudo apt-get update && sudo apt-get install --yes fish jq zsh python3-yaml'
 
 require_count contrib/sway/50-sway-session.conf 'exec --no-startup-id /usr/bin/sway-session daemon' 1
 require_count contrib/sway/50-sway-session.conf 'exec --no-startup-id /usr/bin/sway-session restore' 1
@@ -218,15 +220,15 @@ require_fixed PKGBUILD 'main.commit=$_commit'
 require_fixed PKGBUILD 'buildmetadata.Stamp=sway-session-build-v1|$pkgver|$_commit|false|end-sway-session-build-v1'
 recipe_commit=$(sed -n 's/^_commit=//p' PKGBUILD)
 printf '%s\n' "$recipe_commit" | grep -Eq '^[0-9a-f]{40}$'
-require_fixed .github/workflows/aur.yml "if grep -q '^_commit=' PKGBUILD; then"
-require_fixed .github/workflows/aur.yml 'grep -Fx "_commit=${commit}" PKGBUILD'
+require_fixed .github/workflows/publish-aur.yml "if grep -q '^_commit=' PKGBUILD; then"
+require_fixed .github/workflows/publish-aur.yml 'grep -Fx "_commit=${commit}" PKGBUILD'
 
 # Execute the actual workflow replacement block against both a different
 # pinned commit and an older recipe with no metadata. Never invoke makepkg.
 identity_fixture=$(mktemp -d)
 (
 	trap 'rm -rf "$identity_fixture"' EXIT HUP INT TERM
-	awk '/^          if grep -q '\''\^_commit=/ {copy=1} copy {sub(/^          /, ""); print} copy && /^fi$/ {exit}' .github/workflows/aur.yml >"$identity_fixture/stamp.sh"
+	awk '/^          if grep -q '\''\^_commit=/ {copy=1} copy {sub(/^          /, ""); print} copy && /^fi$/ {exit}' .github/workflows/publish-aur.yml >"$identity_fixture/stamp.sh"
 	test -s "$identity_fixture/stamp.sh"
 	sed 's/^_commit=.*/_commit=1111111111111111111111111111111111111111/' PKGBUILD >"$identity_fixture/PKGBUILD"
 	cd "$identity_fixture"

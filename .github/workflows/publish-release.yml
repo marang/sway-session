@@ -1,0 +1,90 @@
+name: Verified GitHub release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: github-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      commit: ${{ steps.tag.outputs.commit }}
+    steps:
+      - name: Checkout workflow source without persisted credentials
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve immutable release tag on main
+        id: tag
+        env:
+          VERSION: ${{ github.ref_name }}
+          EXPECTED_COMMIT: ${{ github.sha }}
+        run: sh scripts/resolve-release-tag.sh "$VERSION" "$EXPECTED_COMMIT" >> "$GITHUB_OUTPUT"
+
+  verify:
+    needs: resolve
+    uses: ./.github/workflows/verify.yml
+    with:
+      commit: ${{ needs.resolve.outputs.commit }}
+
+  goreleaser:
+    needs: [resolve, verify]
+    if: ${{ needs.verify.outputs.commit == needs.resolve.outputs.commit }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ needs.resolve.outputs.tag }}
+      RELEASE_COMMIT: ${{ needs.resolve.outputs.commit }}
+    steps:
+      - name: Checkout verified commit without persisted credentials
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.resolve.outputs.commit }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Revalidate immutable tag before publication
+        run: sh scripts/resolve-release-tag.sh "$RELEASE_TAG" "$RELEASE_COMMIT"
+
+      - name: Publish each immutable release only once
+        id: release
+        uses: actions/github-script@v8
+        with:
+          script: |
+            try {
+              const { data } = await github.rest.repos.getReleaseByTag({
+                ...context.repo, tag: process.env.RELEASE_TAG
+              });
+              if (data.draft) throw new Error('An existing draft needs explicit recovery before publication.');
+              core.info('This immutable tag already has a published release; leaving its artifacts intact.');
+              core.setOutput('publish', 'false');
+            } catch (error) {
+              if (error.status !== 404) throw error;
+              core.setOutput('publish', 'true');
+            }
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Run GoReleaser
+        if: ${{ steps.release.outputs.publish == 'true' }}
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

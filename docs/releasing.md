@@ -44,6 +44,48 @@ check, shared title-indicator fixture comparison, clean GoReleaser snapshot,
 temporary local-tarball Arch build, package-content inspection, and package
 ownership transition test.
 
+## Automated publication gate
+
+CI, `publish-release.yml`, and `publish-aur.yml` share the read-only
+`verify.yml` workflow. Release jobs first resolve the strict version tag to its
+full commit, require an exact checkout and main ancestry, then verify that
+commit with `make verify` and GoReleaser configuration validation. The verified
+commit output is written only after all checks succeed. Publication depends on
+successful verification and matching commit outputs; a missing, failed,
+cancelled, skipped or running verification cannot authorize publication.
+
+Manual AUR publication is accepted only through `publish-aur.yml` on `main`.
+Its requested tag can be older than main: verification and the Arch package
+build both check out the resolved tag commit, never the dispatch commit. The
+generated package source URL and source directory use that full commit too,
+so changing the tag after checkout cannot substitute a different source tree.
+Current tag-based and previously pinned package templates are supported;
+unrecognized source or directory templates are rejected before publication.
+The existing checksum, non-root package build, metadata handoff and SSH host-key
+checks still apply. No publishing secrets are passed to verification or CI.
+Only the GitHub publisher receives a write-capable GitHub token.
+
+Repeating a gated run retains its exact commit. GitHub publication checks for
+an existing release and leaves already published artifacts intact; an existing
+draft requires explicit recovery. AUR publication keeps the existing
+no-change guard and serialization. Do not move an existing tag or use a rerun
+to replace published assets.
+
+Historical tags retain historical workflow code. The LAB-281 cutover must
+disable the old `release.yml` workflow (ID `350831682`) and `aur.yml` workflow
+(ID `350831683`), confirm their `disabled_manually` state, and confirm no queued
+or running executions remain. Use the new main-dispatch path for AUR recovery.
+Do not re-enable either retired workflow. A read-only probe established that
+disabled workflow IDs reject full, failed-job and single-job reruns with
+HTTP 403; the sanitized evidence is linked from LAB-281.
+
+The repository-policy inspection on 2026-10-09 found main protection disabled,
+one disabled branch ruleset, and no tag ruleset. These supplemental controls
+are not claimed as active. Required CI checks and immutable-tag rules remain
+recommended administrative hardening; the implemented job dependencies and
+retired workflow IDs provide the publication gate. Recheck live repository
+settings before changing this policy.
+
 Required GitHub repository secrets:
 
 ~~~text
@@ -68,7 +110,8 @@ PKGBUILD and .SRCINFO therefore carry SKIP as explicit bootstrap metadata.
 This is not release metadata and must never be published to the AUR.
 
 The AUR workflow checks out the exact immutable tag, downloads its GitHub source
-archive, calculates its SHA-256, writes that checksum into PKGBUILD, regenerates
+archive for the resolved commit, calculates its SHA-256, pins the recipe's
+source and directories to that commit, writes the checksum, regenerates
 .SRCINFO, rejects any remaining SKIP, verifies the source, and builds/tests the
 package. Never invent a checksum, checksum a mutable branch archive, or commit a
 placeholder that looks real.
@@ -112,7 +155,7 @@ Inspect the published release and checksums before treating it as available.
 The tag also starts the AUR workflow:
 
 1. validate the strict vMAJOR.MINOR.PATCH tag and main ancestry;
-2. replace version/checksum in the release template;
+2. replace version/checksum and pin source/directories to the verified commit;
 3. verify and build the source package in Arch Linux;
 4. pass only PKGBUILD and .SRCINFO to the isolated publishing job;
 5. push exact verified metadata to
@@ -127,7 +170,7 @@ If the AUR path fails after the GitHub release exists, rerun the workflow for
 the existing tag:
 
 ~~~sh
-gh workflow run aur.yml --ref main \
+gh workflow run publish-aur.yml --ref main \
   -f operation=publish-release -f version=v0.1.0
 ~~~
 

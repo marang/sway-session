@@ -1,4 +1,4 @@
-name: Publish to AUR
+name: Verified AUR publication
 
 on:
   push:
@@ -27,14 +27,49 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  resolve:
+    if: ${{ github.event_name == 'push' || (github.ref == 'refs/heads/main' && inputs.operation == 'publish-release') }}
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      commit: ${{ steps.tag.outputs.commit }}
+    steps:
+      - name: Checkout workflow source without persisted credentials
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve requested immutable release tag on main
+        id: tag
+        env:
+          VERSION: ${{ github.event.inputs.version || github.ref_name }}
+          EXPECTED_COMMIT: ${{ github.event_name == 'push' && github.sha || '' }}
+        run: |
+          cp scripts/resolve-release-tag.sh "$RUNNER_TEMP/resolve-release-tag.sh"
+          git checkout --detach "refs/tags/$VERSION"
+          if [ -n "$EXPECTED_COMMIT" ]; then
+            sh "$RUNNER_TEMP/resolve-release-tag.sh" "$VERSION" "$EXPECTED_COMMIT" >> "$GITHUB_OUTPUT"
+          else
+            sh "$RUNNER_TEMP/resolve-release-tag.sh" "$VERSION" >> "$GITHUB_OUTPUT"
+          fi
+
+  verify:
+    needs: resolve
+    uses: ./.github/workflows/verify.yml
+    with:
+      commit: ${{ needs.resolve.outputs.commit }}
+
   build:
     name: Build and verify package
-    if: ${{ github.event_name == 'push' || inputs.operation == 'publish-release' }}
+    needs: [resolve, verify]
+    if: ${{ needs.verify.outputs.commit == needs.resolve.outputs.commit }}
     runs-on: ubuntu-latest
     container: archlinux:latest
 
     env:
-      VERSION: ${{ github.event.inputs.version || github.ref_name }}
+      VERSION: ${{ needs.resolve.outputs.tag }}
+      EXPECTED_COMMIT: ${{ needs.resolve.outputs.commit }}
 
     steps:
       - name: Install deps
@@ -45,7 +80,7 @@ jobs:
       - name: Checkout source repo
         uses: actions/checkout@v5
         with:
-          ref: ${{ github.event.inputs.version || github.ref_name }}
+          ref: ${{ needs.resolve.outputs.commit }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -63,6 +98,10 @@ jobs:
           fi
           tag_commit=$(git -c safe.directory="$GITHUB_WORKSPACE" rev-list -n 1 "$VERSION")
           head_commit=$(git -c safe.directory="$GITHUB_WORKSPACE" rev-parse HEAD)
+          if [ "$tag_commit" != "$EXPECTED_COMMIT" ]; then
+            echo 'Release tag changed after verification.' >&2
+            exit 1
+          fi
           if [ "$head_commit" != "$tag_commit" ]; then
             echo "Checkout does not match release tag $VERSION." >&2
             exit 1
@@ -78,6 +117,7 @@ jobs:
         run: echo "version=${VERSION#v}" >> "$GITHUB_OUTPUT"
 
       - name: Bump PKGBUILD version and checksum
+        shell: bash
         env:
           RELEASE_VERSION: ${{ steps.v.outputs.version }}
         run: |
@@ -95,7 +135,23 @@ jobs:
             grep -Fx "_commit=${commit}" PKGBUILD
           fi
 
-          tarball="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/v${ver}.tar.gz"
+          # Pin makepkg's source and extracted directory to the verified commit,
+          # even if a tag moves after checkout. Accept only known recipe forms.
+          tag_source='source=("sway-session-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")'
+          if ! grep -Fx "$tag_source" PKGBUILD >/dev/null && \
+            ! grep -Eq '^source=\("sway-session-\$pkgver\.tar\.gz::\$url/archive/[0-9a-f]{40}\.tar\.gz"\)$' PKGBUILD; then
+            echo 'Refusing an unsupported package source template.' >&2
+            exit 1
+          fi
+          directory_pattern='^[[:space:]]*cd "sway-session-(\$pkgver|[0-9a-f]{40})"$'
+          if [ "$(grep -Ec "$directory_pattern" PKGBUILD)" -ne 3 ]; then
+            echo 'Refusing unsupported package source directories.' >&2
+            exit 1
+          fi
+          sed -i "s|^source=.*|source=(\"sway-session-\$pkgver.tar.gz::\$url/archive/${commit}.tar.gz\")|" PKGBUILD
+          sed -i -E 's@^([[:space:]]*)cd "sway-session-(\$pkgver|[0-9a-f]{40})"$@\1cd "sway-session-'"${commit}"'"@' PKGBUILD
+
+          tarball="https://github.com/${GITHUB_REPOSITORY}/archive/${commit}.tar.gz"
           sum=$(curl -fsSL "$tarball" | sha256sum | cut -d' ' -f1)
           sed -i "s/^sha256sums=.*/sha256sums=('${sum}')/" PKGBUILD
 
@@ -130,13 +186,14 @@ jobs:
 
   publish-aur:
     name: Publish verified package to AUR
-    needs: build
+    needs: [resolve, verify, build]
+    if: ${{ needs.verify.outputs.commit == needs.resolve.outputs.commit }}
     runs-on: ubuntu-latest
 
     env:
       PKGNAME: sway-session
       AUR_REPO: sway-session
-      VERSION: ${{ github.event.inputs.version || github.ref_name }}
+      VERSION: ${{ needs.resolve.outputs.tag }}
 
     steps:
       - name: Download verified package metadata
@@ -194,11 +251,11 @@ jobs:
 
   sync-pkgbuild:
     name: Open repository metadata sync PR
-    needs: publish-aur
+    needs: [resolve, publish-aur]
     runs-on: ubuntu-latest
 
     env:
-      VERSION: ${{ github.event.inputs.version || github.ref_name }}
+      VERSION: ${{ needs.resolve.outputs.tag }}
 
     steps:
       - name: Checkout main without persisted credentials
@@ -282,7 +339,7 @@ jobs:
 
   verify-release-sync-token:
     name: Verify release-sync token permissions
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.operation == 'verify-sync-token' }}
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.operation == 'verify-sync-token' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:

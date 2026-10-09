@@ -10,7 +10,7 @@ GO_LDFLAGS += -X github.com/marang/sway-session/internal/buildmetadata.Stamp=swa
 GO_FILES := $(shell find cmd internal scripts -name '*.go' -type f)
 DOC_ROOT := $(PREFIX)/share/doc/sway-session
 
-.PHONY: build install clean fmt fmt-check test race vet lint apparmor-check completion-check packaging-check standalone-check diff-check verify lifecycle-check vm-harness-check vm-reboot-check
+.PHONY: build install clean fmt fmt-check test race vet lint apparmor-check completion-check packaging-check standalone-check diff-check verify lifecycle-check vm-harness-check vm-reboot-check release-gate-check
 
 fmt:
 	gofmt -w $(GO_FILES)
@@ -62,7 +62,10 @@ vm-harness-check:
 vm-reboot-check:
 	python3 -B scripts/verify-vm-reboot.py $(VM_ARGS)
 
-verify: fmt-check test race vet lint apparmor-check completion-check packaging-check standalone-check vm-harness-check build diff-check
+release-gate-check:
+	python3 -B -m unittest discover -s scripts/release-gate -p 'test_*.py'
+
+verify: fmt-check test race vet lint apparmor-check completion-check packaging-check standalone-check vm-harness-check release-gate-check build diff-check
 
 install: build
 	install -d $(PREFIX)/bin

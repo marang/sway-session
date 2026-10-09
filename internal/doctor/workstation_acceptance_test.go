@@ -156,15 +156,6 @@ func workstationIntegrationCheck(t *testing.T, service *Service) Check {
 	return Check{}
 }
 
-func evidenceLineContains(lines []string, first, second string) bool {
-	for _, line := range lines {
-		if strings.Contains(line, first) && strings.Contains(line, second) {
-			return true
-		}
-	}
-	return false
-}
-
 func copyWorkstationFixture(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()

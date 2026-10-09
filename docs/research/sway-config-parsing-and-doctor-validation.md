@@ -2,12 +2,17 @@
 
 Date: 2026-10-09.
 
-**Recommendation:** keep Doctor focused on sway-session startup and its required
-bindings. Use a bounded, read-only integration analysis with uncertainty attached
-to the relevant requirement. Sway's native validator can be an optional,
-separate diagnostic or an isolated check of a proposed repair; it cannot supply
-the integration evidence itself. Copying the full Sway interpreter is excessive
-for that scope.
+**Decision (LAB-322):** use the owned standard integration snippet with two
+supported profiles and independent runtime checks. Inspect only that sibling
+file and a literal direct include in the selected main file. Foreign
+includes, variables and shell expressions remain opaque. New setup is
+startup-only; shortcuts and adoption require explicit choices. See
+[the current architecture contract](../sway-session-plan.md#setup-inspection-and-repair).
+
+This research records the source analysis and alternatives that informed the
+decision. The earlier general integration recognizer is retired, with no legacy
+fallback. Native Sway validation remains isolated behavioral evidence rather
+than a production-path interpreter or proof of live bindings.
 
 Scope: upstream Sway **1.12**, annotated tag
 [`45961113734a4d2cd3a652723c7499aa5d2e19b6`](https://api.github.com/repos/swaywm/sway/git/tags/45961113734a4d2cd3a652723c7499aa5d2e19b6),
@@ -159,71 +164,82 @@ Sending `reload` is not a read-only validation API: after its initial load it
 schedules the real reload.
 [Reload handler](https://github.com/swaywm/sway/blob/1.12/sway/commands/reload.c#L54-L73).
 
-## Smallest useful Doctor boundary
+## Chosen Doctor ownership contract
 
-The following is a proposal, rather than an existing product contract:
+The standard sibling `50-sway-session-doctor.conf` retains its exact Doctor
+ownership header and format version 1. A complete standard profile contains
+direct one-time daemon/restore `exec` declarations using one safe executable
+path, either alone or with both previous default terminal shortcuts. New
+adoption selects startup only; an omitted shortcut choice preserves an existing
+complete profile. Profile edits preserve its executable path. Partial legacy
+subsets and manually modified or unrecognized files are never expanded or
+overwritten.
 
-| Choice | Fit for Doctor's integration checks |
-| --- | --- |
-| Copy the full interpreter | High maintenance and version coupling; lexical similarity still does not provide handler or runtime equivalence. |
-| Use only native validation | Correct authority for its load-time checks, but gives no required integration evidence and needs isolation. |
-| Keep bounded integration analysis | Fits the four declared requirements and existing repair scope; support and uncertainty must be explicit. |
-| Add optional native validation beside it | Useful for an explicit diagnostic or candidate-repair check, if independently justified and safely isolated. |
+The inspector reads only the selected root and this owned file. A literal
+direct root include is recognized; variable/glob/nested includes are not
+followed. Consequently, ordinary wallpaper and idle expressions require no
+interpretation and cannot become alleged extra sway-session commands in this
+check. Configured-source evidence does not assert absence of arbitrary custom
+starts, earlier indirect inclusion or later binding overrides.
 
-Keep source observation, integration evidence, and optional native validation as
-separate results. The core analyzer should return evidence for each existing
-requirement: source location, recognized command/binding, and a bounded reason
-when that requirement cannot be determined. Preserve include order, variable
-definition order and mode/binding precedence within the supported subset.
-Do not turn every dynamic variable or unrelated shell command into uncertainty
-for every startup check.
+Creating or recovering the standard file or appending its include requires
+explicit `--adopt-standard` with `--fix sway.integration`. Adoption authorizes
+the limited writes and asks the user to review cleanup and first load placement;
+it does not prove that review occurred. `--yes` only commits that prepared
+request. With default shortcuts, the user must define `$mod` before the first
+inclusion and deliberately replace conflicting chords. Legacy migration requires
+a user backup, removal of old starts/includes/chords as applicable, and moving
+the old partial file aside before adoption. Running a daemon alone never grants
+authority to add startup declarations.
 
-For example, a supported unrelated `exec swayidle ...` should be irrelevant to
-the sway-session startup requirement. An opaque wrapper that might launch
-sway-session, or an include whose contents cannot be determined, may make the
-relevant requirement uncertain. Doctor can then decline a repair that risks
-duplicating or overriding an integration, while still reporting known evidence
-for the other requirements.
+The preview may replace complete owned content and append one quoted absolute
+include at root EOF. An existing literal direct include prevents append. It
+preserves other root content and uses the established snapshots, private
+backups and guarded writes. Removing owned chords does not restore previous
+bindings. Binding changes require manual reload; new startup declarations take
+effect in the next Sway session.
 
-The simple seam is a read-only **integration-evidence analyzer** over bounded
-source inputs, with an independently injectable **native-validation runner**
-only if a separate validation use case is selected. A native validation result
-must never silently upgrade unknown integration evidence to present or absent.
-No general Sway health checker is required to correct an overbroad uncertainty
-warning.
+This seam is a small read-only standard-source inspector plus the existing
+preview/apply repair interface. Runtime daemon/broker observations remain
+separate. File recognition cannot prove live keybindings or next-login success.
+A custom absent standard setup is unavailable, known incomplete/legacy setup is
+a warning, and unsafe or modified/unrecognized owned files are unavailable.
+Native validation, user services, new startup commands and IPC key registration
+are excluded from LAB-322. The upstream facts above remain relevant if a
+separate native-validation use case is requested later.
 
-## Current sway-session implementation and local observations
+## Historical implementation and local observations
 
-The reviewed product source is main commit
-`c4a3e9fac5fea912e9bea6f77c9fc5d26bcd0551`; its Doctor implementation is unchanged
+The source reviewed before the LAB-322 ownership change was main commit
+`c4a3e9fac5fea912e9bea6f77c9fc5d26bcd0551`; its Doctor implementation was unchanged
 from released 0.6.4 source `af3cc7bd006ab35991ab4918adaf9bc07be8f5ed`.
 
-Production `Service.Check` combines runtime checks with `inspectSwayConfig`.
-It obtains the main configuration filename from `GET_VERSION` unless explicitly
-overridden, then reads files on disk. Logical-line lexing, ordered variable
-storage, bounded include traversal and command relevance feed four findings:
+Its production `Service.Check` combined runtime checks with `inspectSwayConfig`.
+It obtained the main configuration filename from `GET_VERSION` unless explicitly
+overridden, then read files on disk. Logical-line lexing, ordered variable
+storage, bounded include traversal and command relevance fed four findings:
 one-time daemon startup, one-time restore startup, and the two default terminal
-shortcuts. Neither `Check`, `Plan` nor `Apply` invokes `sway --validate`.
-Plan's proposed-config validation reruns the same integration recognizer;
-Apply replans and verifies file fingerprints before guarded writes.
-[Service](../../internal/doctor/doctor.go),
-[config traversal/report](../../internal/doctor/config.go),
-[classification](../../internal/doctor/config_classifier.go),
-[repair](../../internal/doctor/repair.go).
+shortcuts. Neither `Check`, `Plan` nor `Apply` invoked `sway --validate`.
+Plan's proposed-config validation reran the same integration recognizer;
+Apply replanned and verified file fingerprints before guarded writes.
+[Historical service](https://github.com/marang/sway-session/blob/c4a3e9fac5fea912e9bea6f77c9fc5d26bcd0551/internal/doctor/doctor.go),
+[config traversal/report](https://github.com/marang/sway-session/blob/c4a3e9fac5fea912e9bea6f77c9fc5d26bcd0551/internal/doctor/config.go),
+[classification](https://github.com/marang/sway-session/blob/c4a3e9fac5fea912e9bea6f77c9fc5d26bcd0551/internal/doctor/config_classifier.go),
+[repair](https://github.com/marang/sway-session/blob/c4a3e9fac5fea912e9bea6f77c9fc5d26bcd0551/internal/doctor/repair.go).
 
-An unresolved shell payload and a recognized sway-session reference currently
-share a boolean result. A defined wallpaper variable containing command
-substitution fails the bounded expansion, so an unrelated idle command can
-become an alleged possible daemon/restore startup. The report preserves known
-declaration locations but marks both startup findings uncertain and suppresses
-repair. Distinguishing known references from unresolved analysis would improve
-the diagnosis without removing repair protections.
-[Relevance result and expansion](../../internal/doctor/config_relevance.go),
-[caller](../../internal/doctor/config_classifier.go).
+An unresolved shell payload and a recognized sway-session reference shared a
+boolean result. A defined wallpaper variable containing command substitution
+failed the bounded expansion, so an unrelated idle command became an alleged
+possible daemon/restore startup. The report preserved known declaration locations
+but marked both startup findings uncertain and suppressed repair. This was the
+reported usability failure. The chosen ownership contract removes that general
+analysis obligation; arbitrary substitutions remain outside the source claim.
+[Historical relevance result and expansion](https://github.com/marang/sway-session/blob/c4a3e9fac5fea912e9bea6f77c9fc5d26bcd0551/internal/doctor/config_relevance.go),
+[caller](https://github.com/marang/sway-session/blob/c4a3e9fac5fea912e9bea6f77c9fc5d26bcd0551/internal/doctor/config_classifier.go).
 
 Local checks on 2026-10-09 inspected the full main file and its glob include
 graph: **13 files, 496 physical lines, 17,344 bytes**, with no further includes.
-The required daemon/restore/default terminal declarations appeared once each;
+The then-required daemon/restore/default terminal declarations appeared once each;
 the dynamic idle/wallpaper expression produced the Doctor warning. IPC's main
 file text matched the on-disk main file exactly after folding its one
 backslash-newline continuation. This does not prove that included files remain
@@ -250,7 +266,7 @@ outside the repository.
 
 ## Integration alternatives discussed
 
-These are design alternatives, not implemented changes. The central choice is
+These are the alternatives considered before the LAB-322 decision above. The central choice is
 what Doctor promises: current runtime health, recognition of supported
 declarations, or an exhaustive claim about arbitrary scripts and overrides.
 The last promise cannot be delivered by a bounded configuration recognizer.

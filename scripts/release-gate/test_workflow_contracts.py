@@ -274,7 +274,7 @@ class WorkflowContractsTest(unittest.TestCase):
 
     def test_aur_publication_still_consumes_successfully_built_metadata(self):
         build = self.aur["jobs"]["build"]
-        self.assertEqual(build["container"], "archlinux:latest")
+        self.assertEqual(build["container"], "ghcr.io/archlinux/archlinux:latest")
         build_steps = build["steps"]
         package_build = next(
             step for step in build_steps

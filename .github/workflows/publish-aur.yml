@@ -65,7 +65,7 @@ jobs:
     needs: [resolve, verify]
     if: ${{ needs.verify.outputs.commit == needs.resolve.outputs.commit }}
     runs-on: ubuntu-latest
-    container: archlinux:latest
+    container: ghcr.io/archlinux/archlinux:latest
 
     env:
       VERSION: ${{ needs.resolve.outputs.tag }}

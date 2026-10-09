@@ -54,6 +54,11 @@ commit output is written only after all checks succeed. Publication depends on
 successful verification and matching commit outputs; a missing, failed,
 cancelled, skipped or running verification cannot authorize publication.
 
+The AUR package build uses the official Arch Linux image from
+`ghcr.io/archlinux/archlinux:latest`, avoiding Docker Hub's authentication
+endpoint. Arch documents this registry in its
+[image repository](https://github.com/archlinux/archlinux-docker).
+
 Manual AUR publication is accepted only through `publish-aur.yml` on `main`.
 Its requested tag can be older than main: verification and the Arch package
 build both check out the resolved tag commit, never the dispatch commit. The

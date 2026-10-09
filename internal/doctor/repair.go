@@ -26,18 +26,15 @@ const (
 )
 
 type fileEdit struct {
-	path            string
-	oldContent      []byte
-	newContent      []byte
-	oldState        safeFileState
-	existed         bool
-	directory       safeDirectoryState
-	mode            os.FileMode
-	preview         string
-	missing         []integrationKind
-	root            string
-	snippetIncluded bool
-	observed        []configFingerprint
+	path       string
+	oldContent []byte
+	newContent []byte
+	oldState   safeFileState
+	existed    bool
+	directory  safeDirectoryState
+	mode       os.FileMode
+	preview    string
+	observed   []configFingerprint
 }
 
 type safeDirectoryState struct {
@@ -60,147 +57,97 @@ type unresolvedRepairError struct{ error }
 
 func (err *unresolvedRepairError) Unwrap() error { return err.error }
 
-func (service *Service) Plan(ctx context.Context, fixID string) (Plan, error) {
+func (service *Service) Plan(ctx context.Context, fixID string, request RepairOptions) (Plan, error) {
 	if fixID != swayIntegrationFixID {
 		return Plan{}, fmt.Errorf("unknown repair %q", fixID)
 	}
-	if ctx == nil {
-		ctx = context.Background()
+	switch request.Shortcuts {
+	case ShortcutsUnspecified, ShortcutsNone, ShortcutsDefault:
+	default:
+		return Plan{}, fmt.Errorf("unknown shortcut selection %q", request.Shortcuts)
 	}
-	if err := ctx.Err(); err != nil {
-		return Plan{}, err
-	}
-
 	analysis, err := analyzeSwayConfig(ctx, service.options)
 	if err != nil {
 		return Plan{}, err
 	}
-	if analysis.unsupported != nil {
-		return Plan{}, fmt.Errorf("repair is unavailable: %w", analysis.unsupported)
+	if analysis.snippetErr != nil {
+		return Plan{}, fmt.Errorf("refuse to update doctor-managed snippet; move or remove it manually first: %w", analysis.snippetErr)
 	}
-	missing, err := repairableMissing(analysis)
+	if analysis.snippet.legacy {
+		return Plan{}, errors.New("legacy partial profile requires manual migration; move or remove it before adopting the standard integration")
+	}
+	if (!analysis.snippetExists || analysis.includeLine == 0) && !request.AdoptStandard {
+		return Plan{}, errors.New("explicit adoption of the standard integration is required to create or recover its file or append a direct include; review previous integration and load order manually")
+	}
+	directory, err := repairDirectory(analysis)
 	if err != nil {
-		return Plan{}, err
+		return Plan{}, fmt.Errorf("validate Sway repair ownership and directory: %w", err)
 	}
-	if len(missing) == 0 {
-		return Plan{}, errors.New("sway integration repair is not needed")
-	}
-
-	rootContent, rootState, err := readSafeConfigFile(analysis.root)
-	if err != nil {
-		return Plan{}, fmt.Errorf("revalidate root Sway configuration: %w", err)
-	}
-	if rootState.owner != uint32(os.Getuid()) {
-		return Plan{}, errors.New("repair requires the root Sway configuration to be owned by the current user")
-	}
-	rootDirectory, err := inspectSafeRepairDirectory(filepath.Dir(analysis.root))
-	if err != nil {
-		return Plan{}, fmt.Errorf("validate root Sway configuration directory: %w", err)
-	}
-
-	snippetPath := filepath.Join(filepath.Dir(analysis.root), doctorSnippetName)
-	if snippetPath == analysis.root {
-		return Plan{}, errors.New("root Sway configuration cannot be the doctor-managed snippet")
-	}
-	snippetDirectory := rootDirectory
-	snippetContent, snippetState, snippetExists, err := readOptionalRepairFile(snippetPath)
-	if err != nil {
-		return Plan{}, fmt.Errorf("inspect doctor-managed snippet: %w", err)
-	}
-	if snippetExists && snippetState.owner != uint32(os.Getuid()) {
-		return Plan{}, errors.New("doctor-managed snippet is not owned by the current user")
-	}
-
-	included := false
-	if _, ok := analysis.includes[snippetPath]; ok {
-		included = true
-	}
-	existingKinds := []integrationKind(nil)
-	if snippetExists {
-		existingKinds, err = parseManagedSnippet(snippetContent)
-		if err != nil {
-			return Plan{}, fmt.Errorf("refuse to update doctor-managed snippet: %w", err)
-		}
-	}
-	desiredKinds := slices.Clone(missing)
-	if included {
-		for _, kind := range existingKinds {
-			if !slices.Contains(desiredKinds, kind) {
-				desiredKinds = append(desiredKinds, kind)
-			}
-		}
-	}
-	sortIntegrationKinds(desiredKinds)
-	executable, err := repairExecutable(service.options.Executable)
-	if err != nil {
-		return Plan{}, err
-	}
-	newSnippet := renderManagedSnippet(executable, desiredKinds)
-
-	common := fileEdit{
-		missing:         slices.Clone(missing),
-		root:            analysis.root,
-		snippetIncluded: included,
-		observed:        slices.Clone(analysis.observed),
-	}
-	plan := Plan{ID: swayIntegrationFixID, Summary: "Add missing sway-session integration directives through a doctor-managed snippet."}
-	if !snippetExists || !bytes.Equal(snippetContent, newSnippet) {
-		edit := common
-		edit.path = snippetPath
-		edit.oldContent = slices.Clone(snippetContent)
-		edit.newContent = newSnippet
-		edit.oldState = snippetState
-		edit.existed = snippetExists
-		edit.directory = snippetDirectory
-		edit.mode = 0o600
-		if snippetExists {
-			edit.mode = snippetState.mode
-		}
-		edit.preview = string(newSnippet)
-		plan.edits = append(plan.edits, edit)
-		plan.Changes = append(plan.Changes, FileChange{Path: snippetPath, Preview: string(newSnippet)})
-	}
-	if !included {
-		includeLine, err := renderIncludeLine(snippetPath)
+	executable := analysis.snippet.executable
+	if !analysis.snippetExists {
+		executable, err = repairExecutable(service.options.Executable)
 		if err != nil {
 			return Plan{}, err
 		}
-		newRoot := appendConfigLine(rootContent, includeLine)
+	}
+	shortcuts := request.Shortcuts
+	if shortcuts == ShortcutsUnspecified {
+		shortcuts = ShortcutsNone
+		if analysis.snippetExists {
+			shortcuts = analysis.snippet.shortcuts
+		}
+	}
+	kinds := []integrationKind{integrationDaemon, integrationRestore}
+	if shortcuts == ShortcutsDefault {
+		kinds = integrationOrder
+	}
+	newSnippet := renderManagedSnippet(executable, kinds)
+	common := fileEdit{directory: directory, observed: slices.Clone(analysis.observed)}
+	plan := Plan{ID: swayIntegrationFixID,
+		Summary: "Configure the owned standard Sway integration; review previous integration and effective load order manually.",
+		request: request, fixID: fixID, trusted: true}
+	if !analysis.snippetExists || !bytes.Equal(analysis.snippetContent, newSnippet) {
+		edit := common
+		edit.path = analysis.snippetPath
+		edit.oldContent = slices.Clone(analysis.snippetContent)
+		edit.newContent = newSnippet
+		edit.oldState = analysis.snippetState
+		edit.existed = analysis.snippetExists
+		edit.mode = 0o600
+		if edit.existed {
+			edit.mode = analysis.snippetState.mode
+		}
+		edit.preview = string(newSnippet)
+		plan.edits = append(plan.edits, edit)
+		plan.Changes = append(plan.Changes, FileChange{Path: edit.path, Preview: edit.preview})
+	}
+	if analysis.includeLine == 0 {
+		includeLine, err := renderIncludeLine(analysis.snippetPath)
+		if err != nil {
+			return Plan{}, err
+		}
 		edit := common
 		edit.path = analysis.root
-		edit.oldContent = slices.Clone(rootContent)
-		edit.newContent = newRoot
-		edit.oldState = rootState
+		edit.oldContent = slices.Clone(analysis.rootContent)
+		edit.newContent = appendConfigLine(analysis.rootContent, includeLine)
+		if len(edit.newContent) > maxSwayConfigBytes {
+			return Plan{}, errors.New("appending the direct include would exceed the supported configuration size")
+		}
+		edit.oldState = analysis.rootState
 		edit.existed = true
-		edit.directory = rootDirectory
-		edit.mode = rootState.mode
+		edit.mode = analysis.rootState.mode
 		edit.preview = "+ " + includeLine + "\n"
 		plan.edits = append(plan.edits, edit)
-		plan.Changes = append(plan.Changes, FileChange{Path: analysis.root, Preview: edit.preview})
+		plan.Changes = append(plan.Changes, FileChange{Path: edit.path, Preview: edit.preview})
 	}
 	if len(plan.edits) == 0 {
-		return Plan{}, errors.New("sway integration repair produced no safe changes")
-	}
-	// A newly created snippet may also match an earlier include glob. Validate
-	// the proposed graph in memory, including variable state at that first use.
-	proposedOptions := service.options
-	proposedOptions.SwayConfigPath = analysis.root
-	proposed, err := analyzeSwayConfigWithEdits(ctx, proposedOptions, plan.edits)
-	if err != nil {
-		return Plan{}, fmt.Errorf("validate proposed configuration: %w", err)
-	}
-	if proposed.unsupported != nil {
-		return Plan{}, fmt.Errorf("repair cannot establish safe integration: %w", proposed.unsupported)
-	}
-	remaining, err := repairableMissing(proposed)
-	if err != nil || len(remaining) != 0 {
-		return Plan{}, errors.New("repair cannot establish unambiguous integration in the proposed include graph")
+		return Plan{}, errors.New("standard Sway integration already has the requested profile; repair is not needed")
 	}
 	return plan, nil
 }
 
 func (service *Service) Apply(ctx context.Context, plan Plan) (FixResult, error) {
-	if plan.ID != swayIntegrationFixID || len(plan.edits) == 0 {
+	if !plan.trusted || plan.fixID != swayIntegrationFixID || len(plan.edits) == 0 {
 		return FixResult{}, errors.New("repair plan is missing trusted private edit data")
 	}
 	if ctx == nil {
@@ -209,7 +156,7 @@ func (service *Service) Apply(ctx context.Context, plan Plan) (FixResult, error)
 	if err := ctx.Err(); err != nil {
 		return FixResult{}, err
 	}
-	fresh, err := service.Plan(ctx, plan.ID)
+	fresh, err := service.Plan(ctx, plan.fixID, plan.request)
 	if err != nil {
 		return FixResult{}, fmt.Errorf("repair plan is stale: %w", err)
 	}
@@ -239,6 +186,17 @@ func (service *Service) Apply(ctx context.Context, plan Plan) (FixResult, error)
 		if err := ctx.Err(); err != nil {
 			return FixResult{}, service.rollbackFailure(applied, backups, err)
 		}
+		// Advance only fingerprints for our own proven earlier writes. Every
+		// other observed file must still match the preview during this write.
+		edit.observed = slices.Clone(edit.observed)
+		for index, observed := range edit.observed {
+			for _, receipt := range applied {
+				if observed.path == receipt.edit.path {
+					edit.observed[index].state = receipt.installed
+					edit.observed[index].digest = sha256.Sum256(receipt.edit.newContent)
+				}
+			}
+		}
 		receipt, err := atomicWriteEdit(edit)
 		if receipt.installed.inode != 0 {
 			applied = append(applied, receipt)
@@ -255,20 +213,7 @@ func (service *Service) Apply(ctx context.Context, plan Plan) (FixResult, error)
 			resultBackups = append(resultBackups, backup)
 		}
 	}
-	missing := plan.edits[0].missing
-	message := "Applied the managed Sway integration files."
-	if slices.Contains(missing, integrationPersistent) || slices.Contains(missing, integrationEphemeral) {
-		message += " Reload Sway to load the new bindings."
-	}
-	if slices.Contains(missing, integrationDaemon) || slices.Contains(missing, integrationRestore) {
-		message += " New startup commands run in your next Sway session; reload does not run them."
-	}
-	if slices.Contains(missing, integrationDaemon) {
-		message += " An existing daemon keeps running; if none is running, start it with sway-session daemon."
-	}
-	if slices.Contains(missing, integrationRestore) {
-		message += " Run sway-session restore only if you want saved windows restored now."
-	}
+	message := "Applied the owned standard Sway integration files. Reload Sway manually to load binding changes; removing owned bindings does not establish which prior bindings will become active. Startup commands run in the next Sway session; reload does not run them. Review previous integration and effective load order manually."
 	return FixResult{
 		ID:      swayIntegrationFixID,
 		Message: message,
@@ -327,25 +272,6 @@ func (service *Service) rollbackFailure(applied []appliedFileEdit, backups []str
 	return fmt.Errorf("%w; applied files were rolled back", cause)
 }
 
-func repairableMissing(analysis swayConfigAnalysis) ([]integrationKind, error) {
-	missing := make([]integrationKind, 0, len(integrationOrder))
-	for _, kind := range integrationOrder {
-		if analysis.uncertaintyCounts[kind] != 0 {
-			return nil, fmt.Errorf("repair is unavailable because %s could not be fully checked", integrationLabel(kind))
-		}
-		occurrences := analysis.occurrenceCounts[kind]
-		correct := analysis.matchingCounts[kind]
-		if occurrences == 0 {
-			missing = append(missing, kind)
-			continue
-		}
-		if occurrences != 1 || correct != 1 {
-			return nil, fmt.Errorf("repair is unavailable because %s is duplicated or conflicting", integrationLabel(kind))
-		}
-	}
-	return missing, nil
-}
-
 func repairExecutable(value string) (string, error) {
 	if value == "" {
 		return "/usr/bin/sway-session", nil
@@ -394,36 +320,45 @@ func integrationDirective(executable string, kind integrationKind) string {
 	}
 }
 
-func parseManagedSnippet(content []byte) ([]integrationKind, error) {
+func parseManagedSnippet(content []byte) (managedSnippet, error) {
 	if !bytes.HasPrefix(content, []byte(doctorHeader)) {
-		return nil, errors.New("file does not have the exact doctor ownership header")
+		return managedSnippet{}, errors.New("file does not have the exact doctor ownership header and format version")
 	}
-	remainder := strings.TrimSuffix(string(content[len(doctorHeader):]), "\n")
-	if remainder == "" {
-		return nil, nil
+	if len(content) > maxSwayConfigBytes {
+		return managedSnippet{}, errors.New("file exceeds the supported size")
 	}
-	lines := strings.Split(remainder, "\n")
-	kinds := make([]integrationKind, 0, len(lines))
+	remainder := string(content[len(doctorHeader):])
+	kinds := []integrationKind(nil)
 	executable := ""
-	for _, line := range lines {
-		tokens, unsupported, err := tokenizeSwayLine(line)
-		if err != nil || unsupported || len(tokens) == 0 {
-			return nil, errors.New("file contains unrecognized manual edits")
+	if remainder != "" {
+		if !strings.HasSuffix(remainder, "\n") {
+			return managedSnippet{}, errors.New("file contains unrecognized manual edits")
 		}
-		kind, lineExecutable, ok := parseExactManagedDirective(tokens)
-		if !ok || line != integrationDirective(lineExecutable, kind) {
-			return nil, errors.New("file contains unrecognized manual edits")
+		for _, line := range strings.Split(strings.TrimSuffix(remainder, "\n"), "\n") {
+			kind, lineExecutable, ok := parseExactManagedDirective(strings.Fields(line))
+			if !ok || line != integrationDirective(lineExecutable, kind) {
+				return managedSnippet{}, errors.New("file contains unrecognized manual edits")
+			}
+			if executable != "" && executable != lineExecutable {
+				return managedSnippet{}, errors.New("file contains inconsistent managed executable paths")
+			}
+			executable = lineExecutable
+			if slices.Contains(kinds, kind) {
+				return managedSnippet{}, errors.New("file contains duplicate managed directives")
+			}
+			kinds = append(kinds, kind)
 		}
-		if executable != "" && executable != lineExecutable {
-			return nil, errors.New("file contains inconsistent managed executable paths")
-		}
-		executable = lineExecutable
-		if slices.Contains(kinds, kind) {
-			return nil, errors.New("file contains duplicate managed directives")
-		}
-		kinds = append(kinds, kind)
 	}
-	return kinds, nil
+	if !bytes.Equal(content, renderManagedSnippet(executable, kinds)) {
+		return managedSnippet{}, errors.New("file contains unrecognized manual edits or reordered directives")
+	}
+	result := managedSnippet{executable: executable, legacy: true}
+	if slices.Equal(kinds, []integrationKind{integrationDaemon, integrationRestore}) {
+		result.shortcuts, result.legacy = ShortcutsNone, false
+	} else if slices.Equal(kinds, integrationOrder) {
+		result.shortcuts, result.legacy = ShortcutsDefault, false
+	}
+	return result, nil
 }
 
 func parseExactManagedDirective(tokens []string) (integrationKind, string, bool) {
@@ -450,10 +385,6 @@ func parseExactManagedDirective(tokens []string) (integrationKind, string, bool)
 		}
 	}
 	return 0, "", false
-}
-
-func sortIntegrationKinds(kinds []integrationKind) {
-	slices.SortFunc(kinds, func(left, right integrationKind) int { return int(left) - int(right) })
 }
 
 func renderIncludeLine(path string) (string, error) {
@@ -542,14 +473,14 @@ func validateRepairAncestors(path string) error {
 }
 
 func sameRepairPlan(left, right Plan) bool {
-	if left.ID != right.ID || left.Summary != right.Summary || !slices.Equal(left.Changes, right.Changes) || len(left.edits) != len(right.edits) {
+	if left.request != right.request || left.fixID != right.fixID || left.trusted != right.trusted || left.ID != right.ID || left.Summary != right.Summary || !slices.Equal(left.Changes, right.Changes) || len(left.edits) != len(right.edits) {
 		return false
 	}
 	for index := range left.edits {
 		a, b := left.edits[index], right.edits[index]
 		if a.path != b.path || !bytes.Equal(a.oldContent, b.oldContent) || !bytes.Equal(a.newContent, b.newContent) ||
 			a.oldState != b.oldState || a.existed != b.existed || a.directory != b.directory || a.mode != b.mode ||
-			a.preview != b.preview || a.root != b.root || a.snippetIncluded != b.snippetIncluded || !slices.Equal(a.missing, b.missing) ||
+			a.preview != b.preview ||
 			!slices.Equal(a.observed, b.observed) {
 			return false
 		}

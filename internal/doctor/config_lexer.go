@@ -1,203 +1,117 @@
 package doctor
 
 import (
-	"bufio"
-	"errors"
-	"fmt"
+	"path/filepath"
 	"strings"
 )
 
-type swayLogicalLine struct {
-	text  string
-	start int
-}
-
-func forEachSwayLogicalLine(content []byte, visit func(swayLogicalLine) bool) error {
-	physical := bufio.NewScanner(strings.NewReader(string(content)))
-	physical.Buffer(make([]byte, 4096), maxSwayConfigLine)
+// literalDirectInclude finds only an ordinary, top-level literal include in
+// the selected main file. It does not expand variables, follow includes, parse
+// shell commands, or infer whether Sway loaded this source.
+func literalDirectInclude(content []byte, main, snippet string) int {
+	depth := 0
 	var logical strings.Builder
-	var pending *swayLogicalLine
-	var framingErr error
-	start := 0
-	line := 0
-	continued := false
-	emit := func(item swayLogicalLine) bool {
-		trimmed := strings.TrimSpace(item.text)
-		if pending != nil {
-			if trimmed == "" || strings.HasPrefix(trimmed, "#") {
-				return true
-			}
-			if trimmed == "{" {
-				if len(pending.text)+2 > maxSwayConfigLine {
-					framingErr = errors.New("block header exceeds the supported length")
-					return false
-				}
-				pending.text += " {"
-				ready := *pending
-				pending = nil
-				return visit(ready)
-			}
-			ready := *pending
-			pending = nil
-			if !visit(ready) {
-				return false
-			}
-		}
-		if trimmed == "" || strings.HasPrefix(trimmed, "#") || strings.HasSuffix(trimmed, "{") || strings.HasSuffix(trimmed, "}") {
-			return visit(item)
-		}
-		copy := item
-		pending = &copy
-		return true
-	}
-	for physical.Scan() {
-		line++
-		part := physical.Text()
-		if start == 0 {
-			start = line
-		}
-		isContinuation := strings.HasSuffix(part, "\\") && (len(part) == 0 || part[0] != '#')
-		if isContinuation {
+	start, found := 1, 0
+	continued, oversized := false, false
+	for index, physical := range strings.Split(string(content), "\n") {
+		trimmed := strings.TrimSpace(physical)
+		comment := strings.HasPrefix(trimmed, "#")
+		continuation := !comment && strings.HasSuffix(physical, "\\")
+		part := physical
+		if continuation {
 			part = strings.TrimSuffix(part, "\\")
 		}
 		if logical.Len()+len(part) > maxSwayConfigLine {
-			return fmt.Errorf("continued line starting at %d exceeds the supported length", start)
+			oversized = true
 		}
-		logical.WriteString(part)
-		continued = isContinuation
-		if continued {
+		if !oversized {
+			logical.WriteString(part)
+		}
+		if continuation {
+			continued = true
 			continue
 		}
-		if !emit(swayLogicalLine{text: logical.String(), start: start}) {
-			return framingErr
+		if !oversized {
+			line := strings.TrimSpace(logical.String())
+			if line != "" && !strings.HasPrefix(line, "#") {
+				fields := strings.Fields(line)
+				command := strings.ToLower(fields[0])
+				if depth == 0 && !continued && command == "include" {
+					if path, ok := literalIncludePath(line[len(fields[0]):]); ok {
+						if !filepath.IsAbs(path) {
+							path = filepath.Join(filepath.Dir(main), path)
+						}
+						if path == snippet && found == 0 {
+							found = start
+						}
+					}
+				}
+				// Command payloads are opaque. In particular, shell braces in
+				// unrelated startup commands do not change source scope.
+				if command != "exec" && command != "exec_always" {
+					if line == "}" {
+						if depth > 0 {
+							depth--
+						}
+					} else if fields[len(fields)-1] == "{" {
+						depth++
+					}
+				}
+			}
 		}
 		logical.Reset()
-		start = 0
+		continued, oversized = false, false
+		start = index + 2
+		if depth > maxSwayBlockDepth {
+			// The source is beyond this bounded recognizer. Any earlier
+			// evidence remains source evidence, without a load-order claim.
+			return found
+		}
 	}
-	if err := physical.Err(); err != nil {
-		return errors.New("a physical line exceeds the supported length")
-	}
-	if continued {
-		return fmt.Errorf("continued line starting at %d has no following line", start)
-	}
-	if pending != nil {
-		visit(*pending)
-	}
-	return nil
+	return found
 }
 
-// lexSwayLine retains a completed prefix on failure. The classifier may ignore
-// an argument error only when that prefix and the enclosing scope prove the
-// declaration unrelated. Structural tokens are distinguished from quoted or
-// escaped brace arguments; inline structural syntax is never silently skipped.
-type swayLexedLine struct {
-	tokens        []string
-	starts        []int
-	brace         byte
-	embeddedBrace bool
-	escaped       bool
-	err           error
-}
-
-func lexSwayLine(line string) swayLexedLine {
-	result := swayLexedLine{}
-	if len(line) > maxSwayConfigLine {
-		result.err = errors.New("logical line exceeds the supported length")
-		return result
+func literalIncludePath(argument string) (string, bool) {
+	argument = strings.TrimSpace(argument)
+	if argument == "" {
+		return "", false
 	}
-	// Sway comments start at the first non-whitespace character. Hashes in
-	// arguments, including hexadecimal colors and paths, remain literal.
-	if strings.HasPrefix(strings.TrimSpace(line), "#") {
-		return result
-	}
-	var token strings.Builder
-	var quote byte
-	escaped, active, plain := false, false, true
-	start := 0
-	braces := 0
-	finish := func() {
-		if !active {
-			return
-		}
-		value := token.String()
-		result.tokens = append(result.tokens, value)
-		result.starts = append(result.starts, start)
-		result.brace = 0
-		if plain && (value == "{" || value == "}") {
-			result.brace = value[0]
-			braces++
-		}
-		token.Reset()
-		active, plain = false, true
-	}
-	for index := 0; index < len(line); index++ {
-		character := line[index]
-		if !active {
-			start = index
-		}
-		if character == 0 {
-			result.err = errors.New("NUL in logical line")
-			break
-		}
-		if escaped {
-			token.WriteByte(character)
-			active = true
-			escaped = false
-			continue
-		}
-		if character == '\\' && quote != '\'' {
-			escaped, active, plain = true, true, false
-			continue
-		}
-		if quote != 0 {
-			if character == quote {
-				quote = 0
-			} else {
-				token.WriteByte(character)
+	path := argument
+	if argument[0] == '"' {
+		var decoded strings.Builder
+		closed := false
+		for index := 1; index < len(argument); index++ {
+			character := argument[index]
+			if character == '"' {
+				if strings.TrimSpace(argument[index+1:]) != "" {
+					return "", false
+				}
+				closed = true
+				break
 			}
-			active = true
-			continue
+			if character == '\\' {
+				index++
+				if index >= len(argument) || (argument[index] != '\\' && argument[index] != '"') {
+					return "", false
+				}
+				character = argument[index]
+			}
+			decoded.WriteByte(character)
 		}
-		switch character {
-		case '\'', '"':
-			quote, active, plain = character, true, false
-		case ' ', '\t', '\r':
-			finish()
-		default:
-			token.WriteByte(character)
-			active = true
+		if !closed {
+			return "", false
+		}
+		path = decoded.String()
+	} else if strings.ContainsAny(argument, " \t\r\n\\\"'") {
+		return "", false
+	}
+	if path == "" || strings.ContainsAny(path, "\r\n\x00$`*?[") || filepath.Clean(path) != path {
+		return "", false
+	}
+	for _, component := range strings.Split(path, string(filepath.Separator)) {
+		if component == ".." {
+			return "", false
 		}
 	}
-	finish()
-	result.embeddedBrace = braces > 1 || (braces != 0 && result.brace == 0)
-	if escaped {
-		result.escaped = true
-		result.err = errors.New("unfinished escape")
-	}
-	if quote != 0 {
-		result.err = errors.New("unterminated quoted string")
-	}
-	return result
-}
-func tokenizeSwayLine(line string) ([]string, bool, error) {
-	lexed := lexSwayLine(line)
-	if lexed.escaped {
-		return lexed.tokens, true, nil
-	}
-	return lexed.tokens, false, lexed.err
-}
-
-func swayExecPayload(raw string) string {
-	lexed := lexSwayLine(raw)
-	if len(lexed.tokens) < 2 || (!strings.EqualFold(lexed.tokens[0], "exec") && !strings.EqualFold(lexed.tokens[0], "exec_always")) {
-		return ""
-	}
-	index := 1
-	if lexed.tokens[index] == "--no-startup-id" {
-		index++
-	}
-	if index == len(lexed.tokens) {
-		return ""
-	}
-	return raw[lexed.starts[index]:]
+	return path, true
 }

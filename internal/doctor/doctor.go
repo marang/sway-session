@@ -25,6 +25,8 @@ type Check struct {
 	Hint     string   `json:"hint,omitempty"`
 	Evidence []string `json:"evidence,omitempty"`
 	FixID    string   `json:"fix_id,omitempty"`
+	// AdoptionRequired is an in-process UI signal, not part of the report wire shape.
+	AdoptionRequired bool `json:"-"`
 }
 
 type Report struct {
@@ -92,6 +94,9 @@ type Plan struct {
 	Summary string       `json:"summary"`
 	Changes []FileChange `json:"changes"`
 	edits   []fileEdit
+	request RepairOptions
+	fixID   string
+	trusted bool
 }
 
 type FileChange struct {

@@ -52,6 +52,24 @@ type Options struct {
 	CLIBuild *buildmetadata.Metadata
 }
 
+// ShortcutSelection distinguishes preserving an existing profile from an
+// explicit choice. New standard integrations default to no shortcuts.
+type ShortcutSelection string
+
+const (
+	ShortcutsUnspecified ShortcutSelection = ""
+	ShortcutsNone        ShortcutSelection = "none"
+	ShortcutsDefault     ShortcutSelection = "default"
+)
+
+// RepairOptions selects the owned standard integration. Adoption authorizes
+// creation/recovery and a new direct include; it does not prove that the user
+// has removed previous integration or checked the effective load order.
+type RepairOptions struct {
+	AdoptStandard bool
+	Shortcuts     ShortcutSelection
+}
+
 type Service struct {
 	options Options
 }

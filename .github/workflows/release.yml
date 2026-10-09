@@ -1,0 +1,15 @@
+# Keep this path on main so the historical workflow ID can stay disabled.
+# Deleting the file permits reruns of its historical publishing code.
+name: Retired Release
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  retired:
+    if: ${{ false }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: exit 1

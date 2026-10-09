@@ -65,6 +65,80 @@ therefore does not establish the rerun barrier. Validate the retired IDs with
 new placeholder runs whose jobs cannot execute, as described in
 [the publication gate](releasing.md#automated-publication-gate).
 
+### Integrated review-fix acceptance (LAB-278, LAB-284)
+
+On 2026-10-09, the five review fixes and the three confirmed checkpoint
+follow-ups were tested together at source commit
+`edb2f34fb9caece9a756ab7969438b2775123b6d`. The environment was Arch Linux
+x86_64, kernel `7.2.8-arch1-2`, Go `1.26.5` (module `go 1.26.0`, toolchain
+`go1.26.5`) and private Sway `1.12` where required. The independently exercised
+CGO-free CLI identified itself as `dev`, that exact commit and
+`modified=false`; its SHA-256 was
+`ed7e1c41f52114bbd0d65523a7e1da43e864f35671ad0143ca159a892bf64843`.
+
+| Scenario | Observed evidence | Status |
+| --- | --- | --- |
+| R1 and initialization follow-up | Real management, restore and initialization subprocesses with pipe-holding descendants, plus persistent starter lifecycle, passed five race-detector repetitions. Owned supervisors cleaned up their descendants; captured-pipe bounds did not become process-group termination. | Passed |
+| R2 established Unix exchanges | Session-start, agent-report and Herdr endpoint cases passed 20 race-detector repetitions per package, including accepted mutations, early cancel, deadlines, complete success, ordinary transport failures, response guards and response/cancel races. No automatic second request was sent. CLI SIGINT/SIGTERM cases passed ten repetitions. | Passed |
+| R3 publication, explicit tag and stale metadata | The actual local resolver, source transformation, published-release rerun guard, AUR version guard and metadata-sync scripts passed all 51 release-gate tests with private Git remotes/mock APIs. A fresh actual GoReleaser 2.18.2 build with Go 1.26.5 in a private dual-tag fixture reproduced default tag v1.2.4 and selected v1.2.3 when the production override was supplied; binary and metadata identities agreed. Fresh GitHub scheduler and retired-ID observations are recorded below. | Passed |
+| R4 installation | Three actual private `make install` cases passed: ordinary prefix, prefix with spaces and separate documentation root with spaces. Every installed byte, file/directory mode and destination matched the complete manifest; no split paths appeared. | Passed |
+| R5 repair guidance | An independent validator ran ten actual text/JSON CLI scenarios and real NO_COLOR PTYs at 80×24 and 48×16 against private Sway, workspace 98, using ordinary multi-file configuration with inert startup declarations. Preview, confirmation, original 0600 backups, fall-dependent guidance, full result scrolling and recheck passed. Exec traces, loaded-config facts and private runtime/state comparisons showed no daemon/restore execution or compositor reload. | Passed |
+
+The complete `GOTOOLCHAIN=go1.26.5 make verify` gate passed at that source.
+[Main push CI](https://github.com/marang/sway-session/actions/runs/37931503241)
+also passed and identified `verify.yml` at the same SHA as its reusable
+workflow. Exact checkout, full verification, GoReleaser configuration check and
+verified-commit output steps all succeeded. Separate repetition commands were:
+
+```sh
+GOTOOLCHAIN=go1.26.5 go test -race ./internal/session ./internal/sessionrequest ./internal/herdrinit \
+  -run '^Test(ExecCommandRunnerProcess|ExecRestoreRunnerProcess|ExecRunnerProcess|ExecProcessStarterLifecycle)$' -count=5 -timeout=4m
+GOTOOLCHAIN=go1.26.5 go test -race ./internal/sessionrequest ./internal/agentreport ./internal/session \
+  -run '^Test(Send|HerdrEndpoint)' -count=20 -timeout=4m
+GOTOOLCHAIN=go1.26.5 go test -race ./cmd/sway-session \
+  -run '^TestRequestStartSignalCancellation$' -count=10 -timeout=3m
+GOTOOLCHAIN=go1.26.5 python3 -B scripts/test_install.py -v
+python3 -B -m unittest discover -s scripts/release-gate -p 'test_*.py' -v
+```
+
+Fresh GitHub probes copied production `needs`/`if` and both reusable verifier
+output mappings from the named source into credential-free marker workflows
+at fixture commit `2df5cb93c0254abf4177b0bcf6ad0e50847547d3`.
+[The matrix](https://github.com/marang/sway-session/actions/runs/37932261654)
+passed its assertions in attempts 1 and 2: successful exact-SHA verification
+ran all four build/publish/sync markers; failed, skipped, missing-output and
+wrong-SHA verification left every downstream job skipped with no executed
+steps. [The hold probe](https://github.com/marang/sway-session/actions/runs/37932261632)
+twice showed no downstream start while both verifiers ran. Unique job-level
+concurrency kickers cancelled only those verifier jobs; assertions still ran
+and all four downstream jobs stayed skipped. Synthetic failed/cancelled jobs
+make aggregate probe conclusions red/cancelled by design; the exact job and
+step observations establish the expected barriers, not an aggregate green run.
+These probes exercised GitHub scheduling, not actual publication.
+
+At `2026-10-09T12:51:59Z`, fresh observations of the unchanged historical inert
+artifacts (`add83a40b36e2f7ab13562acde99621e17c179bd`) found both original
+publisher IDs `disabled_manually`, all six full/failed-job/single-job rerun
+requests rejected with HTTP 403, and no queued or running executions. The
+original inert artifact identity remains separate from this acceptance source.
+
+The required current-state architecture checkpoint sampled these transport,
+process, state/transaction, lifecycle and Doctor boundaries plus publication
+workflows. It found no further evidence-backed defect; independent focused
+race checks of 29 transport/lock/repair groups also passed. This was a bounded
+checkpoint, not an exhaustive repository audit.
+
+Not run: production publication/AUR writes, workstation installation or login,
+physical shortcut execution, real daemon/restore startup, production Chrome/
+Slack, loaded AppArmor enforcement, or a new release-candidate archive/DEB/RPM
+and package-manager transition matrix. They are outside this review package;
+earlier release, login and VM evidence retains its own source/artifact identity.
+Private install checks built disposable binaries; the named candidate above
+belongs to the independent executable acceptance. Client cancellation does
+not establish that an accepted remote mutation was undone. The parent ticket
+[LAB-278](https://linear.app/riotbox/issue/LAB-278/codebase-review-2026-10-07-abbruchverhalten-release-gates-und)
+owns the consolidated result and the deliberately excluded checks.
+
 ## Management subprocess pipe draining (LAB-279, LAB-315)
 
 The production Herdr command runner, fixed Herdr initialization runner and

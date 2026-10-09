@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -36,9 +37,11 @@ func Send(ctx context.Context, socketPath string, request Request) (Response, er
 		return Response{}, fmt.Errorf("connect to session start broker: %w", err)
 	}
 	defer connection.Close()
+	stopCancellation := context.AfterFunc(ctx, func() { _ = connection.Close() })
+	defer stopCancellation()
 	if deadline, ok := ctx.Deadline(); ok {
 		if err := connection.SetDeadline(deadline); err != nil {
-			return Response{}, fmt.Errorf("bound session start exchange: %w", err)
+			return Response{}, fmt.Errorf("bound session start exchange: %w", exchangeContextError(ctx, err))
 		}
 	}
 	encoded, err := json.Marshal(request)
@@ -46,12 +49,12 @@ func Send(ctx context.Context, socketPath string, request Request) (Response, er
 		return Response{}, fmt.Errorf("encode session start request: %w", err)
 	}
 	if _, err := connection.Write(append(encoded, '\n')); err != nil {
-		return Response{}, fmt.Errorf("write session start request: %w", err)
+		return Response{}, fmt.Errorf("write session start request: %w", exchangeContextError(ctx, err))
 	}
 	reader := bufio.NewReader(io.LimitReader(connection, maxProtocolMessage+1))
 	line, err := reader.ReadBytes('\n')
 	if err != nil && !errors.Is(err, io.EOF) {
-		return Response{}, fmt.Errorf("read session start response: %w", err)
+		return Response{}, fmt.Errorf("read session start response: %w", exchangeContextError(ctx, err))
 	}
 	if len(line) > maxProtocolMessage {
 		return Response{}, fmt.Errorf("session start response exceeds %d bytes", maxProtocolMessage)
@@ -82,4 +85,16 @@ func Send(ctx context.Context, socketPath string, request Request) (Response, er
 		return Response{}, errors.New("session start response does not match request")
 	}
 	return response, nil
+}
+
+func exchangeContextError(ctx context.Context, err error) error {
+	if cause := ctx.Err(); cause != nil {
+		return cause
+	}
+	// The socket deadline comes only from ctx and can fire before its timer
+	// publishes ctx.Err(). Preserve the context cause in that ordering too.
+	if errors.Is(err, os.ErrDeadlineExceeded) {
+		return context.DeadlineExceeded
+	}
+	return err
 }

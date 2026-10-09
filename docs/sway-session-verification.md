@@ -61,6 +61,34 @@ failed exit, and output limits. Isolated helper supervisors clean up and reap
 only their owned descendants. The launcher check also verifies detached
 process survival after the short-lived CLI returns.
 
+## Established Unix exchange cancellation (LAB-280)
+
+Session-start, agent-report and Herdr API clients close their established
+connection when the request context is canceled. The cancellation callback is
+unregistered when the exchange finishes. Cancellation-induced I/O errors retain
+`context.Canceled`; network deadlines derived from the context retain
+`context.DeadlineExceeded` even if the socket timer fires first. Ordinary
+transport and response-validation errors retain their existing handling.
+
+A fully received and validated response can win a race with cancellation.
+Closing a client connection does not prove that an accepted server action did
+not happen. These clients do not repeat an exchange automatically and do not
+introduce a remote cancellation protocol.
+
+```sh
+GOTOOLCHAIN=go1.26.5 go test -race \
+  ./internal/sessionrequest ./internal/agentreport ./internal/session ./cmd/sway-session \
+  -run '^Test(Send|HerdrEndpoint|RequestStartSignalCancellation)' -count=1
+```
+
+Private Unix servers exercise cancellation after accepting a mutating request,
+deadlines, success, ordinary disconnects, response guards and response/cancel
+races. Each canceled accepted request is sent once. An isolated CLI helper runs
+the actual `main` signal context and verifies both SIGINT and SIGTERM return the
+existing operational-failure exit code while the broker holds its response,
+instead of waiting for the 100-second default deadline. Test sockets and
+processes use disposable roots; no production broker or Herdr session is used.
+
 ## Executable lifecycle scenario matrix (LAB-134)
 
 Run the deterministic matrix with the declared toolchain:

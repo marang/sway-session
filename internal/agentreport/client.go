@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"path/filepath"
 )
 
@@ -48,9 +49,11 @@ func send(ctx context.Context, socketPath string, report Report) error {
 		return fmt.Errorf("connect to agent session reporter: %w", err)
 	}
 	defer connection.Close()
+	stopCancellation := context.AfterFunc(ctx, func() { _ = connection.Close() })
+	defer stopCancellation()
 	if deadline, ok := ctx.Deadline(); ok {
 		if err := connection.SetDeadline(deadline); err != nil {
-			return fmt.Errorf("bound agent report exchange: %w", err)
+			return fmt.Errorf("bound agent report exchange: %w", exchangeContextError(ctx, err))
 		}
 	}
 	encoded, err := json.Marshal(report)
@@ -58,11 +61,11 @@ func send(ctx context.Context, socketPath string, report Report) error {
 		return fmt.Errorf("encode agent session report: %w", err)
 	}
 	if _, err := connection.Write(append(encoded, '\n')); err != nil {
-		return fmt.Errorf("write agent session report: %w", err)
+		return fmt.Errorf("write agent session report: %w", exchangeContextError(ctx, err))
 	}
 	line, err := bufio.NewReader(io.LimitReader(connection, maxProtocolMessage+1)).ReadBytes('\n')
 	if err != nil && !errors.Is(err, io.EOF) {
-		return fmt.Errorf("read agent report response: %w", err)
+		return fmt.Errorf("read agent report response: %w", exchangeContextError(ctx, err))
 	}
 	if len(line) > maxProtocolMessage {
 		return fmt.Errorf("agent report response exceeds %d bytes", maxProtocolMessage)
@@ -84,4 +87,15 @@ func send(ctx context.Context, socketPath string, report Report) error {
 		return errors.New("report rejected")
 	}
 	return nil
+}
+
+func exchangeContextError(ctx context.Context, err error) error {
+	if cause := ctx.Err(); cause != nil {
+		return cause
+	}
+	// SetDeadline uses ctx's deadline; its network timer may fire first.
+	if errors.Is(err, os.ErrDeadlineExceeded) {
+		return context.DeadlineExceeded
+	}
+	return err
 }

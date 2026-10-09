@@ -139,22 +139,23 @@ Herdr plus Alacritty or Foot, desktop-entry launch uses gio, and Flatpak restore
 uses flatpak.
 
 Published archives and packages are available from the
-[GitHub releases](https://github.com/marang/sway-session/releases) page. After
-the v0.1.0 package ownership transition described in docs/releasing.md is
-complete, Arch users can install the standalone AUR package with:
+[GitHub releases](https://github.com/marang/sway-session/releases) page. Arch
+users can install the standalone AUR package with:
 
 ~~~sh
 yay -S sway-session
 ~~~
 
-Do not use a package-manager overwrite flag to install it over an older
-combined sway-title-animator package that still owns /usr/bin/sway-session.
+Systems still using the historical combined sway-title-animator package must
+first complete the [package ownership transition](docs/releasing.md#package-ownership-transition).
+That older package may still own /usr/bin/sway-session; do not use a
+package-manager overwrite flag to replace it.
 
-The first standalone release is planned as v0.1.0. Until that immutable tag
-exists, the checked-in Arch metadata deliberately uses SKIP rather than an
-invented archive checksum. The release workflow replaces it with the checksum
-of the actual tag archive, refuses to publish SKIP, builds the source package,
-and records the exact verified metadata.
+The checked-in Arch metadata identifies a released source archive with its
+SHA-256 checksum. `SKIP` was only the historical bootstrap state before the
+first standalone release. The release workflow calculates the checksum of
+the verified commit archive, refuses to publish `SKIP`, builds the source
+package, and records the exact verified metadata.
 
 ## Sway setup
 
@@ -171,6 +172,12 @@ Source installs can replace /usr/bin with $HOME/.local/bin. Both startup
 commands intentionally use exec, not exec_always: reloading the Sway config
 must not start another daemon or request another startup restore. The daemon
 also holds an owner-only exclusive runtime lock.
+
+Reload Sway to load newly added bindings. Newly added daemon and restore
+startup commands run at the next Sway session; reload does not run them.
+If the daemon is missing in the current session, start it explicitly with
+`sway-session daemon`. Run `sway-session restore` explicitly only when you
+want to restore saved windows now.
 
 ### Setup doctor
 
@@ -823,4 +830,4 @@ disposable XDG roots and workspace 98 or higher; see
 docs/sway-session-verification.md.
 
 This repository preserves the complete project history but publishes no old
-sway-title-animator tags. Standalone releases begin at v0.1.0.
+sway-title-animator tags. Standalone releases began at v0.1.0.

@@ -42,9 +42,14 @@ privilege escalation or production installation directory.
 
 `make release-gate-check` runs isolated local Git fixtures, cross-workflow
 publication contracts, and the actual GitHub release rerun script against a
-mock API. These developer checks require Python 3, PyYAML (`python-yaml` on
-Arch, `python3-yaml` on Ubuntu), and Node.js. They do not publish or access live
-session state. CI installs PyYAML and uses the hosted runner's Node.js.
+mock API. The actual AUR version guards, publication step and standalone
+metadata-sync step also run against private file-only Git remotes and a fake
+GitHub CLI. They check stale reruns, unchanged reruns, accepted version and
+package-revision updates, empty bootstrap repositories and malformed metadata;
+PKGBUILD remains unexecuted input data. These developer checks require Python 3,
+PyYAML (`python-yaml` on Arch, `python3-yaml` on Ubuntu), and Node.js. They do not
+publish or access live session state. CI installs PyYAML and uses the hosted
+runner's Node.js.
 
 LAB-281 additionally exercised the production `needs`/commit comparisons on
 GitHub with read-only placeholder jobs: failed, skipped, missing and wrong-SHA

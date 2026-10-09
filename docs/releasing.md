@@ -73,8 +73,22 @@ guard instead of independently selecting the highest tag on that commit.
 Repeating a gated run retains its exact commit. GitHub publication checks for
 an existing release and leaves already published artifacts intact; an existing
 draft requires explicit recovery. AUR publication keeps the existing
-no-change guard and serialization. Do not move an existing tag or use a rerun
-to replace published assets.
+no-change guard and serialization, and rejects a version older than the
+current AUR metadata before copying or pushing files. Identical package files
+at the same version remain a successful no-op; changed files at that version
+require a reviewed package revision. A repository with no refs and neither
+package file can receive its first publication.
+
+The comparison reads `.SRCINFO` as data: numeric epoch (absent means zero),
+dotted numeric version, then numeric package revision with an optional
+subrevision. Unsupported versions, incomplete metadata and mismatched package
+identities fail before mutation. The incoming version must match the resolved
+release tag; no PKGBUILD is executed by this guard.
+
+The metadata-sync job independently rejects older versions against main,
+including direct job reruns. Equal-version changes remain allowed there so
+main can receive the exact commit-pinned package files already published.
+Do not move an existing tag or use a rerun to replace published assets.
 
 Historical tags retain historical workflow code. Keep `release.yml` (workflow
 ID `350831682`) and `aur.yml` (ID `350831683`) on main as inert retirement

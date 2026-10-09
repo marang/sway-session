@@ -984,6 +984,20 @@ GOTOOLCHAIN=go1.26.5 SWAY_SESSION_HEADLESS_INTEGRATION=1 \
   -run '^TestDaemonRestoreReportInactiveWorkspaceFocusHeadless$' -count=1 -v
 ```
 
+The single-window tab check (LAB-313) captures a real top-level tab container,
+replaces its owned window with a flat desktop or terminal window, and restores
+the captured parent, proportions and local selection. It verifies complete
+outcomes, durable capture, cleanup and steady-state idempotence. Other
+single-child split, stacked, nested and floating groups retain conservative
+placement fallback; unexpected managed or unmanaged tiling neighbors prevent
+reconstruction.
+
+```sh
+GOTOOLCHAIN=go1.26.5 SWAY_SESSION_HEADLESS_INTEGRATION=1 \
+  go test ./cmd/sway-session \
+  -run '^TestSessionRuntimeSingleWindowTabHeadless$' -count=1 -v
+```
+
 ## Durable terminal purge (LAB-208)
 
 The deterministic suite uses independent helper processes to interrupt durable

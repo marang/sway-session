@@ -212,6 +212,7 @@ class WorkflowContractsTest(unittest.TestCase):
         revalidation = next(i for i, script in enumerate(scripts) if "resolve-release-tag.sh" in script)
         self.assertIn('"$RELEASE_TAG" "$RELEASE_COMMIT"', scripts[revalidation])
         release_step = steps_using(release_job, "goreleaser/goreleaser-action")[0]
+        self.assertEqual(release_step.get("env", {}).get("GORELEASER_CURRENT_TAG"), RESOLVED_TAG)
         self.assertLess(revalidation, release_job["steps"].index(release_step))
         build_scripts = "\n".join(step.get("run", "") for step in build_job["steps"])
         self.assertIn('"$tag_commit" != "$EXPECTED_COMMIT"', build_scripts)

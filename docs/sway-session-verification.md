@@ -953,6 +953,15 @@ attempts, interruption and restart, missing contexts, identity changes, and
 report replacement. Verify stable reason codes and UTC timestamps without raw
 process output. A report with no history must succeed without creating files.
 
+Layout completion is a read-only observation of the requested structure,
+geometry and workspace-local selected descendant. A correct inactive workspace
+must complete without acquiring global focus (LAB-277). The observer shares
+the planner's identity, exact-layout and presentation checks; missing or
+malformed local focus evidence does not prove completion. The requested digest
+must still match the saved intent. Capture preservation uses runtime restore
+failures rather than diagnostic timeout rows; explicit report retries retain
+their pending-token checks.
+
 Retry must use the selected exact context ID, re-read current policy and window
 state, refuse archived contexts until explicitly activated, and reuse a mapped
 window without launching an adapter or reinitializing a live agent. Exercise
@@ -962,6 +971,18 @@ Run private-compositor layout checks with disposable state and workspace 98 or
 higher. Verify outcome proofs from fresh trees after restore commands, rather
 than command acknowledgements. This does not establish a machine reboot result
 or application-internal session recovery.
+
+The inactive-workspace report check runs a built daemon against two tab pairs
+and a singleton on private workspaces 98–100. It checks complete outcomes,
+unchanged captured layouts and no window/workspace focus events through the
+real report deadline. An optional `SWAY_SESSION_RESTORE_REPORT_DAEMON` selects
+an already-built comparison executable; it is a test-only override.
+
+```sh
+GOTOOLCHAIN=go1.26.5 SWAY_SESSION_HEADLESS_INTEGRATION=1 \
+  go test ./cmd/sway-session \
+  -run '^TestDaemonRestoreReportInactiveWorkspaceFocusHeadless$' -count=1 -v
+```
 
 ## Durable terminal purge (LAB-208)
 

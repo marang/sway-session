@@ -15,6 +15,8 @@ import (
 const (
 	commandTimeout = 40 * time.Second
 	outputLimit    = 64 * 1024
+	// Bound inherited output pipes without taking ownership of descendants.
+	commandWaitDelay = 250 * time.Millisecond
 )
 
 type ExecRunner struct {
@@ -43,6 +45,7 @@ func (runner ExecRunner) Run(ctx context.Context, session string, cwd string, ar
 	commandArguments = append(commandArguments, "--session", session)
 	commandArguments = append(commandArguments, arguments...)
 	command := exec.CommandContext(commandContext, runner.Executable, commandArguments...)
+	command.WaitDelay = commandWaitDelay
 	command.Dir = cwd
 	environment, err := runner.environment()
 	if err != nil {

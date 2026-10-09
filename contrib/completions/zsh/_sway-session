@@ -76,7 +76,7 @@ _sway_session_marker_is_value() {
 		restore|status|daemon|broker) value_options=' --socket ' ;;
 		restore-report) value_options=' --socket --retry ' ;;
 		state) start=2; value_options=' --output --from --retry --cancel --after --socket ' ;;
-		doctor) value_options=' --fix --socket --sway-config ' ;;
+		doctor) value_options=' --fix --shortcuts --socket --sway-config ' ;;
 		request-start) value_options=' --session --cwd --label --provider --workspace ' ;;
 		app)
 			start=2
@@ -110,20 +110,21 @@ _sway_session_marker_is_value() {
 }
 
 _sway_session_doctor_arguments_valid() {
-	local pending=0 word
-	doctor_has_fix=0 doctor_has_check=0
+	local pending='' word
+	doctor_has_fix=0 doctor_has_check=0 doctor_fix_id=''
 	for word in "${arguments[@]:1}"; do
-		if (( pending )); then
-			pending=0
+		if [[ -n $pending ]]; then
+			[[ $pending == fix ]] && doctor_fix_id=$word
+			pending=''
 			continue
 		fi
 		case $word in
-			--fix) doctor_has_fix=1; pending=1 ;;
-			--fix=*) doctor_has_fix=1 ;;
-			--socket|--sway-config) pending=1 ;;
+			--fix) doctor_has_fix=1; pending=fix ;;
+			--fix=*) doctor_has_fix=1; doctor_fix_id=${word#--fix=} ;;
+			--shortcuts|--socket|--sway-config) pending=value ;;
 			--check|--check=true|--check=1) doctor_has_check=1 ;;
 			--check=false|--check=0) doctor_has_check=0 ;;
-			--yes|--json|-h|--help|--*=*) ;;
+			--yes|--adopt-standard|--json|-h|--help|--*=*) ;;
 			--*) ;;
 			*) return 1 ;;
 		esac
@@ -290,14 +291,26 @@ _sway-session() {
 			_sway_session_add --retry --socket --json -h --help
 			;;
 		doctor)
-			local doctor_has_fix=0 doctor_has_check=0
+			local doctor_has_fix=0 doctor_has_check=0 doctor_fix_id=''
 			_sway_session_doctor_arguments_valid || return 0
 			case ${arguments[-1]-} in
 				--socket|--sway-config) _files; return ;;
 				--fix) _sway_session_add sway.integration; return ;;
+				--shortcuts)
+					[[ $doctor_fix_id == sway.integration ]] && (( !doctor_has_check )) && _sway_session_add none default
+					return 0
+					;;
 			esac
+			if [[ $cur == --shortcuts=* ]]; then
+				[[ $doctor_fix_id == sway.integration ]] && (( !doctor_has_check )) && _sway_session_add --shortcuts=none --shortcuts=default
+				return 0
+			fi
 			if (( doctor_has_fix )); then
-				_sway_session_add --fix --yes --socket --sway-config --json -h --help
+				if [[ $doctor_fix_id == sway.integration ]] && (( !doctor_has_check )); then
+					_sway_session_add --fix --yes --adopt-standard --shortcuts --socket --sway-config --json -h --help
+				else
+					_sway_session_add --fix --yes --socket --sway-config --json -h --help
+				fi
 			elif (( doctor_has_check )); then
 				_sway_session_add --check --socket --sway-config --json -h --help
 			else

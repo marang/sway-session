@@ -40,6 +40,11 @@ trap 'find "$temporary" -depth -delete' EXIT HUP INT TERM
 sentinel=$temporary/executed-description
 state_calls=$temporary/state-completion-calls
 mkdir "$temporary/zsh"
+mkdir "$temporary/fish-completions"
+# Prevent an installed older sway-session completion from autoloading over the
+# candidate functions while Fish evaluates the completion conditions.
+fish_complete_path=$temporary/fish-completions
+export fish_complete_path
 mkdir "$temporary/path values"
 touch "$temporary/path values/example file"
 
@@ -398,6 +403,7 @@ if [[ " ${COMPREPLY[*]} " != *' --json '* ]] || [[ " ${COMPREPLY[*]} " == *' res
 	exit 1
 fi
 
+export SWAY_SESSION_COMPLETION_STATE_CALLS=$STATE_COMPLETION_CALLS
 COMP_WORDS=(sway-session doctor '')
 COMP_CWORD=2
 _sway_session
@@ -407,10 +413,12 @@ for expected in --check --fix --socket --sway-config; do
 		exit 1
 	fi
 done
-if [[ " ${COMPREPLY[*]} " == *' --yes '* ]]; then
-	printf 'bash doctor completion offered --yes without --fix: %q\n' "${COMPREPLY[*]-}" >&2
-	exit 1
-fi
+for forbidden in --yes --adopt-standard --shortcuts; do
+	if [[ " ${COMPREPLY[*]} " == *" $forbidden "* ]]; then
+		printf 'bash doctor completion offered %s without --fix: %q\n' "$forbidden" "${COMPREPLY[*]-}" >&2
+		exit 1
+	fi
+done
 
 COMP_WORDS=(sway-session doctor --fix '')
 COMP_CWORD=3
@@ -423,10 +431,12 @@ fi
 COMP_WORDS=(sway-session doctor --fix sway.integration '')
 COMP_CWORD=4
 _sway_session
-if [[ " ${COMPREPLY[*]} " != *' --yes '* ]]; then
-	printf 'bash doctor completion omitted --yes after --fix: %q\n' "${COMPREPLY[*]-}" >&2
-	exit 1
-fi
+for expected in --yes --adopt-standard --shortcuts; do
+	if [[ " ${COMPREPLY[*]} " != *" $expected "* ]]; then
+		printf 'bash doctor completion omitted %s after --fix: %q\n' "$expected" "${COMPREPLY[*]-}" >&2
+		exit 1
+	fi
+done
 if [[ " ${COMPREPLY[*]} " == *' --check '* ]]; then
 	echo 'bash doctor offered --check after --fix' >&2
 	exit 1
@@ -434,10 +444,47 @@ fi
 COMP_WORDS=(sway-session doctor --check '')
 COMP_CWORD=3
 _sway_session
-if [[ " ${COMPREPLY[*]} " == *' --fix '* || " ${COMPREPLY[*]} " == *' --yes '* ]]; then
-	echo 'bash doctor offered repair after --check' >&2
-	exit 1
-fi
+for forbidden in --fix --yes --adopt-standard --shortcuts; do
+	if [[ " ${COMPREPLY[*]} " == *" $forbidden "* ]]; then
+		echo 'bash doctor offered repair after --check' >&2
+		exit 1
+	fi
+done
+
+for fix_argument in 'sway.integration' '--fix=sway.integration'; do
+	COMP_WORDS=(sway-session doctor)
+	[[ $fix_argument == --fix=* ]] || COMP_WORDS+=(--fix)
+	COMP_WORDS+=("$fix_argument" --adopt-standard --shortcuts '')
+	COMP_CWORD=$((${#COMP_WORDS[@]} - 1))
+	_sway_session
+	[[ ${#COMPREPLY[@]} == 2 && " ${COMPREPLY[*]} " == *' none '* && " ${COMPREPLY[*]} " == *' default '* ]] || {
+		printf 'bash doctor shortcuts omitted enum values: %q\n' "${COMPREPLY[*]-}" >&2
+		exit 1
+	}
+done
+COMP_WORDS=(sway-session doctor --fix sway.integration --shortcuts=n)
+COMP_CWORD=4
+_sway_session
+[[ ${#COMPREPLY[@]} == 1 && ${COMPREPLY[0]} == --shortcuts=none ]] || exit 1
+for invocation in 'doctor --shortcuts' 'doctor --fix unknown --shortcuts' 'doctor --check --shortcuts'; do
+	read -r -a COMP_WORDS <<<"sway-session $invocation"
+	COMP_WORDS+=('')
+	COMP_CWORD=$((${#COMP_WORDS[@]} - 1))
+	_sway_session
+	[[ ${#COMPREPLY[@]} == 0 ]] || { echo 'bash doctor offered shortcuts outside the standard fix' >&2; exit 1; }
+done
+COMP_WORDS=(sway-session doctor --fix unknown '')
+COMP_CWORD=4
+_sway_session
+[[ " ${COMPREPLY[*]} " != *' --adopt-standard '* && " ${COMPREPLY[*]} " != *' --shortcuts '* ]] || exit 1
+COMP_WORDS=(sway-session doctor --fix sway.integration --adopt-standard --shortcuts default --sway-config "$BASH_COMPLETION_SPACED_PATH")
+COMP_CWORD=8
+_sway_session
+[[ ${#COMPREPLY[@]} == 1 && ${COMPREPLY[0]} == "$BASH_COMPLETION_SPACED_PATH file" ]] || { echo 'bash managed repair options broke path completion' >&2; exit 1; }
+COMP_WORDS=(sway-session doctor --fix sway.integration --shortcuts default -- '')
+COMP_CWORD=7
+_sway_session
+[[ ${#COMPREPLY[@]} == 0 ]] || { echo 'bash doctor offered options after --' >&2; exit 1; }
 
 COMP_WORDS=(sway-session doctor unexpected '')
 COMP_CWORD=3
@@ -446,6 +493,8 @@ if [ "${#COMPREPLY[@]}" -ne 0 ]; then
 	printf 'bash doctor completion proposed values after a positional argument: %q\n' "${COMPREPLY[*]-}" >&2
 	exit 1
 fi
+[[ ! -e $STATE_COMPLETION_CALLS ]] || { echo 'doctor completion invoked the CLI' >&2; exit 1; }
+unset SWAY_SESSION_COMPLETION_STATE_CALLS
 EOF
 
 for description in 'First $(touch "$SWAY_SESSION_COMPLETION_SENTINEL") · active · herdr:first' 'Second · active · herdr:second'; do
@@ -768,6 +817,7 @@ if (( ${captured_values[(Ie)--json]} == 0 )) || (( ${captured_values[(Ie)restore
 	exit 1
 fi
 
+export SWAY_SESSION_COMPLETION_STATE_CALLS=$STATE_COMPLETION_CALLS
 captured_values=()
 words=(sway-session doctor '')
 CURRENT=3
@@ -778,10 +828,12 @@ for expected in --check --fix --socket --sway-config; do
 		exit 1
 	fi
 done
-if (( ${captured_values[(Ie)--yes]} != 0 )); then
-	print -u2 -r -- "zsh doctor completion offered --yes without --fix: ${(j:,:)captured_values}"
-	exit 1
-fi
+for forbidden in --yes --adopt-standard --shortcuts; do
+	if (( ${captured_values[(Ie)$forbidden]} != 0 )); then
+		print -u2 -r -- "zsh doctor completion offered $forbidden without --fix: ${(j:,:)captured_values}"
+		exit 1
+	fi
+done
 
 captured_values=()
 words=(sway-session doctor --fix '')
@@ -796,10 +848,12 @@ captured_values=()
 words=(sway-session doctor --fix sway.integration '')
 CURRENT=5
 _sway-session
-if (( ${captured_values[(Ie)--yes]} == 0 )); then
-	print -u2 -r -- "zsh doctor completion omitted --yes after --fix: ${(j:,:)captured_values}"
-	exit 1
-fi
+for expected in --yes --adopt-standard --shortcuts; do
+	if (( ${captured_values[(Ie)$expected]} == 0 )); then
+		print -u2 -r -- "zsh doctor completion omitted $expected after --fix: ${(j:,:)captured_values}"
+		exit 1
+	fi
+done
 if (( ${captured_values[(Ie)--check]} != 0 )); then
 	print -u2 -- 'zsh doctor offered --check after --fix'
 	exit 1
@@ -808,10 +862,54 @@ captured_values=()
 words=(sway-session doctor --check '')
 CURRENT=4
 _sway-session
-if (( ${captured_values[(Ie)--fix]} != 0 || ${captured_values[(Ie)--yes]} != 0 )); then
-	print -u2 -- 'zsh doctor offered repair after --check'
-	exit 1
-fi
+for forbidden in --fix --yes --adopt-standard --shortcuts; do
+	if (( ${captured_values[(Ie)$forbidden]} != 0 )); then
+		print -u2 -- 'zsh doctor offered repair after --check'
+		exit 1
+	fi
+done
+for fix_argument in sway.integration --fix=sway.integration; do
+	captured_values=()
+	words=(sway-session doctor)
+	[[ $fix_argument == --fix=* ]] || words+=(--fix)
+	words+=("$fix_argument" --adopt-standard --shortcuts '')
+	CURRENT=${#words}
+	_sway-session
+	(( ${#captured_values} == 2 && ${captured_values[(Ie)none]} != 0 && ${captured_values[(Ie)default]} != 0 )) || {
+		print -u2 -r -- "zsh doctor shortcuts omitted enum values: ${(j:,:)captured_values}"
+		exit 1
+	}
+done
+captured_values=()
+words=(sway-session doctor --fix sway.integration --shortcuts=)
+CURRENT=5
+_sway-session
+(( ${#captured_values} == 2 && ${captured_values[(Ie)--shortcuts=none]} != 0 && ${captured_values[(Ie)--shortcuts=default]} != 0 )) || exit 1
+for invocation in 'doctor --shortcuts' 'doctor --fix unknown --shortcuts' 'doctor --check --shortcuts'; do
+	captured_values=()
+	words=(sway-session ${=invocation} '')
+	CURRENT=${#words}
+	_sway-session
+	(( ${#captured_values} == 0 )) || { print -u2 'zsh doctor offered shortcuts outside the standard fix'; exit 1; }
+done
+captured_values=()
+words=(sway-session doctor --fix unknown '')
+CURRENT=5
+_sway-session
+(( ${captured_values[(Ie)--adopt-standard]} == 0 && ${captured_values[(Ie)--shortcuts]} == 0 )) || exit 1
+_files() { captured_values+=(file-completion); }
+captured_values=()
+words=(sway-session doctor --fix sway.integration --adopt-standard --shortcuts default --sway-config '')
+CURRENT=9
+_sway-session
+[[ ${#captured_values} == 1 && $captured_values[1] == file-completion ]] || { print -u2 'zsh managed repair options broke path completion'; exit 1; }
+captured_values=()
+words=(sway-session doctor --fix sway.integration --shortcuts default -- '')
+CURRENT=8
+_sway-session
+(( ${#captured_values} == 0 )) || { print -u2 'zsh doctor offered options after --'; exit 1; }
+[[ ! -e $STATE_COMPLETION_CALLS ]] || { print -u2 'doctor completion invoked the CLI'; exit 1; }
+unset SWAY_SESSION_COMPLETION_STATE_CALLS
 EOF
 fi
 
@@ -860,6 +958,45 @@ for operation in backup recover
     string match -q '*example*file*' -- $candidates[1]; or exit 1
     set candidates (state_values "sway-session state $operation -- ")
     test (count $candidates) -eq 0; or exit 1
+end
+for invocation in 'sway-session doctor --' 'sway-session doctor --check --' 'sway-session doctor --fix unknown --'
+    set candidates (state_values "$invocation")
+    for forbidden in --adopt-standard --shortcuts
+        contains -- $forbidden $candidates; and begin
+            printf 'fish doctor offered %s outside the standard fix\n' "$forbidden" >&2
+            exit 1
+        end
+    end
+end
+for invocation in 'sway-session doctor --fix sway.integration --' 'sway-session doctor --fix=sway.integration --'
+    set candidates (state_values "$invocation")
+    for expected in --yes --adopt-standard --shortcuts
+        contains -- $expected $candidates; or begin
+            printf 'fish doctor omitted %s after --fix\n' "$expected" >&2
+            exit 1
+        end
+    end
+end
+for invocation in 'sway-session doctor --fix sway.integration --adopt-standard --shortcuts ' 'sway-session doctor --fix=sway.integration --shortcuts='
+    set candidates (state_values "$invocation")
+    # Fish returns the full option for an equals-form value completion.
+    set candidates (string replace -- '--shortcuts=' '' $candidates)
+    test (count $candidates) -eq 2; and contains -- none $candidates; and contains -- default $candidates; or begin
+        printf 'fish doctor shortcuts omitted enum values: %s\n' "$candidates" >&2
+        exit 1
+    end
+end
+for invocation in 'sway-session doctor --shortcuts ' 'sway-session doctor --check --shortcuts ' 'sway-session doctor --fix unknown --shortcuts ' 'sway-session doctor --fix sway.integration --shortcuts default -- '
+    set candidates (state_values "$invocation")
+    test (count $candidates) -eq 0; or begin
+        printf 'fish doctor offered shortcuts or options outside the standard fix: %s\n' "$candidates" >&2
+        exit 1
+    end
+end
+set candidates (state_values "sway-session doctor --fix sway.integration --adopt-standard --shortcuts default --sway-config '$STATE_COMPLETION_PATH")
+test (count $candidates) -eq 1; and string match -q '*example*file*' -- $candidates[1]; or begin
+    echo 'fish managed repair options broke path completion' >&2
+    exit 1
 end
 test ! -e "$STATE_COMPLETION_CALLS"; or exit 1
 EOF

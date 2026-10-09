@@ -140,3 +140,20 @@ func TestLiteralIncludePathPreservesUnicodeWhitespace(t *testing.T) {
 		t.Fatalf("literal Unicode directory rejected: line=%d", got)
 	}
 }
+
+func TestLiteralDirectIncludeRejectsNULSource(t *testing.T) {
+	const main = "/fixture/config"
+	sibling := "/fixture/" + doctorSnippetName
+	directive := "include " + doctorSnippetName + "\n"
+	for _, source := range []string{
+		"mode default {\x00opaque\n",
+		"exec /usr/bin/true {\x00opaque\n" + directive + "}\n",
+		"include " + doctorSnippetName + "\x00opaque\n",
+		directive + "# corrupted comment\x00\n",
+	} {
+		line, err := inspectDirectInclude([]byte(source), main, sibling)
+		if line != 0 || err == nil || !strings.Contains(err.Error(), "NUL") {
+			t.Fatalf("NUL source granted framing authority: line=%d error=%v", line, err)
+		}
+	}
+}

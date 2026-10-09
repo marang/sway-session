@@ -1,6 +1,7 @@
 package doctor
 
 import (
+	"bytes"
 	"errors"
 	"path/filepath"
 	"strings"
@@ -21,6 +22,11 @@ func literalDirectInclude(content []byte, main, snippet string) int {
 // The append guard establishes only a standalone top-level EOF position. It
 // does not validate Sway commands or interpret their arguments.
 func inspectDirectInclude(content []byte, main, snippet string) (int, error) {
+	// Sway's C-string reader truncates at NUL. Such source cannot establish
+	// trustworthy include or append framing for this bounded recognizer.
+	if bytes.IndexByte(content, 0) != -1 {
+		return 0, errors.New("cannot append a direct include to configuration containing NUL bytes; remove them manually first")
+	}
 	depth := 0
 	var logical strings.Builder
 	start, found := 1, 0

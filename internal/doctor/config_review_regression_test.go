@@ -186,3 +186,36 @@ func TestDoctorUnicodeFilenameDoesNotGrantDirectIncludeAuthority(t *testing.T) {
 		t.Fatalf("standalone managed include failed to converge: %+v", check)
 	}
 }
+
+func TestDoctorNULSourceCannotGrantRepairAuthority(t *testing.T) {
+	for _, source := range []string{
+		"exec /usr/bin/true {\x00opaque\ninclude " + doctorSnippetName + "\n}\n",
+		"include " + doctorSnippetName + "\n# corrupted comment\x00\n",
+	} {
+		root := writeStandardSwayConfig(t, ShortcutsNone, true)
+		if err := os.WriteFile(root, []byte(source), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		snippet := filepath.Join(filepath.Dir(root), doctorSnippetName)
+		original, err := os.ReadFile(snippet)
+		if err != nil {
+			t.Fatal(err)
+		}
+		service := New(Options{SwayConfigPath: root})
+		check := inspectSwayConfig(t.Context(), service.options)[0]
+		if check.Status == OK || check.FixID != "" || check.AdoptionRequired || containsEvidence(check.Evidence, "literal direct include: present") {
+			t.Fatalf("NUL source granted integration or repair authority: %+v", check)
+		}
+		for _, adopt := range []bool{false, true} {
+			if _, err := service.Plan(t.Context(), swayIntegrationFixID, RepairOptions{AdoptStandard: adopt, Shortcuts: ShortcutsDefault}); err == nil {
+				t.Fatalf("NUL source allowed profile repair (adopt=%t)", adopt)
+			}
+		}
+		if after, err := os.ReadFile(root); err != nil || string(after) != source {
+			t.Fatalf("rejected plan changed main: %q %v", after, err)
+		}
+		if after, err := os.ReadFile(snippet); err != nil || string(after) != string(original) {
+			t.Fatalf("rejected plan changed snippet: %q %v", after, err)
+		}
+	}
+}

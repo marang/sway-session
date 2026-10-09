@@ -433,6 +433,7 @@ func TestRepairRefusesNonStandaloneIncludeAppend(t *testing.T) {
 		"indented comment continuation":      "  # note \\\n",
 		"indented comment without newline":   "\t# note \\",
 		"continued comment at EOF":           "exec /usr/bin/true \\\n# note \\\n",
+		"NUL hidden mode opener":             "mode default {\x00opaque\n",
 		"unfinished mode":                    "mode resize {\n bindsym Return mode default\n",
 		"unfinished startup block":           "exec {\n notify-send hello\n",
 		"oversized logical line":             strings.Repeat("x", maxSwayConfigLine+1) + "\n",

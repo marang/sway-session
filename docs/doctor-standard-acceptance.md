@@ -67,9 +67,9 @@ focused repair-safety race tests also passed at the final product source.
 | Complete narrow guidance | Adoption limits, profile limits, first-start commands, next-session/reload distinction, result/backup and recheck feedback stay reachable by paging; error recovery and cancel/quit controls remain visible. | Actual PTYs at 80×24/48×16 plus bounded rendering tests | Passed |
 | No runtime effects from Doctor | An inert private `exec_always` observer records only initial compositor startup throughout the CLI/TUI matrix. No additional load occurs, and no sway-session runtime or session-state directory appears. | Real private Sway trace and filesystem checks | Passed |
 
-## Current acceptance after review corrections
+## Acceptance at 3c1dc26 after review corrections
 
-The corrected product source is
+The product source tested in this recorded run was
 `3c1dc2611a4118e324fa71e531447be79b9e5eca`. Its executing candidate reports
 `dev`, that commit and `modified=false`; its SHA-256 is
 `38d886e3b7a564fbc8364ea41e318dc6f61660c8b1cbfecb84833192daf8e9b4`.

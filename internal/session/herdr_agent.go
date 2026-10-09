@@ -281,9 +281,11 @@ func (endpoint *herdrAPIEndpoint) request(ctx context.Context, requestID string,
 		return nil, fmt.Errorf("connect to Herdr reporting endpoint: %w", err)
 	}
 	defer connection.Close()
+	stopCancellation := context.AfterFunc(ctx, func() { _ = connection.Close() })
+	defer stopCancellation()
 	if deadline, ok := ctx.Deadline(); ok {
 		if err := connection.SetDeadline(deadline); err != nil {
-			return nil, fmt.Errorf("bound Herdr reporting exchange: %w", err)
+			return nil, fmt.Errorf("bound Herdr reporting exchange: %w", herdrExchangeContextError(ctx, err))
 		}
 	}
 	var currentSocket unix.Stat_t
@@ -297,7 +299,7 @@ func (endpoint *herdrAPIEndpoint) request(ctx context.Context, requestID string,
 		return nil, err
 	}
 	if _, err := connection.Write(encoded); err != nil {
-		return nil, fmt.Errorf("write Herdr request: %w", err)
+		return nil, fmt.Errorf("write Herdr request: %w", herdrExchangeContextError(ctx, err))
 	}
 	reader := bufio.NewReader(io.LimitReader(connection, maxHerdrAPIResponse+1))
 	line, err := reader.ReadBytes('\n')
@@ -305,7 +307,7 @@ func (endpoint *herdrAPIEndpoint) request(ctx context.Context, requestID string,
 		return nil, fmt.Errorf("herdr response exceeds %d bytes", maxHerdrAPIResponse)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("read Herdr response: %w", err)
+		return nil, fmt.Errorf("read Herdr response: %w", herdrExchangeContextError(ctx, err))
 	}
 	decoder := json.NewDecoder(bytes.NewReader(line))
 	decoder.DisallowUnknownFields()
@@ -338,6 +340,17 @@ func (endpoint *herdrAPIEndpoint) request(ctx context.Context, requestID string,
 		return nil, errors.New("herdr response omitted its result")
 	}
 	return *response.Result, nil
+}
+
+func herdrExchangeContextError(ctx context.Context, err error) error {
+	if cause := ctx.Err(); cause != nil {
+		return cause
+	}
+	// SetDeadline uses ctx's deadline; its network timer may fire first.
+	if errors.Is(err, os.ErrDeadlineExceeded) {
+		return context.DeadlineExceeded
+	}
+	return err
 }
 
 func processDescendsFrom(pid int, ancestor int) (bool, error) {

@@ -44,6 +44,12 @@ verification was running neither publisher started, and cancelling the run
 left both unexecuted. Full reruns retained those outcomes. A separate disabled
 workflow rejected full, failed-job and single-job reruns with HTTP 403. These
 are GitHub orchestration checks, not real release or AUR publication evidence.
+The historical publisher files remain as inert retirement placeholders so
+their workflow IDs can stay explicitly disabled. GitHub's `deleted` state did
+not reject an isolated, skipped historical job rerun; deleting workflow files
+therefore does not establish the rerun barrier. Validate the retired IDs with
+new placeholder runs whose jobs cannot execute, as described in
+[the publication gate](releasing.md#automated-publication-gate).
 
 ## Management subprocess pipe draining (LAB-279)
 

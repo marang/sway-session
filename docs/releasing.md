@@ -71,13 +71,25 @@ draft requires explicit recovery. AUR publication keeps the existing
 no-change guard and serialization. Do not move an existing tag or use a rerun
 to replace published assets.
 
-Historical tags retain historical workflow code. The LAB-281 cutover must
-disable the old `release.yml` workflow (ID `350831682`) and `aur.yml` workflow
-(ID `350831683`), confirm their `disabled_manually` state, and confirm no queued
-or running executions remain. Use the new main-dispatch path for AUR recovery.
-Do not re-enable either retired workflow. A read-only probe established that
-disabled workflow IDs reject full, failed-job and single-job reruns with
-HTTP 403; the sanitized evidence is linked from LAB-281.
+Historical tags retain historical workflow code. Keep `release.yml` (workflow
+ID `350831682`) and `aur.yml` (ID `350831683`) on main as inert retirement
+placeholders, and keep both IDs in `disabled_manually` state. Deleting the files
+is insufficient: GitHub's `deleted` state accepted an isolated historical job
+rerun during the LAB-281 cutover, and the disable endpoint rejected that state
+as not active. The placeholders have no automatic trigger or token permissions,
+and their only job is unconditionally skipped. They allow explicit disabling
+of the historical IDs without restoring any publishing code on main.
+
+During cutover, while the restored IDs are active, dispatch each placeholder
+from main. Confirm the merged commit, the sole skipped `retired` job and no
+executed steps. Then disable both IDs, confirm their `disabled_manually` state,
+and confirm no queued or running executions remain. Check full, failed-job and
+single-job rerun rejection using those inert runs; never use historical
+publishing jobs as probes. Do not
+re-enable either retired workflow or remove its placeholder. Use the new
+`publish-aur.yml` main-dispatch path for AUR recovery. A read-only probe
+established that disabled workflow IDs reject all three rerun endpoints with
+HTTP 403; sanitized cutover evidence belongs in LAB-281.
 
 The repository-policy inspection on 2026-10-09 found main protection disabled,
 one disabled branch ruleset, and no tag ruleset. These supplemental controls

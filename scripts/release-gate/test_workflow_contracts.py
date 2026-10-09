@@ -115,6 +115,23 @@ class WorkflowContractsTest(unittest.TestCase):
                 self.assert_requires_success(verifier, {"resolve"})
                 self.assert_verifier_call(verifier, RESOLVED_COMMIT)
 
+    def test_historical_publisher_ids_retain_inert_placeholders(self):
+        # Removing these paths makes GitHub's workflow state `deleted`, which
+        # does not prevent historical reruns. Keep them available for disabling.
+        for name in ("release.yml", "aur.yml"):
+            with self.subTest(workflow=name):
+                retired = load_workflow(name)
+                self.assertEqual(set(retired["on"]), {"workflow_dispatch"})
+                self.assertEqual(retired["permissions"], {})
+                self.assertNotIn("env", retired)
+                self.assertFalse(any("secrets." in value for value in strings(retired)))
+                self.assertEqual(set(retired["jobs"]), {"retired"})
+                job = retired["jobs"]["retired"]
+                self.assertEqual(expression(job["if"]), "${{false}}")
+                self.assertNotIn("uses", job)
+                self.assertNotIn("permissions", job)
+                self.assertEqual(job["steps"], [{"run": "exit 1"}])
+
     def test_verification_and_ci_have_no_publication_credentials(self):
         self.assert_no_credentials(self.verify)
         self.assert_no_credentials(self.ci)

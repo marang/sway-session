@@ -53,6 +53,7 @@ type swayConfigAnalysis struct {
 	snippet        managedSnippet
 	snippetErr     error
 	includeLine    int
+	appendErr      error
 	observed       []configFingerprint
 }
 
@@ -114,9 +115,25 @@ func inspectSwayConfig(ctx context.Context, options Options) []Check {
 		check.Evidence = append(check.Evidence, standardProfileEvidence(analysis.snippet.shortcuts))
 	}
 	if analysis.snippetErr == nil && !analysis.snippet.legacy {
-		if _, err := repairDirectory(analysis); err == nil {
+		_, safetyErr := repairDirectory(analysis)
+		if safetyErr == nil && !analysis.snippetExists {
+			_, safetyErr = repairExecutable(options.Executable)
+		}
+		if safetyErr == nil && analysis.includeLine == 0 {
+			safetyErr = analysis.appendErr
+			if safetyErr == nil {
+				var include string
+				include, safetyErr = renderIncludeLine(analysis.snippetPath)
+				if safetyErr == nil && len(appendConfigLine(analysis.rootContent, include)) > maxSwayConfigBytes {
+					safetyErr = errors.New("appending the direct include exceeds the supported configuration size")
+				}
+			}
+		}
+		if safetyErr == nil {
 			check.FixID = swayIntegrationFixID
 			check.AdoptionRequired = !analysis.snippetExists || analysis.includeLine == 0
+		} else {
+			check.Hint += " Automatic setup/profile changes are unavailable: " + safetyErr.Error()
 		}
 	}
 	return []Check{check}
@@ -151,7 +168,7 @@ func analyzeSwayConfig(ctx context.Context, options Options) (swayConfigAnalysis
 	}
 	analysis.observed = append(analysis.observed, configFingerprint{
 		path: analysis.root, state: analysis.rootState, digest: sha256.Sum256(analysis.rootContent)})
-	analysis.includeLine = literalDirectInclude(analysis.rootContent, analysis.root, analysis.snippetPath)
+	analysis.includeLine, analysis.appendErr = inspectDirectInclude(analysis.rootContent, analysis.root, analysis.snippetPath)
 	analysis.snippetContent, analysis.snippetState, analysis.snippetExists, err = readOptionalRepairFile(analysis.snippetPath)
 	if err != nil {
 		return swayConfigAnalysis{}, fmt.Errorf("inspect standard integration file %s: %w", analysis.snippetPath, err)

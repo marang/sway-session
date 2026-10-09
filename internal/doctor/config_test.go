@@ -11,230 +11,74 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func TestInspectSwayConfigHealthyStaticConfiguration(t *testing.T) {
-	path := writeSwayConfig(t, healthySwayConfig())
-	before, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	checks := inspectSwayConfig(context.Background(), Options{SwayConfigPath: path})
-	if len(checks) != 1 || checks[0].Status != OK || checks[0].FixID != "" {
-		t.Fatalf("unexpected checks: %+v", checks)
-	}
-	if !strings.Contains(checks[0].Evidence[0], "on-disk") || !strings.Contains(checks[0].Hint, "does not claim") {
-		t.Fatalf("static provenance not explicit: %+v", checks[0])
-	}
-	after, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(after) != string(before) {
-		t.Fatal("inspection changed the configuration")
-	}
-	if matches, _ := filepath.Glob(filepath.Join(filepath.Dir(path), "*doctor*")); len(matches) != 0 {
-		t.Fatalf("inspection created files: %v", matches)
-	}
-}
-
-func TestInspectSwayConfigAcceptsInstalledBindingsAndUnrelatedBlocks(t *testing.T) {
-	config := "set $mod Mod4\n" +
-		"exec --no-startup-id /usr/bin/sway-session daemon\n" +
-		"exec --no-startup-id /usr/bin/sway-session restore\n" +
-		"bindsym --inhibited $mod+Return exec /usr/bin/sway-session terminal --new\n" +
-		"bindsym --inhibited $mod+Shift+Return exec /usr/bin/sway-session terminal --ephemeral\n" +
-		"for_window [app_id=\\\"pavucontrol\\\"] {\n floating enable\n move position center\n}\n" +
-		"exec --no-startup-id swayidle -w timeout 60 'echo $random_wallpaper'\n" +
-		"bindsym --locked {\n XF86AudioRaiseVolume exec pactl set-sink-volume @DEFAULT_SINK@ +5%\n}\n" +
-		"bindsym {\n Print exec grimshot save screen\n}\n"
-	check := inspectSwayConfig(context.Background(), Options{SwayConfigPath: writeSwayConfig(t, config)})[0]
-	if check.Status != OK || check.FixID != "" {
-		t.Fatalf("installed integration with unrelated blocks = %+v", check)
-	}
-}
-
-func TestInspectSwayConfigRetainsRelevantCompoundBindingUncertainty(t *testing.T) {
-	config := healthySwayConfig() + "bindsym {\n $mod+Return exec foot\n}\n"
-	check := inspectSwayConfig(context.Background(), Options{SwayConfigPath: writeSwayConfig(t, config)})[0]
-	if check.Status != Warning || check.FixID != "" || !evidenceLineContains(check.Evidence, "persistent-terminal shortcut", "conflicting") {
-		t.Fatalf("relevant compound binding was not retained conservatively: %+v", check)
-	}
-}
-
-func TestInspectSwayConfigRetainsConditionalSwaySessionStartupUncertainty(t *testing.T) {
-	config := healthySwayConfig() + "for_window [app_id=\\\"example\\\"] {\n exec /usr/bin/sway-session daemon\n}\n"
-	check := inspectSwayConfig(context.Background(), Options{SwayConfigPath: writeSwayConfig(t, config)})[0]
-	if check.Status != Warning || check.FixID != "" || !evidenceLineContains(check.Evidence, "daemon startup", "conditional sway-session startup") {
-		t.Fatalf("conditional sway-session startup was not retained conservatively: %+v", check)
-	}
-}
-
-func TestInspectSwayConfigIgnoresSwaySessionAsUnrelatedStartupArgument(t *testing.T) {
-	config := healthySwayConfig() + "exec notify-send sway-session\nexec sh -c 'notify-send sway-session'\n"
-	check := inspectSwayConfig(context.Background(), Options{SwayConfigPath: writeSwayConfig(t, config)})[0]
-	if check.Status != OK || check.FixID != "" {
-		t.Fatalf("unrelated startup argument changed integration result: %+v", check)
-	}
-}
-
-func TestInspectSwayConfigRetainsLaterShellStartupUncertainty(t *testing.T) {
-	config := healthySwayConfig() + "exec 'true; sway-session daemon'\n"
-	check := inspectSwayConfig(context.Background(), Options{SwayConfigPath: writeSwayConfig(t, config)})[0]
-	if check.Status != Warning || check.FixID != "" || !evidenceLineContains(check.Evidence, "daemon startup", "indirect sway-session startup") {
-		t.Fatalf("later shell startup was not retained conservatively: %+v", check)
-	}
-}
-
-func TestInspectSwayConfigRetainsVariableForWindowStartupUncertainty(t *testing.T) {
-	config := healthySwayConfig() + "set $start exec /usr/bin/sway-session daemon\nfor_window [app_id=\"example\"] {\n $start\n}\n"
-	check := inspectSwayConfig(context.Background(), Options{SwayConfigPath: writeSwayConfig(t, config)})[0]
-	if check.Status != Warning || check.FixID != "" || !evidenceLineContains(check.Evidence, "daemon startup", "conditional sway-session startup") {
-		t.Fatalf("variable for_window startup was not retained conservatively: %+v", check)
-	}
-}
-
-func TestInspectSwayConfigIgnoresUnrelatedVariableForWindowCommand(t *testing.T) {
-	config := healthySwayConfig() + "set $float floating enable\nfor_window [app_id=\"example\"] {\n $float\n}\n"
-	check := inspectSwayConfig(context.Background(), Options{SwayConfigPath: writeSwayConfig(t, config)})[0]
-	if check.Status != OK || check.FixID != "" {
-		t.Fatalf("unrelated variable for_window command changed integration result: %+v", check)
-	}
-}
-
-func TestInspectSwayConfigMissingOffersNarrowRepair(t *testing.T) {
-	path := writeSwayConfig(t, "set $mod Mod4\n")
-	check := inspectSwayConfig(context.Background(), Options{SwayConfigPath: path})[0]
-	if check.Status != Warning || check.FixID != swayIntegrationFixID {
-		t.Fatalf("missing integration did not offer repair: %+v", check)
-	}
-}
-
-func TestInspectSwayConfigFollowsQuotedVariableGlobIncludes(t *testing.T) {
-	directory := t.TempDir()
-	includedDirectory := filepath.Join(directory, "parts with spaces")
-	if err := os.Mkdir(includedDirectory, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(includedDirectory, "50-session.conf"), []byte(healthySwayConfig()), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	root := filepath.Join(directory, "config")
-	content := "set $parts \"" + includedDirectory + "\"\ninclude \"$parts/*.conf\"\n"
-	if err := os.WriteFile(root, []byte(content), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	check := inspectSwayConfig(context.Background(), Options{SwayConfigPath: root})[0]
-	if check.Status != OK || !containsEvidence(check.Evidence, "followed 2 safe") {
-		t.Fatalf("include graph not recognized: %+v", check)
-	}
-}
-
-func TestInspectSwayConfigRecognizesBlockBraceOnFollowingLine(t *testing.T) {
-	config := "set $mod Mod4\n" +
-		"output eDP-1\n\n{\n    mode 1920x1080\n}\n" +
-		strings.TrimPrefix(healthySwayConfig(), "set $mod Mod4\n")
-	path := writeSwayConfig(t, config)
-
-	check := inspectSwayConfig(context.Background(), Options{SwayConfigPath: path})[0]
-	if check.Status != OK {
-		t.Fatalf("brace on following line disabled inspection: %+v", check)
-	}
-}
-
-func TestInspectSwayConfigRetainsObservedDeclarationsWhenIncludeIsUnsafe(t *testing.T) {
-	root := writeSwayConfig(t, healthySwayConfig()+"include unsafe.conf\n")
-	unsafe := filepath.Join(filepath.Dir(root), "unsafe.conf")
-	if err := os.WriteFile(unsafe, []byte("# contents must not be reported\n"), 0o620); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(unsafe, 0o620); err != nil {
-		t.Fatal(err)
-	}
-
-	check := inspectSwayConfig(context.Background(), Options{SwayConfigPath: root})[0]
-	if check.Status != Warning || !strings.Contains(check.Detail, "partially checked") || check.FixID != "" {
-		t.Fatalf("observed declarations were not retained as partial evidence: %+v", check)
-	}
-	for _, label := range []string{"daemon startup", "restore startup", "persistent-terminal shortcut", "ephemeral-terminal shortcut"} {
-		if !evidenceLineContains(check.Evidence, label, "matching declaration observed") {
-			t.Errorf("lost observed location for %s: %+v", label, check)
-		}
-	}
-	if strings.Contains(strings.Join(check.Evidence, "\n")+check.Hint, "contents must not be reported") {
-		t.Fatalf("configuration contents leaked: %+v", check)
-	}
-}
-
-func TestInspectSwayConfigAcceptsEmptyOptionalIncludeGlob(t *testing.T) {
-	root := writeSwayConfig(t, healthySwayConfig()+"include optional/*.conf\n")
-	check := inspectSwayConfig(context.Background(), Options{SwayConfigPath: root})[0]
-	if check.Status != OK {
-		t.Fatalf("empty optional glob is a valid Sway no-op: %+v", check)
-	}
-}
-
-func TestInspectSwayConfigDoesNotTreatQuotedBracesAsBlocks(t *testing.T) {
-	root := writeSwayConfig(t,
-		"set $mod Mod4\nbar {\n status_command printf '{'\n status_command printf '}'\n}\n"+
-			strings.TrimPrefix(healthySwayConfig(), "set $mod Mod4\n"))
-	check := inspectSwayConfig(context.Background(), Options{SwayConfigPath: root})[0]
-	if check.Status != OK {
-		t.Fatalf("quoted command arguments changed block structure: %+v", check)
-	}
-}
-
-func TestInspectSwayConfigRefusesDuplicateAndOverriddenShortcut(t *testing.T) {
-	config := healthySwayConfig() + "bindsym $mod+Return exec foot\n"
-	path := writeSwayConfig(t, config)
-	check := inspectSwayConfig(context.Background(), Options{SwayConfigPath: path})[0]
-	if check.Status != Warning || check.FixID != "" || !strings.Contains(check.Detail, "conflicting") {
-		t.Fatalf("overridden shortcut was not reported conservatively: %+v", check)
-	}
-	if !containsEvidence(check.Evidence, "conflicting declaration") {
-		t.Fatalf("conflicting location missing: %+v", check.Evidence)
-	}
-}
-
-func TestInspectSwayConfigRefusesExecAlwaysStartup(t *testing.T) {
-	config := strings.Replace(healthySwayConfig(), "exec --no-startup-id /usr/bin/sway-session daemon",
-		"exec_always --no-startup-id /usr/bin/sway-session daemon", 1)
-	path := writeSwayConfig(t, config)
-	check := inspectSwayConfig(context.Background(), Options{SwayConfigPath: path})[0]
-	if check.Status != Warning || check.FixID != "" || !strings.Contains(check.Detail, "conflicting") {
-		t.Fatalf("exec_always was accepted as one-time: %+v", check)
-	}
-}
-
-func TestInspectSwayConfigUnsupportedMalformedAndCycle(t *testing.T) {
-	tests := map[string]func(*testing.T) string{
-		"dynamic include": func(t *testing.T) string {
-			return writeSwayConfig(t, "include $(find /tmp -name '*.conf')\n")
-		},
-		"malformed quote": func(t *testing.T) string {
-			return writeSwayConfig(t, "set $broken \"unterminated\n")
-		},
-		"include cycle": func(t *testing.T) string {
-			directory := t.TempDir()
-			first := filepath.Join(directory, "first")
-			second := filepath.Join(directory, "second")
-			if err := os.WriteFile(first, []byte("include \""+second+"\"\n"), 0o600); err != nil {
-				t.Fatal(err)
+func TestInspectSwayConfigSupportedProfiles(t *testing.T) {
+	for _, shortcuts := range []ShortcutSelection{ShortcutsNone, ShortcutsDefault} {
+		t.Run(string(shortcuts), func(t *testing.T) {
+			root := writeStandardSwayConfig(t, shortcuts, true)
+			check := inspectSwayConfig(t.Context(), Options{SwayConfigPath: root})[0]
+			if check.Status != OK || check.FixID != swayIntegrationFixID || check.AdoptionRequired {
+				t.Fatalf("supported owned profile not recognized: %+v", check)
 			}
-			if err := os.WriteFile(second, []byte("include \""+first+"\"\n"), 0o600); err != nil {
-				t.Fatal(err)
+			if !containsEvidence(check.Evidence, standardProfileEvidence(shortcuts)) || !containsEvidence(check.Evidence, "literal direct include: present at "+root+":1") {
+				t.Fatalf("missing located source evidence: %+v", check)
 			}
-			return first
-		},
-	}
-	for name, setup := range tests {
-		t.Run(name, func(t *testing.T) {
-			check := inspectSwayConfig(context.Background(), Options{SwayConfigPath: setup(t)})[0]
-			if check.Status != Unavailable || check.FixID != "" {
-				t.Fatalf("unsafe syntax offered repair: %+v", check)
+			if !strings.Contains(check.Hint, "does not establish effective load order or live binding activity") {
+				t.Fatalf("report overstated source evidence: %+v", check)
 			}
 		})
 	}
+}
+
+func TestInspectSwayConfigMissingOwnedIntegration(t *testing.T) {
+	for _, test := range []struct {
+		name, content string
+		status        Status
+	}{
+		{"no direct include", healthySwayConfig(), Unavailable},
+		{"missing included sibling", "include " + doctorSnippetName + "\n", Warning},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := writeSwayConfig(t, test.content)
+			check := inspectSwayConfig(t.Context(), Options{SwayConfigPath: root})[0]
+			if check.Status != test.status || check.FixID != swayIntegrationFixID || !check.AdoptionRequired {
+				t.Fatalf("missing owned source must require adoption: %+v", check)
+			}
+			if !containsEvidence(check.Evidence, "standard file: missing") {
+				t.Fatalf("foreign directives substituted for standard ownership: %+v", check)
+			}
+			if after, err := os.ReadFile(root); err != nil || string(after) != test.content {
+				t.Fatalf("inspection changed root: %q, %v", after, err)
+			}
+			if _, err := os.Stat(filepath.Join(filepath.Dir(root), doctorSnippetName)); !os.IsNotExist(err) {
+				t.Fatalf("inspection created snippet: %v", err)
+			}
+		})
+	}
+}
+
+func TestInspectSwayConfigSupportedSiblingWithoutDirectInclude(t *testing.T) {
+	root := writeStandardSwayConfig(t, ShortcutsDefault, false)
+	check := inspectSwayConfig(t.Context(), Options{SwayConfigPath: root})[0]
+	if check.Status != Warning || check.FixID != swayIntegrationFixID || !check.AdoptionRequired || !containsEvidence(check.Evidence, "standard profile: default shortcuts") {
+		t.Fatalf("disconnected standard source was not reported: %+v", check)
+	}
+}
+
+func writeStandardSwayConfig(t *testing.T, shortcuts ShortcutSelection, include bool) string {
+	t.Helper()
+	content := "# unrelated main configuration\n"
+	if include {
+		content = "include " + doctorSnippetName + "\n"
+	}
+	root := writeSwayConfig(t, content)
+	kinds := []integrationKind{integrationDaemon, integrationRestore}
+	if shortcuts == ShortcutsDefault {
+		kinds = integrationOrder
+	}
+	if err := os.WriteFile(filepath.Join(filepath.Dir(root), doctorSnippetName), renderManagedSnippet("/usr/bin/sway-session", kinds), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return root
 }
 
 func TestInspectSwayConfigRejectsUnsafeFilesystemObjectsWithoutBlocking(t *testing.T) {

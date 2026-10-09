@@ -1,6 +1,7 @@
 package doctor
 
 import (
+	"errors"
 	"path/filepath"
 	"strings"
 )
@@ -9,11 +10,23 @@ import (
 // the selected main file. It does not expand variables, follow includes, parse
 // shell commands, or infer whether Sway loaded this source.
 func literalDirectInclude(content []byte, main, snippet string) int {
+	line, _ := inspectDirectInclude(content, main, snippet)
+	return line
+}
+
+// The append guard establishes only a standalone top-level EOF position. It
+// does not validate Sway commands or interpret their arguments.
+func inspectDirectInclude(content []byte, main, snippet string) (int, error) {
 	depth := 0
 	var logical strings.Builder
 	start, found := 1, 0
 	continued, oversized := false, false
-	for index, physical := range strings.Split(string(content), "\n") {
+	var appendErr error
+	lines := strings.Split(string(content), "\n")
+	if lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1] // a final newline is not another physical line
+	}
+	for index, physical := range lines {
 		trimmed := strings.TrimSpace(physical)
 		comment := strings.HasPrefix(trimmed, "#")
 		continuation := !comment && strings.HasSuffix(physical, "\\")
@@ -23,6 +36,7 @@ func literalDirectInclude(content []byte, main, snippet string) int {
 		}
 		if logical.Len()+len(part) > maxSwayConfigLine {
 			oversized = true
+			appendErr = errors.New("cannot append a direct include after a line beyond the supported inspection bound")
 		}
 		if !oversized {
 			logical.WriteString(part)
@@ -46,16 +60,16 @@ func literalDirectInclude(content []byte, main, snippet string) int {
 						}
 					}
 				}
-				// Command payloads are opaque. In particular, shell braces in
-				// unrelated startup commands do not change source scope.
-				if command != "exec" && command != "exec_always" {
-					if line == "}" {
-						if depth > 0 {
-							depth--
-						}
-					} else if fields[len(fields)-1] == "{" {
-						depth++
+				// An unquoted trailing brace opens a Sway source prefix block,
+				// including for exec. Quoted shell braces remain opaque payload.
+				if line == "}" {
+					if depth > 0 {
+						depth--
+					} else {
+						appendErr = errors.New("cannot establish a top-level append position after an unmatched block terminator")
 					}
+				} else if fields[len(fields)-1] == "{" {
+					depth++
 				}
 			}
 		}
@@ -65,10 +79,16 @@ func literalDirectInclude(content []byte, main, snippet string) int {
 		if depth > maxSwayBlockDepth {
 			// The source is beyond this bounded recognizer. Any earlier
 			// evidence remains source evidence, without a load-order claim.
-			return found
+			return found, errors.New("cannot append a direct include beyond the supported block depth")
 		}
 	}
-	return found
+	if continued {
+		appendErr = errors.New("cannot append a direct include after an unfinished line continuation; finish it manually first")
+	}
+	if depth != 0 {
+		appendErr = errors.New("cannot append a direct include inside an unfinished configuration block; close it manually first")
+	}
+	return found, appendErr
 }
 
 func literalIncludePath(argument string) (string, bool) {
@@ -105,7 +125,7 @@ func literalIncludePath(argument string) (string, bool) {
 	} else if strings.ContainsAny(argument, " \t\r\n\\\"'") {
 		return "", false
 	}
-	if path == "" || strings.ContainsAny(path, "\r\n\x00$`*?[") || filepath.Clean(path) != path {
+	if path == "" || strings.ContainsAny(path, "\r\n\x00$`*?[") {
 		return "", false
 	}
 	for _, component := range strings.Split(path, string(filepath.Separator)) {
@@ -113,5 +133,5 @@ func literalIncludePath(argument string) (string, bool) {
 			return "", false
 		}
 	}
-	return path, true
+	return filepath.Clean(path), true
 }

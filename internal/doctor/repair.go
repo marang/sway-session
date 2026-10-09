@@ -79,6 +79,9 @@ func (service *Service) Plan(ctx context.Context, fixID string, request RepairOp
 	if (!analysis.snippetExists || analysis.includeLine == 0) && !request.AdoptStandard {
 		return Plan{}, errors.New("explicit adoption of the standard integration is required to create or recover its file or append a direct include; review previous integration and load order manually")
 	}
+	if analysis.includeLine == 0 && analysis.appendErr != nil {
+		return Plan{}, analysis.appendErr
+	}
 	directory, err := repairDirectory(analysis)
 	if err != nil {
 		return Plan{}, fmt.Errorf("validate Sway repair ownership and directory: %w", err)
@@ -189,12 +192,18 @@ func (service *Service) Apply(ctx context.Context, plan Plan) (FixResult, error)
 		// Advance only fingerprints for our own proven earlier writes. Every
 		// other observed file must still match the preview during this write.
 		edit.observed = slices.Clone(edit.observed)
-		for index, observed := range edit.observed {
-			for _, receipt := range applied {
-				if observed.path == receipt.edit.path {
-					edit.observed[index].state = receipt.installed
-					edit.observed[index].digest = sha256.Sum256(receipt.edit.newContent)
+		for _, receipt := range applied {
+			updated := configFingerprint{path: receipt.edit.path, state: receipt.installed,
+				digest: sha256.Sum256(receipt.edit.newContent)}
+			found := false
+			for index, observed := range edit.observed {
+				if observed.path == updated.path {
+					edit.observed[index] = updated
+					found = true
 				}
+			}
+			if !found {
+				edit.observed = append(edit.observed, updated)
 			}
 		}
 		receipt, err := atomicWriteEdit(edit)
@@ -213,7 +222,7 @@ func (service *Service) Apply(ctx context.Context, plan Plan) (FixResult, error)
 			resultBackups = append(resultBackups, backup)
 		}
 	}
-	message := "Applied the owned standard Sway integration files. Reload Sway manually to load binding changes; removing owned bindings does not establish which prior bindings will become active. Startup commands run in the next Sway session; reload does not run them. Review previous integration and effective load order manually."
+	message := "Applied the owned standard Sway integration files. Reload Sway manually to load binding changes; removing owned bindings does not establish which prior bindings will become active. Startup commands run in the next Sway session; reload does not run them. If no daemon is running, start it with sway-session daemon. Run sway-session restore only if you want saved windows restored now. Review previous integration and effective load order manually."
 	return FixResult{
 		ID:      swayIntegrationFixID,
 		Message: message,
@@ -588,6 +597,18 @@ func atomicWriteEdit(edit fileEdit) (appliedFileEdit, error) {
 		if err != nil {
 			_ = unix.Unlinkat(int(directory.Fd()), temporary, 0)
 			return appliedFileEdit{}, err
+		}
+		// Revalidate other sources after staging. A newly installed snippet is
+		// included in these fingerprints before writing its main-file include.
+		for _, observed := range edit.observed {
+			if observed.path == edit.path {
+				continue
+			}
+			content, state, err := readSafeConfigFile(observed.path)
+			if err != nil || state != observed.state || sha256.Sum256(content) != observed.digest {
+				_ = unix.Unlinkat(int(directory.Fd()), temporary, 0)
+				return appliedFileEdit{}, errors.New("observed configuration changed during repair staging")
+			}
 		}
 		flags := uint(unix.RENAME_NOREPLACE)
 		if edit.existed {

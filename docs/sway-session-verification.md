@@ -30,6 +30,37 @@ CI additionally runs GoReleaser configuration validation. A release candidate
 must also run a clean GoReleaser snapshot and inspect every archive, DEB, and
 RPM so only sway-session and the documented integration assets are present.
 
+## Management subprocess pipe draining (LAB-279)
+
+The production Herdr command runner and trusted restore subprocess allow
+250 ms for output-pipe draining after context cancellation or direct-process
+exit. Their existing output limits remain separate memory bounds. A descendant
+holding an inherited pipe cannot keep an otherwise finished command waiting
+until that descendant exits.
+
+The runners retain `os/exec` error classification: a killed or unsuccessful
+direct process normally returns `*exec.ExitError`; a successful direct process
+whose pipes exceed the drain budget returns `exec.ErrWaitDelay`. Existing
+wrappers preserve these errors. Closing the pipes does not establish whether
+the requested management action took effect, so it does not trigger a retry.
+
+`CommandContext` owns its direct process. The runners do not signal process
+groups or reap arbitrary descendants; a descendant writing afterward may
+encounter a closed pipe. Detached terminal and desktop starts continue to use
+the separate asynchronous `ExecProcessStarter` lifetime.
+
+```sh
+GOTOOLCHAIN=go1.26.5 go test -race ./internal/session ./internal/sessionrequest \
+  -run '^Test(ExecCommandRunnerProcess|ExecRestoreRunnerProcess|ExecProcessStarterLifecycle)$' \
+  -count=1
+```
+
+These tests exercise the production runners with real pipe-holding descendants,
+early cancellation, deadlines, successful parent exit, ordinary success and
+failed exit, and output limits. Isolated helper supervisors clean up and reap
+only their owned descendants. The launcher check also verifies detached
+process survival after the short-lived CLI returns.
+
 ## Executable lifecycle scenario matrix (LAB-134)
 
 Run the deterministic matrix with the declared toolchain:

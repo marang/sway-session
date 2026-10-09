@@ -72,7 +72,7 @@ func TestRepairPreservesConcurrentRootSave(t *testing.T) {
 			if err != nil || !bytes.Equal(content, concurrent) {
 				t.Fatalf("concurrent save lost: %q, %v", content, err)
 			}
-			if _, err := os.Stat(filepath.Join(filepath.Dir(root), doctorSnippetName)); !errors.Is(err, os.ErrNotExist) {
+			if _, err := os.Stat(filepath.Join(filepath.Dir(root), "config.d", doctorSnippetName)); !errors.Is(err, os.ErrNotExist) {
 				t.Fatalf("earlier snippet was not rolled back: %v", err)
 			}
 		})
@@ -86,7 +86,7 @@ func TestRepairDoesNotReplaceConcurrentSnippetCreation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	snippet := filepath.Join(filepath.Dir(root), doctorSnippetName)
+	snippet := filepath.Join(filepath.Dir(root), "config.d", doctorSnippetName)
 	mutateRepairStaging(t, 2, func() {
 		if err := os.WriteFile(snippet, []byte("# user created this file\n"), 0o600); err != nil {
 			t.Fatal(err)
@@ -148,13 +148,13 @@ func TestFailedCompensationPreservesBothConcurrentFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	directory, err := openVerifiedDirectory(filepath.Dir(root), receipt.edit.directory)
+	directory, err := openVerifiedDirectory(filepath.Dir(receipt.edit.path), receipt.edit.directory)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer directory.Close()
 	displacedName := ".displaced-concurrent-config"
-	displacedPath := filepath.Join(filepath.Dir(root), displacedName)
+	displacedPath := filepath.Join(filepath.Dir(receipt.edit.path), displacedName)
 	if err := os.WriteFile(displacedPath, []byte("# first concurrent save\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -203,7 +203,7 @@ func TestRollbackPreservesReplacementDuringRemoval(t *testing.T) {
 }
 
 func TestRepairIgnoresChangedForeignInclude(t *testing.T) {
-	root := writeSwayConfig(t, "include settings.conf\ninclude 50-sway-session-doctor.conf\n")
+	root := writeSwayConfig(t, "include settings.conf\ninclude config.d/50-sway-session-doctor.conf\n")
 	settings := filepath.Join(filepath.Dir(root), "settings.conf")
 	if err := os.WriteFile(settings, []byte("set $mod Mod4\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -228,8 +228,8 @@ func TestRepairIgnoresChangedForeignInclude(t *testing.T) {
 }
 
 func TestRollbackRestoresExistingManagedSnippet(t *testing.T) {
-	root := writeSwayConfig(t, "set $mod Mod4\ninclude 50-sway-session-doctor.conf\n")
-	snippet := filepath.Join(filepath.Dir(root), doctorSnippetName)
+	root := writeSwayConfig(t, "set $mod Mod4\ninclude config.d/50-sway-session-doctor.conf\n")
+	snippet := filepath.Join(filepath.Dir(root), "config.d", doctorSnippetName)
 	original := renderManagedSnippet("/usr/bin/sway-session", []integrationKind{integrationDaemon, integrationRestore})
 	if err := os.WriteFile(snippet, original, 0o600); err != nil {
 		t.Fatal(err)
@@ -263,8 +263,8 @@ func TestRepairPreservesManualManagedSnippetText(t *testing.T) {
 		"quoted executable":      {"exec --no-startup-id \"/usr/bin/sway-session\" daemon", "manual edits"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			root := writeSwayConfig(t, "set $mod Mod4\ninclude 50-sway-session-doctor.conf\n")
-			snippet := filepath.Join(filepath.Dir(root), doctorSnippetName)
+			root := writeSwayConfig(t, "set $mod Mod4\ninclude config.d/50-sway-session-doctor.conf\n")
+			snippet := filepath.Join(filepath.Dir(root), "config.d", doctorSnippetName)
 			original := []byte(doctorHeader + example.line + "\n")
 			if err := os.WriteFile(snippet, original, 0o600); err != nil {
 				t.Fatal(err)
@@ -288,7 +288,7 @@ func TestRepairRejectsChangedUneditedMainAndManagedSnippet(t *testing.T) {
 	for _, changed := range []string{"main", "snippet"} {
 		t.Run(changed, func(t *testing.T) {
 			root := writeStandardSwayConfig(t, ShortcutsNone, true)
-			snippet := filepath.Join(filepath.Dir(root), doctorSnippetName)
+			snippet := filepath.Join(filepath.Dir(root), "config.d", doctorSnippetName)
 			service := New(Options{SwayConfigPath: root})
 			plan, err := service.Plan(t.Context(), swayIntegrationFixID, RepairOptions{Shortcuts: ShortcutsDefault})
 			if err != nil {
@@ -298,7 +298,7 @@ func TestRepairRejectsChangedUneditedMainAndManagedSnippet(t *testing.T) {
 				t.Fatalf("expected root to remain unedited: %+v", plan)
 			}
 			path := root
-			data := []byte("# concurrent root save\ninclude " + doctorSnippetName + "\n")
+			data := []byte("# concurrent root save\ninclude config.d/" + doctorSnippetName + "\n")
 			if changed == "snippet" {
 				path = snippet
 				data = append(renderManagedSnippet("/usr/bin/sway-session", []integrationKind{integrationDaemon, integrationRestore}), []byte("# concurrent manual edit\n")...)
@@ -339,8 +339,8 @@ func TestRepairManualOwnershipAndDirectiveEditsStayProtected(t *testing.T) {
 		"exec always":         bytes.Replace(original, []byte("exec --"), []byte("exec_always --"), 1),
 	} {
 		t.Run(name, func(t *testing.T) {
-			root := writeSwayConfig(t, "include "+doctorSnippetName+"\n")
-			snippet := filepath.Join(filepath.Dir(root), doctorSnippetName)
+			root := writeSwayConfig(t, "include config.d/"+doctorSnippetName+"\n")
+			snippet := filepath.Join(filepath.Dir(root), "config.d", doctorSnippetName)
 			if err := os.WriteFile(snippet, edited, 0o600); err != nil {
 				t.Fatal(err)
 			}
@@ -366,7 +366,7 @@ func TestRepairPreservesConcurrentSnippetReplacementBeforeMainSwap(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	snippet := filepath.Join(filepath.Dir(root), doctorSnippetName)
+	snippet := filepath.Join(filepath.Dir(root), "config.d", doctorSnippetName)
 	concurrent := []byte("# concurrent user-owned integration\n")
 	// Root backup, snippet staging, then main staging.
 	mutateRepairStaging(t, 3, func() {

@@ -31,7 +31,7 @@ func TestDoctorOrdinaryWorkstationConfiguration(t *testing.T) {
 
 func TestDoctorWorkstationForeignSourcesCannotSubstituteForStandard(t *testing.T) {
 	root := copyWorkstationFixture(t)
-	if err := os.Remove(filepath.Join(root, doctorSnippetName)); err != nil {
+	if err := os.Remove(filepath.Join(root, "config.d", doctorSnippetName)); err != nil {
 		t.Fatal(err)
 	}
 	before := snapshotWorkstationFiles(t, root)
@@ -48,7 +48,7 @@ func TestDoctorWorkstationForeignSourcesCannotSubstituteForStandard(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plan.Changes) != 1 || plan.Changes[0].Path != filepath.Join(root, doctorSnippetName) {
+	if len(plan.Changes) != 1 || plan.Changes[0].Path != filepath.Join(root, "config.d", doctorSnippetName) {
 		t.Fatalf("recovery escaped standard sibling: %+v", plan)
 	}
 	if _, err := service.Apply(t.Context(), plan); err != nil {
@@ -62,7 +62,7 @@ func TestDoctorWorkstationForeignSourcesCannotSubstituteForStandard(t *testing.T
 
 func TestDoctorWorkstationManualOwnedShortcutRemovalIsProtected(t *testing.T) {
 	root := copyWorkstationFixture(t)
-	snippet := filepath.Join(root, doctorSnippetName)
+	snippet := filepath.Join(root, "config.d", doctorSnippetName)
 	original, err := os.ReadFile(snippet)
 	if err != nil {
 		t.Fatal(err)
@@ -74,7 +74,7 @@ func TestDoctorWorkstationManualOwnedShortcutRemovalIsProtected(t *testing.T) {
 	before := snapshotWorkstationFiles(t, root)
 	service := New(Options{SwayConfigPath: filepath.Join(root, "config")})
 	check := workstationIntegrationCheck(t, service)
-	if check.Status != Warning || check.FixID != "" || !containsEvidence(check.Evidence, "legacy partial") {
+	if check.Status != Unavailable || check.FixID != "" {
 		t.Fatalf("partial owned profile offered regeneration: %+v", check)
 	}
 	if _, err := service.Plan(t.Context(), swayIntegrationFixID, RepairOptions{AdoptStandard: true, Shortcuts: ShortcutsDefault}); err == nil {

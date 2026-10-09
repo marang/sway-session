@@ -36,10 +36,9 @@ var integrationOrder = []integrationKind{
 type managedSnippet struct {
 	executable string
 	shortcuts  ShortcutSelection
-	legacy     bool
 }
 
-// The selected main file and its one standard sibling are the entire source
+// The selected main file and its fixed config.d fragment are the entire source
 // inspection boundary. Other includes and command bodies are never read.
 type swayConfigAnalysis struct {
 	root           string
@@ -61,6 +60,7 @@ type configFingerprint struct {
 	path   string
 	state  safeFileState
 	digest [sha256.Size]byte
+	exists bool
 }
 
 func inspectSwayConfig(ctx context.Context, options Options) []Check {
@@ -91,11 +91,6 @@ func inspectSwayConfig(ctx context.Context, options Options) []Check {
 		check.Status = Unavailable
 		check.Detail = "The standard file is unrecognized or manually edited and is protected."
 		check.Hint = "Move or remove this file manually before adopting the standard integration: " + analysis.snippetErr.Error()
-	case analysis.snippetExists && analysis.snippet.legacy:
-		check.Status = Warning
-		check.Detail = "The standard file contains a legacy partial profile that requires manual migration."
-		check.Evidence = append(check.Evidence, "standard profile: legacy partial")
-		check.Hint = "Move or remove this legacy file manually before adopting a supported standard profile. Review previous integration and load order yourself."
 	case !analysis.snippetExists:
 		check.Status = Unavailable
 		if analysis.includeLine != 0 {
@@ -114,7 +109,7 @@ func inspectSwayConfig(ctx context.Context, options Options) []Check {
 		check.Detail = "The standard file contains a supported profile and the selected main file contains its literal direct include."
 		check.Evidence = append(check.Evidence, standardProfileEvidence(analysis.snippet.shortcuts))
 	}
-	if analysis.snippetErr == nil && !analysis.snippet.legacy {
+	if analysis.snippetErr == nil {
 		_, safetyErr := repairDirectory(analysis)
 		if safetyErr == nil && !analysis.snippetExists {
 			_, safetyErr = repairExecutable(options.Executable)
@@ -158,8 +153,8 @@ func analyzeSwayConfig(ctx context.Context, options Options) (swayConfigAnalysis
 		return swayConfigAnalysis{}, fmt.Errorf("resolve Sway configuration: %w", err)
 	}
 	analysis := swayConfigAnalysis{root: selection.path, live: selection.live,
-		snippetPath: filepath.Join(filepath.Dir(selection.path), doctorSnippetName)}
-	if analysis.root == analysis.snippetPath {
+		snippetPath: filepath.Join(filepath.Dir(selection.path), "config.d", doctorSnippetName)}
+	if filepath.Base(analysis.root) == doctorSnippetName {
 		return swayConfigAnalysis{}, errors.New("selected main file cannot be the doctor-managed snippet")
 	}
 	analysis.rootContent, analysis.rootState, err = readSafeConfigFile(analysis.root)
@@ -167,15 +162,15 @@ func analyzeSwayConfig(ctx context.Context, options Options) (swayConfigAnalysis
 		return swayConfigAnalysis{}, fmt.Errorf("inspect selected main Sway configuration %s: %w; create an absent main file manually", analysis.root, err)
 	}
 	analysis.observed = append(analysis.observed, configFingerprint{
-		path: analysis.root, state: analysis.rootState, digest: sha256.Sum256(analysis.rootContent)})
+		path: analysis.root, state: analysis.rootState, digest: sha256.Sum256(analysis.rootContent), exists: true})
 	analysis.includeLine, analysis.appendErr = inspectDirectInclude(analysis.rootContent, analysis.root, analysis.snippetPath)
 	analysis.snippetContent, analysis.snippetState, analysis.snippetExists, err = readOptionalRepairFile(analysis.snippetPath)
 	if err != nil {
 		return swayConfigAnalysis{}, fmt.Errorf("inspect standard integration file %s: %w", analysis.snippetPath, err)
 	}
+	analysis.observed = append(analysis.observed, configFingerprint{path: analysis.snippetPath,
+		state: analysis.snippetState, digest: sha256.Sum256(analysis.snippetContent), exists: analysis.snippetExists})
 	if analysis.snippetExists {
-		analysis.observed = append(analysis.observed, configFingerprint{path: analysis.snippetPath,
-			state: analysis.snippetState, digest: sha256.Sum256(analysis.snippetContent)})
 		analysis.snippet, analysis.snippetErr = parseManagedSnippet(analysis.snippetContent)
 	}
 	if err := ctx.Err(); err != nil {
@@ -191,7 +186,23 @@ func repairDirectory(analysis swayConfigAnalysis) (safeDirectoryState, error) {
 	if analysis.snippetExists && analysis.snippetState.owner != uint32(os.Getuid()) {
 		return safeDirectoryState{}, errors.New("doctor-managed snippet is not owned by the current user")
 	}
+	if filepath.Dir(analysis.snippetPath) != filepath.Dir(analysis.root) {
+		if _, err := inspectSafeRepairDirectory(filepath.Dir(analysis.snippetPath)); err != nil {
+			return safeDirectoryState{}, fmt.Errorf("fragment directory must exist and be safe to edit: %w", err)
+		}
+	}
 	return inspectSafeRepairDirectory(filepath.Dir(analysis.root))
+}
+
+func revalidateConfigFingerprint(observed configFingerprint) error {
+	content, state, exists, err := readOptionalRepairFile(observed.path)
+	if err != nil {
+		return fmt.Errorf("observed configuration cannot be revalidated: %w", err)
+	}
+	if exists != observed.exists || exists && (state != observed.state || sha256.Sum256(content) != observed.digest) {
+		return errors.New("observed configuration changed since the preview")
+	}
+	return nil
 }
 
 type safeFileState struct {

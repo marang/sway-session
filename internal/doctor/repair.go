@@ -26,15 +26,17 @@ const (
 )
 
 type fileEdit struct {
-	path       string
-	oldContent []byte
-	newContent []byte
-	oldState   safeFileState
-	existed    bool
-	directory  safeDirectoryState
-	mode       os.FileMode
-	preview    string
-	observed   []configFingerprint
+	path            string
+	oldContent      []byte
+	newContent      []byte
+	oldState        safeFileState
+	existed         bool
+	directory       safeDirectoryState
+	mode            os.FileMode
+	preview         string
+	observed        []configFingerprint
+	backupPath      string
+	backupDirectory safeDirectoryState
 }
 
 type safeDirectoryState struct {
@@ -73,9 +75,6 @@ func (service *Service) Plan(ctx context.Context, fixID string, request RepairOp
 	if analysis.snippetErr != nil {
 		return Plan{}, fmt.Errorf("refuse to update doctor-managed snippet; move or remove it manually first: %w", analysis.snippetErr)
 	}
-	if analysis.snippet.legacy {
-		return Plan{}, errors.New("legacy partial profile requires manual migration; move or remove it before adopting the standard integration")
-	}
 	if (!analysis.snippetExists || analysis.includeLine == 0) && !request.AdoptStandard {
 		return Plan{}, errors.New("explicit adoption of the standard integration is required to create or recover its file or append a direct include; review previous integration and load order manually")
 	}
@@ -105,13 +104,18 @@ func (service *Service) Plan(ctx context.Context, fixID string, request RepairOp
 		kinds = integrationOrder
 	}
 	newSnippet := renderManagedSnippet(executable, kinds)
-	common := fileEdit{directory: directory, observed: slices.Clone(analysis.observed)}
+	common := fileEdit{directory: directory, observed: slices.Clone(analysis.observed),
+		backupPath: filepath.Dir(analysis.root), backupDirectory: directory}
 	plan := Plan{ID: swayIntegrationFixID,
 		Summary: "Configure the owned standard Sway integration; review previous integration and effective load order manually.",
 		request: request, fixID: fixID, trusted: true}
 	if !analysis.snippetExists || !bytes.Equal(analysis.snippetContent, newSnippet) {
 		edit := common
 		edit.path = analysis.snippetPath
+		edit.directory, err = inspectSafeRepairDirectory(filepath.Dir(edit.path))
+		if err != nil {
+			return Plan{}, err
+		}
 		edit.oldContent = slices.Clone(analysis.snippetContent)
 		edit.newContent = newSnippet
 		edit.oldState = analysis.snippetState
@@ -194,7 +198,7 @@ func (service *Service) Apply(ctx context.Context, plan Plan) (FixResult, error)
 		edit.observed = slices.Clone(edit.observed)
 		for _, receipt := range applied {
 			updated := configFingerprint{path: receipt.edit.path, state: receipt.installed,
-				digest: sha256.Sum256(receipt.edit.newContent)}
+				digest: sha256.Sum256(receipt.edit.newContent), exists: true}
 			found := false
 			for index, observed := range edit.observed {
 				if observed.path == updated.path {
@@ -237,6 +241,11 @@ func (service *Service) rollbackFailure(applied []appliedFileEdit, backups []str
 	for index := len(applied) - 1; index >= 0; index-- {
 		receipt := applied[index]
 		edit := receipt.edit
+		directory, err := inspectSafeRepairDirectory(filepath.Dir(edit.path))
+		if err != nil || directory != edit.directory {
+			uncertain = true
+			continue
+		}
 		current, state, exists, err := readOptionalRepairFile(edit.path)
 		if err != nil {
 			uncertain = true
@@ -361,11 +370,13 @@ func parseManagedSnippet(content []byte) (managedSnippet, error) {
 	if !bytes.Equal(content, renderManagedSnippet(executable, kinds)) {
 		return managedSnippet{}, errors.New("file contains unrecognized manual edits or reordered directives")
 	}
-	result := managedSnippet{executable: executable, legacy: true}
+	result := managedSnippet{executable: executable}
 	if slices.Equal(kinds, []integrationKind{integrationDaemon, integrationRestore}) {
-		result.shortcuts, result.legacy = ShortcutsNone, false
+		result.shortcuts = ShortcutsNone
 	} else if slices.Equal(kinds, integrationOrder) {
-		result.shortcuts, result.legacy = ShortcutsDefault, false
+		result.shortcuts = ShortcutsDefault
+	} else {
+		return managedSnippet{}, errors.New("file does not contain a supported complete profile")
 	}
 	return result, nil
 }
@@ -489,7 +500,7 @@ func sameRepairPlan(left, right Plan) bool {
 		a, b := left.edits[index], right.edits[index]
 		if a.path != b.path || !bytes.Equal(a.oldContent, b.oldContent) || !bytes.Equal(a.newContent, b.newContent) ||
 			a.oldState != b.oldState || a.existed != b.existed || a.directory != b.directory || a.mode != b.mode ||
-			a.preview != b.preview ||
+			a.preview != b.preview || a.backupPath != b.backupPath || a.backupDirectory != b.backupDirectory ||
 			!slices.Equal(a.observed, b.observed) {
 			return false
 		}
@@ -499,12 +510,8 @@ func sameRepairPlan(left, right Plan) bool {
 
 func revalidateEdit(edit fileEdit) error {
 	for _, observed := range edit.observed {
-		content, state, err := readSafeConfigFile(observed.path)
-		if err != nil {
-			return fmt.Errorf("observed configuration cannot be revalidated: %w", err)
-		}
-		if state != observed.state || sha256.Sum256(content) != observed.digest {
-			return errors.New("observed configuration changed since the preview")
+		if err := revalidateConfigFingerprint(observed); err != nil {
+			return err
 		}
 	}
 	directory, err := inspectSafeRepairDirectory(filepath.Dir(edit.path))
@@ -528,7 +535,9 @@ func revalidateEdit(edit fileEdit) error {
 }
 
 func createExclusiveBackup(edit fileEdit) (string, error) {
-	directory, err := openVerifiedDirectory(filepath.Dir(edit.path), edit.directory)
+	// Keep fragment backups out of config.d/*: copied startup commands in a
+	// backup have a different canonical path and would be loaded a second time.
+	directory, err := openVerifiedDirectory(edit.backupPath, edit.backupDirectory)
 	if err != nil {
 		return "", err
 	}
@@ -557,7 +566,7 @@ func createExclusiveBackup(edit fileEdit) (string, error) {
 		if err := directory.Sync(); err != nil {
 			return "", err
 		}
-		return filepath.Join(filepath.Dir(edit.path), name), nil
+		return filepath.Join(edit.backupPath, name), nil
 	}
 	return "", errors.New("could not allocate a unique backup path")
 }
@@ -604,11 +613,17 @@ func atomicWriteEdit(edit fileEdit) (appliedFileEdit, error) {
 			if observed.path == edit.path {
 				continue
 			}
-			content, state, err := readSafeConfigFile(observed.path)
-			if err != nil || state != observed.state || sha256.Sum256(content) != observed.digest {
+			if err := revalidateConfigFingerprint(observed); err != nil {
 				_ = unix.Unlinkat(int(directory.Fd()), temporary, 0)
 				return appliedFileEdit{}, errors.New("observed configuration changed during repair staging")
 			}
+		}
+		// A fragment-directory swap can leave the main file unchanged. Verify
+		// that the pathname still names the directory pinned by this descriptor.
+		currentDirectory, err := inspectSafeRepairDirectory(filepath.Dir(edit.path))
+		if err != nil || currentDirectory != edit.directory {
+			_ = unix.Unlinkat(int(directory.Fd()), temporary, 0)
+			return appliedFileEdit{}, errors.New("parent directory was replaced or changed during repair staging")
 		}
 		flags := uint(unix.RENAME_NOREPLACE)
 		if edit.existed {
@@ -628,7 +643,18 @@ func atomicWriteEdit(edit fileEdit) (appliedFileEdit, error) {
 				return receipt, fmt.Errorf("preserved displaced configuration at %s: %w", filepath.Join(filepath.Dir(edit.path), temporary), err)
 			}
 		}
-		return receipt, directory.Sync()
+		if err := directory.Sync(); err != nil {
+			return receipt, err
+		}
+		currentDirectory, err = inspectSafeRepairDirectory(filepath.Dir(edit.path))
+		if err != nil || currentDirectory != edit.directory {
+			return receipt, errors.New("parent directory was replaced or changed during repair installation")
+		}
+		current, state, err := readSafeConfigFile(edit.path)
+		if err != nil || state != installed || !bytes.Equal(current, edit.newContent) {
+			return receipt, errors.New("installed configuration changed during repair installation")
+		}
+		return receipt, nil
 	}
 	return appliedFileEdit{}, errors.New("could not allocate a unique temporary path")
 }

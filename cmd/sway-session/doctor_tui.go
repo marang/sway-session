@@ -294,7 +294,7 @@ func (model doctorModel) detailWidth() int {
 func (model doctorModel) detailLines() []string {
 	var lines []string
 	if model.repairChoice == "adopt" {
-		lines = []string{"Adopt standard integration", "Create or recover the managed file and append a direct include when missing.", "Review previous startup commands, includes and bindings manually before adoption. Doctor does not remove them or verify effective load order.", "", "[a] Explicitly adopt standard integration", "[n/Esc] Cancel; no files changed"}
+		lines = []string{"Adopt standard integration", "Create or recover the managed file and append a direct include when missing.", "Managed file: config.d/50-sway-session-doctor.conf next to the selected main file. Create config.d manually before setup if it is absent.", "Review previous startup commands, includes and bindings manually before adoption. Doctor does not remove them or verify effective load order.", "", "[a] Explicitly adopt standard integration", "[n/Esc] Cancel; no files changed"}
 	} else if model.repairChoice == "profile" {
 		lines = []string{"Choose standard profile", "[Enter] Preserve existing profile; new setup uses no shortcuts", "[0] Daemon and Restore; no shortcuts", "[1] Daemon and Restore with default shortcuts", "", "Default shortcuts use $mod+Return and $mod+Shift+Return. Define $mod before the first include. Review competing bindings and load order manually.", "Selection opens a preview; [y] applies only after review."}
 	} else if len(model.feedback) != 0 {

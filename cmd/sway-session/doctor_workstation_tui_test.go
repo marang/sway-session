@@ -26,7 +26,7 @@ func TestDoctorWorkstationReportRemainsInspectableInTUI(t *testing.T) {
 		{"default shortcuts", doctorAcceptanceSnippet("/usr/bin/sway-session", true), true, doctor.OK, true},
 		{"include not observed", doctorAcceptanceSnippet("/usr/bin/sway-session", false), false, doctor.Warning, true},
 		{"missing standard", "", false, doctor.Unavailable, true},
-		{"legacy partial", doctorAcceptanceHeader + "exec --no-startup-id /usr/bin/sway-session daemon\n", true, doctor.Warning, false},
+		{"legacy partial", doctorAcceptanceHeader + "exec --no-startup-id /usr/bin/sway-session daemon\n", true, doctor.Unavailable, false},
 		{"manual edit", doctorAcceptanceSnippet("/usr/bin/sway-session", false) + "# manual edit\n", true, doctor.Unavailable, false},
 	} {
 		name := fixture.name
@@ -47,7 +47,7 @@ func TestDoctorWorkstationReportRemainsInspectableInTUI(t *testing.T) {
 				t.Fatal(err)
 			}
 			path := filepath.Join(configDir, "config")
-			snippet := filepath.Join(configDir, "50-sway-session-doctor.conf")
+			snippet := filepath.Join(configDir, "config.d", "50-sway-session-doctor.conf")
 			if err := os.Remove(snippet); err != nil && !os.IsNotExist(err) {
 				t.Fatal(err)
 			}
@@ -60,7 +60,7 @@ func TestDoctorWorkstationReportRemainsInspectableInTUI(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			before = []byte(strings.ReplaceAll(string(before), "include 50-sway-session-doctor.conf\n", ""))
+			before = []byte(strings.ReplaceAll(string(before), "include config.d/50-sway-session-doctor.conf\n", ""))
 			if fixture.include {
 				before = append(before, []byte("include "+snippet+"\n")...)
 			}

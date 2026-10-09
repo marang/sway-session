@@ -26,7 +26,7 @@ func TestAnalyzeSwayConfigNeverFollowsForeignIncludes(t *testing.T) {
 	if err := os.WriteFile(foreign, []byte("private-foreign-source-value\n"), 0o666); err != nil {
 		t.Fatal(err)
 	}
-	content := "include " + doctorSnippetName + "\ninclude blocked.conf\ninclude linked.conf\ninclude private.conf\ninclude missing.conf\ninclude $unknown\ninclude *.conf\ninclude config\n"
+	content := "include config.d/" + doctorSnippetName + "\ninclude blocked.conf\ninclude linked.conf\ninclude private.conf\ninclude missing.conf\ninclude $unknown\ninclude *.conf\ninclude config\n"
 	if err := os.WriteFile(root, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -34,8 +34,8 @@ func TestAnalyzeSwayConfigNeverFollowsForeignIncludes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(analysis.observed) != 2 || analysis.observed[0].path != root || analysis.observed[1].path != filepath.Join(directory, doctorSnippetName) {
-		t.Fatalf("inspection escaped two-file boundary: %+v", analysis.observed)
+	if len(analysis.observed) != 2 || analysis.observed[0].path != root || analysis.observed[1].path != filepath.Join(directory, "config.d", doctorSnippetName) || !analysis.observed[1].exists {
+		t.Fatalf("inspection escaped fixed-path boundary: %+v", analysis.observed)
 	}
 	check := inspectSwayConfig(t.Context(), Options{SwayConfigPath: root})[0]
 	if check.Status != OK || strings.Contains(strings.Join(check.Evidence, "\n")+check.Hint, "private-foreign-source-value") {
@@ -47,7 +47,7 @@ func TestInspectSwayConfigRejectsUnsafeStandardSibling(t *testing.T) {
 	for _, name := range []string{"symlink", "hardlink", "group writable", "fifo", "oversized"} {
 		t.Run(name, func(t *testing.T) {
 			root := writeSwayConfig(t, "# root\n")
-			snippet := filepath.Join(filepath.Dir(root), doctorSnippetName)
+			snippet := filepath.Join(filepath.Dir(root), "config.d", doctorSnippetName)
 			switch name {
 			case "symlink":
 				if err := os.Symlink(root, snippet); err != nil {
@@ -96,7 +96,7 @@ func TestInspectSwayConfigRejectsOversizedMainAndAbsentMain(t *testing.T) {
 
 func TestInspectSwayConfigRejectsSelectedManagedSibling(t *testing.T) {
 	root := writeStandardSwayConfig(t, ShortcutsNone, true)
-	snippet := filepath.Join(filepath.Dir(root), doctorSnippetName)
+	snippet := filepath.Join(filepath.Dir(root), "config.d", doctorSnippetName)
 	check := inspectSwayConfig(t.Context(), Options{SwayConfigPath: snippet})[0]
 	if check.Status != Unavailable || check.FixID != "" || !strings.Contains(check.Hint, "cannot be the doctor-managed snippet") {
 		t.Fatalf("selected sibling became main: %+v", check)

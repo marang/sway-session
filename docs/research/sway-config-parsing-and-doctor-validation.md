@@ -9,6 +9,11 @@ includes, variables and shell expressions remain opaque. New setup is
 startup-only; shortcuts and adoption require explicit choices. See
 [the current architecture contract](../sway-session-plan.md#setup-inspection-and-repair).
 
+**Location update (LAB-328):** the bounded inspector uses only the fixed
+`config.d/50-sway-session-doctor.conf` path. The architecture contract describes
+the existing-directory requirement and backups outside the fragment directory.
+The original LAB-322 source analysis below remains historical.
+
 This research records the source analysis and alternatives that informed the
 decision. The earlier general integration recognizer is retired, with no legacy
 fallback. Native Sway validation remains isolated behavioral evidence rather

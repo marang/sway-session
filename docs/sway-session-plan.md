@@ -129,17 +129,19 @@ provable partial changes on failure. No state database, service, session,
 package, hook, or security policy is changed by this repair.
 
 Sway integration inspection has one narrow source boundary: the selected main
-file and its sibling `50-sway-session-doctor.conf`. The name, location and v1
-ownership header remain stable. A byte-exact parser recognizes two profiles:
+file and its fixed `config.d/50-sway-session-doctor.conf` fragment. The v1
+ownership header identifies the managed file. The main file and a real, safe
+`config.d` directory must exist before adoption. Doctor creates no directories,
+searches no other locations and moves no files; unsafe objects block repair.
+A byte-exact parser recognizes two profiles:
 one-time `exec --no-startup-id` daemon and restore declarations, optionally
 followed by both `$mod+Return` / `$mod+Shift+Return` standard terminal bindings.
-Historical subsets are recognized as legacy partial profiles and require manual
-migration; reordered, foreign or manually changed files are protected.
+Incomplete, reordered, foreign or manually changed files are protected.
 
 The main-file recognizer observes only a literal top-level direct include of the
-standard sibling. It accepts normalized literal absolute or sibling-relative
+selected standard file. It accepts normalized literal absolute or main-relative
 paths, including
-double-quoted and `./` sibling paths, without variable/glob expansion or include
+double-quoted and `./` paths, without variable/glob expansion or include
 traversal. Parent traversal (`..`) remains outside the recognized boundary.
 Command bodies remain opaque. It does not classify foreign shell expressions,
 resolve variables, read startup scripts, infer hidden calls or compare foreign
@@ -149,7 +151,7 @@ and block depth 64. These are inspection bounds, not limits on saved contexts.
 
 `ok` establishes a supported standard profile and observed direct include on
 disk. `warning` covers an unobserved include, a dangling direct include or a
-legacy partial profile. Missing and unrecognized standard files are
+missing included file. Missing and unrecognized standard files are
 `unavailable`. Check ID `sway.integration`, public JSON fields, statuses and
 exit codes stay stable. In-process adoption selection is excluded from JSON.
 Sway IPC, daemon identity and broker liveness checks retain independent runtime
@@ -167,9 +169,13 @@ migrate old starts/includes themselves, free the chosen bindings, define `$mod`
 before the first include and review load position before opting in. An absent
 main file is created manually. Doctor never removes foreign entries or edits unsupported snippets.
 
-Plans snapshot only the main file and standard sibling. Apply revalidates both
-sources, ownership and directory identity, preserves exclusive private original
-backups, and writes atomically using file descriptors. Concurrent writer
+Plans snapshot the main file and fixed fragment, including an absent fragment.
+Apply revalidates existence, sources, ownership and each edited parent
+directory identity. Exclusive private original backups stay next to the main
+file, outside `config.d` glob inclusion, and writes use descriptor-relative
+atomic replacements. Sway deduplicates repeated inclusion of the same file;
+a main-file glob and the direct include do not repeat its startup commands.
+The first include determines load position. Concurrent writer
 compensation requires proof of the installed inode, not merely matching bytes;
 uncertain compensation preserves the displaced file and reports its path.
 Appending a new direct include requires a standalone top-level EOF position;

@@ -304,9 +304,9 @@ Apply only to the fixture. Verify private `0600` original backups, unchanged
 foreign content, atomic writes and exactly one newly appended direct include.
 Cancelled, stale and concurrent-writer plans must preserve intervening edits.
 
-Both main file and snippet are protected by file/ownership checks. Historical
-partial profiles and manual edits require migration and must never be expanded
-or replaced. Missing main files are not created. Missing snippets or unobserved
+Both main file and snippet are protected by file/ownership checks. Incomplete
+profiles and manual edits must never be expanded or replaced. Missing main
+files and fragment directories are not created. Missing snippets or unobserved
 direct includes require explicit adoption. Cover CLI option restrictions,
 text/JSON status and stable wire shape, read-only inspection and independent
 runtime findings. No production compositor reload is part of Doctor.
@@ -327,12 +327,23 @@ Through the public report, verify that their content does not alter the result
 for a supported owned snippet and an observed direct include.
 
 Cover both supported profiles, missing standard files, literal direct and
-repeated includes, unobserved indirect/variable/glob includes, protected legacy
+repeated includes, unobserved indirect/variable/glob includes, protected incomplete
 partial and edited files. A working indirect include in Sway still produces
 unobserved-direct-include evidence in Doctor. Source evidence must not claim
 effective load order, executed bindings or successful next login. The bounded
 recognizer's fuzz seeds cover quoting, continuations, comments and block scope;
 fuzz campaigns must be explicitly time-bounded.
+
+Cover the fixed fragment under `config.d`, including recovery of a missing
+directly included file. The fragment directory must exist and be safe; Doctor
+does not create directories or search alternative locations. Check unsafe and
+replaced directories, stale plans, and rollback across the two edited
+directories. Private original backups must remain next to main,
+outside the fragment directory. With `config.d/*` and `config.d/*.conf`, run
+actual profile switches, then a new private Sway startup and two reloads: glob
+plus direct include must start daemon and restore exactly once, even while
+original profile backups exist. Exercise fragment adoption through the actual
+CLI and both NO_COLOR PTY sizes as well.
 
 Run `sh scripts/check-completions.sh` with Bash, Zsh and Fish installed, and
 `sh scripts/check-packaging.sh`. Check fix-only adoption and shortcut values,

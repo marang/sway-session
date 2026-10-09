@@ -14,7 +14,7 @@ func TestDoctorUnrelatedColorAndCommentLinesPreserveOwnedSourceEvidence(t *testi
 		"bar {\n colors {\n background #202020\n }\n}\n",
 	} {
 		root := writeStandardSwayConfig(t, ShortcutsNone, true)
-		source += "include " + doctorSnippetName + "\n"
+		source += "include config.d/" + doctorSnippetName + "\n"
 		if err := os.WriteFile(root, []byte(source), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -34,7 +34,10 @@ func TestDoctorStandardSiblingInDirectoryWithHash(t *testing.T) {
 		t.Fatal(err)
 	}
 	root := filepath.Join(directory, "config")
-	snippet := filepath.Join(directory, doctorSnippetName)
+	if err := os.Mkdir(filepath.Join(directory, "config.d"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	snippet := filepath.Join(directory, "config.d", doctorSnippetName)
 	if err := os.WriteFile(root, []byte("include \""+snippet+"\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}

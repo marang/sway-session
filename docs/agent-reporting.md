@@ -101,15 +101,47 @@ mismatched identities, and reports the actual session ID and supplied event orig
 the registry, starts an agent, or accepts a destination socket. Keep Codex's
 normal hook timeout; no hook should wait indefinitely for a broker.
 
+## Named agent workspaces
+
+From a terminal inside Sway, ask the running daemon to open a named
+Codex-and-shell workspace:
+
+```sh
+sway-session request-start --session my-project --cwd "$PWD" --label "My project" --workspace 5
+```
+
+Choose a stable session name for each work context. Repeating the request opens
+or focuses that context without restarting its agent or replacing occupied
+panes. Different contexts can share a workspace. An existing context must
+already belong to the requested workspace; use Sway controls to move it first.
+If creation or initialization fails, resolve the cause and retry the same
+request. Changing the name can create a duplicate context.
+
 ## Security limitations
 
 The optional `agent-home-guard` AppArmor template includes session-start and
 agent-report paths. Its ready-to-use attachment is Codex; another agent needs a
 separate copied profile with its executable attachment changed. It remains
-experimental: pathname socket-connect mediation and unconfined broker-created
-panes have the limitations described in the README. Supporting more agent kinds
+experimental: pathname socket-connect mediation depends on kernel support, and
+broker-created terminals and agent panes are unconfined. Supporting more agent kinds
 is not a claim that those agents are sandboxed. This change does not install or
 reload the host's AppArmor policy.
+
+The template restricts direct access to private Herdr history, sway-session
+state, credential stores, shell histories and browser profiles. It permits
+the two sway-session broker paths. Review the template before enabling it.
+For the packaged Codex example:
+
+```sh
+sudo install -m 0644 /usr/share/doc/sway-session/contrib/apparmor/agent-home-guard /etc/apparmor.d/agent-home-guard
+sudo apparmor_parser -r /etc/apparmor.d/agent-home-guard
+```
+
+For another agent, copy the template, choose a unique profile name and update
+the executable attachment before loading it. Source installations ship the
+template under `~/.local/share/doc/sway-session/contrib/apparmor/`.
+The packaged `verify-codex-boundary.sh` checks the supplied Codex hook and
+requires the package-owned `/usr/bin/sway-session` executable.
 
 ## Integration acceptance
 

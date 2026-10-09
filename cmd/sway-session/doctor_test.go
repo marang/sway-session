@@ -125,6 +125,9 @@ func TestExecuteDoctorFixPreviewAndApplyRecheck(t *testing.T) {
 func appliedDoctorIntegrationFixture(t *testing.T) (doctor.Plan, doctor.FixResult) {
 	t.Helper()
 	root := filepath.Join(t.TempDir(), "config")
+	if err := os.Mkdir(filepath.Join(filepath.Dir(root), "config.d"), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(root, []byte("set $mod Mod4\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}

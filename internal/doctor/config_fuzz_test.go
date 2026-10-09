@@ -31,7 +31,7 @@ func FuzzManagedSnippetExactOwnership(f *testing.F) {
 			t.Skip()
 		}
 		parsed, err := parseManagedSnippet(content)
-		if err != nil || parsed.legacy {
+		if err != nil {
 			return
 		}
 		kinds := []integrationKind{integrationDaemon, integrationRestore}

@@ -65,6 +65,11 @@ The existing checksum, non-root package build, metadata handoff and SSH host-key
 checks still apply. No publishing secrets are passed to verification or CI.
 Only the GitHub publisher receives a write-capable GitHub token.
 
+The GitHub publisher passes the resolved tag explicitly as
+`GORELEASER_CURRENT_TAG`. When multiple version tags share a verified commit,
+GoReleaser therefore builds and publishes the version checked by the release
+guard instead of independently selecting the highest tag on that commit.
+
 Repeating a gated run retains its exact commit. GitHub publication checks for
 an existing release and leaves already published artifacts intact; an existing
 draft requires explicit recovery. AUR publication keeps the existing

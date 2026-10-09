@@ -92,6 +92,18 @@ class ResolveReleaseTagTest(unittest.TestCase):
         self.git("tag", "v1.2.3")
         self.assert_resolves("v1.2.3", self.initial_commit, self.initial_commit)
 
+    def test_requested_tag_is_preserved_when_versions_share_a_commit(self):
+        self.git("tag", "v1.2.3")
+        self.git("tag", "v1.2.4")
+        # GoReleaser's default selection prefers the higher tag. Resolution
+        # must retain the caller's tag, which the publishing action passes on.
+        self.assertEqual(
+            self.git("tag", "--points-at", "HEAD", "--sort", "-version:refname").splitlines(),
+            ["v1.2.4", "v1.2.3"],
+        )
+        self.assert_resolves("v1.2.3", self.initial_commit, self.initial_commit)
+        self.assert_resolves("v1.2.4", self.initial_commit, self.initial_commit)
+
     def test_annotated_tag_returns_peeled_commit(self):
         self.git("tag", "-a", "v1.2.3", "-m", "release")
         tag_object = self.git("rev-parse", "refs/tags/v1.2.3")

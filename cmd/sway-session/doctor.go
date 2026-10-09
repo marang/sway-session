@@ -18,7 +18,7 @@ import (
 
 type doctorOperations interface {
 	Check(context.Context) doctor.Report
-	Plan(context.Context, string) (doctor.Plan, error)
+	Plan(context.Context, string, doctor.RepairOptions) (doctor.Plan, error)
 	Apply(context.Context, doctor.Plan) (doctor.FixResult, error)
 }
 
@@ -35,15 +35,21 @@ func executeDoctor(ctx context.Context, arguments []string, stdin io.Reader, std
 	checkOnly := flags.Bool("check", false, "print a read-only report")
 	fixID := flags.String("fix", "", "preview a known repair ID")
 	yes := flags.Bool("yes", false, "apply the selected repair")
+	adopt := flags.Bool("adopt-standard", false, "adopt the managed standard integration")
+	shortcuts := flags.String("shortcuts", "", "standard shortcuts: none or default")
 	socket := flags.String("socket", "", "Sway IPC socket")
 	swayConfig := flags.String("sway-config", "", "explicit Sway config file")
 	if err := flags.Parse(arguments); err != nil || flags.NArg() != 0 {
 		return commandResult{}, usageFailure("doctor", "doctor accepts only named options; see sway-session help doctor")
 	}
 	emptyFix := false
+	repairOption := false
 	flags.Visit(func(option *flag.Flag) {
 		if option.Name == "fix" && *fixID == "" {
 			emptyFix = true
+		}
+		if option.Name == "adopt-standard" || option.Name == "shortcuts" {
+			repairOption = true
 		}
 	})
 	if emptyFix {
@@ -51,6 +57,18 @@ func executeDoctor(ctx context.Context, arguments []string, stdin io.Reader, std
 	}
 	if *checkOnly && *fixID != "" || *yes && *fixID == "" {
 		return commandResult{}, usageFailure("doctor", "--check cannot be combined with --fix; --yes requires --fix ID")
+	}
+	if repairOption && *fixID != "sway.integration" {
+		return commandResult{}, usageFailure("doctor", "--adopt-standard and --shortcuts require --fix sway.integration")
+	}
+	invalidShortcuts := false
+	flags.Visit(func(option *flag.Flag) {
+		if option.Name == "shortcuts" && *shortcuts != "none" && *shortcuts != "default" {
+			invalidShortcuts = true
+		}
+	})
+	if invalidShortcuts {
+		return commandResult{}, usageFailure("doctor", "--shortcuts requires none or default")
 	}
 	for _, path := range []string{configPath, *socket, *swayConfig} {
 		if path != "" && (!filepath.IsAbs(path) || filepath.Clean(path) != path) {
@@ -71,7 +89,7 @@ func executeDoctor(ctx context.Context, arguments []string, stdin io.Reader, std
 	}
 	result := commandResult{Command: "doctor"}
 	if *fixID != "" {
-		plan, err := operations.Plan(ctx, *fixID)
+		plan, err := operations.Plan(ctx, *fixID, doctor.RepairOptions{AdoptStandard: *adopt, Shortcuts: doctor.ShortcutSelection(*shortcuts)})
 		if err != nil {
 			return result, failure("doctor_plan", "prepare configuration repair", err.Error())
 		}
@@ -146,15 +164,33 @@ func writeDoctorResult(writer io.Writer, result commandResult) error {
 		}
 	}
 	if result.Doctor != nil {
+		section := ""
 		for _, check := range result.Doctor.Checks {
+			current := "Runtime checks"
+			if strings.HasPrefix(check.ID, "sway.config") || check.ID == "sway.integration" {
+				current = "Standard integration on disk"
+			} else if check.ID == "apparmor" {
+				current = "Optional hardening"
+			}
+			if current != section {
+				if _, err := fmt.Fprintln(writer, current); err != nil {
+					return err
+				}
+				section = current
+			}
 			if _, err := fmt.Fprintf(writer, "[%s] %s — %s\n", check.Status, doctorText(check.ID), doctorText(check.Detail)); err != nil {
 				return err
 			}
-			if check.ID == "daemon.binary" {
+			if check.ID == "daemon.binary" || check.ID == "sway.integration" {
 				for _, evidence := range check.Evidence {
 					if _, err := fmt.Fprintf(writer, "  %s\n", doctorText(evidence)); err != nil {
 						return err
 					}
+				}
+			}
+			if check.ID == "sway.integration" {
+				if _, err := fmt.Fprintln(writer, "  Source files only; runtime checks are separate. This does not prove startup execution, effective bindings or successful next login."); err != nil {
+					return err
 				}
 			}
 			if check.Hint != "" {

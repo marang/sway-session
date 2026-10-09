@@ -15,14 +15,15 @@ import (
 )
 
 type fakeDoctorOperations struct {
-	report      doctor.Report
-	plan        doctor.Plan
-	planErr     error
-	applyResult doctor.FixResult
-	applyErr    error
-	checkCalls  int
-	planCalls   []string
-	applyCalls  int
+	report       doctor.Report
+	plan         doctor.Plan
+	planErr      error
+	applyResult  doctor.FixResult
+	applyErr     error
+	checkCalls   int
+	planCalls    []string
+	planRequests []doctor.RepairOptions
+	applyCalls   int
 }
 
 func (fake *fakeDoctorOperations) Check(context.Context) doctor.Report {
@@ -30,8 +31,9 @@ func (fake *fakeDoctorOperations) Check(context.Context) doctor.Report {
 	return fake.report
 }
 
-func (fake *fakeDoctorOperations) Plan(_ context.Context, id string) (doctor.Plan, error) {
+func (fake *fakeDoctorOperations) Plan(_ context.Context, id string, request doctor.RepairOptions) (doctor.Plan, error) {
 	fake.planCalls = append(fake.planCalls, id)
+	fake.planRequests = append(fake.planRequests, request)
 	if fake.planErr != nil {
 		return doctor.Plan{}, fake.planErr
 	}
@@ -127,7 +129,7 @@ func appliedDoctorIntegrationFixture(t *testing.T) (doctor.Plan, doctor.FixResul
 		t.Fatal(err)
 	}
 	service := doctor.New(doctor.Options{SwayConfigPath: root})
-	plan, err := service.Plan(t.Context(), "sway.integration")
+	plan, err := service.Plan(t.Context(), "sway.integration", doctor.RepairOptions{AdoptStandard: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,5 +214,119 @@ func TestWriteDoctorResultHandlesWriterErrorsAndEscapesControls(t *testing.T) {
 	}
 	if !strings.Contains(output.String(), `id `) || !strings.Contains(output.String(), `done`) {
 		t.Fatalf("controls were not sanitized as expected: %q", output.String())
+	}
+}
+
+func TestDoctorRepairSelectionFlags(t *testing.T) {
+	for _, args := range [][]string{
+		{"--adopt-standard"}, {"--adopt-standard=false"}, {"--check", "--shortcuts", "none"},
+		{"--fix", "other", "--shortcuts", "default"}, {"--fix", "other", "--adopt-standard"},
+		{"--fix", "sway.integration", "--shortcuts", ""}, {"--fix", "sway.integration", "--shortcuts", "custom"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			fake := &fakeDoctorOperations{}
+			_, failure := executeDoctor(t.Context(), args, strings.NewReader(""), io.Discard, false, "", doctorTestDeps(t, fake))
+			if failure == nil || !failure.usage || len(fake.planCalls) != 0 || fake.applyCalls != 0 || fake.checkCalls != 0 {
+				t.Fatalf("invalid options reached doctor: failure=%+v operations=%+v", failure, fake)
+			}
+		})
+	}
+	for _, choice := range []string{"", "none", "default"} {
+		t.Run("forward-"+choice, func(t *testing.T) {
+			fake := &fakeDoctorOperations{plan: doctor.Plan{ID: "sway.integration"}}
+			args := []string{"--fix", "sway.integration", "--adopt-standard"}
+			if choice != "" {
+				args = append(args, "--shortcuts", choice)
+			}
+			result, failure := executeDoctor(t.Context(), args, strings.NewReader(""), io.Discard, false, "", doctorTestDeps(t, fake))
+			want := doctor.RepairOptions{AdoptStandard: true, Shortcuts: doctor.ShortcutSelection(choice)}
+			if failure != nil || !result.Preview || len(fake.planRequests) != 1 || fake.planRequests[0] != want || fake.applyCalls != 0 {
+				t.Fatalf("selection forwarding: result=%+v failure=%+v requests=%v", result, failure, fake.planRequests)
+			}
+		})
+	}
+}
+
+func TestDoctorSetupAndRuntimeStatusesStayIndependent(t *testing.T) {
+	for _, runtimeStatus := range []doctor.Status{doctor.OK, doctor.Error} {
+		for _, setupStatus := range []doctor.Status{doctor.OK, doctor.Warning, doctor.Unavailable} {
+			t.Run(string(runtimeStatus)+"-"+string(setupStatus), func(t *testing.T) {
+				fake := &fakeDoctorOperations{report: doctor.Report{Checks: []doctor.Check{
+					{ID: "daemon.runtime", Status: runtimeStatus},
+					{ID: "sway.integration", Status: setupStatus, Evidence: []string{"Sources on disk only; effective bindings are not verified."}, AdoptionRequired: true},
+				}}}
+				var stdout, stderr bytes.Buffer
+				code := runWith([]string{"--json", "doctor", "--check"}, strings.NewReader(""), &stdout, &stderr, doctorTestDeps(t, fake))
+				wantCode := exitSuccess
+				if runtimeStatus == doctor.Error {
+					wantCode = exitOperation
+				}
+				var result commandResult
+				if code != wantCode || json.Unmarshal(stdout.Bytes(), &result) != nil || result.Doctor == nil {
+					t.Fatalf("independent status/exit: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+				}
+				if checks := result.Doctor.Checks; checks[0].Status != runtimeStatus || checks[1].Status != setupStatus || strings.Contains(stdout.String(), "adoption_required") {
+					t.Fatalf("public JSON contract changed: %s", stdout.String())
+				}
+				stdout.Reset()
+				if err := writeDoctorResult(&stdout, result); err != nil || !strings.Contains(stdout.String(), "Runtime checks") || !strings.Contains(stdout.String(), "Standard integration on disk") || !strings.Contains(stdout.String(), "effective bindings are not verified") {
+					t.Fatalf("text lost distinct findings or evidence: %s error=%v", stdout.String(), err)
+				}
+			})
+		}
+	}
+}
+
+func TestDoctorRepairBooleanAndEqualsForms(t *testing.T) {
+	for _, example := range []struct {
+		args []string
+		want doctor.RepairOptions
+	}{
+		{nil, doctor.RepairOptions{}},
+		{[]string{"--adopt-standard=false"}, doctor.RepairOptions{}},
+		{[]string{"--shortcuts=default"}, doctor.RepairOptions{Shortcuts: doctor.ShortcutsDefault}},
+		{[]string{"--adopt-standard=true", "--shortcuts=none"}, doctor.RepairOptions{AdoptStandard: true, Shortcuts: doctor.ShortcutsNone}},
+	} {
+		fake := &fakeDoctorOperations{plan: doctor.Plan{ID: "sway.integration"}}
+		args := append([]string{"--fix=sway.integration"}, example.args...)
+		result, failure := executeDoctor(t.Context(), args, strings.NewReader(""), io.Discard, true, "", doctorTestDeps(t, fake))
+		if failure != nil || !result.Preview || len(fake.planRequests) != 1 || fake.planRequests[0] != example.want || fake.checkCalls != 0 || fake.applyCalls != 0 {
+			t.Fatalf("option forms: args=%v result=%+v failure=%+v requests=%v", args, result, failure, fake.planRequests)
+		}
+	}
+}
+
+func TestDoctorHelpExplainsMigrationAndEvidenceLimits(t *testing.T) {
+	var output bytes.Buffer
+	writeCommandUsage(&output, "doctor", commandSpecs["doctor"])
+	for _, text := range []string{"--adopt-standard", "--shortcuts none|default", "Existing profiles are preserved", "new setup has no shortcuts", "remove previous starts and includes manually", "define $mod before the first include", "source files only", "next login", "reload Sway yourself"} {
+		if !strings.Contains(output.String(), text) {
+			t.Fatalf("help omitted %q:\n%s", text, output.String())
+		}
+	}
+}
+
+type doctorRejectTextWriter string
+
+func (writer doctorRejectTextWriter) Write(value []byte) (int, error) {
+	if strings.Contains(string(value), string(writer)) {
+		return 0, errors.New("write failed")
+	}
+	return len(value), nil
+}
+
+func TestDoctorIntegrationEvidenceEscapesControlsAndPropagatesWriterErrors(t *testing.T) {
+	result := commandResult{Doctor: &doctor.Report{Checks: []doctor.Check{{ID: "sway.integration", Status: doctor.Unavailable, Evidence: []string{"standard profile: startup-only\x1b[31m\r"}}}}}
+	var output bytes.Buffer
+	if err := writeDoctorResult(&output, result); err != nil {
+		t.Fatal(err)
+	}
+	if strings.ContainsAny(output.String(), "\x1b\r") || !strings.Contains(output.String(), "runtime checks are separate") {
+		t.Fatalf("unsafe or incomplete source evidence: %q", output.String())
+	}
+	for _, text := range []string{"Standard integration on disk", "standard profile", "Source files only"} {
+		if err := writeDoctorResult(doctorRejectTextWriter(text), result); err == nil {
+			t.Fatalf("writer failure swallowed at %q", text)
+		}
 	}
 }

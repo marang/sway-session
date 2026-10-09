@@ -37,6 +37,9 @@ type doctorModel struct {
 	message                       string
 	plan                          *doctor.Plan
 	feedback                      []string
+	repairChoice                  string
+	repairRequest                 doctor.RepairOptions
+	repairID                      string
 }
 
 type doctorListRow struct {
@@ -168,6 +171,36 @@ func (model doctorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if model.busy != "" {
 			return model, nil
 		}
+		if model.repairChoice != "" {
+			switch key {
+			case "esc", "n":
+				model.repairChoice, model.offset, model.message = "", 0, "Repair cancelled; no files changed."
+			case "a":
+				if model.repairChoice == "adopt" {
+					model.repairRequest.AdoptStandard = true
+					model.repairChoice, model.offset = "profile", 0
+				}
+			case "0", "1", "enter":
+				if model.repairChoice == "profile" {
+					if key == "0" {
+						model.repairRequest.Shortcuts = doctor.ShortcutsNone
+					} else if key == "1" {
+						model.repairRequest.Shortcuts = doctor.ShortcutsDefault
+					}
+					model.repairChoice = ""
+					return model.prepareRepair()
+				}
+			case "down", "j":
+				model.scroll(1)
+			case "up", "k":
+				model.scroll(-1)
+			case "pgdown":
+				model.scroll(model.bodyHeight())
+			case "pgup":
+				model.scroll(-model.bodyHeight())
+			}
+			return model, nil
+		}
 		if len(model.feedback) != 0 {
 			switch key {
 			case "esc", "enter":
@@ -231,10 +264,10 @@ func (model doctorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return model, model.check()
 		case "f":
 			if check, ok := model.selected(); ok && check.FixID != "" {
-				model.busy = "Preparing preview…"
-				return model, func() tea.Msg {
-					plan, err := model.operations.Plan(model.ctx, check.FixID)
-					return doctorPlannedMsg{plan, err}
+				model.repairID, model.repairRequest, model.offset = check.FixID, doctor.RepairOptions{}, 0
+				model.repairChoice = "profile"
+				if check.AdoptionRequired {
+					model.repairChoice = "adopt"
 				}
 			}
 		}
@@ -242,16 +275,29 @@ func (model doctorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return model, nil
 }
 
+func (model doctorModel) prepareRepair() (tea.Model, tea.Cmd) {
+	model.busy = "Preparing preview…"
+	id, request := model.repairID, model.repairRequest
+	return model, func() tea.Msg {
+		plan, err := model.operations.Plan(model.ctx, id, request)
+		return doctorPlannedMsg{plan, err}
+	}
+}
+
 func (model doctorModel) bodyHeight() int { return max(1, model.height-9) }
 func (model doctorModel) detailWidth() int {
-	if model.plan == nil && len(model.feedback) == 0 && model.width >= 100 {
+	if model.plan == nil && model.repairChoice == "" && len(model.feedback) == 0 && model.width >= 100 {
 		return model.width - model.width*2/5 - 5
 	}
 	return max(1, model.width-4)
 }
 func (model doctorModel) detailLines() []string {
 	var lines []string
-	if len(model.feedback) != 0 {
+	if model.repairChoice == "adopt" {
+		lines = []string{"Adopt standard integration", "Create or recover the managed file and append a direct include when missing.", "Review previous startup commands, includes and bindings manually before adoption. Doctor does not remove them or verify effective load order.", "", "[a] Explicitly adopt standard integration", "[n/Esc] Cancel; no files changed"}
+	} else if model.repairChoice == "profile" {
+		lines = []string{"Choose standard profile", "[Enter] Preserve existing profile; new setup uses no shortcuts", "[0] Daemon and Restore; no shortcuts", "[1] Daemon and Restore with default shortcuts", "", "Default shortcuts use $mod+Return and $mod+Shift+Return. Define $mod before the first include. Review competing bindings and load order manually.", "Selection opens a preview; [y] applies only after review."}
+	} else if len(model.feedback) != 0 {
 		lines = append(lines, model.feedback...)
 	} else if model.plan != nil {
 		lines = append(lines, "Repair: "+doctorText(model.plan.ID), doctorText(model.plan.Summary), "")
@@ -271,8 +317,11 @@ func (model doctorModel) detailLines() []string {
 		for _, evidence := range check.Evidence {
 			lines = append(lines, "Evidence: "+doctorText(evidence))
 		}
+		if check.ID == "sway.integration" {
+			lines = append(lines, "", "Source files only; runtime checks are separate. This does not prove startup execution, effective bindings or successful next login.")
+		}
 		if check.FixID != "" {
-			lines = append(lines, "", "[f] Preview fix: "+doctorText(check.FixID))
+			lines = append(lines, "", "[f] Configure standard profile: "+doctorText(check.FixID))
 		}
 	} else {
 		lines = append(lines, "No matching checks. [Esc] Clear filter.")
@@ -283,7 +332,7 @@ func (model *doctorModel) scroll(delta int) {
 	model.offset = max(0, min(model.offset+delta, max(0, len(model.detailLines())-model.detailHeight())))
 }
 func (model doctorModel) detailHeight() int {
-	if model.plan == nil && len(model.feedback) == 0 && model.width < 100 {
+	if model.plan == nil && model.repairChoice == "" && len(model.feedback) == 0 && model.width < 100 {
 		return max(1, model.bodyHeight()-min(5, model.bodyHeight()/2)-1)
 	}
 	return model.bodyHeight()
@@ -304,7 +353,13 @@ func (model doctorModel) filterView() string {
 
 func (model doctorModel) listRows() []doctorListRow {
 	rows := make([]doctorListRow, 0, len(model.visible)+1)
-	for _, checkIndex := range model.visible {
+	for position, checkIndex := range model.visible {
+		if position == 0 && model.report.Checks[checkIndex].ID != "sway.integration" && model.report.Checks[checkIndex].ID != "apparmor" {
+			rows = append(rows, doctorListRow{heading: "Runtime checks"})
+		}
+		if model.report.Checks[checkIndex].ID == "sway.integration" {
+			rows = append(rows, doctorListRow{heading: "Setup on disk"})
+		}
 		if model.report.Checks[checkIndex].ID == "apparmor" {
 			rows = append(rows, doctorListRow{heading: "Optional"})
 		}
@@ -384,12 +439,12 @@ func (model doctorModel) View() tea.View {
 	}
 	body := make([]string, model.bodyHeight())
 	if model.help {
-		copy(body, []string{"Doctor inspects setup without starting sessions or services.", "[↑/↓ or j/k] Select check    [PgUp/PgDn] Scroll details", "[/] Filter   [Esc] Clear filter   [r] Refresh", "[f] Prepare a repair preview; no file changes yet.", "Preview: [y] Apply with backups, [n/Esc] Cancel.", "Unknown or conflicting checks require manual review.", "[Esc/?] Close help   [q] Quit"})
+		copy(body, []string{"Doctor inspects setup without starting sessions or services.", "[↑/↓ or j/k] Select check    [PgUp/PgDn] Scroll details", "[/] Filter   [Esc] Clear filter   [r] Refresh", "[f] Choose adoption/profile, then review preview.", "Preview: [y] Apply with backups, [n/Esc] Cancel.", "Unknown or edited files require manual migration.", "[Esc/?] Close help   [q] Quit"})
 	} else {
 		details := model.detailLines()
 		offset := min(model.offset, max(0, len(details)-model.detailHeight()))
 		visible := details[offset:min(len(details), offset+model.detailHeight())]
-		if model.plan != nil || len(model.feedback) != 0 {
+		if model.plan != nil || model.repairChoice != "" || len(model.feedback) != 0 {
 			copy(body, visible)
 		} else if model.width >= 100 {
 			listWidth := model.width * 2 / 5
@@ -409,11 +464,18 @@ func (model doctorModel) View() tea.View {
 	footer := "[↑/↓ j/k] Select  [/] Filter  [PgUp/PgDn] Details"
 	actions := "[r] Refresh  [?] Help  [q] Quit"
 	if check, ok := model.selected(); ok && check.FixID != "" {
-		actions = "[f] Preview fix  " + actions
+		actions = "[f] Configure  " + actions
 	}
 	if model.plan != nil {
 		footer = "[↑/↓ PgUp/PgDn] Scroll preview"
 		actions = "[y] Apply + backup  [n/Esc] Cancel  [q] Quit"
+	}
+	if model.repairChoice != "" {
+		footer = "[↑/↓ PgUp/Dn] Scroll choices  [q] Quit"
+		actions = "[Enter] Keep [0] None [1] Default [Esc] Back"
+		if model.repairChoice == "adopt" {
+			actions = "[a] Adopt  [n/Esc] Cancel  [q] Quit"
+		}
 	}
 	if len(model.feedback) != 0 {
 		footer = "[↑/↓ PgUp/PgDn] Scroll repair result"
@@ -431,7 +493,7 @@ func (model doctorModel) View() tea.View {
 	} else if model.busy != "" {
 		footer = model.busy
 		actions = "[q/Ctrl+C] Quit"
-	} else if model.width < 70 && model.plan == nil && len(model.feedback) == 0 {
+	} else if model.width < 70 && model.plan == nil && model.repairChoice == "" && len(model.feedback) == 0 {
 		footer = "[↑/↓ j/k] Select  [/] Filter  [PgUp/Dn] More"
 		actions = "[r] Check  [?] Help  [q] Quit"
 		if check, ok := model.selected(); ok && check.FixID != "" {

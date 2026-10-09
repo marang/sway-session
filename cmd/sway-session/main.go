@@ -577,6 +577,9 @@ func writeCommandUsage(writer io.Writer, name string, spec commandSpec) {
 	}
 	if name == "doctor" {
 		_, _ = fmt.Fprintln(writer, "Options: --check, --fix ID [--yes], --socket PATH, --sway-config PATH; global --config PATH selects terminal configuration.")
+		_, _ = fmt.Fprintln(writer, "With --fix sway.integration: --adopt-standard explicitly authorizes setup; --shortcuts none|default selects a profile. Existing profiles are preserved when unspecified; new setup has no shortcuts.")
+		_, _ = fmt.Fprintln(writer, "Before adoption, remove previous starts and includes manually. For default shortcuts, free the chords and define $mod before the first include; review load position.")
+		_, _ = fmt.Fprintln(writer, "The integration check reads source files only; runtime findings remain separate. Startup exec lines run at the next login; reload Sway yourself for binding changes.")
 		_, _ = fmt.Fprintln(writer, "Default: interactive TUI when stdin/stdout are terminals; otherwise a read-only report. --json always stays noninteractive.")
 		_, _ = fmt.Fprintln(writer, "--fix sway.integration previews a narrow config repair; only --yes or the TUI confirmation applies it. No service reloads or package installs.")
 		_, _ = fmt.Fprintln(writer, "Exit status: 0 no failed checks (warnings/unavailable may remain), 2 invalid arguments, 3 failed checks or repair. TUI exit is 0 unless it cannot run.")

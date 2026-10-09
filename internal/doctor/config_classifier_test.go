@@ -13,6 +13,13 @@ func TestLiteralDirectIncludeRecognizesOnlyTopLevelLiteralSibling(t *testing.T) 
 		name, source string
 		line         int
 	}{
+		{"NBSP before command", "\u00a0include " + doctorSnippetName + "\n", 0},
+		{"NBSP command separator", "include\u00a0" + doctorSnippetName + "\n", 0},
+		{"NBSP in unquoted filename", "include " + doctorSnippetName + "\u00a0\n", 0},
+		{"NBSP in quoted filename", "include \"" + doctorSnippetName + "\u00a0\"\n", 0},
+		{"NBSP after quoted argument", "include \"" + doctorSnippetName + "\"\u00a0\n", 0},
+		{"ASCII form feed separator", "include\f" + doctorSnippetName + "\n", 1},
+		{"ASCII vertical tab separator", "include\v" + doctorSnippetName + "\n", 1},
 		{"relative", "include " + doctorSnippetName + "\n", 1},
 		{"absolute quoted", "# comment\ninclude \"" + sibling + "\"\n", 2},
 		{"uppercase keyword", "INCLUDE " + doctorSnippetName + "\n", 1},
@@ -54,7 +61,7 @@ func TestLiteralDirectIncludeRecognizesOnlyTopLevelLiteralSibling(t *testing.T) 
 }
 
 func TestLiteralIncludePathRejectsExpansionAndNonLiteralSyntax(t *testing.T) {
-	for _, argument := range []string{"", "$HOME/file", "~/../file", "file*", "file?", "file[12]", "`true`", "file\x00", "\"unterminated", "'file'", "a b", "\"file\" trailing", "\"file\\n\"", "../file"} {
+	for _, argument := range []string{"", "$HOME/file", "~/../file", "file*", "file?", "file[12]", "`true`", "file\x00", "\"unterminated", "'file'", "a b", "a\fb", "a\vb", "\"file\"\u00a0", "\"file\" trailing", "\"file\\n\"", "../file"} {
 		if path, ok := literalIncludePath(argument); ok {
 			t.Errorf("accepted nonliteral argument %q as %q", argument, path)
 		}
@@ -116,5 +123,20 @@ func TestLiteralDirectIncludeCommentContinuationBoundaries(t *testing.T) {
 				t.Fatalf("line=%d error=%v, want line=%d appendSafe=%t", line, err, test.line, test.appendSafe)
 			}
 		})
+	}
+}
+
+func TestLiteralIncludePathPreservesUnicodeWhitespace(t *testing.T) {
+	for _, path := range []string{"\u00a0file.conf", "file.conf\u00a0", "directory\u2003/file.conf"} {
+		for _, argument := range []string{path, "\"" + path + "\""} {
+			if got, ok := literalIncludePath(argument); !ok || got != path {
+				t.Errorf("changed literal Unicode filename %q into %q (accepted=%t)", argument, got, ok)
+			}
+		}
+	}
+	main := "/fixture/\u00a0/config"
+	sibling := "/fixture/\u00a0/" + doctorSnippetName
+	if got := literalDirectInclude([]byte("include \""+sibling+"\"\n"), main, sibling); got != 1 {
+		t.Fatalf("literal Unicode directory rejected: line=%d", got)
 	}
 }

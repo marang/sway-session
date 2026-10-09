@@ -149,3 +149,40 @@ func TestDoctorEscapedSpaceBracePreservesRealInclude(t *testing.T) {
 		t.Fatalf("profile switch changed foreign exec: %q %v", after, err)
 	}
 }
+
+func TestDoctorUnicodeFilenameDoesNotGrantDirectIncludeAuthority(t *testing.T) {
+	root := writeStandardSwayConfig(t, ShortcutsNone, true)
+	foreign := filepath.Join(filepath.Dir(root), doctorSnippetName+"\u00a0")
+	originalForeign := "# distinct foreign file\n"
+	if err := os.WriteFile(foreign, []byte(originalForeign), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	source := "include " + doctorSnippetName + "\u00a0\n"
+	if err := os.WriteFile(root, []byte(source), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	service := New(Options{SwayConfigPath: root})
+	check := inspectSwayConfig(t.Context(), service.options)[0]
+	if check.Status != Warning || !check.AdoptionRequired || containsEvidence(check.Evidence, "literal direct include: present") {
+		t.Fatalf("foreign Unicode filename granted managed include authority: %+v", check)
+	}
+	if _, err := service.Plan(t.Context(), swayIntegrationFixID, RepairOptions{Shortcuts: ShortcutsDefault}); err == nil || !strings.Contains(err.Error(), "explicit adoption") {
+		t.Fatalf("foreign Unicode filename allowed profile change without adoption: %v", err)
+	}
+	plan, err := service.Plan(t.Context(), swayIntegrationFixID, RepairOptions{AdoptStandard: true, Shortcuts: ShortcutsDefault})
+	if err != nil || len(plan.Changes) != 2 {
+		t.Fatalf("adoption must add a real include and change the profile: %+v %v", plan, err)
+	}
+	if _, err := service.Apply(t.Context(), plan); err != nil {
+		t.Fatal(err)
+	}
+	if after, err := os.ReadFile(root); err != nil || !strings.HasPrefix(string(after), source) {
+		t.Fatalf("adoption changed original Unicode include: %q %v", after, err)
+	}
+	if after, err := os.ReadFile(foreign); err != nil || string(after) != originalForeign {
+		t.Fatalf("adoption touched foreign Unicode file: %q %v", after, err)
+	}
+	if check := inspectSwayConfig(t.Context(), service.options)[0]; check.Status != OK || check.AdoptionRequired {
+		t.Fatalf("standalone managed include failed to converge: %+v", check)
+	}
+}

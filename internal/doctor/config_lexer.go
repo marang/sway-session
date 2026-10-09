@@ -6,6 +6,10 @@ import (
 	"strings"
 )
 
+// Sway separates source tokens with ASCII whitespace. Unicode whitespace can
+// belong to a literal filename and must not be stripped or treated as a delimiter.
+const swayConfigWhitespace = " \f\n\r\t\v"
+
 // literalDirectInclude finds only an ordinary, top-level literal include in
 // the selected main file. It does not expand variables, follow includes, parse
 // shell commands, or infer whether Sway loaded this source.
@@ -48,12 +52,15 @@ func inspectDirectInclude(content []byte, main, snippet string) (int, error) {
 			continued = true
 			continue
 		}
-		line := strings.TrimSpace(logical.String())
+		line := strings.Trim(logical.String(), swayConfigWhitespace)
 		if line != "" && !strings.HasPrefix(line, "#") {
-			fields := strings.Fields(line)
-			command := strings.ToLower(fields[0])
+			commandEnd := strings.IndexAny(line, swayConfigWhitespace)
+			if commandEnd == -1 {
+				commandEnd = len(line)
+			}
+			command := strings.ToLower(line[:commandEnd])
 			if depth == 0 && !continued && command == "include" && !nextLineOpensBlock(lines[index+1:]) {
-				if path, ok := literalIncludePath(line[len(fields[0]):]); ok {
+				if path, ok := literalIncludePath(line[commandEnd:]); ok {
 					if !filepath.IsAbs(path) {
 						path = filepath.Join(filepath.Dir(main), path)
 					}
@@ -95,7 +102,7 @@ func inspectDirectInclude(content []byte, main, snippet string) (int, error) {
 // Sway's brace lookahead skips empty physical lines, but stops at comments.
 func nextLineOpensBlock(lines []string) bool {
 	for _, line := range lines {
-		line = strings.Trim(line, " \f\n\r\t\v")
+		line = strings.Trim(line, swayConfigWhitespace)
 		if line != "" {
 			return line == "{"
 		}
@@ -145,7 +152,7 @@ func hasTrailingBlockBrace(line string) bool {
 }
 
 func literalIncludePath(argument string) (string, bool) {
-	argument = strings.TrimSpace(argument)
+	argument = strings.Trim(argument, swayConfigWhitespace)
 	if argument == "" {
 		return "", false
 	}
@@ -156,7 +163,7 @@ func literalIncludePath(argument string) (string, bool) {
 		for index := 1; index < len(argument); index++ {
 			character := argument[index]
 			if character == '"' {
-				if strings.TrimSpace(argument[index+1:]) != "" {
+				if strings.Trim(argument[index+1:], swayConfigWhitespace) != "" {
 					return "", false
 				}
 				closed = true
@@ -175,7 +182,7 @@ func literalIncludePath(argument string) (string, bool) {
 			return "", false
 		}
 		path = decoded.String()
-	} else if strings.ContainsAny(argument, " \t\r\n\\\"'") {
+	} else if strings.ContainsAny(argument, swayConfigWhitespace+"\\\"'") {
 		return "", false
 	}
 	if path == "" || strings.ContainsAny(path, "\r\n\x00$`*?[") {

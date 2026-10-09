@@ -1,0 +1,60 @@
+name: Verify exact commit
+
+on:
+  workflow_call:
+    inputs:
+      commit:
+        required: true
+        type: string
+    outputs:
+      commit:
+        description: Commit that passed every verification step
+        value: ${{ jobs.verify.outputs.commit }}
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    outputs:
+      commit: ${{ steps.verified.outputs.commit }}
+    env:
+      VERIFY_COMMIT: ${{ inputs.commit }}
+    steps:
+      - name: Checkout exact commit without persisted credentials
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.commit }}
+          persist-credentials: false
+
+      - name: Require exact checkout
+        run: |
+          [[ "$VERIFY_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$VERIFY_COMMIT"
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Install staticcheck
+        run: go install honnef.co/go/tools/cmd/staticcheck@v0.7.0
+
+      - name: Install verification tools
+        run: sudo apt-get update && sudo apt-get install --yes fish jq zsh python3-yaml
+
+      - name: Verify
+        run: make verify
+
+      - name: Check GoReleaser configuration
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          version: "~> v2"
+          args: check
+
+      - name: Record verified commit
+        id: verified
+        run: |
+          test "$(git rev-parse HEAD)" = "$VERIFY_COMMIT"
+          printf 'commit=%s\n' "$VERIFY_COMMIT" >> "$GITHUB_OUTPUT"

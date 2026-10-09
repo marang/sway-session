@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -390,7 +391,9 @@ func requireHerdrRequestResult(t *testing.T, finished <-chan herdrCancellationRe
 
 func waitForHerdrClientClose(connection net.Conn, _ herdrCancellationRequest) error {
 	_, err := connection.Read(make([]byte, 1))
-	if !errors.Is(err, io.EOF) {
+	// Closing with unread reply bytes can reset the Unix stream on Linux.
+	// Both EOF and ECONNRESET prove that the client closed its connection.
+	if !errors.Is(err, io.EOF) && !errors.Is(err, syscall.ECONNRESET) {
 		return fmt.Errorf("waiting for canceled client's connection to close: %w", err)
 	}
 	return nil

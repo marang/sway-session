@@ -23,12 +23,27 @@ The gate covers:
 - Bash, Zsh, and Fish completion behavior;
 - standalone source and package boundaries;
 - GoReleaser, Arch, install-path, and release-workflow metadata;
+- exact release-tag and publication-workflow regressions;
 - git whitespace checks; and
 - the version-1 title-indicator golden wire fixture.
 
 CI additionally runs GoReleaser configuration validation. A release candidate
 must also run a clean GoReleaser snapshot and inspect every archive, DEB, and
 RPM so only sway-session and the documented integration assets are present.
+
+`make release-gate-check` runs isolated local Git fixtures, cross-workflow
+publication contracts, and the actual GitHub release rerun script against a
+mock API. These developer checks require Python 3, PyYAML (`python-yaml` on
+Arch, `python3-yaml` on Ubuntu), and Node.js. They do not publish or access live
+session state. CI installs PyYAML and uses the hosted runner's Node.js.
+
+LAB-281 additionally exercised the production `needs`/commit comparisons on
+GitHub with read-only placeholder jobs: failed, skipped, missing and wrong-SHA
+verification blocked both publishers; an accepted SHA allowed both. While
+verification was running neither publisher started, and cancelling the run
+left both unexecuted. Full reruns retained those outcomes. A separate disabled
+workflow rejected full, failed-job and single-job reruns with HTTP 403. These
+are GitHub orchestration checks, not real release or AUR publication evidence.
 
 ## Management subprocess pipe draining (LAB-279)
 

@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -116,6 +118,56 @@ func TestExecuteDoctorFixPreviewAndApplyRecheck(t *testing.T) {
 			t.Fatalf("apply result=%+v failure=%+v applies=%d checks=%d", result, failure, fake.applyCalls, fake.checkCalls)
 		}
 	})
+}
+
+func appliedDoctorIntegrationFixture(t *testing.T) (doctor.Plan, doctor.FixResult) {
+	t.Helper()
+	root := filepath.Join(t.TempDir(), "config")
+	if err := os.WriteFile(root, []byte("set $mod Mod4\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	service := doctor.New(doctor.Options{SwayConfigPath: root})
+	plan, err := service.Plan(t.Context(), "sway.integration")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.Apply(t.Context(), plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return plan, result
+}
+
+func TestExecuteDoctorPreservesAppliedIntegrationGuidance(t *testing.T) {
+	plan, applied := appliedDoctorIntegrationFixture(t)
+	for _, structured := range []bool{false, true} {
+		t.Run(map[bool]string{false: "text", true: "json"}[structured], func(t *testing.T) {
+			fake := &fakeDoctorOperations{
+				plan: plan, applyResult: applied,
+				report: doctor.Report{Checks: []doctor.Check{{ID: "sway.integration", Status: doctor.OK}}},
+			}
+			arguments := []string{"doctor", "--fix", "sway.integration", "--yes"}
+			if structured {
+				arguments = append([]string{"--json"}, arguments...)
+			}
+			var stdout, stderr bytes.Buffer
+			code := runWith(arguments, strings.NewReader(""), &stdout, &stderr, doctorTestDeps(t, fake))
+			if code != exitSuccess || stderr.Len() != 0 || len(fake.planCalls) != 1 || fake.applyCalls != 1 || fake.checkCalls != 1 {
+				t.Fatalf("repair/recheck code=%d stderr=%q plans=%v applies=%d checks=%d", code, stderr.String(), fake.planCalls, fake.applyCalls, fake.checkCalls)
+			}
+			if structured {
+				var result commandResult
+				if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+					t.Fatal(err)
+				}
+				if result.DoctorFix == nil || result.DoctorFix.Message != applied.Message || result.Doctor == nil || len(result.Doctor.Checks) != 1 || result.Doctor.Checks[0].Status != doctor.OK {
+					t.Fatalf("JSON lost repair guidance or recheck: %+v", result)
+				}
+			} else if !strings.Contains(stdout.String(), applied.Message+"\n") || !strings.Contains(stdout.String(), "[ok] sway.integration") {
+				t.Fatalf("text lost repair guidance or recheck: %q", stdout.String())
+			}
+		})
+	}
 }
 
 func TestExecuteDoctorRejectsInvalidFlagsAndReportsPlanErrors(t *testing.T) {

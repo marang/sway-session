@@ -120,7 +120,7 @@ reject_fixed .SRCINFO 'optdepends ='
 reject_fixed .SRCINFO 'sway-title-animator'
 reject_fixed .SRCINFO 'depends = jq'
 
-# Before the first v0.1.0 tag, SKIP is honest bootstrap state. Release metadata
+# Historical pre-v0.1.0 templates used SKIP as bootstrap state. Release metadata
 # may instead contain only the real 64-hex digest generated from an immutable
 # tag archive. Later metadata-sync PRs must continue to pass this gate.
 pkgver=$(sed -n 's/^pkgver=//p' PKGBUILD)

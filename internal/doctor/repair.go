@@ -255,9 +255,23 @@ func (service *Service) Apply(ctx context.Context, plan Plan) (FixResult, error)
 			resultBackups = append(resultBackups, backup)
 		}
 	}
+	missing := plan.edits[0].missing
+	message := "Applied the managed Sway integration files."
+	if slices.Contains(missing, integrationPersistent) || slices.Contains(missing, integrationEphemeral) {
+		message += " Reload Sway to load the new bindings."
+	}
+	if slices.Contains(missing, integrationDaemon) || slices.Contains(missing, integrationRestore) {
+		message += " New startup commands run in your next Sway session; reload does not run them."
+	}
+	if slices.Contains(missing, integrationDaemon) {
+		message += " An existing daemon keeps running; if none is running, start it with sway-session daemon."
+	}
+	if slices.Contains(missing, integrationRestore) {
+		message += " Run sway-session restore only if you want saved windows restored now."
+	}
 	return FixResult{
 		ID:      swayIntegrationFixID,
-		Message: "Applied the managed Sway integration files. Reload Sway when convenient.",
+		Message: message,
 		Backups: resultBackups,
 	}, nil
 }

@@ -228,6 +228,12 @@ the generated snippet includes only missing directives, the original config
 content is preserved, and a repeated check sees the declarations. Confirm
 cancelled and stale plans do not apply. No workstation reload is part of doctor.
 
+Check the repair result for bindings-only and newly added daemon/restore
+directives. Reload activates new bindings; newly added startup commands run
+in the next Sway session. CLI and TUI must preserve the shared result message,
+including the explicit first-start guidance. Repairs never start a daemon or
+restore saved windows themselves.
+
 Check the TUI at 80×24, at its 48×16 minimum, with NO_COLOR, with a long repair
 preview, a filtered list, and reordered results after refresh. Select by stable
 check identity. Confirm errors remain inspectable, confirmation is distinct
@@ -972,15 +978,17 @@ unsupported boundary, never a passing result.
 
 ## Package build check
 
-Before v0.1.0 exists, do not fetch or checksum a nonexistent tag archive.
-Create a temporary source archive from the current worktree, copy PKGBUILD to a
-temporary build directory, point its source at that local archive, replace SKIP
-with the archive's real sha256, regenerate .SRCINFO, then run:
+Create a temporary source archive from the intended release commit and copy
+PKGBUILD to a temporary build directory. Set the intended package version,
+point its source at that local archive, replace the source checksum with the
+archive's actual SHA-256 and regenerate .SRCINFO. This private build needs no
+new release tag; `SKIP` was only the historical pre-v0.1.0 bootstrap state.
+Then run:
 
 ~~~sh
 makepkg --verifysource
 makepkg --cleanbuild --clean --noconfirm
-pacman -Qlp sway-session-0.1.0-1-ARCH.pkg.tar.zst
+pacman -Qlp ./*.pkg.tar.zst
 ~~~
 
 Inspect that the package contains /usr/bin/sway-session, completions, the
@@ -1014,10 +1022,10 @@ Before tagging:
   and
 - the release commit is on main.
 
-Only then create immutable tag v0.1.0. The AUR workflow computes the actual
-GitHub source archive checksum, refuses SKIP, verifies and builds the package,
-publishes exact metadata, and opens the metadata-sync PR. Do not move a release
-tag or invent a checksum.
+Only then create the immutable tag for the approved, unused release version.
+The AUR workflow computes the verified commit archive's actual checksum,
+refuses `SKIP`, verifies and builds the package, publishes exact metadata, and
+opens the metadata-sync PR. Do not move a release tag or invent a checksum.
 
 
 ## Next-login policy and transition evidence (LAB-130)

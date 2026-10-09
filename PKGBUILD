@@ -1,7 +1,7 @@
 # Maintainer: marang <1550038+marang@users.noreply.github.com>
-# Release template: the AUR workflow replaces sha256sums from the immutable
-# pushed v0.1.0 tag before it verifies, builds, and publishes this package.
-# The bootstrap checksum is replaced before publication; an unverified source
+# Release template: the AUR workflow resolves the requested immutable release
+# tag, pins source to its verified commit and computes the archive checksum
+# before verification, build and publication. Historical bootstrap placeholders
 # must never reach the AUR.
 pkgname=sway-session
 pkgver=0.6.2

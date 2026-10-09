@@ -1,6 +1,6 @@
 # Releasing sway-session
 
-This document is for maintainers. The first standalone release is v0.1.0.
+This document is for maintainers. Standalone releases began at v0.1.0.
 Although the repository preserves the complete source history, do not push or
 recreate sway-title-animator tags in the sway-session remote.
 
@@ -134,11 +134,13 @@ verify-sync-token operation against main. It creates a uniquely named probe
 branch and PR, verifies that pull-request checks run, and always closes and
 deletes the exact probe. It does not publish a release or AUR package.
 
-## Honest v0.1.0 bootstrap metadata
+## Historical v0.1.0 bootstrap metadata
 
-No immutable v0.1.0 GitHub tag archive exists before the first release.
-PKGBUILD and .SRCINFO therefore carry SKIP as explicit bootstrap metadata.
-This is not release metadata and must never be published to the AUR.
+Before the first standalone release, no immutable tag archive existed.
+The initial PKGBUILD and .SRCINFO therefore carried `SKIP` as explicit
+bootstrap metadata. Current checked-in metadata describes a released archive
+with a concrete SHA-256 checksum. `SKIP` is not release metadata and must never
+be published to the AUR.
 
 The AUR workflow checks out the exact immutable tag, downloads its GitHub source
 archive for the resolved commit, calculates its SHA-256, pins the recipe's
@@ -149,8 +151,9 @@ placeholder that looks real.
 
 ## Package ownership transition
 
-The pre-split sway-title-animator package may own /usr/bin/sway-session. The
-standalone package must not use an overwrite escape hatch.
+The historical pre-split sway-title-animator package may own
+/usr/bin/sway-session. The standalone package must not use an overwrite escape
+hatch.
 
 Before releasing, build the corresponding animator package that no longer owns
 the sway-session binary and this standalone package. In an isolated package
@@ -170,8 +173,9 @@ origin/main. After every precondition passes:
 ~~~sh
 git switch main
 git pull --ff-only
-git tag v0.1.0
-git push origin v0.1.0
+release_tag=v1.2.3 # Example: replace with the approved, unused release version.
+git tag "$release_tag"
+git push origin "$release_tag"
 ~~~
 
 GoReleaser publishes Linux amd64 and arm64 tar.gz archives plus DEB and RPM
@@ -194,15 +198,15 @@ The tag also starts the AUR workflow:
 6. open a PR syncing those exact files back to main.
 
 Review and merge the metadata-sync PR after its normal checks pass. The
-checked-in files then describe the immutable release rather than the bootstrap
-SKIP state.
+checked-in files then describe that immutable release and its verified source
+checksum.
 
 If the AUR path fails after the GitHub release exists, rerun the workflow for
 the existing tag:
 
 ~~~sh
 gh workflow run publish-aur.yml --ref main \
-  -f operation=publish-release -f version=v0.1.0
+  -f operation=publish-release -f version="$release_tag"
 ~~~
 
 Never move or replace the tag. The manual path verifies that the requested tag

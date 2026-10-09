@@ -16,7 +16,15 @@ func TestRepairPlanPreviewApplyBackupAndIdempotence(t *testing.T) {
 	if err := os.WriteFile(root, []byte(secret), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	service := New(Options{SwayConfigPath: root})
+	executable := filepath.Join(directory, "sway-session")
+	if err := os.WriteFile(executable, []byte("#!/bin/sh\n: > \"$0.started\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	unrelated := filepath.Join(directory, "unrelated.conf")
+	if err := os.WriteFile(unrelated, []byte("set $private untouched\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	service := New(Options{SwayConfigPath: root, Executable: executable})
 
 	plan, err := service.Plan(context.Background(), swayIntegrationFixID)
 	if err != nil {
@@ -55,6 +63,22 @@ func TestRepairPlanPreviewApplyBackupAndIdempotence(t *testing.T) {
 	if !strings.HasPrefix(string(rootAfter), secret) || strings.Count(string(rootAfter), "include ") != 1 {
 		t.Fatalf("root content not narrowly appended: %q", rootAfter)
 	}
+	if _, err := os.Stat(executable + ".started"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("repair executed the pinned command: %v", err)
+	}
+	unrelatedAfter, err := os.ReadFile(unrelated)
+	if err != nil || string(unrelatedAfter) != "set $private untouched\n" {
+		t.Fatalf("repair changed unrelated configuration: %q, %v", unrelatedAfter, err)
+	}
+	entries, err := os.ReadDir(directory)
+	if err != nil || len(entries) != 5 {
+		t.Fatalf("repair wrote beyond planned files and backup: %v, %v", entries, err)
+	}
+	managed, err := os.ReadFile(snippet)
+	if err != nil || !strings.Contains(string(managed), "exec --no-startup-id "+executable+" daemon\n") ||
+		!strings.Contains(string(managed), "exec --no-startup-id "+executable+" restore\n") || strings.Contains(string(managed), "exec_always") {
+		t.Fatalf("repair changed pinned startup commands: %q, %v", managed, err)
+	}
 	check := inspectSwayConfig(context.Background(), service.options)[0]
 	if check.Status != OK {
 		t.Fatalf("repair did not converge: %+v", check)
@@ -77,6 +101,85 @@ func TestRepairAddsOnlyMissingDirectives(t *testing.T) {
 	if strings.Contains(preview, " daemon\n") || strings.Contains(preview, " terminal --new\n") ||
 		!strings.Contains(preview, " restore\n") || !strings.Contains(preview, " terminal --ephemeral\n") {
 		t.Fatalf("managed snippet was not limited to missing directives: %q", preview)
+	}
+}
+
+func TestRepairApplyExplainsWhenMissingIntegrationTakesEffect(t *testing.T) {
+	const (
+		daemon     = "exec --no-startup-id /usr/bin/sway-session daemon\n"
+		restore    = "exec --no-startup-id /usr/bin/sway-session restore\n"
+		persistent = "bindsym $mod+Return exec --no-startup-id /usr/bin/sway-session terminal --new\n"
+		ephemeral  = "bindsym $mod+Shift+Return exec --no-startup-id /usr/bin/sway-session terminal --ephemeral\n"
+		applied    = "Applied the managed Sway integration files."
+		bindings   = " Reload Sway to load the new bindings."
+		startup    = " New startup commands run in your next Sway session; reload does not run them."
+		daemonNow  = " An existing daemon keeps running; if none is running, start it with sway-session daemon."
+		restoreNow = " Run sway-session restore only if you want saved windows restored now."
+	)
+	for _, test := range []struct {
+		name, existing, message string
+	}{
+		{"bindings only", daemon + restore, applied + bindings},
+		{"persistent binding only", daemon + restore + ephemeral, applied + bindings},
+		{"ephemeral binding only", daemon + restore + persistent, applied + bindings},
+		{"daemon only", restore + persistent + ephemeral, applied + startup + daemonNow},
+		{"restore only", daemon + persistent + ephemeral, applied + startup + restoreNow},
+		{"startup only", persistent + ephemeral, applied + startup + daemonNow + restoreNow},
+		{"all integration", "", applied + bindings + startup + daemonNow + restoreNow},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			original := "set $mod Mod4\n" + test.existing
+			root := writeSwayConfig(t, original)
+			service := New(Options{SwayConfigPath: root})
+			plan, err := service.Plan(t.Context(), swayIntegrationFixID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := service.Apply(t.Context(), plan)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Message != test.message {
+				t.Errorf("repair guidance = %q, want %q", result.Message, test.message)
+			}
+			if len(result.Backups) != 1 {
+				t.Fatalf("repair backups = %v, want original root backup", result.Backups)
+			}
+			backup, err := os.ReadFile(result.Backups[0])
+			if err != nil || string(backup) != original {
+				t.Fatalf("backup did not preserve original configuration: %q, %v", backup, err)
+			}
+			check := inspectSwayConfig(t.Context(), service.options)[0]
+			if check.Status != OK {
+				t.Fatalf("repair did not converge: %+v", check)
+			}
+		})
+	}
+}
+
+func TestRepairApplyGuidanceDistinguishesExistingManagedStartup(t *testing.T) {
+	root := writeSwayConfig(t, "set $mod Mod4\ninclude 50-sway-session-doctor.conf\n"+
+		"bindsym $mod+Return exec --no-startup-id /usr/bin/sway-session terminal --new\n"+
+		"bindsym $mod+Shift+Return exec --no-startup-id /usr/bin/sway-session terminal --ephemeral\n")
+	snippet := filepath.Join(filepath.Dir(root), doctorSnippetName)
+	if err := os.WriteFile(snippet, []byte(doctorHeader+"exec --no-startup-id /usr/bin/sway-session daemon\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	service := New(Options{SwayConfigPath: root})
+	plan, err := service.Plan(t.Context(), swayIntegrationFixID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.Apply(t.Context(), plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result.Message, "reload does not run them") || !strings.Contains(result.Message, "restore only if") ||
+		strings.Contains(result.Message, "daemon") || strings.Contains(result.Message, "new bindings") {
+		t.Fatalf("guidance confused existing and new managed directives: %q", result.Message)
+	}
+	if len(plan.Changes) != 1 || plan.Changes[0].Path != snippet || len(result.Backups) != 1 {
+		t.Fatalf("repair expanded beyond the existing managed snippet: plan=%+v result=%+v", plan, result)
 	}
 }
 

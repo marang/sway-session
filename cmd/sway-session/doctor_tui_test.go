@@ -171,11 +171,12 @@ func TestDoctorTUIHelpAtMinimumSizeHasAccurateExitKeys(t *testing.T) {
 }
 
 func TestDoctorTUIRepairRequiresPreviewAndConfirmation(t *testing.T) {
+	_, applied := appliedDoctorIntegrationFixture(t)
 	ops := &fakeDoctorOperations{
 		report: doctor.Report{Checks: []doctor.Check{{ID: "sway.startup", Title: "Startup", Status: doctor.Warning, FixID: "sway.integration"}}},
 		plan:   doctor.Plan{ID: "sway.integration", Summary: "Add missing integration", Changes: []doctor.FileChange{{Path: "/test/config", Preview: "+ include managed.conf"}}},
 		applyResult: doctor.FixResult{
-			Message: "Applied the managed Sway integration files. Reload Sway when convenient.",
+			Message: applied.Message,
 			Backups: []string{"/home/test/.config/sway/config.backup", "/home/test/.config/sway/50-sway-session-doctor.conf.backup"},
 		},
 	}
@@ -219,6 +220,73 @@ func TestDoctorTUIRepairRequiresPreviewAndConfirmation(t *testing.T) {
 	model, _ = doctorUpdate(t, model, terminalManageKey("esc"))
 	if len(model.feedback) != 0 {
 		t.Fatal("repair feedback did not close explicitly")
+	}
+}
+
+func TestDoctorTUIAppliedIntegrationGuidanceFitsAndScrolls(t *testing.T) {
+	plan, applied := appliedDoctorIntegrationFixture(t)
+	for _, size := range [][2]int{{80, 24}, {48, 16}} {
+		t.Run(fmt.Sprintf("%dx%d", size[0], size[1]), func(t *testing.T) {
+			ops := &fakeDoctorOperations{
+				plan: plan, applyResult: applied,
+				report: doctor.Report{Checks: []doctor.Check{{ID: "sway.integration", Status: doctor.Warning, FixID: "sway.integration"}}},
+			}
+			model := newDoctorModel(t.Context(), ops)
+			model.noColor = true
+			model, _ = doctorUpdate(t, model, tea.WindowSizeMsg{Width: size[0], Height: size[1]})
+			model, _ = doctorUpdate(t, model, model.Init()())
+			model, command := doctorUpdate(t, model, terminalManageKey("f"))
+			model, _ = doctorUpdate(t, model, command())
+			model, command = doctorUpdate(t, model, terminalManageKey("y"))
+			model, recheck := doctorUpdate(t, model, command())
+			ops.report.Checks[0].Status = doctor.OK
+			model, _ = doctorUpdate(t, model, recheck())
+			if ops.applyCalls != 1 || ops.checkCalls != 2 || model.busy != "" || len(model.feedback) < 2 || model.feedback[1] != applied.Message {
+				t.Fatalf("repair/recheck lost production guidance: applies=%d checks=%d busy=%q feedback=%v", ops.applyCalls, ops.checkCalls, model.busy, model.feedback)
+			}
+
+			visibleRows := func(model doctorModel) []string {
+				t.Helper()
+				view := model.View().Content
+				lines := strings.Split(view, "\n")
+				if strings.Contains(view, "\x1b") || len(lines) > size[1] || !strings.Contains(view, "Scroll repair result") {
+					t.Fatalf("repair view exceeds terminal or loses scroll help:\n%s", view)
+				}
+				for _, line := range lines {
+					if ansi.StringWidth(line) > size[0] {
+						t.Fatalf("repair line exceeds width %d: %q", size[0], line)
+					}
+				}
+				rows := append([]string(nil), lines[4:4+model.bodyHeight()]...)
+				for index, row := range rows {
+					rows[index] = strings.Trim(row, "│ ")
+				}
+				return rows
+			}
+			observed := visibleRows(model)
+			for range 100 {
+				previous := model.offset
+				model, _ = doctorUpdate(t, model, terminalManageKey("down"))
+				if model.offset == previous {
+					break
+				}
+				rows := visibleRows(model)
+				observed = append(observed, rows[len(rows)-1])
+			}
+			if size[0] == 48 && model.offset == 0 {
+				t.Fatal("minimum-size fixture did not exercise result scrolling")
+			}
+			// Ignore wrapping whitespace while preserving the order of every
+			// displayed character, including words split by a narrow terminal.
+			text := strings.Join(strings.Fields(strings.Join(observed, "")), "")
+			if !strings.Contains(text, strings.Join(strings.Fields(applied.Message), "")) || !strings.Contains(text, "Setuprecheckcompleted.") {
+				t.Fatalf("repair guidance or recheck was inaccessible after scrolling: %q", strings.Join(observed, "\n"))
+			}
+			model, _ = doctorUpdate(t, model, terminalManageKey("esc"))
+			if len(model.feedback) != 0 || model.report.Checks[0].Status != doctor.OK {
+				t.Fatal("closing repair result lost the completed recheck")
+			}
+		})
 	}
 }
 

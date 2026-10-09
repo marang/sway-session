@@ -1,238 +1,159 @@
 package doctor
 
 import (
-	"context"
-	"strconv"
+	"path/filepath"
 	"strings"
 	"testing"
 )
 
-func TestDoctorQuotedExecutableInShellPayloadBlocksRepair(t *testing.T) {
-	root := writeSwayConfig(t, "set $mod Mod4\nexec sh -c '\"sway-session\" daemon'\n")
-	service := New(Options{SwayConfigPath: root})
-	check := inspectSwayConfig(t.Context(), service.options)[0]
-	if check.FixID != "" || !evidenceLineContains(check.Evidence, "daemon startup", "could not be fully checked") {
-		t.Fatalf("quoted executable escaped startup uncertainty: %+v", check)
-	}
-	if _, err := service.Plan(context.Background(), swayIntegrationFixID); err == nil {
-		t.Fatal("quoted indirect startup allowed automatic repair")
-	}
-}
-
-func classifySwaySource(t *testing.T, content string, seeds map[string]string) swayConfigEvidence {
-	t.Helper()
-	parser := newSwayConfigClassifier(seeds).source("/fixture/config")
-	evidence := newSwayConfigEvidence()
-	if err := forEachSwayLogicalLine([]byte(content), func(line swayLogicalLine) bool {
-		evidence.record(parser.line(line))
-		return true
-	}); err != nil {
-		t.Fatal(err)
-	}
-	evidence.record(parser.finish())
-	return evidence
-}
-
-func TestSwayClassifierUnrelatedScopedParseErrors(t *testing.T) {
-	for name, unrelated := range map[string]string{
-		"input":             "input * {\n xkb_layout \"broken\n}\n",
-		"output":            "output * {\n mode \"broken\n}\n",
-		"for window":        "for_window [app_id=\"example\"] {\n floating \"broken\n}\n",
-		"media binding":     "bindsym --locked {\n XF86AudioRaiseVolume exec printf \"broken\n}\n",
-		"startup block":     "exec {\n notify-send \"broken\n}\n",
-		"unrelated startup": "exec notify-send \"broken\n",
-	} {
-		t.Run(name, func(t *testing.T) {
-			evidence := classifySwaySource(t, unrelated+healthySwayConfig(), nil)
-			if evidence.unsupported != nil {
-				t.Fatalf("unrelated scoped error tainted integration: %v", evidence.unsupported)
-			}
-			for _, kind := range integrationOrder {
-				if evidence.matchingCounts[kind] != 1 || evidence.uncertaintyCounts[kind] != 0 {
-					t.Fatalf("lost independent %s evidence: %+v", integrationLabel(kind), evidence)
-				}
-			}
-		})
-	}
-}
-
-func TestSwayClassifierRelevantParseErrorsBlockRepair(t *testing.T) {
-	for _, extra := range []string{
-		"exec sh -c '\"sway-session\" daemon\n",
-		"bindsym $mod+Return exec \"broken\n",
-		"for_window [app_id=\"example\"] {\n exec $unknown\n}\n",
-		"input * {\n xkb_layout us } include hidden.conf\n",
-		"include \"broken\n",
-	} {
-		evidence := classifySwaySource(t, healthySwayConfig()+extra, nil)
-		if evidence.unsupported == nil {
-			t.Fatalf("relevant or structural uncertainty was ignored: %q", extra)
-		}
-		if _, err := repairableMissing(swayConfigAnalysis{swayConfigEvidence: evidence}); err == nil {
-			t.Fatalf("uncertain configuration allowed repair: %q", extra)
-		}
-	}
-}
-
-func TestSwayClassifierOrderedSetAndIncludeFacts(t *testing.T) {
-	seeds := map[string]string{"$HOME": "/injected/home"}
-	classifier := newSwayConfigClassifier(seeds)
-	parent := classifier.source("/fixture/config")
-	set := parent.line(swayLogicalLine{text: "set $parts ~/parts", start: 1})
-	if set.set == nil || set.set.name != "$parts" || set.set.value != "~/parts" {
-		t.Fatalf("missing assignment directive: %+v", set)
-	}
-	include := parent.line(swayLogicalLine{text: "include $parts/*.conf", start: 2})
-	if len(include.includes) != 1 || include.includes[0] != "/injected/home/parts/*.conf" {
-		t.Fatalf("include did not use injected ordered assignment: %+v", include)
-	}
-	child := classifier.source("/fixture/parts/session.conf")
-	child.line(swayLogicalLine{text: "set $mod Mod4", start: 1})
-	facts := parent.line(swayLogicalLine{text: "bindsym $mod+Return exec sway-session terminal --new", start: 3})
-	if len(facts.occurrences) != 1 || !facts.occurrences[0].correct || facts.occurrences[0].where.line != 3 {
-		t.Fatalf("included assignment did not affect following parent declaration: %+v", facts)
-	}
-	if _, changed := seeds["$mod"]; changed {
-		t.Fatal("classifier mutated injected seeds")
-	}
-	if strings.Contains(include.includes[0], "$HOME") {
-		t.Fatal("include directive retained unresolved seed")
-	}
-}
-
-func TestSwayClassifierBoundsExpandedInclude(t *testing.T) {
-	parser := newSwayConfigClassifier(map[string]string{"$part": strings.Repeat("x", maxSwayConfigLine)}).source("/fixture/config")
-	facts := parser.line(swayLogicalLine{text: "include $part/$part", start: 1})
-	if len(facts.includes) != 0 || len(facts.limitations) == 0 {
-		t.Fatalf("unbounded variable expansion became an include directive: includes=%d limitations=%d", len(facts.includes), len(facts.limitations))
-	}
-}
-
-func TestSwayClassifierBoundsExpandedStartupPrefix(t *testing.T) {
-	prefix, suffix := ` t'r'u'e' "`, `"; sway-session daemon`
-	body := prefix + strings.Repeat("x", maxSwayConfigLine-len(prefix)-len(suffix)-1) + suffix
-	evidence := classifySwaySource(t, healthySwayConfig()+"exec {\n"+body+"\n}\n", nil)
-	if evidence.uncertaintyCounts[integrationDaemon] == 0 || evidence.uncertaintyCounts[integrationPersistent] != 0 {
-		t.Fatal("overlong startup prefix lost relevant uncertainty or its scope")
-	}
-}
-
-func TestSwayClassifierUnrelatedShellStartup(t *testing.T) {
-	for name, startup := range map[string]string{
-		"quoted argument":   "exec sh -c 'notify-send \"unrelated; sway-session daemon\"'\n",
-		"literal script":    "exec sh /fixture/startup.sh sway-session daemon\n",
-		"script variable":   "exec sh $HOME/startup.sh\n",
-		"argument variable": "exec sh -c 'notify-send \"$HOME\"'\n",
-	} {
-		t.Run(name, func(t *testing.T) {
-			evidence := classifySwaySource(t, healthySwayConfig()+startup, map[string]string{"$HOME": "/fixture/home"})
-			if evidence.unsupported != nil {
-				t.Fatalf("unrelated startup tainted integration: %v", evidence.unsupported)
-			}
-		})
-	}
-}
-
-func TestSwayClassifierDeduplicatesLimitationsNotDeclarations(t *testing.T) {
-	parser := newSwayConfigClassifier(map[string]string{"$mod": "Mod4"}).source("/fixture/config")
-	evidence := newSwayConfigEvidence()
-	facts := parser.line(swayLogicalLine{text: "bindcode Mod4+36 exec foot", start: 7})
-	evidence.record(facts)
-	evidence.record(facts)
-	for _, kind := range []integrationKind{integrationPersistent, integrationEphemeral} {
-		if evidence.uncertaintyCounts[kind] != 1 || len(evidence.uncertain[kind]) != 1 {
-			t.Fatalf("repeated limitation was not deduplicated for %s: %+v", integrationLabel(kind), evidence)
-		}
-	}
-	for _, line := range []int{8, 9} {
-		evidence.record(parser.line(swayLogicalLine{text: "exec sway-session daemon", start: line}))
-	}
-	if evidence.occurrenceCounts[integrationDaemon] != 2 || evidence.matchingCounts[integrationDaemon] != 2 {
-		t.Fatalf("distinct declarations were deduplicated: %+v", evidence)
-	}
-}
-
-func TestSwayClassifierSharedWrapperBudgets(t *testing.T) {
-	deep := "notify-send sway-session"
-	for range maxSwayWrapperDepth + 1 {
-		deep = "env sh -c " + strconv.Quote(deep)
-	}
-	for name, content := range map[string]string{
-		"mixed depth":   "exec " + deep + "\n",
-		"expanded work": "exec env " + strings.Repeat("FOO=$large ", 10) + "notify-send sway-session\n",
-	} {
-		t.Run(name, func(t *testing.T) {
-			evidence := classifySwaySource(t, healthySwayConfig()+content, map[string]string{"$large": strings.Repeat("x", maxSwayExpansionBytes/2)})
-			if evidence.uncertaintyCounts[integrationDaemon] == 0 || evidence.uncertaintyCounts[integrationPersistent] != 0 {
-				t.Fatalf("exhausted shared wrapper budget lost startup locality: %+v", evidence)
-			}
-		})
-	}
-}
-
-func TestSwayClassifierBoundedDiagnosticDeduplication(t *testing.T) {
-	evidence := newSwayConfigEvidence()
-	for line := range maxSwayUncertaintyKeys + 10 {
-		evidence.markUncertain([]integrationKind{integrationDaemon}, configLocation{path: "/fixture/config", line: line}, "unresolved startup")
-	}
-	if len(evidence.uncertaintySeen) != maxSwayUncertaintyKeys || !evidence.uncertaintySaturated[integrationDaemon] || len(evidence.uncertain[integrationDaemon]) != maxSwayEvidenceItems {
-		t.Fatalf("diagnostic deduplication was not bounded: keys=%d retained=%d", len(evidence.uncertaintySeen), len(evidence.uncertain[integrationDaemon]))
-	}
-	// A newly affected requirement must still become unknown after saturation.
-	evidence.markUncertain([]integrationKind{integrationRestore}, configLocation{path: "/fixture/config", line: 99}, "unresolved restore")
-	if evidence.uncertaintyCounts[integrationRestore] == 0 {
-		t.Fatal("deduplication saturation hid a new unknown requirement")
-	}
-}
-
-func TestSwayClassifierUnresolvedStartupForms(t *testing.T) {
-	for name, extra := range map[string]string{
-		"unquoted later command":   "exec true; sway-session daemon\n",
-		"shell control form":       "exec sh -c 'if true; then \"sway-session\" daemon; fi'\n",
-		"variable assignment name": "set $$mod Mod1\n",
-	} {
-		t.Run(name, func(t *testing.T) {
-			evidence := classifySwaySource(t, healthySwayConfig()+extra, nil)
-			if evidence.unsupported == nil {
-				t.Fatalf("unresolved relevant declaration was ignored: %q", extra)
-			}
-		})
-	}
-}
-
-func TestSwayClassifierLiteralShellRelevance(t *testing.T) {
+func TestLiteralDirectIncludeRecognizesOnlyTopLevelLiteralSibling(t *testing.T) {
+	main := "/fixture/config"
+	sibling := "/fixture/" + doctorSnippetName
 	for _, test := range []struct {
-		name, startup string
-		relevant      bool
+		name, source string
+		line         int
 	}{
-		{"unrelated redirection", "exec nm-applet >/dev/null 2>&1\n", false},
-		{"unrelated conditional", "exec sh -c 'if true; then notify-send hello; fi'\n", false},
-		{"unrelated branches", "exec sh -c 'if false; then notify-send hello; elif true; then nm-applet; else notify-send bye; fi'\n", false},
-		{"unrelated redirect path", "exec sh -c 'notify-send hello >\"/tmp/sway-session daemon\" 2>&1'\n", false},
-		{"unrelated malformed argument", "exec notify-send \"broken\n", false},
-		{"unrelated malformed later argument", "exec true; notify-send \"broken\n", false},
-		{"relevant redirection", "exec sh -c '\"sway-session\" daemon >/dev/null 2>&1'\n", true},
-		{"relevant conditional", "exec sh -c 'if true; then \"sway-session\" daemon; fi'\n", true},
-		{"relevant inactive branch", "exec sh -c 'if false; then sway-session daemon; else notify-send hello; fi'\n", true},
-		{"relevant condition", "exec sh -c 'if sway-session daemon; then notify-send hello; fi'\n", true},
-		{"dynamic condition", "exec sh -c 'if $unknown; then notify-send hello; fi'\n", true},
-		{"dynamic redirect", "exec nm-applet >$(sway-session daemon)\n", true},
-		{"variable argument command", "set $msg hello; sway-session daemon\nexec notify-send $msg\n", true},
-		{"quoted variable substitution", "set $msg '$(sway-session daemon)'\nexec notify-send '$msg'\n", true},
-		{"quoted variable backticks", "set $msg '`sway-session daemon`'\nexec notify-send '$msg'\n", true},
-		{"incomplete conditional", "exec sh -c 'if true; then notify-send hello'\n", true},
-		{"incomplete executable", "exec \"notify-send\n", true},
-		{"incomplete shell envelope", "exec true; sh -c 'notify-send hello\n", true},
+		{"NBSP before command", "\u00a0include " + doctorSnippetName + "\n", 0},
+		{"NBSP command separator", "include\u00a0" + doctorSnippetName + "\n", 0},
+		{"NBSP in unquoted filename", "include " + doctorSnippetName + "\u00a0\n", 0},
+		{"NBSP in quoted filename", "include \"" + doctorSnippetName + "\u00a0\"\n", 0},
+		{"NBSP after quoted argument", "include \"" + doctorSnippetName + "\"\u00a0\n", 0},
+		{"ASCII form feed separator", "include\f" + doctorSnippetName + "\n", 1},
+		{"ASCII vertical tab separator", "include\v" + doctorSnippetName + "\n", 1},
+		{"relative", "include " + doctorSnippetName + "\n", 1},
+		{"absolute quoted", "# comment\ninclude \"" + sibling + "\"\n", 2},
+		{"uppercase keyword", "INCLUDE " + doctorSnippetName + "\n", 1},
+		{"first evidence", "include " + doctorSnippetName + "\ninclude " + doctorSnippetName + "\n", 1},
+		{"comment", "# include " + doctorSnippetName + "\n", 0},
+		{"inline comment", "include " + doctorSnippetName + " # note\n", 0},
+		{"variable", "set $source " + sibling + "\ninclude $source\n", 0},
+		{"glob", "include *.conf\n", 0},
+		{"parent traversal", "include ../fixture/" + doctorSnippetName + "\n", 0},
+		{"normalized relative", "include ./" + doctorSnippetName + "\n", 1},
+		{"shell substitution", "include $(printf '" + sibling + "')\n", 0},
+		{"nested block", "mode default {\n include " + doctorSnippetName + "\n}\n", 0},
+		{"continued include", "include \\\n " + doctorSnippetName + "\n", 0},
+		{"continued payload", "exec notify-send \\\n include " + doctorSnippetName + "\n", 0},
+		{"startup payload", "exec include " + doctorSnippetName + "\n", 0},
+		{"startup prefix block", "exec {\n include " + doctorSnippetName + "\n}\n", 0},
+		{"startup option prefix block", "exec --no-startup-id {\n include " + doctorSnippetName + "\n}\n", 0},
+		{"startup command prefix block", "exec /usr/bin/true {\n include " + doctorSnippetName + "\n}\n", 0},
+		{"startup shell prefix block", "exec sh -c true {\n include " + doctorSnippetName + "\n}\n", 0},
+		{"startup always option prefix block", "exec_always --no-startup-id {\n include " + doctorSnippetName + "\n}\n", 0},
+		{"startup always prefix block", "exec_always {\n include " + doctorSnippetName + "\n}\n", 0},
+		{"next-line include block", "include " + doctorSnippetName + "\n{\n}\n", 0},
+		{"next-line include block after blanks", "include " + doctorSnippetName + "\n\n \t\n  {\n}\n", 0},
+		{"comment ends brace lookahead", "include " + doctorSnippetName + "\n# comment\n{\n}\n", 1},
+		{"real include after include block", "include " + doctorSnippetName + "\n{\n}\ninclude " + doctorSnippetName + "\n", 4},
+		{"escaped space before brace", "exec /usr/bin/printf \\ {\ninclude " + doctorSnippetName + "\n", 2},
+		{"double escaped space before brace", "exec /usr/bin/printf \\\\ {\ninclude " + doctorSnippetName + "\n}\n", 0},
+		{"escaped quote before brace", `exec /usr/bin/printf \" {` + "\ninclude " + doctorSnippetName + "\n}\n", 0},
+		{"opaque startup braces", "exec sh -c '{'\nexec_always sh -c '{'\ninclude " + doctorSnippetName + "\n", 3},
+		{"foreign include", "include foreign.conf\n", 0},
+		{"quoted trailing payload", "include \"" + sibling + "\" exec true\n", 0},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			evidence := classifySwaySource(t, "set $mod Mod4\n"+test.startup, nil)
-			_, err := repairableMissing(swayConfigAnalysis{swayConfigEvidence: evidence})
-			if (err != nil) != test.relevant {
-				t.Fatalf("startup repair eligibility = %v, want relevance %v: %+v", err, test.relevant, evidence)
-			}
-			if evidence.uncertaintyCounts[integrationPersistent] != 0 {
-				t.Fatal("shell startup uncertainty tainted shortcuts")
+			if got := literalDirectInclude([]byte(test.source), main, sibling); got != test.line {
+				t.Fatalf("include line=%d, want %d for %q", got, test.line, test.source)
 			}
 		})
+	}
+}
+
+func TestLiteralIncludePathRejectsExpansionAndNonLiteralSyntax(t *testing.T) {
+	for _, argument := range []string{"", "$HOME/file", "~/../file", "file*", "file?", "file[12]", "`true`", "file\x00", "\"unterminated", "'file'", "a b", "a\fb", "a\vb", "\"file\"\u00a0", "\"file\" trailing", "\"file\\n\"", "../file"} {
+		if path, ok := literalIncludePath(argument); ok {
+			t.Errorf("accepted nonliteral argument %q as %q", argument, path)
+		}
+	}
+	for _, argument := range []string{"file.conf", "./file.conf", "a//file.conf", "parts#colors.conf", "\"directory with spaces/file.conf\"", `"directory\\name/file.conf"`, `"directory\"name/file.conf"`} {
+		path, ok := literalIncludePath(argument)
+		if !ok || filepath.Clean(path) != path {
+			t.Errorf("rejected literal argument %q: %q", argument, path)
+		}
+	}
+}
+
+func TestLiteralDirectIncludeBoundsLinesAndBlockNesting(t *testing.T) {
+	const main = "/fixture/config"
+	sibling := "/fixture/" + doctorSnippetName
+	directive := "include " + doctorSnippetName + "\n"
+	for _, test := range []struct {
+		name, source string
+		line         int
+	}{
+		{"oversized line", "include " + strings.Repeat(" ", maxSwayConfigLine) + doctorSnippetName + "\n" + directive, 0},
+		{"oversized continued line", strings.Repeat("x", maxSwayConfigLine) + "\\\n" + directive + directive, 0},
+		{"oversized block opener", "exec /usr/bin/true " + strings.Repeat(" ", maxSwayConfigLine) + "{\n" + directive + "}\n", 0},
+		{"oversized continued block opener", "exec /usr/bin/true \\\n" + strings.Repeat(" ", maxSwayConfigLine) + "{\n" + directive + "}\n", 0},
+		{"earlier evidence before oversized line", directive + strings.Repeat("x", maxSwayConfigLine+1) + "\n" + directive, 1},
+		{"deep blocks", strings.Repeat("mode default {\n", maxSwayBlockDepth+1) + directive, 0},
+		{"earlier evidence retained", directive + strings.Repeat("mode default {\n", maxSwayBlockDepth+1), 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := literalDirectInclude([]byte(test.source), main, sibling); got != test.line {
+				t.Fatalf("include line=%d, want %d", got, test.line)
+			}
+		})
+	}
+}
+
+func TestLiteralDirectIncludeCommentContinuationBoundaries(t *testing.T) {
+	const main = "/fixture/config"
+	sibling := "/fixture/" + doctorSnippetName
+	directive := "include " + doctorSnippetName + "\n"
+	for _, test := range []struct {
+		name, source string
+		line         int
+		appendSafe   bool
+	}{
+		{"column zero comment", "# note \\\n" + directive, 2, true},
+		{"indented comment", "  # note \\\n" + directive, 0, true},
+		{"tab indented comment", "\t# note \\\n" + directive, 0, true},
+		{"indented comment at EOF", "  # note \\\n", 0, false},
+		{"indented comment without newline", "  # note \\", 0, false},
+		{"blank ends indented comment", "  # note \\\n\n" + directive, 3, true},
+		{"comment within continued command", "exec /usr/bin/true \\\n# note \\\n" + directive, 0, true},
+		{"continued comment at EOF", "exec /usr/bin/true \\\n# note \\\n", 0, false},
+		{"comment after empty continuation", "\\\n# note \\\n" + directive, 3, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			line, err := inspectDirectInclude([]byte(test.source), main, sibling)
+			if line != test.line || (err == nil) != test.appendSafe {
+				t.Fatalf("line=%d error=%v, want line=%d appendSafe=%t", line, err, test.line, test.appendSafe)
+			}
+		})
+	}
+}
+
+func TestLiteralIncludePathPreservesUnicodeWhitespace(t *testing.T) {
+	for _, path := range []string{"\u00a0file.conf", "file.conf\u00a0", "directory\u2003/file.conf"} {
+		for _, argument := range []string{path, "\"" + path + "\""} {
+			if got, ok := literalIncludePath(argument); !ok || got != path {
+				t.Errorf("changed literal Unicode filename %q into %q (accepted=%t)", argument, got, ok)
+			}
+		}
+	}
+	main := "/fixture/\u00a0/config"
+	sibling := "/fixture/\u00a0/" + doctorSnippetName
+	if got := literalDirectInclude([]byte("include \""+sibling+"\"\n"), main, sibling); got != 1 {
+		t.Fatalf("literal Unicode directory rejected: line=%d", got)
+	}
+}
+
+func TestLiteralDirectIncludeRejectsNULSource(t *testing.T) {
+	const main = "/fixture/config"
+	sibling := "/fixture/" + doctorSnippetName
+	directive := "include " + doctorSnippetName + "\n"
+	for _, source := range []string{
+		"mode default {\x00opaque\n",
+		"exec /usr/bin/true {\x00opaque\n" + directive + "}\n",
+		"include " + doctorSnippetName + "\x00opaque\n",
+		directive + "# corrupted comment\x00\n",
+	} {
+		line, err := inspectDirectInclude([]byte(source), main, sibling)
+		if line != 0 || err == nil || !strings.Contains(err.Error(), "NUL") {
+			t.Fatalf("NUL source granted framing authority: line=%d error=%v", line, err)
+		}
 	}
 }

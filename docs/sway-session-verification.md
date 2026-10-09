@@ -296,74 +296,82 @@ GOTOOLCHAIN=go1.26.5 go test -race ./internal/doctor ./cmd/sway-session
 ~~~
 
 Use disposable configuration and XDG roots for end-to-end repair checks.
-Inspect the preview without `--yes` and confirm no file changed or was created.
-Apply only to that fixture; verify the private backup contains the original,
-the generated snippet includes only missing directives, the original config
-content is preserved, and a repeated check sees the declarations. Confirm
-cancelled and stale plans do not apply. No workstation reload is part of doctor.
+Preview new setup with `--fix sway.integration --adopt-standard` and confirm no
+file changed or was created. New setup must produce startup-only; explicitly
+select `--shortcuts default` to add both bindings. Preserve an existing profile
+when no selection is supplied; exercise explicit switches in both directions.
+Apply only to the fixture. Verify private `0600` original backups, unchanged
+foreign content, atomic writes and exactly one newly appended direct include.
+Cancelled, stale and concurrent-writer plans must preserve intervening edits.
 
-Check the repair result for bindings-only and newly added daemon/restore
-directives. Reload activates new bindings; newly added startup commands run
-in the next Sway session. CLI and TUI must preserve the shared result message,
-including the explicit first-start guidance. Repairs never start a daemon or
-restore saved windows themselves.
+Both main file and snippet are protected by file/ownership checks. Historical
+partial profiles and manual edits require migration and must never be expanded
+or replaced. Missing main files are not created. Missing snippets or unobserved
+direct includes require explicit adoption. Cover CLI option restrictions,
+text/JSON status and stable wire shape, read-only inspection and independent
+runtime findings. No production compositor reload is part of Doctor.
 
-Check the TUI at 80×24, at its 48×16 minimum, with NO_COLOR, with a long repair
-preview, a filtered list, and reordered results after refresh. Select by stable
-check identity. Confirm errors remain inspectable, confirmation is distinct
-from preview, and all quit/cancel keys have explicit footer labels.
+Check the TUI at 80×24 and 48×16 with NO_COLOR, long evidence/preview/result,
+a filtered list and reordered results after refresh. Select by stable check
+identity. Adoption, profile selection, preview and application are distinct
+steps; cancellation at each step must leave files untouched. All details and
+first-start guidance remain reachable by scrolling with labelled quit/cancel
+keys. Runtime findings and source setup must be distinguishable.
 
-For compositor evidence, use only a private Sway instance and disposable roots
-as below. Doctor's Sway IPC operations are read-only; no live user's session,
-config, process, broker, or workspace may be modified for a diagnostic test.
-An unavailable optional integration is an expected report, not passed live
-verification of that integration.
+## Standard Doctor integration acceptance
 
-## Realistic doctor configuration acceptance
+`internal/doctor/testdata/workstation` is sanitized foreign configuration with
+output/input/bar/resize-mode blocks, colors, shell expressions, continuations
+and other includes. These files are opaque to the standard integration check.
+Through the public report, verify that their content does not alter the result
+for a supported owned snippet and an observed direct include.
 
-`internal/doctor/testdata/workstation` is a sanitized multi-file configuration
-with output/input/bar/resize-mode blocks, nested colors, unrelated shell syntax,
-continued commands, and included startup/shortcut declarations. Test through
-the public doctor report, not only token helpers. Its ordinary valid settings
-must not prevent a useful integration result.
+Cover both supported profiles, missing standard files, literal direct and
+repeated includes, unobserved indirect/variable/glob includes, protected legacy
+partial and edited files. A working indirect include in Sway still produces
+unobserved-direct-include evidence in Doctor. Source evidence must not claim
+effective load order, executed bindings or successful next login. The bounded
+recognizer's fuzz seeds cover quoting, continuations, comments and block scope;
+fuzz campaigns must be explicitly time-bounded.
 
-Verify that ambiguous keycode bindings preserve independent startup evidence,
-indirect startup commands preserve shortcut evidence, and incomplete includes
-retain known locations without enabling repair. Fully understood configurations
-with a missing shortcut should still offer the narrow preview. Unknown must
-never be reported as missing merely because no matching declaration was seen.
-
-Validate this realistic fixture with Sway itself (`sway -C`) using a disposable
-runtime and headless backend. Exercise a private-compositor doctor JSON/TUI run
-at workspace 98 or higher; preserve the host's windows, configuration and state.
-Use both a complete fixture and a partially checked fixture at 80x24 and verify
-that all four requirements, locations, and limitations remain inspectable.
-Independent review must assess everyday usefulness as well as fail-closed
-repair safety; safe-but-unusable is not sufficient acceptance.
-
-Run the pure classification regressions and fuzz seeds alongside the existing
-Doctor include, repair, workstation and TUI tests. Bound fuzz campaigns explicitly
-and retain any new failure as a minimal permanent case. Quoting, continuation,
-structural braces, wrapper nesting and expansion exhaustion must not panic or
-convert potentially relevant uncertainty into permission to repair.
+Run `sh scripts/check-completions.sh` with Bash, Zsh and Fish installed, and
+`sh scripts/check-packaging.sh`. Check fix-only adoption and shortcut values,
+option terminators, path arguments and absence of CLI execution during Doctor
+completion. The shipped template has active daemon/restore starts and commented
+terminal shortcuts. Removing owned shortcuts must not claim restored previous
+bindings. The default-shortcut choice must remind users to define `$mod` before the first
+include; it does not verify that definition.
 
 The automated private-compositor acceptance uses:
 
 ~~~sh
 SWAY_SESSION_HEADLESS_INTEGRATION=1 GOTOOLCHAIN=go1.26.5 \
-  go test ./cmd/sway-session -run '^TestDoctorConfigurationHeadless$' \
+  go test ./cmd/sway-session -run '^TestDoctor(ConfigurationHeadless|StandardStartupHeadless)$' \
   -count=1 -v
 ~~~
 
-It validates realistic complete, partial, conflicting and missing-declaration
-fixtures with `sway -C`, then loads them into a disposable compositor on
-workspace 98. Startup declarations use an inert test executable. Loaded text
-and current mode are the only asserted configuration IPC facts; these do not
-prove effective bindings or actual startup success. Public Doctor reports,
-short/structured CLI output, the rendered 80x24 TUI and stale included-file
-repair previews use the same fixtures. Inspection and rejected stale application
-must leave configuration unchanged and create no repair snippet. It is not an
-interactive keyboard, production workstation or reboot test.
+Use a private headless Sway instance, disposable XDG roots and workspace 98 or
+higher. Startup declarations target an inert own executable named sway-session.
+For both profiles, count one daemon and one restore invocation at startup and
+no additional invocation after reload. This validates the declarations, not a
+production daemon or restore implementation. Validate source fixtures with
+`sway -C`; GET_CONFIG and GET_BINDING_STATE establish only loaded main source
+and current mode. Text/JSON reports and rendered TUI use the same cases.
+Inspection, previews and rejected stale applications must leave files unchanged.
+No interactive keyboard or production-workstation/reboot behavior is implied.
+
+Run the real executable CLI and PTY acceptance separately:
+
+~~~sh
+mkdir -p /tmp/lab322-candidate
+go build -o /tmp/lab322-candidate/sway-session ./cmd/sway-session
+python3 scripts/doctor-standard-acceptance.py --binary /tmp/lab322-candidate/sway-session
+~~~
+
+This exercises private Sway, actual CLI flows and NO_COLOR terminal sessions at
+80×24 and 48×16. See `docs/doctor-standard-acceptance.md` for measured outcomes
+and coverage limits. These behavioral checks complement `make verify` and the
+independent code and architecture reviews for LAB-322.
 
 ## Shared-workspace session-start broker (LAB-270)
 

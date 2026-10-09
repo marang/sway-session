@@ -159,19 +159,22 @@ package, and records the exact verified metadata.
 
 ## Sway setup
 
-Include contrib/sway/50-sway-session.conf, or add:
+Include contrib/sway/50-sway-session.conf once, or add:
 
 ~~~conf
 exec --no-startup-id /usr/bin/sway-session daemon
 exec --no-startup-id /usr/bin/sway-session restore
-bindsym $mod+Return exec --no-startup-id /usr/bin/sway-session terminal --new
-bindsym $mod+Shift+Return exec --no-startup-id /usr/bin/sway-session terminal --ephemeral
+# Optional: replace conflicting bindings, define $mod, then uncomment.
+# bindsym $mod+Return exec --no-startup-id /usr/bin/sway-session terminal --new
+# bindsym $mod+Shift+Return exec --no-startup-id /usr/bin/sway-session terminal --ephemeral
 ~~~
 
 Source installs can replace /usr/bin with $HOME/.local/bin. Both startup
 commands intentionally use exec, not exec_always: reloading the Sway config
 must not start another daemon or request another startup restore. The daemon
-also holds an owner-only exclusive runtime lock.
+also holds an owner-only exclusive runtime lock. Use the shipped template,
+your own declarations or Doctor setup; remove duplicate starts and includes
+when switching between them.
 
 Reload Sway to load newly added bindings. Newly added daemon and restore
 startup commands run at the next Sway session; reload does not run them.
@@ -183,8 +186,10 @@ want to restore saved windows now.
 
 Run `sway-session doctor` in a terminal for the setup TUI, using the same
 styling as `terminal manage`. Select a check with ↑/↓ or j/k, filter with `/`,
-and read its evidence and next steps. `[f]` prepares a repair preview;
-`[y]` confirms it and `[n]` or Escape cancels without changing files.
+and read its evidence and next steps. `[f]` opens the standard integration
+choices: explicit adoption when needed, then the shortcut profile, then a
+repair preview. `[y]` confirms the preview; `[n]` or Escape cancels without
+changing files.
 Page Up/Down scroll the details or preview. `[r]` repeats the checks.
 
 For scripts and agents, no interactive terminal is required:
@@ -192,9 +197,14 @@ For scripts and agents, no interactive terminal is required:
 ~~~sh
 sway-session doctor --check
 sway-session --json doctor
-sway-session doctor --sway-config /absolute/path/to/sway/config --fix sway.integration
+# New setup: preview startup-only integration after choosing adoption.
+sway-session doctor --sway-config /absolute/path/to/sway/config --fix sway.integration --adopt-standard
 # Inspect the preview first, then explicitly apply:
-sway-session doctor --sway-config /absolute/path/to/sway/config --fix sway.integration --yes
+sway-session doctor --sway-config /absolute/path/to/sway/config --fix sway.integration --adopt-standard --yes
+# Explicitly enable both standard terminal shortcuts in an existing standard file:
+sway-session doctor --fix sway.integration --shortcuts default
+# Remove both standard shortcuts from that file:
+sway-session doctor --fix sway.integration --shortcuts none
 ~~~
 
 Checks cover the selected terminal adapter and session-manager setup, Sway
@@ -216,37 +226,51 @@ deleted binary, and retains inode/content comparison even when versions match.
 Older builds may report unknown metadata with an explanation. A mismatch
 includes a stop/start procedure; Doctor never restarts the daemon automatically.
 
-The Sway configuration check accepts unquoted hexadecimal colors such as
-`#RRGGBB` and `#RRGGBBAA`; a hash in an argument or include path is literal.
-Lines beginning with a hash after whitespace are comments. Shell-derived
-startup expressions can remain uncertain because Doctor does not execute them.
+The `sway.integration` check reads only the selected main file and its sibling
+`50-sway-session-doctor.conf`. It recognizes two exact profiles with the existing
+v1 ownership header: daemon and restore, or daemon and restore with both standard
+terminal shortcuts. It reports the profile and whether a literal top-level
+direct include of that file occurs in the main file. Other includes are not
+followed; foreign variables, wallpaper/idle shell expressions, launchers and
+bindings are not interpreted. A supported standard file with a direct include
+is `ok`; a supported file without a direct include or a historical partial
+profile is `warning`. A missing standard file is `unavailable` (`warning` when
+its include is present); an edited or unrecognized standard file is protected
+and `unavailable`. Sway IPC, daemon and broker checks are independent runtime
+observations, so source-file success does not establish runtime health.
 
-The Sway integration check reports four separate findings in its details:
-daemon startup, restore startup, the default persistent-terminal shortcut and
-the default ephemeral-terminal shortcut. Normal output/input/bar and binding-mode
-blocks, `for_window` rules, unrelated startup and shortcut blocks, continued
-lines and supported includes do not make the whole check
-unavailable. When only some requirements can be established, the summary is
-`warning` / partially checked, with known declarations and the exact remaining
-limitations. An uncertain shortcut does not erase known startup evidence.
-Each requirement retains up to eight limitation locations; larger reports show
-the omitted count instead of silently hiding additional blockers.
+New setup defaults to startup-only. `--shortcuts none|default` explicitly selects
+a profile; without that option an existing supported profile is preserved.
+Profile changes preserve the executable path in that standard file.
+`--adopt-standard` is required to create or recover the standard file or append
+a direct include at the end of the main file. Both options are accepted only
+with `--fix sway.integration`; `--yes` alone does not authorize adoption.
+The TUI offers the same choices before preview.
+Adoption authorizes those limited file changes; it does not establish that
+previous integration has been removed. Existing files receive private `0600`
+original backups. The main file must already exist and be safe to edit; Doctor
+never creates it. Historical partial snippets and manual changes require manual
+migration instead of automatic expansion or replacement.
 
-The initial `sway.integration` fix only adds missing one-time startup commands
-and default terminal shortcuts through a sibling `50-sway-session-doctor.conf`
-snippet and, when needed, one include line. Existing files receive private
-`0600` backups. Unknown syntax, ambiguous or conflicting shortcuts, unsafe
-paths, and manual snippet edits require manual intervention. The scanner is
-deliberately static: it does not prove which keybinding is currently live.
-`--sway-config` selects an explicit file; otherwise doctor asks Sway for its
-loaded config path, falling back to the default on-disk path when unavailable.
+To migrate, review and remove the previous sway-session starts and includes
+manually. Move or remove any historical partial or edited standard file after
+saving what you need. If choosing shortcuts, free `$mod+Return` and
+`$mod+Shift+Return`, define `$mod` before the first include, and check the effective
+load position yourself. Preview adoption against the intended main file before
+applying. Doctor leaves foreign configuration intact, including old starts and
+bindings; it cannot rule out hidden calls or competing bindings.
 
-Sway's `get_config` returns main-file text, not an evaluated configuration or a
-complete shortcut inventory; included files are not included in that response.
-`get_binding_state` reports only the current mode. Doctor therefore uses Sway's
-reported config path and inspects the files, without claiming effective live
-bindings. Repairs require a complete, unambiguous inspection even when a partial
-diagnosis already provides useful information.
+`--sway-config` selects an explicit file; otherwise Doctor asks Sway for its
+loaded configuration path, falling back to the default on-disk path when
+unavailable. The source check is not full Sway validation, proof of effective
+load order or live shortcuts, or a guarantee that the next login will succeed.
+Removing owned shortcuts does not restore previous bindings.
+An indirect or variable-based include may work in Sway while remaining
+unobserved by this check. Sway's `get_config` supplies main-file source text;
+`get_binding_state` supplies the current mode. Neither is a live binding
+inventory. Reload can activate new bindings; newly added `exec` startup commands
+run at the next Sway session. Start the daemon or request a restore explicitly
+only when needed in the current session.
 
 Doctor never installs packages, changes session state, restarts services,
 reloads Sway, or edits agent hooks. Optional sockets are checked with a pinned,

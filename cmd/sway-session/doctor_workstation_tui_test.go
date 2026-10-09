@@ -12,14 +12,24 @@ import (
 	"github.com/marang/sway-session/internal/doctor"
 )
 
-// Feed the actual public diagnostic report into the TUI: a synthetic one-line
-// check cannot prove that ordinary multi-file evidence remains reachable.
+// Feed the actual public diagnostic report into the TUI, including supported
+// profiles and protected migrations, so every source limitation stays reachable.
 func TestDoctorWorkstationReportRemainsInspectableInTUI(t *testing.T) {
-	for _, partial := range []bool{false, true} {
-		name := "complete"
-		if partial {
-			name = "partially checked"
-		}
+	for _, fixture := range []struct {
+		name    string
+		snippet string
+		include bool
+		status  doctor.Status
+		fix     bool
+	}{
+		{"startup-only", doctorAcceptanceSnippet("/usr/bin/sway-session", false), true, doctor.OK, true},
+		{"default shortcuts", doctorAcceptanceSnippet("/usr/bin/sway-session", true), true, doctor.OK, true},
+		{"include not observed", doctorAcceptanceSnippet("/usr/bin/sway-session", false), false, doctor.Warning, true},
+		{"missing standard", "", false, doctor.Unavailable, true},
+		{"legacy partial", doctorAcceptanceHeader + "exec --no-startup-id /usr/bin/sway-session daemon\n", true, doctor.Warning, false},
+		{"manual edit", doctorAcceptanceSnippet("/usr/bin/sway-session", false) + "# manual edit\n", true, doctor.Unavailable, false},
+	} {
+		name := fixture.name
 		t.Run(name, func(t *testing.T) {
 			root := t.TempDir()
 			for _, key := range []string{"XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR"} {
@@ -37,14 +47,25 @@ func TestDoctorWorkstationReportRemainsInspectableInTUI(t *testing.T) {
 				t.Fatal(err)
 			}
 			path := filepath.Join(configDir, "config")
-			if partial {
-				content, err := os.ReadFile(path)
-				if err != nil {
+			snippet := filepath.Join(configDir, "50-sway-session-doctor.conf")
+			if err := os.Remove(snippet); err != nil && !os.IsNotExist(err) {
+				t.Fatal(err)
+			}
+			if fixture.snippet != "" {
+				if err := os.WriteFile(snippet, []byte(fixture.snippet), 0o600); err != nil {
 					t.Fatal(err)
 				}
-				if err := os.WriteFile(path, append(content, []byte("bindcode Mod4+36 exec foot\n")...), 0o600); err != nil {
-					t.Fatal(err)
-				}
+			}
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			before = []byte(strings.ReplaceAll(string(before), "include 50-sway-session-doctor.conf\n", ""))
+			if fixture.include {
+				before = append(before, []byte("include "+snippet+"\n")...)
+			}
+			if err := os.WriteFile(path, before, 0o600); err != nil {
+				t.Fatal(err)
 			}
 			service := doctor.New(doctor.Options{SwayConfigPath: path})
 			model := newDoctorModel(context.Background(), service)
@@ -54,11 +75,7 @@ func TestDoctorWorkstationReportRemainsInspectableInTUI(t *testing.T) {
 			model, _ = doctorUpdate(t, model, terminalManageKey("sway.integration"))
 			model, _ = doctorUpdate(t, model, terminalManageKey("enter"))
 			selected, ok := model.selected()
-			wantStatus := doctor.OK
-			if partial {
-				wantStatus = doctor.Warning
-			}
-			if !ok || selected.ID != "sway.integration" || selected.Status != wantStatus || selected.FixID != "" {
+			if !ok || selected.ID != "sway.integration" || selected.Status != fixture.status || (selected.FixID != "") != fixture.fix {
 				t.Fatalf("unexpected real workstation report: %+v", selected)
 			}
 			for _, size := range [][2]int{{80, 24}, {48, 16}, {120, 30}} {
@@ -76,7 +93,7 @@ func TestDoctorWorkstationReportRemainsInspectableInTUI(t *testing.T) {
 							t.Fatalf("report exceeds %d columns: %q", size[0], line)
 						}
 					}
-					if strings.Contains(view, "[f]") || !strings.Contains(view, "[q] Quit") {
+					if (strings.Contains(view, "[f]") && !fixture.fix) || !strings.Contains(view, "[q] Quit") {
 						t.Fatalf("unsafe or missing action in report: %s", view)
 					}
 					pages.WriteString(view)
@@ -99,8 +116,15 @@ func TestDoctorWorkstationReportRemainsInspectableInTUI(t *testing.T) {
 					}
 				}
 			}
-			if _, err := os.Stat(filepath.Join(configDir, "50-sway-session-doctor.conf")); !os.IsNotExist(err) {
-				t.Fatalf("viewing the report created a repair snippet: %v", err)
+			if after, err := os.ReadFile(path); err != nil || string(after) != string(before) {
+				t.Fatalf("viewing the report changed main configuration: %v", err)
+			}
+			if fixture.snippet == "" {
+				if _, err := os.Stat(snippet); !os.IsNotExist(err) {
+					t.Fatalf("inspection created snippet: %v", err)
+				}
+			} else if after, err := os.ReadFile(snippet); err != nil || string(after) != fixture.snippet {
+				t.Fatalf("inspection changed the standard file: %v", err)
 			}
 		})
 	}

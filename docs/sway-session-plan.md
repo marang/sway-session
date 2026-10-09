@@ -128,74 +128,61 @@ backups, uses descriptor-relative atomic file replacements, and rolls back
 provable partial changes on failure. No state database, service, session,
 package, hook, or security policy is changed by this repair.
 
-Sway integration analysis follows a bounded, static include graph. Ordinary
-output/input/bar blocks and binding modes retain their scope; logical lines
-support continuation without confusing a block's subcommands with top-level
-startup commands. Evidence and uncertainty are tracked independently for daemon
-startup, restore startup, and each of the two default terminal shortcuts.
-Recoverable uncertainty retains independent findings and known source locations;
-the report says partially checked rather than discarding useful evidence.
-Unsupported relevant syntax, incomplete include graphs, or ambiguous existing
-bindings suppress repair rather than guessing.
-The only generated file is the recognized doctor-owned snippet beside the
-selected Sway config. Other config content is preserved and excluded from
-repair previews. File checks never imply that a binding or socket endpoint is
-live. Users reload Sway separately after reviewing applied edits.
+Sway integration inspection has one narrow source boundary: the selected main
+file and its sibling `50-sway-session-doctor.conf`. The name, location and v1
+ownership header remain stable. A byte-exact parser recognizes two profiles:
+one-time `exec --no-startup-id` daemon and restore declarations, optionally
+followed by both `$mod+Return` / `$mod+Shift+Return` standard terminal bindings.
+Historical subsets are recognized as legacy partial profiles and require manual
+migration; reordered, foreign or manually changed files are protected.
 
-The inspection module separates logical-line lexing, pure declaration and
-command-relevance classification, safe include traversal, and repair writes.
-Classification accepts supplied variable seeds and source locations; it never
-reads files, queries IPC, executes a shell or applies an edit. The traversal
-adapter supplies included files in source order and preserves Sway's first
-inclusion rule. Repair continues to derive authority from the resulting facts
-and revalidates the same file fingerprints before applying a preview.
+The main-file recognizer observes only a literal top-level direct include of the
+standard sibling. It accepts normalized literal absolute or sibling-relative
+paths, including
+double-quoted and `./` sibling paths, without variable/glob expansion or include
+traversal. Parent traversal (`..`) remains outside the recognized boundary.
+Command bodies remain opaque. It does not classify foreign shell expressions,
+resolve variables, read startup scripts, infer hidden calls or compare foreign
+bindings. The old general Sway/shell classifier is intentionally retired, with
+no fallback. Inspection is bounded to 1 MiB per file, 64 KiB per logical line
+and block depth 64. These are inspection bounds, not limits on saved contexts.
 
-The supported integration grammar is deliberately narrower than Sway:
+`ok` establishes a supported standard profile and observed direct include on
+disk. `warning` covers an unobserved include, a dangling direct include or a
+legacy partial profile. Missing and unrecognized standard files are
+`unavailable`. Check ID `sway.integration`, public JSON fields, statuses and
+exit codes stay stable. In-process adoption selection is excluded from JSON.
+Sway IPC, daemon identity and broker liveness checks retain independent runtime
+results; source inspection neither proves effective bindings or load order nor
+guarantees a successful next login.
 
-| Requirement | Matching declaration |
-| --- | --- |
-| Daemon startup | One `exec [--no-startup-id] /path/to/sway-session daemon` |
-| Restore startup | One `exec [--no-startup-id] /path/to/sway-session restore` |
-| Persistent terminal | Default-mode `bindsym $mod+Return exec [--no-startup-id] /path/to/sway-session terminal --new` |
-| Ephemeral terminal | Default-mode `bindsym $mod+Shift+Return exec [--no-startup-id] /path/to/sway-session terminal --ephemeral` |
+RepairOptions makes creation/recovery and direct-include insertion conditional
+on explicit adoption. New profiles default to startup-only; an unspecified
+shortcut selection preserves an existing supported profile. Explicit
+`--shortcuts none|default` changes only the owned snippet. `--adopt-standard` and
+`--shortcuts` are additive CLI options restricted to `--fix sway.integration`;
+the TUI gathers equivalent choices before preview. Adoption authorizes limited
+writes, not a conclusion that previous configuration was cleaned up. Users
+migrate old starts/includes themselves, free the chosen bindings, define `$mod`
+before the first include and review load position before opting in. An absent
+main file is created manually. Doctor never removes foreign entries or edits unsupported snippets.
 
-Sway keywords are case-insensitive; executable names and arguments are not.
-Known modifier aliases and ordering are accepted, as are `--no-warn` and
-`--inhibited` binding flags. Other binding variants are conflicts or require
-manual review. Ordered scalar `set` values, safe scalar/glob includes, quoted
-arguments, continuation lines and supported command blocks remain inspectable.
-Known non-default binding modes do not satisfy default shortcuts. Unrelated
-output, input, bar, media and window rules retain their own scope.
+Plans snapshot only the main file and standard sibling. Apply revalidates both
+sources, ownership and directory identity, preserves exclusive private original
+backups, and writes atomically using file descriptors. Concurrent writer
+compensation requires proof of the installed inode, not merely matching bytes;
+uncertain compensation preserves the displaced file and reports its path.
+Appending a new direct include requires a standalone top-level EOF position;
+unfinished continuations, unclosed blocks and exhausted recognition bounds
+require manual correction first. This guard is not full Sway validation.
+No SQLite mutation, process start/stop, restore request or Sway reload occurs.
+Startup declarations remain `exec`; reload activates bindings but does not run
+new daemon/restore startup declarations. Those run at the next Sway session.
 
-One bounded classifier recognizes executable positions through shell/env
-wrappers, including quoted names. Literal redirections and balanced
-`if`/`then`/`elif`/`else`/`fi` envelopes are inspected only to locate possible
-executables in every branch; conditions are never evaluated. It reports
-potentially affected requirements as uncertain instead of treating indirect
-startup as a matching declaration. Other programming forms remain outside this
-grammar. It does not evaluate shell expressions or inspect arbitrary launcher
-scripts.
-Unresolved relevant syntax, exhausted limits and incomplete include graphs
-prevent repair while retaining independently established facts. Repeated
-uncertainty at the same location is deduplicated; separate declarations still
-count as duplicates or conflicts.
-
-The file/graph limits remain 1 MiB per file, 4 MiB total, 64 files, include depth
-16, block depth 64 and 64 KiB per logical line or expanded scalar. Wrapper
-recognition is bounded to four levels and 256 KiB of shared work per command.
-Retained evidence is limited to eight items per requirement, with at most 4096
-distinct uncertainty keys. These are inspection bounds, not limits on saved
-contexts.
-Diagnostics distinguish static declaration presence, runtime observations and
-repair eligibility. Sway's `GET_CONFIG` returns loaded configuration text and
-`GET_BINDING_STATE` returns the current mode; neither provides an evaluated
-binding table. See the primary [Sway configuration](https://github.com/swaywm/sway/blob/master/sway/sway.5.scd)
-and [IPC specifications](https://github.com/swaywm/sway/blob/master/sway/sway-ipc.7.scd).
-
-The existing GET_VERSION IPC query supplies the loaded root path. GET_CONFIG
-does not expose evaluated settings: Sway stores folded main-file text without
-included files, while GET_BINDING_STATE supplies only a mode name. Neither is
-used as a substitute for effective binding inventory or as repair authorization.
+GET_VERSION supplies the loaded root path. GET_CONFIG exposes source text and
+GET_BINDING_STATE the current mode; neither supplies effective binding inventory
+or repair authority. Disposable private Sway validation belongs in the test
+workflow, outside the production inspection path.
 
 ## Durable state
 

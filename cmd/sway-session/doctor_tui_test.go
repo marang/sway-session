@@ -182,7 +182,8 @@ func TestDoctorTUIRepairRequiresPreviewAndConfirmation(t *testing.T) {
 	}
 	model := newDoctorModel(context.Background(), ops)
 	model, _ = doctorUpdate(t, model, model.Init()())
-	model, command := doctorUpdate(t, model, terminalManageKey("f"))
+	model, _ = doctorUpdate(t, model, terminalManageKey("f"))
+	model, command := doctorUpdate(t, model, terminalManageKey("enter"))
 	if command == nil || ops.applyCalls != 0 {
 		t.Fatal("fix did not prepare preview")
 	}
@@ -194,7 +195,8 @@ func TestDoctorTUIRepairRequiresPreviewAndConfirmation(t *testing.T) {
 	if model.plan != nil || ops.applyCalls != 0 {
 		t.Fatal("cancel mutated")
 	}
-	model, command = doctorUpdate(t, model, terminalManageKey("f"))
+	model, _ = doctorUpdate(t, model, terminalManageKey("f"))
+	model, command = doctorUpdate(t, model, terminalManageKey("enter"))
 	model, _ = doctorUpdate(t, model, command())
 	model, command = doctorUpdate(t, model, terminalManageKey("y"))
 	if command == nil || ops.applyCalls != 0 {
@@ -235,7 +237,8 @@ func TestDoctorTUIAppliedIntegrationGuidanceFitsAndScrolls(t *testing.T) {
 			model.noColor = true
 			model, _ = doctorUpdate(t, model, tea.WindowSizeMsg{Width: size[0], Height: size[1]})
 			model, _ = doctorUpdate(t, model, model.Init()())
-			model, command := doctorUpdate(t, model, terminalManageKey("f"))
+			model, _ = doctorUpdate(t, model, terminalManageKey("f"))
+			model, command := doctorUpdate(t, model, terminalManageKey("enter"))
 			model, _ = doctorUpdate(t, model, command())
 			model, command = doctorUpdate(t, model, terminalManageKey("y"))
 			model, recheck := doctorUpdate(t, model, command())
@@ -325,5 +328,147 @@ func TestDoctorTUIPreviewScrollAndFailure(t *testing.T) {
 	model, _ = doctorUpdate(t, model, tea.WindowSizeMsg{Width: 20, Height: 8})
 	if !strings.Contains(model.View().Content, "Resize") {
 		t.Fatal("tiny terminal missing fallback")
+	}
+}
+
+func TestDoctorTUIAdoptionAndProfileChoicesPrecedePreview(t *testing.T) {
+	for _, adoption := range []bool{false, true} {
+		for _, key := range []string{"enter", "0", "1"} {
+			for _, size := range [][2]int{{80, 24}, {48, 16}} {
+				t.Run(fmt.Sprintf("adopt=%v/key=%s/%dx%d", adoption, key, size[0], size[1]), func(t *testing.T) {
+					ops := &fakeDoctorOperations{report: doctor.Report{Checks: []doctor.Check{{ID: "sway.integration", Title: "Standard integration", FixID: "sway.integration", AdoptionRequired: adoption}}}, plan: doctor.Plan{ID: "sway.integration"}}
+					model := newDoctorModel(t.Context(), ops)
+					model.noColor = true
+					model, _ = doctorUpdate(t, model, tea.WindowSizeMsg{Width: size[0], Height: size[1]})
+					model, _ = doctorUpdate(t, model, model.Init()())
+					model, command := doctorUpdate(t, model, terminalManageKey("f"))
+					if command != nil || ops.planCalls != nil || ops.applyCalls != 0 {
+						t.Fatal("fix skipped explicit choices")
+					}
+					if adoption {
+						if model.repairChoice != "adopt" {
+							t.Fatal("missing explicit adoption")
+						}
+						model, command = doctorUpdate(t, model, terminalManageKey("enter"))
+						if command != nil || model.repairChoice != "adopt" {
+							t.Fatal("enter implicitly adopted")
+						}
+						model, _ = doctorUpdate(t, model, terminalManageKey("a"))
+					}
+					if model.repairChoice != "profile" {
+						t.Fatal("profile selection missing")
+					}
+					view := model.View().Content
+					for _, line := range strings.Split(view, "\n") {
+						if ansi.StringWidth(line) > size[0] || strings.Contains(view, "\x1b") {
+							t.Fatalf("choice exceeds terminal: %q", view)
+						}
+					}
+					if !strings.Contains(view, "[Enter] Keep") || !strings.Contains(view, "[Esc] Back") || !strings.Contains(view, "[q] Quit") {
+						t.Fatalf("choices lack recovery controls: %s", view)
+					}
+					model, command = doctorUpdate(t, model, terminalManageKey(key))
+					if command == nil || ops.planCalls != nil {
+						t.Fatal("preview must run as an effect")
+					}
+					model, _ = doctorUpdate(t, model, command())
+					want := doctor.RepairOptions{AdoptStandard: adoption}
+					if key == "0" {
+						want.Shortcuts = doctor.ShortcutsNone
+					}
+					if key == "1" {
+						want.Shortcuts = doctor.ShortcutsDefault
+					}
+					if model.plan == nil || ops.planRequests[0] != want || ops.applyCalls != 0 {
+						t.Fatalf("incorrect choice: %+v", ops.planRequests)
+					}
+					model, _ = doctorUpdate(t, model, terminalManageKey("esc"))
+					if model.plan != nil || ops.applyCalls != 0 {
+						t.Fatal("preview cancellation applied repair")
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestDoctorTUIChoiceCancellationAndProtectedFiles(t *testing.T) {
+	for _, adoption := range []bool{false, true} {
+		ops := &fakeDoctorOperations{report: doctor.Report{Checks: []doctor.Check{{ID: "sway.integration", FixID: "sway.integration", AdoptionRequired: adoption}}}}
+		model := newDoctorModel(t.Context(), ops)
+		model, _ = doctorUpdate(t, model, model.Init()())
+		model, _ = doctorUpdate(t, model, terminalManageKey("f"))
+		model, _ = doctorUpdate(t, model, terminalManageKey("esc"))
+		if model.repairChoice != "" || ops.planCalls != nil || ops.applyCalls != 0 {
+			t.Fatal("choice cancellation invoked repair")
+		}
+	}
+	ops := &fakeDoctorOperations{report: doctor.Report{Checks: []doctor.Check{{ID: "sway.integration", Status: doctor.Unavailable, Detail: "Manual migration required"}}}}
+	model := newDoctorModel(t.Context(), ops)
+	model, _ = doctorUpdate(t, model, model.Init()())
+	model, command := doctorUpdate(t, model, terminalManageKey("f"))
+	if command != nil || model.repairChoice != "" || strings.Contains(ansi.Strip(model.View().Content), "[f]") {
+		t.Fatal("protected file offered automatic repair")
+	}
+}
+
+func TestDoctorTUIChoicesKeepContextualKeysAndBackendAuthority(t *testing.T) {
+	ops := &fakeDoctorOperations{
+		report:  doctor.Report{Checks: []doctor.Check{{ID: "sway.integration", FixID: "sway.integration", AdoptionRequired: true}}},
+		planErr: errors.New("manual edits\x1b[31m"),
+	}
+	model := newDoctorModel(t.Context(), ops)
+	model.noColor = true
+	model, _ = doctorUpdate(t, model, model.Init()())
+	model, _ = doctorUpdate(t, model, terminalManageKey("f"))
+	for _, key := range []string{"y", "r", "/", "f", "?"} {
+		model, command := doctorUpdate(t, model, terminalManageKey(key))
+		if command != nil || model.filtering || model.help || ops.checkCalls != 1 || ops.planCalls != nil || ops.applyCalls != 0 {
+			t.Fatalf("choice leaked contextual key %q", key)
+		}
+	}
+	model, _ = doctorUpdate(t, model, terminalManageKey("a"))
+	model, command := doctorUpdate(t, model, terminalManageKey("1"))
+	model, _ = doctorUpdate(t, model, command())
+	if model.plan != nil || model.repairChoice != "" || model.busy != "" || ops.applyCalls != 0 || !strings.Contains(model.View().Content, "manual edits") || strings.Contains(model.View().Content, "\x1b") {
+		t.Fatalf("backend rejection lost authority: %s", model.View().Content)
+	}
+}
+
+func TestDoctorTUIProfileGuidanceAndSourceLimitsRemainReachable(t *testing.T) {
+	for _, size := range [][2]int{{80, 24}, {48, 16}} {
+		model := newDoctorModel(t.Context(), &fakeDoctorOperations{})
+		model.noColor, model.busy, model.repairChoice = true, "", "profile"
+		model, _ = doctorUpdate(t, model, tea.WindowSizeMsg{Width: size[0], Height: size[1]})
+		var rows []string
+		for range 40 {
+			lines := strings.Split(model.View().Content, "\n")
+			if len(lines) > size[1] {
+				t.Fatal("guidance exceeds terminal height")
+			}
+			for _, line := range lines {
+				if ansi.StringWidth(line) > size[0] {
+					t.Fatal("guidance exceeds terminal width")
+				}
+			}
+			rows = append(rows, strings.Join(lines[4:4+model.bodyHeight()], ""))
+			previous := model.offset
+			model, _ = doctorUpdate(t, model, terminalManageKey("pgdown"))
+			if previous == model.offset {
+				break
+			}
+		}
+		text := strings.Join(strings.Fields(strings.NewReplacer("│", "", "\n", "").Replace(strings.Join(rows, ""))), "")
+		for _, requirement := range []string{"Preserve existing profile", "new setup uses no shortcuts", "Define $mod before the first include", "competing bindings and load order manually", "applies only after review"} {
+			if !strings.Contains(text, strings.Join(strings.Fields(requirement), "")) {
+				t.Fatalf("guidance inaccessible at %v: %q", size, requirement)
+			}
+		}
+		model.repairChoice = ""
+		model.report = doctor.Report{Checks: []doctor.Check{{ID: "sway.integration", Status: doctor.Unavailable, Detail: "Protected file"}}}
+		model.refilter("")
+		if !strings.Contains(strings.Join(model.detailLines(), ""), "runtime checks are separate") {
+			t.Fatal("protected file omitted source/runtime limits")
+		}
 	}
 }

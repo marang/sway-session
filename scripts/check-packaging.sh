@@ -171,8 +171,18 @@ require_fixed .github/workflows/verify.yml 'sudo apt-get update && sudo apt-get 
 
 require_count contrib/sway/50-sway-session.conf 'exec --no-startup-id /usr/bin/sway-session daemon' 1
 require_count contrib/sway/50-sway-session.conf 'exec --no-startup-id /usr/bin/sway-session restore' 1
-require_count contrib/sway/50-sway-session.conf 'bindsym $mod+Return exec --no-startup-id /usr/bin/sway-session terminal --new' 1
-require_count contrib/sway/50-sway-session.conf 'bindsym $mod+Shift+Return exec --no-startup-id /usr/bin/sway-session terminal --ephemeral' 1
+for startup in daemon restore; do
+	if ! grep -F -x -- "exec --no-startup-id /usr/bin/sway-session $startup" contrib/sway/50-sway-session.conf >/dev/null; then
+		echo "Shipped Sway template must keep the $startup startup active." >&2
+		exit 1
+	fi
+done
+require_count contrib/sway/50-sway-session.conf '# bindsym $mod+Return exec --no-startup-id /usr/bin/sway-session terminal --new' 1
+require_count contrib/sway/50-sway-session.conf '# bindsym $mod+Shift+Return exec --no-startup-id /usr/bin/sway-session terminal --ephemeral' 1
+if grep -E '^[[:space:]]*bind(sym|code)[[:space:]]' contrib/sway/50-sway-session.conf >/dev/null; then
+	echo 'Standard Sway template must default to startup-only' >&2
+	exit 1
+fi
 reject_fixed contrib/sway/50-sway-session.conf 'exec_always'
 reject_fixed contrib/sway/50-sway-session.conf 'sway-title-animator'
 

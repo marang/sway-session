@@ -25,6 +25,8 @@ type Check struct {
 	Hint     string   `json:"hint,omitempty"`
 	Evidence []string `json:"evidence,omitempty"`
 	FixID    string   `json:"fix_id,omitempty"`
+	// AdoptionRequired is an in-process UI signal, not part of the report wire shape.
+	AdoptionRequired bool `json:"-"`
 }
 
 type Report struct {
@@ -52,6 +54,24 @@ type Options struct {
 	CLIBuild *buildmetadata.Metadata
 }
 
+// ShortcutSelection distinguishes preserving an existing profile from an
+// explicit choice. New standard integrations default to no shortcuts.
+type ShortcutSelection string
+
+const (
+	ShortcutsUnspecified ShortcutSelection = ""
+	ShortcutsNone        ShortcutSelection = "none"
+	ShortcutsDefault     ShortcutSelection = "default"
+)
+
+// RepairOptions selects the owned standard integration. Adoption authorizes
+// creation/recovery and a new direct include; it does not prove that the user
+// has removed previous integration or checked the effective load order.
+type RepairOptions struct {
+	AdoptStandard bool
+	Shortcuts     ShortcutSelection
+}
+
 type Service struct {
 	options Options
 }
@@ -74,6 +94,9 @@ type Plan struct {
 	Summary string       `json:"summary"`
 	Changes []FileChange `json:"changes"`
 	edits   []fileEdit
+	request RepairOptions
+	fixID   string
+	trusted bool
 }
 
 type FileChange struct {

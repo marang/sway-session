@@ -60,13 +60,13 @@ therefore does not establish the rerun barrier. Validate the retired IDs with
 new placeholder runs whose jobs cannot execute, as described in
 [the publication gate](releasing.md#automated-publication-gate).
 
-## Management subprocess pipe draining (LAB-279)
+## Management subprocess pipe draining (LAB-279, LAB-315)
 
-The production Herdr command runner and trusted restore subprocess allow
-250 ms for output-pipe draining after context cancellation or direct-process
-exit. Their existing output limits remain separate memory bounds. A descendant
-holding an inherited pipe cannot keep an otherwise finished command waiting
-until that descendant exits.
+The production Herdr command runner, fixed Herdr initialization runner and
+trusted restore subprocess allow 250 ms for output-pipe draining after context
+cancellation or direct-process exit. Their existing output limits remain
+separate memory bounds. A descendant holding an inherited pipe cannot keep an
+otherwise finished command waiting until that descendant exits.
 
 The runners retain `os/exec` error classification: a killed or unsuccessful
 direct process normally returns `*exec.ExitError`; a successful direct process
@@ -80,8 +80,8 @@ encounter a closed pipe. Detached terminal and desktop starts continue to use
 the separate asynchronous `ExecProcessStarter` lifetime.
 
 ```sh
-GOTOOLCHAIN=go1.26.5 go test -race ./internal/session ./internal/sessionrequest \
-  -run '^Test(ExecCommandRunnerProcess|ExecRestoreRunnerProcess|ExecProcessStarterLifecycle)$' \
+GOTOOLCHAIN=go1.26.5 go test -race ./internal/session ./internal/sessionrequest ./internal/herdrinit \
+  -run '^Test(ExecCommandRunnerProcess|ExecRestoreRunnerProcess|ExecRunnerProcess|ExecProcessStarterLifecycle)$' \
   -count=1
 ```
 

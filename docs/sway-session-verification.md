@@ -31,6 +31,15 @@ CI additionally runs GoReleaser configuration validation. A release candidate
 must also run a clean GoReleaser snapshot and inspect every archive, DEB, and
 RPM so only sway-session and the documented integration assets are present.
 
+`make packaging-check` runs the complete Makefile install target in disposable
+build directories with private installation prefixes. It covers plain paths,
+prefixes containing spaces, and an independently overridden `DOC_ROOT` with
+spaces. Source inputs are linked from the checkout; generated binaries
+and installed files stay in the disposable roots. The checks compare every
+installed file, its contents and mode, all destination directories, and the
+absence of paths accidentally created by shell word splitting. They use no
+privilege escalation or production installation directory.
+
 `make release-gate-check` runs isolated local Git fixtures, cross-workflow
 publication contracts, and the actual GitHub release rerun script against a
 mock API. These developer checks require Python 3, PyYAML (`python-yaml` on

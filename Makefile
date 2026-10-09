@@ -68,40 +68,40 @@ release-gate-check:
 verify: fmt-check test race vet lint apparmor-check completion-check packaging-check standalone-check vm-harness-check release-gate-check build diff-check
 
 install: build
-	install -d $(PREFIX)/bin
-	install -m755 sway-session $(PREFIX)/bin/sway-session
-	install -d $(PREFIX)/share/bash-completion/completions
-	install -d $(PREFIX)/share/zsh/site-functions
-	install -d $(PREFIX)/share/fish/vendor_completions.d
-	install -d $(DOC_ROOT)/contrib/sway-session
-	install -d $(DOC_ROOT)/contrib/herdr
-	install -d $(DOC_ROOT)/contrib/codex
-	install -d $(DOC_ROOT)/contrib/apparmor
-	install -d $(DOC_ROOT)/scripts
-	install -d $(DOC_ROOT)/docs/adr
-	install -d $(DOC_ROOT)/docs/research
-	install -d $(DOC_ROOT)/docs/assets
-	install -m644 docs/assets/*.jpeg $(DOC_ROOT)/docs/assets/
-	install -m644 docs/branding.md $(DOC_ROOT)/docs/branding.md
-	install -m644 docs/agent-reporting.md $(DOC_ROOT)/docs/agent-reporting.md
-	install -m644 docs/lifecycle-recovery.md $(DOC_ROOT)/docs/lifecycle-recovery.md
-	install -m644 docs/research/herdr-plugin-session-deletion.md $(DOC_ROOT)/docs/research/herdr-plugin-session-deletion.md
-	install -m644 README.md $(DOC_ROOT)/README.md
-	install -m644 LICENSE $(DOC_ROOT)/LICENSE
-	install -m644 docs/sway-session-plan.md $(DOC_ROOT)/docs/sway-session-plan.md
-	install -m644 docs/sway-session-verification.md $(DOC_ROOT)/docs/sway-session-verification.md
-	install -m644 docs/releasing.md $(DOC_ROOT)/docs/releasing.md
-	install -m644 docs/workflow_conventions.md $(DOC_ROOT)/docs/workflow_conventions.md
-	install -m644 docs/adr/0001-sqlite-session-runtime-state.md $(DOC_ROOT)/docs/adr/0001-sqlite-session-runtime-state.md
-	install -m644 contrib/completions/bash/sway-session $(PREFIX)/share/bash-completion/completions/sway-session
-	install -m644 contrib/completions/zsh/_sway-session $(PREFIX)/share/zsh/site-functions/_sway-session
-	install -m644 contrib/completions/fish/sway-session.fish $(PREFIX)/share/fish/vendor_completions.d/sway-session.fish
-	install -m644 contrib/sway/50-sway-session.conf $(DOC_ROOT)/50-sway-session.conf
-	install -m644 contrib/sway-session/config.toml $(DOC_ROOT)/contrib/sway-session/config.toml
-	install -m644 contrib/herdr/config.toml $(DOC_ROOT)/contrib/herdr/config.toml
-	install -m644 contrib/codex/hooks.json $(DOC_ROOT)/contrib/codex/hooks.json
-	install -m644 contrib/apparmor/agent-home-guard $(DOC_ROOT)/contrib/apparmor/agent-home-guard
-	install -m755 scripts/verify-codex-boundary.sh $(DOC_ROOT)/scripts/verify-codex-boundary.sh
+	install -d "$(PREFIX)/bin"
+	install -m755 sway-session "$(PREFIX)/bin/sway-session"
+	install -d "$(PREFIX)/share/bash-completion/completions"
+	install -d "$(PREFIX)/share/zsh/site-functions"
+	install -d "$(PREFIX)/share/fish/vendor_completions.d"
+	install -d "$(DOC_ROOT)/contrib/sway-session"
+	install -d "$(DOC_ROOT)/contrib/herdr"
+	install -d "$(DOC_ROOT)/contrib/codex"
+	install -d "$(DOC_ROOT)/contrib/apparmor"
+	install -d "$(DOC_ROOT)/scripts"
+	install -d "$(DOC_ROOT)/docs/adr"
+	install -d "$(DOC_ROOT)/docs/research"
+	install -d "$(DOC_ROOT)/docs/assets"
+	install -m644 docs/assets/*.jpeg "$(DOC_ROOT)/docs/assets/"
+	install -m644 docs/branding.md "$(DOC_ROOT)/docs/branding.md"
+	install -m644 docs/agent-reporting.md "$(DOC_ROOT)/docs/agent-reporting.md"
+	install -m644 docs/lifecycle-recovery.md "$(DOC_ROOT)/docs/lifecycle-recovery.md"
+	install -m644 docs/research/herdr-plugin-session-deletion.md "$(DOC_ROOT)/docs/research/herdr-plugin-session-deletion.md"
+	install -m644 README.md "$(DOC_ROOT)/README.md"
+	install -m644 LICENSE "$(DOC_ROOT)/LICENSE"
+	install -m644 docs/sway-session-plan.md "$(DOC_ROOT)/docs/sway-session-plan.md"
+	install -m644 docs/sway-session-verification.md "$(DOC_ROOT)/docs/sway-session-verification.md"
+	install -m644 docs/releasing.md "$(DOC_ROOT)/docs/releasing.md"
+	install -m644 docs/workflow_conventions.md "$(DOC_ROOT)/docs/workflow_conventions.md"
+	install -m644 docs/adr/0001-sqlite-session-runtime-state.md "$(DOC_ROOT)/docs/adr/0001-sqlite-session-runtime-state.md"
+	install -m644 contrib/completions/bash/sway-session "$(PREFIX)/share/bash-completion/completions/sway-session"
+	install -m644 contrib/completions/zsh/_sway-session "$(PREFIX)/share/zsh/site-functions/_sway-session"
+	install -m644 contrib/completions/fish/sway-session.fish "$(PREFIX)/share/fish/vendor_completions.d/sway-session.fish"
+	install -m644 contrib/sway/50-sway-session.conf "$(DOC_ROOT)/50-sway-session.conf"
+	install -m644 contrib/sway-session/config.toml "$(DOC_ROOT)/contrib/sway-session/config.toml"
+	install -m644 contrib/herdr/config.toml "$(DOC_ROOT)/contrib/herdr/config.toml"
+	install -m644 contrib/codex/hooks.json "$(DOC_ROOT)/contrib/codex/hooks.json"
+	install -m644 contrib/apparmor/agent-home-guard "$(DOC_ROOT)/contrib/apparmor/agent-home-guard"
+	install -m755 scripts/verify-codex-boundary.sh "$(DOC_ROOT)/scripts/verify-codex-boundary.sh"
 
 clean:
 	rm -f $(BINARIES)

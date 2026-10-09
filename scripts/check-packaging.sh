@@ -56,20 +56,16 @@ test -f docs/agent-reporting.md
 require_fixed docs/agent-reporting.md '`event_origin`'
 require_fixed docs/agent-reporting.md 'version-3 newline-delimited JSON'
 require_fixed docs/agent-reporting.md '`session_start_source`'
-require_fixed Makefile 'install -m644 docs/agent-reporting.md $(DOC_ROOT)/docs/agent-reporting.md'
 require_fixed PKGBUILD 'install -Dm644 docs/agent-reporting.md "$pkgdir/usr/share/doc/$pkgname/docs/agent-reporting.md"'
 require_fixed .goreleaser.yaml '      - docs/agent-reporting.md'
 require_fixed .goreleaser.yaml '        dst: /usr/share/doc/sway-session/docs/agent-reporting.md'
 test -f docs/lifecycle-recovery.md
-require_fixed Makefile 'install -m644 docs/lifecycle-recovery.md $(DOC_ROOT)/docs/lifecycle-recovery.md'
 require_fixed PKGBUILD 'install -Dm644 docs/lifecycle-recovery.md "$pkgdir/usr/share/doc/$pkgname/docs/lifecycle-recovery.md"'
 require_fixed .goreleaser.yaml '      - docs/lifecycle-recovery.md'
 require_ordered_lines .goreleaser.yaml \
   '      - src: ./docs/lifecycle-recovery.md' \
   '        dst: /usr/share/doc/sway-session/docs/lifecycle-recovery.md'
 test -f docs/research/herdr-plugin-session-deletion.md
-require_fixed Makefile 'install -d $(DOC_ROOT)/docs/research'
-require_fixed Makefile 'install -m644 docs/research/herdr-plugin-session-deletion.md $(DOC_ROOT)/docs/research/herdr-plugin-session-deletion.md'
 require_fixed PKGBUILD 'install -Dm644 docs/research/herdr-plugin-session-deletion.md "$pkgdir/usr/share/doc/$pkgname/docs/research/herdr-plugin-session-deletion.md"'
 require_fixed .goreleaser.yaml '      - docs/research/herdr-plugin-session-deletion.md'
 require_ordered_lines .goreleaser.yaml \
@@ -183,8 +179,6 @@ reject_fixed contrib/sway/50-sway-session.conf 'sway-title-animator'
 require_fixed Makefile 'BINARIES := sway-session'
 require_fixed Makefile 'CGO_ENABLED=0 go build'
 reject_fixed Makefile 'codex-report-agent-session'
-require_fixed Makefile '$(PREFIX)/share/doc/sway-session'
-require_fixed Makefile 'install -m644 docs/sway-session-verification.md $(DOC_ROOT)/docs/sway-session-verification.md'
 reject_fixed Makefile 'sway-title-animator'
 
 require_fixed contrib/codex/hooks.json '\"$HOME/.local/bin/sway-session\" report-agent-session --codex-hook'
@@ -242,3 +236,7 @@ identity_fixture=$(mktemp -d)
 	sh -eu ./stamp.sh >/dev/null
 	cmp old-recipe PKGBUILD
 )
+
+# Verify installed content and modes through the real Makefile, including
+# prefixes and independent documentation roots containing spaces.
+python3 -B scripts/test_install.py

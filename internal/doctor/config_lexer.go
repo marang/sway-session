@@ -52,7 +52,7 @@ func inspectDirectInclude(content []byte, main, snippet string) (int, error) {
 		if line != "" && !strings.HasPrefix(line, "#") {
 			fields := strings.Fields(line)
 			command := strings.ToLower(fields[0])
-			if depth == 0 && !continued && command == "include" {
+			if depth == 0 && !continued && command == "include" && !nextLineOpensBlock(lines[index+1:]) {
 				if path, ok := literalIncludePath(line[len(fields[0]):]); ok {
 					if !filepath.IsAbs(path) {
 						path = filepath.Join(filepath.Dir(main), path)
@@ -70,7 +70,7 @@ func inspectDirectInclude(content []byte, main, snippet string) (int, error) {
 				} else {
 					appendErr = errors.New("cannot establish a top-level append position after an unmatched block terminator")
 				}
-			} else if fields[len(fields)-1] == "{" {
+			} else if hasTrailingBlockBrace(line) {
 				depth++
 			}
 		}
@@ -90,6 +90,58 @@ func inspectDirectInclude(content []byte, main, snippet string) (int, error) {
 		appendErr = errors.New("cannot append a direct include inside an unfinished configuration block; close it manually first")
 	}
 	return found, appendErr
+}
+
+// Sway's brace lookahead skips empty physical lines, but stops at comments.
+func nextLineOpensBlock(lines []string) bool {
+	for _, line := range lines {
+		line = strings.Trim(line, " \f\n\r\t\v")
+		if line != "" {
+			return line == "{"
+		}
+	}
+	return false
+}
+
+// Recognize only a trailing source token consisting of an unquoted brace.
+// Escaped whitespace and quoted/bracketed payload remain part of their token;
+// this framing check neither expands arguments nor interprets shell commands.
+func hasTrailingBlockBrace(line string) bool {
+	if !strings.HasSuffix(line, "{") {
+		return false
+	}
+	start := 0
+	var quote byte
+	bracket, escaped := false, false
+	for index := 0; index < len(line); index++ {
+		character := line[index]
+		if character == '\\' {
+			escaped = !escaped
+			continue
+		}
+		if !escaped {
+			if quote != 0 {
+				if character == quote {
+					quote = 0
+				}
+			} else {
+				switch character {
+				case '\'', '"':
+					quote = character
+				case '[':
+					bracket = true
+				case ']':
+					bracket = false
+				case ' ', '\f', '\n', '\r', '\t', '\v':
+					if !bracket {
+						start = index + 1
+					}
+				}
+			}
+		}
+		escaped = false
+	}
+	return start == len(line)-1
 }
 
 func literalIncludePath(argument string) (string, bool) {

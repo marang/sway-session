@@ -9,15 +9,16 @@ It does not authorize or establish a production installation or release.
 The acceptance runs on 2026-10-09 used Arch Linux x86_64, kernel
 `7.2.8-arch1-2`, Go `1.26.5`, Python `3.14.7` and Sway `1.12`.
 The comparison baseline is `c4a3e9fac5fea912e9bea6f77c9fc5d26bcd0551`.
-The final product source is `40578e57796837d7c0f3321769a35ecba89ccd0e`;
+The initial acceptance product source was `40578e57796837d7c0f3321769a35ecba89ccd0e`;
 the executing binary reports `dev`, that exact commit and `modified=true`.
 The flag records pending acceptance evidence in the build checkout. Its SHA-256
 is `46afe37f9c553b48532333212e5c3b802318ef2b905cde4bb734d2f00ce527ca`.
 The executable was built with `GOTOOLCHAIN=go1.26.5 make build` (CGO disabled,
 repository build stamp), then copied outside the checkout for execution.
-Subsequent acceptance-observer and documentation changes do not alter the
-tested product executable; the recorded identity belongs to these actual
-executions.
+The acceptance-observer and documentation changes immediately following that
+run did not alter its product executable. Later product corrections are separate
+candidates; this initial artifact identity and its results are historical
+evidence, not an assertion that every subsequent product revision was tested.
 
 Every compositor uses the headless backend and Pixman renderer, workspace 98,
 private configuration and XDG roots, and an explicitly selected private socket.
@@ -43,7 +44,7 @@ of a successful source repair: the deliberately absent explicit session config
 in the Go adoption case keeps operational exit code 3 while `sway.integration`
 becomes `ok` and the applied repair result remains visible.
 
-The final artifact passed all 24 executable scenarios: nine CLI scenarios, two
+That initial artifact passed all 24 executable scenarios: nine CLI scenarios, two
 startup profiles, twelve PTY scenarios and the no-runtime-effects sentinel.
 Both private-Sway Go tests passed their nine subcases under Go 1.26.5; the eight
 focused repair-safety race tests also passed at the final product source.
@@ -103,7 +104,8 @@ production reload, hidden-startup search, conflicting-binding exclusion, native
 Sway validation in the production Doctor path, package-manager installation or
 release publication was performed.
 
-The final canonical `GOTOOLCHAIN=go1.26.5 make verify` passed. Its completion
+The canonical `GOTOOLCHAIN=go1.26.5 make verify` at the initial acceptance
+source passed. Its completion
 check ran Bash, Zsh and portable Fish 4.9.3 without workstation installation.
 Uncached unit/race tests, vet/staticcheck, AppArmor, packaging (three private
 installation fixtures), standalone checks, release/VM helper tests, CGO-disabled
@@ -111,6 +113,7 @@ build and whitespace checks passed. These private installation fixtures do not
 establish a package-manager installation or production transition.
 
 The local code/adversarial/security reviews and scoped architecture checkpoint
-reported no remaining findings. They are preparatory reviews; the final
-independent review in the original session and PR/merge gates remain open.
+at the initial acceptance source reported no remaining findings. They were
+preparatory reviews and do not substitute for reviewing later product changes.
+PR and merge gates remain open.
 No unexecuted boundary or pending review/merge is recorded as passed.

@@ -96,3 +96,56 @@ func TestDoctorDoesNotUseIncludeEvidenceAfterInspectionBound(t *testing.T) {
 		})
 	}
 }
+
+func TestDoctorIncludeBlockRequiresExplicitAdoption(t *testing.T) {
+	for _, gap := range []string{"", "\n \t\n"} {
+		root := writeStandardSwayConfig(t, ShortcutsNone, true)
+		source := "include " + doctorSnippetName + "\n" + gap + "{\n}\n"
+		if err := os.WriteFile(root, []byte(source), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		service := New(Options{SwayConfigPath: root})
+		check := inspectSwayConfig(t.Context(), service.options)[0]
+		if check.Status != Warning || !check.AdoptionRequired {
+			t.Fatalf("block header granted direct-include authority: %+v", check)
+		}
+		if _, err := service.Plan(t.Context(), swayIntegrationFixID, RepairOptions{Shortcuts: ShortcutsDefault}); err == nil || !strings.Contains(err.Error(), "explicit adoption") {
+			t.Fatalf("block header allowed profile change without adoption: %v", err)
+		}
+		plan, err := service.Plan(t.Context(), swayIntegrationFixID, RepairOptions{AdoptStandard: true, Shortcuts: ShortcutsDefault})
+		if err != nil || len(plan.Changes) != 2 {
+			t.Fatalf("explicit adoption did not append a standalone include and change profile: %+v %v", plan, err)
+		}
+		if _, err := service.Apply(t.Context(), plan); err != nil {
+			t.Fatal(err)
+		}
+		if after, err := os.ReadFile(root); err != nil || !strings.HasPrefix(string(after), source) {
+			t.Fatalf("adoption changed existing block: %q %v", after, err)
+		}
+		if check := inspectSwayConfig(t.Context(), service.options)[0]; check.Status != OK || check.AdoptionRequired {
+			t.Fatalf("explicit standalone include did not converge: %+v", check)
+		}
+	}
+}
+
+func TestDoctorEscapedSpaceBracePreservesRealInclude(t *testing.T) {
+	root := writeStandardSwayConfig(t, ShortcutsNone, true)
+	source := "exec /usr/bin/printf \\ {\ninclude " + doctorSnippetName + "\n"
+	if err := os.WriteFile(root, []byte(source), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	service := New(Options{SwayConfigPath: root})
+	if check := inspectSwayConfig(t.Context(), service.options)[0]; check.Status != OK || check.AdoptionRequired {
+		t.Fatalf("opaque exec payload hid real direct include: %+v", check)
+	}
+	plan, err := service.Plan(t.Context(), swayIntegrationFixID, RepairOptions{Shortcuts: ShortcutsDefault})
+	if err != nil || len(plan.Changes) != 1 {
+		t.Fatalf("existing integration could not switch just its profile: %+v %v", plan, err)
+	}
+	if _, err := service.Apply(t.Context(), plan); err != nil {
+		t.Fatal(err)
+	}
+	if after, err := os.ReadFile(root); err != nil || string(after) != source {
+		t.Fatalf("profile switch changed foreign exec: %q %v", after, err)
+	}
+}

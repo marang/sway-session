@@ -68,14 +68,45 @@ func TestLiteralDirectIncludeBoundsLinesAndBlockNesting(t *testing.T) {
 		name, source string
 		line         int
 	}{
-		{"oversized line", "include " + strings.Repeat(" ", maxSwayConfigLine) + doctorSnippetName + "\n" + directive, 2},
-		{"oversized continued line", strings.Repeat("x", maxSwayConfigLine) + "\\\n" + directive + directive, 3},
+		{"oversized line", "include " + strings.Repeat(" ", maxSwayConfigLine) + doctorSnippetName + "\n" + directive, 0},
+		{"oversized continued line", strings.Repeat("x", maxSwayConfigLine) + "\\\n" + directive + directive, 0},
+		{"oversized block opener", "exec /usr/bin/true " + strings.Repeat(" ", maxSwayConfigLine) + "{\n" + directive + "}\n", 0},
+		{"oversized continued block opener", "exec /usr/bin/true \\\n" + strings.Repeat(" ", maxSwayConfigLine) + "{\n" + directive + "}\n", 0},
+		{"earlier evidence before oversized line", directive + strings.Repeat("x", maxSwayConfigLine+1) + "\n" + directive, 1},
 		{"deep blocks", strings.Repeat("mode default {\n", maxSwayBlockDepth+1) + directive, 0},
 		{"earlier evidence retained", directive + strings.Repeat("mode default {\n", maxSwayBlockDepth+1), 1},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if got := literalDirectInclude([]byte(test.source), main, sibling); got != test.line {
 				t.Fatalf("include line=%d, want %d", got, test.line)
+			}
+		})
+	}
+}
+
+func TestLiteralDirectIncludeCommentContinuationBoundaries(t *testing.T) {
+	const main = "/fixture/config"
+	sibling := "/fixture/" + doctorSnippetName
+	directive := "include " + doctorSnippetName + "\n"
+	for _, test := range []struct {
+		name, source string
+		line         int
+		appendSafe   bool
+	}{
+		{"column zero comment", "# note \\\n" + directive, 2, true},
+		{"indented comment", "  # note \\\n" + directive, 0, true},
+		{"tab indented comment", "\t# note \\\n" + directive, 0, true},
+		{"indented comment at EOF", "  # note \\\n", 0, false},
+		{"indented comment without newline", "  # note \\", 0, false},
+		{"blank ends indented comment", "  # note \\\n\n" + directive, 3, true},
+		{"comment within continued command", "exec /usr/bin/true \\\n# note \\\n" + directive, 0, true},
+		{"continued comment at EOF", "exec /usr/bin/true \\\n# note \\\n", 0, false},
+		{"comment after empty continuation", "\\\n# note \\\n" + directive, 3, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			line, err := inspectDirectInclude([]byte(test.source), main, sibling)
+			if line != test.line || (err == nil) != test.appendSafe {
+				t.Fatalf("line=%d error=%v, want line=%d appendSafe=%t", line, err, test.line, test.appendSafe)
 			}
 		})
 	}

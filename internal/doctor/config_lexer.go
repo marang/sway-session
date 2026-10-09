@@ -20,61 +20,62 @@ func inspectDirectInclude(content []byte, main, snippet string) (int, error) {
 	depth := 0
 	var logical strings.Builder
 	start, found := 1, 0
-	continued, oversized := false, false
+	continued := false
 	var appendErr error
 	lines := strings.Split(string(content), "\n")
 	if lines[len(lines)-1] == "" {
 		lines = lines[:len(lines)-1] // a final newline is not another physical line
 	}
 	for index, physical := range lines {
-		trimmed := strings.TrimSpace(physical)
-		comment := strings.HasPrefix(trimmed, "#")
+		// Sway folds continuations before trimming: only a '#' at the
+		// beginning of the accumulated raw line suppresses continuation.
+		comment := strings.HasPrefix(physical, "#")
+		if logical.Len() != 0 {
+			comment = strings.HasPrefix(logical.String(), "#")
+		}
 		continuation := !comment && strings.HasSuffix(physical, "\\")
 		part := physical
 		if continuation {
 			part = strings.TrimSuffix(part, "\\")
 		}
 		if logical.Len()+len(part) > maxSwayConfigLine {
-			oversized = true
-			appendErr = errors.New("cannot append a direct include after a line beyond the supported inspection bound")
+			// Skipping an uninspected line could lose a block opener. Keep
+			// earlier evidence, but do not discover includes after this point.
+			return found, errors.New("cannot append a direct include after a line beyond the supported inspection bound")
 		}
-		if !oversized {
-			logical.WriteString(part)
-		}
+		logical.WriteString(part)
 		if continuation {
 			continued = true
 			continue
 		}
-		if !oversized {
-			line := strings.TrimSpace(logical.String())
-			if line != "" && !strings.HasPrefix(line, "#") {
-				fields := strings.Fields(line)
-				command := strings.ToLower(fields[0])
-				if depth == 0 && !continued && command == "include" {
-					if path, ok := literalIncludePath(line[len(fields[0]):]); ok {
-						if !filepath.IsAbs(path) {
-							path = filepath.Join(filepath.Dir(main), path)
-						}
-						if path == snippet && found == 0 {
-							found = start
-						}
+		line := strings.TrimSpace(logical.String())
+		if line != "" && !strings.HasPrefix(line, "#") {
+			fields := strings.Fields(line)
+			command := strings.ToLower(fields[0])
+			if depth == 0 && !continued && command == "include" {
+				if path, ok := literalIncludePath(line[len(fields[0]):]); ok {
+					if !filepath.IsAbs(path) {
+						path = filepath.Join(filepath.Dir(main), path)
+					}
+					if path == snippet && found == 0 {
+						found = start
 					}
 				}
-				// An unquoted trailing brace opens a Sway source prefix block,
-				// including for exec. Quoted shell braces remain opaque payload.
-				if line == "}" {
-					if depth > 0 {
-						depth--
-					} else {
-						appendErr = errors.New("cannot establish a top-level append position after an unmatched block terminator")
-					}
-				} else if fields[len(fields)-1] == "{" {
-					depth++
+			}
+			// An unquoted trailing brace opens a Sway source prefix block,
+			// including for exec. Quoted shell braces remain opaque payload.
+			if line == "}" {
+				if depth > 0 {
+					depth--
+				} else {
+					appendErr = errors.New("cannot establish a top-level append position after an unmatched block terminator")
 				}
+			} else if fields[len(fields)-1] == "{" {
+				depth++
 			}
 		}
 		logical.Reset()
-		continued, oversized = false, false
+		continued = false
 		start = index + 2
 		if depth > maxSwayBlockDepth {
 			// The source is beyond this bounded recognizer. Any earlier

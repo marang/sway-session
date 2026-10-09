@@ -63,3 +63,36 @@ func TestDoctorLegacyPartialProfilesRequireManualMigration(t *testing.T) {
 		}
 	}
 }
+
+func TestDoctorDoesNotUseIncludeEvidenceAfterInspectionBound(t *testing.T) {
+	for name, source := range map[string]string{
+		"block opener":           "exec /usr/bin/true " + strings.Repeat(" ", maxSwayConfigLine) + "{\ninclude " + doctorSnippetName + "\n}\n",
+		"continued block opener": "exec /usr/bin/true \\\n" + strings.Repeat(" ", maxSwayConfigLine) + "{\ninclude " + doctorSnippetName + "\n}\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := writeSwayConfig(t, source)
+			snippet := filepath.Join(filepath.Dir(root), doctorSnippetName)
+			original := renderManagedSnippet("/usr/bin/sway-session", []integrationKind{integrationDaemon, integrationRestore})
+			if err := os.WriteFile(snippet, original, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			service := New(Options{SwayConfigPath: root})
+			check := inspectSwayConfig(t.Context(), service.options)[0]
+			if check.Status == OK || check.FixID != "" || containsEvidence(check.Evidence, "literal direct include: present") {
+				t.Fatalf("uninspected block produced direct-include evidence or repair authority: %+v", check)
+			}
+			for _, adopt := range []bool{false, true} {
+				_, err := service.Plan(t.Context(), swayIntegrationFixID, RepairOptions{AdoptStandard: adopt, Shortcuts: ShortcutsDefault})
+				if err == nil {
+					t.Fatalf("uninspected block allowed profile change with adoption=%t", adopt)
+				}
+			}
+			if after, err := os.ReadFile(root); err != nil || string(after) != source {
+				t.Fatalf("rejected plan changed main: %q, %v", after, err)
+			}
+			if after, err := os.ReadFile(snippet); err != nil || string(after) != string(original) {
+				t.Fatalf("rejected plan changed standard file: %q, %v", after, err)
+			}
+		})
+	}
+}

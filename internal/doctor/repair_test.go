@@ -430,6 +430,9 @@ func TestRepairRefusesNonStandaloneIncludeAppend(t *testing.T) {
 	for name, source := range map[string]string{
 		"trailing continuation no newline":   "exec notify-send \\",
 		"trailing continuation with newline": "exec notify-send \\\n",
+		"indented comment continuation":      "  # note \\\n",
+		"indented comment without newline":   "\t# note \\",
+		"continued comment at EOF":           "exec /usr/bin/true \\\n# note \\\n",
 		"unfinished mode":                    "mode resize {\n bindsym Return mode default\n",
 		"unfinished startup block":           "exec {\n notify-send hello\n",
 		"oversized logical line":             strings.Repeat("x", maxSwayConfigLine+1) + "\n",

@@ -254,20 +254,23 @@ func TestRollbackRestoresExistingManagedSnippet(t *testing.T) {
 }
 
 func TestRepairPreservesManualManagedSnippetText(t *testing.T) {
-	for name, line := range map[string]string{
-		"inline comment":    "exec --no-startup-id /usr/bin/sway-session daemon # deliberate user note",
-		"added whitespace":  "exec  --no-startup-id /usr/bin/sway-session daemon",
-		"quoted executable": "exec --no-startup-id \"/usr/bin/sway-session\" daemon",
+	for name, example := range map[string]struct {
+		line      string
+		wantError string
+	}{
+		"trailing hash argument": {"exec --no-startup-id /usr/bin/sway-session daemon # deliberate user note", "duplicated or conflicting"},
+		"added whitespace":       {"exec  --no-startup-id /usr/bin/sway-session daemon", "manual edits"},
+		"quoted executable":      {"exec --no-startup-id \"/usr/bin/sway-session\" daemon", "manual edits"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			root := writeSwayConfig(t, "set $mod Mod4\ninclude 50-sway-session-doctor.conf\n")
 			snippet := filepath.Join(filepath.Dir(root), doctorSnippetName)
-			original := []byte(doctorHeader + line + "\n")
+			original := []byte(doctorHeader + example.line + "\n")
 			if err := os.WriteFile(snippet, original, 0o600); err != nil {
 				t.Fatal(err)
 			}
 			service := New(Options{SwayConfigPath: root})
-			if _, err := service.Plan(context.Background(), swayIntegrationFixID); err == nil || !strings.Contains(err.Error(), "manual edits") {
+			if _, err := service.Plan(context.Background(), swayIntegrationFixID); err == nil || !strings.Contains(err.Error(), example.wantError) {
 				t.Fatalf("manual text was accepted for regeneration: %v", err)
 			}
 			if check := inspectSwayConfig(context.Background(), service.options)[0]; check.FixID != "" {

@@ -216,6 +216,11 @@ deleted binary, and retains inode/content comparison even when versions match.
 Older builds may report unknown metadata with an explanation. A mismatch
 includes a stop/start procedure; Doctor never restarts the daemon automatically.
 
+The Sway configuration check accepts unquoted hexadecimal colors such as
+`#RRGGBB` and `#RRGGBBAA`; a hash in an argument or include path is literal.
+Lines beginning with a hash after whitespace are comments. Shell-derived
+startup expressions can remain uncertain because Doctor does not execute them.
+
 The Sway integration check reports four separate findings in its details:
 daemon startup, restore startup, the default persistent-terminal shortcut and
 the default ephemeral-terminal shortcut. Normal output/input/bar and binding-mode

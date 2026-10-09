@@ -105,6 +105,11 @@ func lexSwayLine(line string) swayLexedLine {
 		result.err = errors.New("logical line exceeds the supported length")
 		return result
 	}
+	// Sway comments start at the first non-whitespace character. Hashes in
+	// arguments, including hexadecimal colors and paths, remain literal.
+	if strings.HasPrefix(strings.TrimSpace(line), "#") {
+		return result
+	}
 	var token strings.Builder
 	var quote byte
 	escaped, active, plain := false, false, true
@@ -156,8 +161,6 @@ func lexSwayLine(line string) swayLexedLine {
 		switch character {
 		case '\'', '"':
 			quote, active, plain = character, true, false
-		case '#':
-			index = len(line)
 		case ' ', '\t', '\r':
 			finish()
 		default:

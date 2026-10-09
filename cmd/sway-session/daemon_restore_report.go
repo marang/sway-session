@@ -326,8 +326,8 @@ func (runtime *sessionRuntime) observeRestoreReportWithUpdater(root *Node, regis
 				if found && requested.Layout && requested.LayoutDigest == record.Requested.LayoutDigest {
 					proof, known := layoutProof[requested.LayoutDigest]
 					if !known {
-						step, planErr := sessionstate.PlanWorkspaceRestoreStep(root, registry, desired, sessionstate.RestoreProgress{Workspace: desired.Name, Phase: sessionstate.RestoreBuild}, nil)
-						proof = planErr == nil && step.Done && step.Action == nil
+						observed, observeErr := sessionstate.ObserveWorkspaceRestoreComplete(root, registry, desired)
+						proof = observeErr == nil && observed
 						layoutProof[requested.LayoutDigest] = proof
 					}
 					update.LayoutApplied = proof

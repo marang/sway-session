@@ -247,6 +247,28 @@ func PlanWorkspaceRestoreStep(
 	progress RestoreProgress,
 	skipped map[string]struct{},
 ) (RestoreStep, error) {
+	return planWorkspaceRestoreStep(root, registry, desired, progress, skipped, false)
+}
+
+// ObserveWorkspaceRestoreComplete proves the saved structure and presentation
+// from a fresh tree without requesting any mutation. Focus is the selected
+// descendant within this workspace, including when another workspace is active.
+// It shares the planner's identity, mixed-layout and geometry checks.
+func ObserveWorkspaceRestoreComplete(root *swayipc.TreeNode, registry Registry, desired WorkspaceLayout) (bool, error) {
+	step, err := planWorkspaceRestoreStep(root, registry, desired, RestoreProgress{
+		Workspace: desired.Name, Phase: RestoreBuild,
+	}, nil, true)
+	return err == nil && step.Done && step.Action == nil, err
+}
+
+func planWorkspaceRestoreStep(
+	root *swayipc.TreeNode,
+	registry Registry,
+	desired WorkspaceLayout,
+	progress RestoreProgress,
+	skipped map[string]struct{},
+	observeLocalFocus bool,
+) (RestoreStep, error) {
 	if err := (&LayoutSnapshot{
 		Version:    LayoutSchemaVersion,
 		Workspaces: []WorkspaceLayout{desired},
@@ -497,7 +519,15 @@ func PlanWorkspaceRestoreStep(
 		}
 		if desired.FocusedContext != nil {
 			node := observation.contexts[*desired.FocusedContext]
-			if node != nil && !node.Focused {
+			focused := node != nil && node.Focused
+			if observeLocalFocus {
+				selected, err := focusedManagedContext(workspaceNode, observation.registered)
+				if err != nil {
+					return RestoreStep{}, fmt.Errorf("observe workspace focus: %w", err)
+				}
+				focused = selected != nil && *selected == *desired.FocusedContext
+			}
+			if node != nil && !focused {
 				action := RestoreAction{
 					Kind:        RestoreFocus,
 					Workspace:   desired.Name,

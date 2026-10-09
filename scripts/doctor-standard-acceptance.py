@@ -148,6 +148,7 @@ class Screen:
         self.width, self.height = width, height
         self.cells = [[" "] * width for _ in range(height)]
         self.row = self.col = 0
+        self.top, self.bottom = 0, height - 1
         self.pending = ""
         self.decoder = codecs.getincrementaldecoder("utf-8")("replace")
 
@@ -167,10 +168,12 @@ class Screen:
                     self.col = max(0, ((values[1] if len(values) > 1 else 1) or 1) - 1)
                 elif final == "G":
                     self.col = max(0, (first or 1) - 1)
+                elif final == "d":
+                    self.row = min(self.height - 1, max(0, (first or 1) - 1))
                 elif final == "A":
                     self.row = max(0, self.row - (first or 1))
                 elif final == "B":
-                    self.row += first or 1
+                    self.row = min(self.height - 1, self.row + (first or 1))
                 elif final == "C":
                     self.col += first or 1
                 elif final == "D":
@@ -189,6 +192,12 @@ class Screen:
                 elif final == "X" and self.row < self.height:
                     end = min(self.width, self.col + (first or 1))
                     self.cells[self.row][self.col:end] = [" "] * max(0, end - self.col)
+                elif final == "r":
+                    self.top = max(0, (first or 1) - 1)
+                    self.bottom = min(self.height - 1, ((values[1] if len(values) > 1 else self.height) or self.height) - 1)
+                    self.row = self.col = 0
+                elif final in "ST":
+                    self.scroll_region(first or 1, final == "S")
                 continue
             if self.pending.startswith("\x1b]"):
                 end = re.search(r"\x07|\x1b\\", self.pending)
@@ -205,20 +214,32 @@ class Screen:
             if char == "\r":
                 self.col = 0
             elif char == "\n":
-                self.row += 1
+                self.newline()
             elif char == "\b":
                 self.col = max(0, self.col - 1)
+            elif char == "\t":
+                self.col = min(self.width - 1, (self.col // 8 + 1) * 8)
             elif char >= " " and char != "\x7f":
                 if self.col >= self.width:
-                    self.col, self.row = 0, self.row + 1
-                if self.row >= self.height:
-                    self.cells.pop(0)
-                    self.cells.append([" "] * self.width)
-                    self.row = self.height - 1
+                    self.col = 0
+                    self.newline()
                 if unicodedata.combining(char):
                     continue
                 self.cells[self.row][self.col] = char
                 self.col += 2 if unicodedata.east_asian_width(char) in "WF" else 1
+
+    def scroll_region(self, count, up):
+        count = min(count, self.bottom - self.top + 1)
+        if up:
+            self.cells[self.top:self.bottom + 1] = self.cells[self.top + count:self.bottom + 1] + [[" "] * self.width for _ in range(count)]
+        else:
+            self.cells[self.top:self.bottom + 1] = [[" "] * self.width for _ in range(count)] + self.cells[self.top:self.bottom + 1 - count]
+
+    def newline(self):
+        if self.row == self.bottom:
+            self.scroll_region(1, True)
+        else:
+            self.row = min(self.height - 1, self.row + 1)
 
     def text(self):
         return "\n".join("".join(row).rstrip() for row in self.cells)
@@ -324,7 +345,11 @@ class Acceptance:
         write(config, BASE + f"exec_always {observer}\n")
         self.sway = PrivateSway(root, self.env, config)
         self.env["SWAYSOCK"] = str(self.sway.socket)
-        until(lambda: self.reload_calls.exists(), "private reload observer startup")
+        try:
+            until(lambda: self.reload_calls.exists(), "private reload observer startup")
+        except BaseException:
+            self.sway.close()
+            raise
 
     def fixture(self, name, profile=None, include="direct", dynamic=True):
         directory = self.root / name

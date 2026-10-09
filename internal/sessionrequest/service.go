@@ -18,7 +18,11 @@ import (
 	"github.com/marang/sway-session/internal/swayipc"
 )
 
-const registrationRollbackTimeout = time.Second
+const (
+	registrationRollbackTimeout = time.Second
+	// Bound output-pipe draining; descendant lifetimes remain with their owners.
+	restoreCommandWaitDelay = 250 * time.Millisecond
+)
 
 type SwayRequester interface {
 	RequestContext(context.Context, swayipc.MessageType, []byte) (swayipc.Message, error)
@@ -49,6 +53,7 @@ func (runner ExecRestoreRunner) Restore(ctx context.Context, id sessionstate.Con
 		return errors.New("sway socket must be absolute")
 	}
 	command := exec.CommandContext(ctx, runner.Executable, "--json", "restore", "--require-active", "--socket", runner.SwaySocket, string(id))
+	command.WaitDelay = restoreCommandWaitDelay
 	command.Env = systemExecutableEnvironment()
 	stderr := boundedBuffer{limit: 4096}
 	command.Stdout = io.Discard

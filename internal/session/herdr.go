@@ -20,9 +20,12 @@ import (
 )
 
 const (
-	maxHerdrConfigSize          = 1024 * 1024
-	maxHerdrOutputSize          = 1024 * 1024
-	herdrCommandTimeout         = 20 * time.Second
+	maxHerdrConfigSize  = 1024 * 1024
+	maxHerdrOutputSize  = 1024 * 1024
+	herdrCommandTimeout = 20 * time.Second
+	// Bound inherited output pipes after cancellation or direct-process exit.
+	// Descendants are not process-group killed by this management runner.
+	herdrCommandWaitDelay       = 250 * time.Millisecond
 	maxHerdrUnixSocketPathBytes = len(unix.RawSockaddrUnix{}.Path) - 1
 	herdrAPISocketFilename      = "herdr.sock"
 	herdrClientSocketFilename   = "herdr-client.sock"
@@ -421,6 +424,7 @@ func (ExecCommandRunner) CombinedOutput(ctx context.Context, name string, argume
 
 func execHerdrCommand(ctx context.Context, configHome, name string, arguments ...string) ([]byte, error) {
 	command := exec.CommandContext(ctx, name, arguments...)
+	command.WaitDelay = herdrCommandWaitDelay
 	if configHome != "" {
 		environment := command.Environ()
 		filtered := make([]string, 0, len(environment)+1)

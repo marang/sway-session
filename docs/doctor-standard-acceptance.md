@@ -47,7 +47,7 @@ becomes `ok` and the applied repair result remains visible.
 That initial artifact passed all 24 executable scenarios: nine CLI scenarios, two
 startup profiles, twelve PTY scenarios and the no-runtime-effects sentinel.
 Both private-Sway Go tests passed their nine subcases under Go 1.26.5; the eight
-focused repair-safety race tests also passed at the final product source.
+focused repair-safety race tests also passed at that product source.
 
 | Scenario | Expected and observed behavior | Proof level | Status |
 | --- | --- | --- | --- |
@@ -93,6 +93,35 @@ and profile changes that touch only the intended files. Non-ASCII filename
 bytes remain literal; quoted Unicode directory names remain supported.
 Review conclusions and PR/merge approval are separate gates from this
 behavioral evidence. The initial artifact above remains historical evidence.
+
+## Acceptance at c89d6b0 after NUL rejection
+
+The product source tested in this recorded run was
+`c89d6b0ee89c1215d7c1d4d7ac7cb26334149ffd`. Its executing candidate reports
+`dev`, that commit and `modified=false`; its SHA-256 is
+`bfec5bf8a69e8923d8d3e78f6aa654ec34348857d057f3ae7007e1003caa31ea`.
+The Go 1.26.5, CGO-disabled candidate built outside the checkout was byte-identical
+to the executable produced by the canonical `make verify` at that revision.
+
+The complete `make verify` passed, including Bash/Zsh/Fish completions, unit and
+race tests, vet/staticcheck, AppArmor, private packaging fixtures, standalone
+checks, release/VM helper tests, the CGO-disabled build and whitespace checks.
+All 24 actual CLI/PTY scenarios and all nine private-Sway Go subcases passed
+again. A two-worker `FuzzLiteralDirectInclude` run with a 10-second target passed
+44,183 executions. Actual-CLI/native-Sway probes rechecked the five corrected
+families above and the NUL-bearing source cases.
+
+NUL bytes anywhere in the selected main source now prevent direct-include
+evidence and automatic repair. Regression tests and private actual-CLI probes
+cover both missing and existing owned files: preview and apply refuse the
+unsafe source without changing file bytes or creating repair files. This avoids
+using inconsistent C-string and Go-string interpretations as repair authority.
+
+The five independent roles in the code-review panel reviewed the complete
+change set against the comparison baseline, including the NUL correction, and
+reported no remaining findings at this product revision. This evidence update
+changes only documentation. PR and merge approval remain separate gates; the
+production and runtime limits below still apply.
 
 ## Reproduce
 

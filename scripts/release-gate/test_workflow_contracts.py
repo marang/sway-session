@@ -293,6 +293,27 @@ class WorkflowContractsTest(unittest.TestCase):
             self.assertEqual(downloads[0]["with"]["name"], upload[0]["with"]["name"])
             self.assertEqual(downloads[0]["with"]["path"], "release-metadata")
 
+    def test_aur_and_sync_reject_stale_metadata_before_mutation(self):
+        guards = []
+        for job_name, guard_name, mutation_name, target, empty, equal in (
+            ("publish-aur", "Reject stale package metadata", "Commit & push to AUR", "aur", "true", "false"),
+            ("sync-pkgbuild", "Reject stale repository metadata", "Update exact release metadata and open PR", ".", "false", "true"),
+        ):
+            with self.subTest(job=job_name):
+                steps = self.aur["jobs"][job_name]["steps"]
+                guard = next(step for step in steps if step.get("name") == guard_name)
+                mutation = next(step for step in steps if step.get("name") == mutation_name)
+                self.assertLess(steps.index(guard), steps.index(mutation))
+                self.assert_success_only(guard)
+                self.assertNotIn("if", guard)
+                self.assertEqual(guard["env"], {
+                    "CURRENT_METADATA_DIR": target,
+                    "ALLOW_EMPTY_AUR": empty,
+                    "ALLOW_EQUAL_CHANGES": equal,
+                })
+                guards.append(guard["run"])
+        self.assertEqual(guards[0], guards[1])
+
     def test_contract_guards_reject_missing_edges_wrong_sha_and_fail_open_mutations(self):
         publisher = self.release["jobs"]["goreleaser"]
         mutations = (

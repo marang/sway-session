@@ -228,6 +228,91 @@ jobs:
         run: |
           git clone ssh://aur@aur.archlinux.org/${AUR_REPO}.git aur
 
+      - name: Reject stale package metadata
+        env:
+          CURRENT_METADATA_DIR: aur
+          ALLOW_EMPTY_AUR: 'true'
+          ALLOW_EQUAL_CHANGES: 'false'
+        run: &package-version-guard |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import re
+          import stat
+          import subprocess
+
+          def read_file(path):
+              try:
+                  mode = path.lstat().st_mode
+              except FileNotFoundError:
+                  return None
+              if not stat.S_ISREG(mode):
+                  raise ValueError(f'{path} must be a regular file')
+              with path.open('rb') as stream:
+                  data = stream.read(1024 * 1024 + 1)
+              if len(data) > 1024 * 1024:
+                  raise ValueError(f'{path} exceeds the metadata size limit')
+              return data
+
+          def version(data):
+              if data is None:
+                  raise ValueError('missing .SRCINFO')
+              fields, names = {}, []
+              for line in data.decode('utf-8').splitlines():
+                  line = line.strip()
+                  if not line or line.startswith('#'):
+                      continue
+                  key, separator, value = line.partition('=')
+                  key, value = key.strip(), value.strip()
+                  if not separator or not value or not re.fullmatch(r'[a-z][a-z0-9_]*', key):
+                      raise ValueError('malformed .SRCINFO field')
+                  if key == 'pkgname':
+                      names.append(value)
+                  elif key in ('pkgbase', 'epoch', 'pkgver', 'pkgrel'):
+                      if names or key in fields or key != 'pkgbase' and 'pkgbase' not in fields:
+                          raise ValueError(f'duplicate or misplaced .SRCINFO {key}')
+                      fields[key] = value
+              if fields.get('pkgbase') != 'sway-session' or names != ['sway-session']:
+                  raise ValueError('unexpected package identity')
+              epoch = fields.get('epoch', '0')
+              pkgver, pkgrel = fields.get('pkgver', ''), fields.get('pkgrel', '')
+              if not re.fullmatch(r'[0-9]+', epoch) or not re.fullmatch(r'[0-9]+(?:\.[0-9]+)*', pkgver):
+                  raise ValueError('unsupported package epoch or version')
+              if not re.fullmatch(r'[0-9]+(?:\.[0-9]+)?', pkgrel) or int(pkgrel.split('.')[0]) < 1:
+                  raise ValueError('unsupported package revision')
+              return (int(epoch), tuple(map(int, pkgver.split('.'))), tuple(map(int, pkgrel.split('.')))), pkgver
+
+          try:
+              requested = os.environ['VERSION']
+              if not re.fullmatch(r'v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)', requested):
+                  raise ValueError('malformed resolved release tag')
+              incoming_info = read_file(Path('release-metadata/SRCINFO'))
+              incoming_recipe = read_file(Path('release-metadata/PKGBUILD'))
+              incoming, pkgver = version(incoming_info)
+              if incoming_recipe is None or pkgver != requested[1:]:
+                  raise ValueError('incoming metadata does not match the resolved release tag')
+              target = Path(os.environ['CURRENT_METADATA_DIR'])
+              current_info = read_file(target / '.SRCINFO')
+              current_recipe = read_file(target / 'PKGBUILD')
+              if current_info is None or current_recipe is None:
+                  if current_info is not None or current_recipe is not None or os.environ['ALLOW_EMPTY_AUR'] != 'true':
+                      raise ValueError('existing package metadata is incomplete')
+                  refs = subprocess.run(['git', '-C', str(target), 'for-each-ref', '--format=%(refname)'],
+                                        check=True, capture_output=True, text=True, timeout=10).stdout
+                  if refs.strip():
+                      raise ValueError('existing repository has no package metadata')
+              else:
+                  current, _ = version(current_info)
+                  if incoming < current:
+                      raise ValueError('release would downgrade the existing package version')
+                  if incoming == current and os.environ['ALLOW_EQUAL_CHANGES'] != 'true' and (
+                          incoming_info != current_info or incoming_recipe != current_recipe):
+                      raise ValueError('changed metadata for a published version requires a package revision')
+          except (OSError, UnicodeError, ValueError, subprocess.SubprocessError) as error:
+              raise SystemExit(f'Package version guard rejected metadata: {error}')
+          print('Package metadata version accepted.')
+          PY
+
       - name: Commit & push to AUR
         env:
           GIT_AUTHOR_NAME: ${{ secrets.AUR_COMMIT_NAME || 'github-actions[bot]' }}
@@ -270,6 +355,13 @@ jobs:
         with:
           name: aur-release-metadata
           path: release-metadata
+
+      - name: Reject stale repository metadata
+        env:
+          CURRENT_METADATA_DIR: '.'
+          ALLOW_EMPTY_AUR: 'false'
+          ALLOW_EQUAL_CHANGES: 'true'
+        run: *package-version-guard
 
       - name: Update exact release metadata and open PR
         env:

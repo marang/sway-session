@@ -35,7 +35,7 @@ func TestInspectSwayConfigMissingOwnedIntegration(t *testing.T) {
 		status        Status
 	}{
 		{"no direct include", healthySwayConfig(), Unavailable},
-		{"missing included sibling", "include " + doctorSnippetName + "\n", Warning},
+		{"missing included sibling", "include config.d/" + doctorSnippetName + "\n", Warning},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			root := writeSwayConfig(t, test.content)
@@ -49,7 +49,7 @@ func TestInspectSwayConfigMissingOwnedIntegration(t *testing.T) {
 			if after, err := os.ReadFile(root); err != nil || string(after) != test.content {
 				t.Fatalf("inspection changed root: %q, %v", after, err)
 			}
-			if _, err := os.Stat(filepath.Join(filepath.Dir(root), doctorSnippetName)); !os.IsNotExist(err) {
+			if _, err := os.Stat(filepath.Join(filepath.Dir(root), "config.d", doctorSnippetName)); !os.IsNotExist(err) {
 				t.Fatalf("inspection created snippet: %v", err)
 			}
 		})
@@ -68,14 +68,14 @@ func writeStandardSwayConfig(t *testing.T, shortcuts ShortcutSelection, include 
 	t.Helper()
 	content := "# unrelated main configuration\n"
 	if include {
-		content = "include " + doctorSnippetName + "\n"
+		content = "include config.d/" + doctorSnippetName + "\n"
 	}
 	root := writeSwayConfig(t, content)
 	kinds := []integrationKind{integrationDaemon, integrationRestore}
 	if shortcuts == ShortcutsDefault {
 		kinds = integrationOrder
 	}
-	if err := os.WriteFile(filepath.Join(filepath.Dir(root), doctorSnippetName), renderManagedSnippet("/usr/bin/sway-session", kinds), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(filepath.Dir(root), "config.d", doctorSnippetName), renderManagedSnippet("/usr/bin/sway-session", kinds), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return root
@@ -139,6 +139,9 @@ func assertUnavailableQuickly(t *testing.T, path string) {
 func writeSwayConfig(t *testing.T, content string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "config")
+	if err := os.Mkdir(filepath.Join(filepath.Dir(path), "config.d"), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}

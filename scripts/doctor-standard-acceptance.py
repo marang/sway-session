@@ -351,11 +351,15 @@ class Acceptance:
             self.sway.close()
             raise
 
-    def fixture(self, name, profile=None, include="direct", dynamic=True):
+    def fixture(self, name, profile=None, include="direct", dynamic=True, glob_include=False):
         directory = self.root / name
         directory.mkdir(mode=0o700)
-        config, owned = directory / "config", directory / "50-sway-session-doctor.conf"
+        config = directory / "config"
+        (directory / "config.d").mkdir(mode=0o700)
+        owned = directory / "config.d/50-sway-session-doctor.conf"
         text = BASE + (DYNAMIC if dynamic else "")
+        if glob_include:
+            text += "include config.d/*\n"
         if profile is not None:
             write(owned, profile)
             if include == "indirect":
@@ -440,7 +444,7 @@ class Acceptance:
             self.backup(switched, preserved_owned)
             self.passed(name, "text/JSON, explicit adoption, read-only preview, 0600 original backup, preserve and switch")
         for name, profile, expected in (
-                ("legacy", HEADER + f"exec --no-startup-id {self.binary} daemon\n", "warning"),
+                ("incomplete", HEADER + f"exec --no-startup-id {self.binary} daemon\n", "unavailable"),
                 ("foreign", "# foreign file\nexec /usr/bin/true\n", "unavailable"),
                 ("manual-edit", snippet(self.binary) + "# local edit\n", "unavailable")):
             config, owned = self.fixture("cli-" + name, profile)
@@ -470,7 +474,9 @@ class Acceptance:
             (directory / "run").mkdir(mode=0o700)
             calls, inert = directory / "calls", directory / "sway-session"
             write(inert, f"#!/bin/sh\nprintf '%s\\n' \"$1\" >> '{calls}'\n", 0o700)
-            config, owned = directory / "config", directory / "50-sway-session-doctor.conf"
+            config = directory / "config"
+            (directory / "config.d").mkdir(mode=0o700)
+            owned = directory / "config.d/50-sway-session-doctor.conf"
             write(owned, snippet(inert, default))
             write(config, BASE + DYNAMIC + f'include "{owned}"\n')
             env = dict(self.env, XDG_RUNTIME_DIR=str(directory / "run"))
@@ -488,11 +494,59 @@ class Acceptance:
             finally:
                 sway.close()
 
+    def fragment_scenarios(self):
+        for glob in ("*", "*.conf"):
+            name = "fragment-all" if glob == "*" else "fragment-conf"
+            config, owned = self.fixture(name, glob_include=True)
+            write(config, config.read_text().replace("include config.d/*\n", f"include config.d/{glob}\n"))
+            original = config.read_bytes()
+            code, preview = self.cli(config, "--fix", "sway.integration", "--adopt-standard")
+            require(code == 0 and preview["doctor_plan"]["changes"][0]["path"] == str(owned)
+                    and not owned.exists() and config.read_bytes() == original,
+                    "fragment preview selected the wrong location or wrote files")
+            code, result = self.cli(config, "--fix", "sway.integration", "--adopt-standard", "--yes")
+            require(code == 0 and owned.read_text() == snippet(self.binary), "fragment adoption failed")
+            self.backup(result, original)
+            require(all(Path(path).parent == config.parent for path in result["doctor_fix"]["backups"]),
+                    "fragment adoption backup escaped the main-file directory")
+            self.check(config, "ok")
+            calls, inert = config.parent / "calls", config.parent / "sway-session"
+            write(inert, f"#!/bin/sh\nprintf '%s\\n' \"$1\" >> '{calls}'\n", 0o700)
+            write(owned, snippet(inert))
+            run = config.parent / "run"
+            run.mkdir(mode=0o700)
+            env = dict(self.env, XDG_RUNTIME_DIR=str(run))
+            env.pop("SWAYSOCK", None)
+            for round in range(2):
+                sway = PrivateSway(config.parent, env, config)
+                try:
+                    until(lambda: calls.exists() and len(calls.read_text().splitlines()) >= 2,
+                          "fragment inert startup traces")
+                    if round == 0:
+                        before = owned.read_bytes()
+                        code, switched = self.cli(config, "--fix", "sway.integration", "--shortcuts", "default", "--yes")
+                        require(code == 0 and owned.read_text() == snippet(inert, True),
+                                "fragment switch failed to preserve its executable")
+                        self.backup(switched, before)
+                        require(Path(switched["doctor_fix"]["backups"][0]).parent == config.parent,
+                                "profile backup would be loaded by config.d glob")
+                        require(sorted(path.name for path in owned.parent.iterdir()) == [owned.name],
+                                "config.d contains extra repair files")
+                    sway.reload()
+                    sway.reload()
+                    time.sleep(0.3)
+                    require(sorted(calls.read_text().splitlines()) == ["daemon", "restore"],
+                            "glob plus literal include or a profile backup repeated startup")
+                finally:
+                    sway.close()
+                calls.unlink()
+            self.passed(name, "actual CLI adoption and profile switch; private Sway starts daemon/restore once with glob plus direct include, including next login with original backups; two reloads add no calls")
+
     def tui_scenarios(self):
         for width, height in ((80, 24), (48, 16)):
-            for default in (False, True):
-                name = f"tui-new-{'default' if default else 'none'}-{width}x{height}"
-                config, owned = self.fixture(name)
+            for default, glob_include in ((False, False), (True, False), (False, True), (True, True)):
+                name = f"tui-new-{'glob-' if glob_include else ''}{'default' if default else 'none'}-{width}x{height}"
+                config, owned = self.fixture(name, glob_include=glob_include)
                 original = config.read_bytes()
                 terminal = DoctorPTY(self.args(config), self.env, width, height, self.root / (name + ".pty"))
                 try:
@@ -562,7 +616,7 @@ class Acceptance:
                 finally:
                     terminal.close()
             for kind, profile, message in (
-                    ("legacy", HEADER + f"exec --no-startup-id {self.binary} daemon\n", "legacy partial"),
+                    ("incomplete", HEADER + f"exec --no-startup-id {self.binary} daemon\n", "unrecognized"),
                     ("foreign", "# foreign file\nexec /usr/bin/true\n", "protected"),
                     ("manual-edit", snippet(self.binary) + "# manual edit\n", "protected")):
                 name = f"tui-{kind}-{width}x{height}"
@@ -626,6 +680,7 @@ def main():
                     "sway": subprocess.check_output(["/usr/bin/sway", "--version"], env=acceptance.env).decode().strip()}
         acceptance.cli_scenarios()
         acceptance.startup_scenarios()
+        acceptance.fragment_scenarios()
         if options.skip_tui:
             acceptance.records.append({"scenario": "real-TUI-PTY", "status": "not run", "observed": "--skip-tui selected"})
         else:

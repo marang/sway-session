@@ -69,7 +69,10 @@ func TestDoctorConfigurationHeadless(t *testing.T) {
 				t.Fatal(err)
 			}
 			config := filepath.Join(h.root, "config", "sway.conf")
-			snippet := filepath.Join(filepath.Dir(config), "50-sway-session-doctor.conf")
+			snippet := filepath.Join(filepath.Dir(config), "config.d", "50-sway-session-doctor.conf")
+			if err := os.Mkdir(filepath.Dir(snippet), 0o700); err != nil {
+				t.Fatal(err)
+			}
 			content := "xwayland disable\noutput HEADLESS-1 mode 1280x720\nworkspace 98 output HEADLESS-1\nworkspace 98\nset $mod Mod4\n"
 			// A safe shell-valued wallpaper/idle-shaped command is intentionally
 			// irrelevant to our source inspection. Native Sway may interpret it.
@@ -130,7 +133,7 @@ func TestDoctorConfigurationHeadless(t *testing.T) {
 			case "new-adoption":
 				want = doctor.Unavailable
 			case "legacy-partial":
-				want, fix = doctor.Warning, false
+				want, fix = doctor.Unavailable, false
 			case "manual-edit":
 				want, fix = doctor.Unavailable, false
 			}
@@ -243,7 +246,10 @@ func TestDoctorStandardStartupHeadless(t *testing.T) {
 				t.Fatal(err)
 			}
 			config := filepath.Join(h.root, "config", "startup.conf")
-			snippet := filepath.Join(filepath.Dir(config), "50-sway-session-doctor.conf")
+			snippet := filepath.Join(filepath.Dir(config), "config.d", "50-sway-session-doctor.conf")
+			if err := os.Mkdir(filepath.Dir(snippet), 0o700); err != nil {
+				t.Fatal(err)
+			}
 			if err := os.WriteFile(snippet, []byte(doctorAcceptanceSnippet(executable, shortcuts)), 0600); err != nil {
 				t.Fatal(err)
 			}

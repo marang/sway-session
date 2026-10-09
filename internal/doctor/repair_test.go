@@ -13,6 +13,9 @@ import (
 func TestRepairPlanPreviewApplyBackupAndIdempotence(t *testing.T) {
 	directory := t.TempDir()
 	root := filepath.Join(directory, "config")
+	if err := os.Mkdir(filepath.Join(directory, "config.d"), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	secret := "set $mod Mod4\nset $private super-secret-value\n"
 	if err := os.WriteFile(root, []byte(secret), 0o600); err != nil {
 		t.Fatal(err)
@@ -55,7 +58,7 @@ func TestRepairPlanPreviewApplyBackupAndIdempotence(t *testing.T) {
 		t.Fatalf("backup mismatch: %q, %v", backup, err)
 	}
 	assertMode(t, result.Backups[0], 0o600)
-	snippet := filepath.Join(directory, doctorSnippetName)
+	snippet := filepath.Join(directory, "config.d", doctorSnippetName)
 	assertMode(t, snippet, 0o600)
 	rootAfter, err := os.ReadFile(root)
 	if err != nil {
@@ -132,7 +135,7 @@ func TestRepairShortcutSelectionPreservesOrChangesCompleteProfiles(t *testing.T)
 		for _, requested := range []ShortcutSelection{ShortcutsUnspecified, ShortcutsNone, ShortcutsDefault} {
 			t.Run(string(existing)+" to "+string(requested), func(t *testing.T) {
 				root := writeStandardSwayConfig(t, existing, true)
-				snippet := filepath.Join(filepath.Dir(root), doctorSnippetName)
+				snippet := filepath.Join(filepath.Dir(root), "config.d", doctorSnippetName)
 				service := New(Options{SwayConfigPath: root, Executable: "/different/sway-session"})
 				plan, err := service.Plan(t.Context(), swayIntegrationFixID, RepairOptions{Shortcuts: requested})
 				if requested == ShortcutsUnspecified || requested == existing {
@@ -192,7 +195,7 @@ func TestRepairAdoptionPreservesExistingProfileWhenIncludeMissing(t *testing.T) 
 }
 
 func TestRepairRequiresExplicitAdoptionForCreationAndRecovery(t *testing.T) {
-	for _, main := range []string{"# root\n", "include " + doctorSnippetName + "\n"} {
+	for _, main := range []string{"# root\n", "include config.d/" + doctorSnippetName + "\n"} {
 		root := writeSwayConfig(t, main)
 		service := New(Options{SwayConfigPath: root})
 		for _, selection := range []ShortcutSelection{ShortcutsUnspecified, ShortcutsNone, ShortcutsDefault} {
@@ -219,7 +222,7 @@ func TestRepairAdoptionShortcutSelection(t *testing.T) {
 		if want == ShortcutsUnspecified {
 			want = ShortcutsNone
 		}
-		if err != nil || parsed.legacy || parsed.shortcuts != want {
+		if err != nil || parsed.shortcuts != want {
 			t.Fatalf("adoption selected wrong profile: %+v, %v", parsed, err)
 		}
 	}
@@ -236,7 +239,10 @@ func TestRepairAdoptionShortcutSelection(t *testing.T) {
 func TestRepairRecoversMissingIncludedManagedSnippet(t *testing.T) {
 	directory := t.TempDir()
 	root := filepath.Join(directory, "config")
-	snippet := filepath.Join(directory, doctorSnippetName)
+	if err := os.Mkdir(filepath.Join(directory, "config.d"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	snippet := filepath.Join(directory, "config.d", doctorSnippetName)
 	includeLine, err := renderIncludeLine(snippet)
 	if err != nil {
 		t.Fatal(err)
@@ -259,7 +265,7 @@ func TestRepairRecoversMissingIncludedManagedSnippet(t *testing.T) {
 
 func TestRepairRefusesUnknownManagedSnippetEdits(t *testing.T) {
 	root := writeSwayConfig(t, "set $mod Mod4\n")
-	snippet := filepath.Join(filepath.Dir(root), doctorSnippetName)
+	snippet := filepath.Join(filepath.Dir(root), "config.d", doctorSnippetName)
 	if err := os.WriteFile(snippet, []byte(doctorHeader+"set $manual yes\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -287,7 +293,7 @@ func TestRepairRejectsStaleFileAndDirectoryPlans(t *testing.T) {
 		if _, err := service.Apply(context.Background(), plan); err == nil || !strings.Contains(err.Error(), "stale") {
 			t.Fatalf("stale file plan accepted: %v", err)
 		}
-		if _, err := os.Stat(filepath.Join(filepath.Dir(root), doctorSnippetName)); !errors.Is(err, os.ErrNotExist) {
+		if _, err := os.Stat(filepath.Join(filepath.Dir(root), "config.d", doctorSnippetName)); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("stale plan wrote snippet: %v", err)
 		}
 	})
@@ -299,6 +305,9 @@ func TestRepairRejectsStaleFileAndDirectoryPlans(t *testing.T) {
 			t.Fatal(err)
 		}
 		root := filepath.Join(directory, "config")
+		if err := os.Mkdir(filepath.Join(directory, "config.d"), 0o700); err != nil {
+			t.Fatal(err)
+		}
 		if err := os.WriteFile(root, []byte("set $mod Mod4\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -340,7 +349,7 @@ func TestRepairRefusesUnsafeExecutableAndCancellation(t *testing.T) {
 	if _, err := service.Apply(ctx, plan); !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled apply returned %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(filepath.Dir(root), doctorSnippetName)); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(filepath.Join(filepath.Dir(root), "config.d", doctorSnippetName)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("canceled apply wrote snippet: %v", err)
 	}
 }
@@ -390,14 +399,14 @@ func TestRepairPrivateRequestAndPreviewCannotGrantAuthority(t *testing.T) {
 	if _, err := service.Apply(t.Context(), tampered); err == nil {
 		t.Fatal("adoption loss accepted")
 	}
-	if _, err := os.Stat(filepath.Join(filepath.Dir(root), doctorSnippetName)); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(filepath.Join(filepath.Dir(root), "config.d", doctorSnippetName)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("untrusted apply wrote file")
 	}
 }
 
 func TestRepairChangesProfileAndAppendsIncludeTogether(t *testing.T) {
 	root := writeStandardSwayConfig(t, ShortcutsDefault, false)
-	snippet := filepath.Join(filepath.Dir(root), doctorSnippetName)
+	snippet := filepath.Join(filepath.Dir(root), "config.d", doctorSnippetName)
 	service := New(Options{SwayConfigPath: root})
 	plan, err := service.Plan(t.Context(), swayIntegrationFixID, RepairOptions{AdoptStandard: true, Shortcuts: ShortcutsNone})
 	if err != nil {
@@ -454,7 +463,7 @@ func TestRepairRefusesNonStandaloneIncludeAppend(t *testing.T) {
 			if after, err := os.ReadFile(root); err != nil || string(after) != source {
 				t.Fatalf("failed preview changed root: %q, %v", after, err)
 			}
-			if _, err := os.Stat(filepath.Join(filepath.Dir(root), doctorSnippetName)); !errors.Is(err, os.ErrNotExist) {
+			if _, err := os.Stat(filepath.Join(filepath.Dir(root), "config.d", doctorSnippetName)); !errors.Is(err, os.ErrNotExist) {
 				t.Fatalf("failed preview created snippet: %v", err)
 			}
 		})
@@ -476,13 +485,13 @@ func TestRepairAllowsAppendAfterBlankLineEndsContinuation(t *testing.T) {
 	if err != nil || !strings.HasPrefix(string(after), source) {
 		t.Fatalf("source preceding include changed: %q, %v", after, err)
 	}
-	if line := literalDirectInclude(after, root, filepath.Join(filepath.Dir(root), doctorSnippetName)); line != 3 {
+	if line := literalDirectInclude(after, root, filepath.Join(filepath.Dir(root), "config.d", doctorSnippetName)); line != 3 {
 		t.Fatalf("include was not standalone after blank physical line: %d", line)
 	}
 }
 
 func TestRepairNormalizedLiteralIncludesDoNotAppendDuplicates(t *testing.T) {
-	for _, include := range []string{"include ./" + doctorSnippetName + "\n", "include \"./" + doctorSnippetName + "\"\n", "include .//" + doctorSnippetName + "\n"} {
+	for _, include := range []string{"include ./config.d/" + doctorSnippetName + "\n", "include \"./config.d/" + doctorSnippetName + "\"\n", "include .//config.d/" + doctorSnippetName + "\n"} {
 		root := writeStandardSwayConfig(t, ShortcutsNone, true)
 		if err := os.WriteFile(root, []byte(include), 0o600); err != nil {
 			t.Fatal(err)
@@ -510,7 +519,7 @@ func TestRepairNormalizedLiteralIncludesDoNotAppendDuplicates(t *testing.T) {
 
 func TestRepairPreservesExistingFileModesAndMakesPrivateBackups(t *testing.T) {
 	root := writeStandardSwayConfig(t, ShortcutsDefault, false)
-	snippet := filepath.Join(filepath.Dir(root), doctorSnippetName)
+	snippet := filepath.Join(filepath.Dir(root), "config.d", doctorSnippetName)
 	for _, path := range []string{root, snippet} {
 		if err := os.Chmod(path, 0o640); err != nil {
 			t.Fatal(err)

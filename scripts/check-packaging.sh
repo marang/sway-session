@@ -84,13 +84,8 @@ require_fixed .goreleaser.yaml '        dst: /usr/share/doc/sway-session/50-sway
 require_fixed .goreleaser.yaml '        dst: /usr/share/doc/sway-session/contrib/codex/hooks.json'
 reject_fixed .goreleaser.yaml 'codex-report-agent-session'
 require_fixed .goreleaser.yaml '        dst: /usr/share/doc/sway-session/contrib/apparmor/agent-home-guard'
-require_ordered_lines README.md \
-  'sudo apparmor_parser -R /etc/apparmor.d/codex-home-guard' \
-  'sudo mv /etc/apparmor.d/codex-home-guard' \
-  '/root/codex-home-guard.before-agent-home-guard' \
-  'sudo install -m 0644' \
-  '/usr/share/doc/sway-session/contrib/apparmor/agent-home-guard' \
-  '/etc/apparmor.d/agent-home-guard' \
+require_ordered_lines docs/agent-reporting.md \
+  'sudo install -m 0644 /usr/share/doc/sway-session/contrib/apparmor/agent-home-guard /etc/apparmor.d/agent-home-guard' \
   'sudo apparmor_parser -r /etc/apparmor.d/agent-home-guard'
 require_fixed .goreleaser.yaml '        dst: /usr/share/doc/sway-session/scripts/verify-codex-boundary.sh'
 reject_fixed .goreleaser.yaml 'sway-title-animator'

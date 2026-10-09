@@ -44,18 +44,18 @@ func TestDoctorLegacyPartialProfilesRequireManualMigration(t *testing.T) {
 				kinds = append(kinds, kind)
 			}
 		}
-		root := writeSwayConfig(t, "include "+doctorSnippetName+"\n")
-		snippet := filepath.Join(filepath.Dir(root), doctorSnippetName)
+		root := writeSwayConfig(t, "include config.d/"+doctorSnippetName+"\n")
+		snippet := filepath.Join(filepath.Dir(root), "config.d", doctorSnippetName)
 		original := renderManagedSnippet("/usr/bin/sway-session", kinds)
 		if err := os.WriteFile(snippet, original, 0o600); err != nil {
 			t.Fatal(err)
 		}
 		service := New(Options{SwayConfigPath: root})
 		check := inspectSwayConfig(t.Context(), service.options)[0]
-		if check.Status != Warning || check.FixID != "" || !containsEvidence(check.Evidence, "legacy partial") {
+		if check.Status != Unavailable || check.FixID != "" {
 			t.Fatalf("partial mask %d offered repair: %+v", mask, check)
 		}
-		if _, err := service.Plan(t.Context(), swayIntegrationFixID, RepairOptions{AdoptStandard: true, Shortcuts: ShortcutsDefault}); err == nil || !strings.Contains(err.Error(), "manual migration") {
+		if _, err := service.Plan(t.Context(), swayIntegrationFixID, RepairOptions{AdoptStandard: true, Shortcuts: ShortcutsDefault}); err == nil || !strings.Contains(err.Error(), "supported complete profile") {
 			t.Fatalf("partial mask %d accepted adoption: %v", mask, err)
 		}
 		if after, err := os.ReadFile(snippet); err != nil || string(after) != string(original) {
@@ -66,12 +66,12 @@ func TestDoctorLegacyPartialProfilesRequireManualMigration(t *testing.T) {
 
 func TestDoctorDoesNotUseIncludeEvidenceAfterInspectionBound(t *testing.T) {
 	for name, source := range map[string]string{
-		"block opener":           "exec /usr/bin/true " + strings.Repeat(" ", maxSwayConfigLine) + "{\ninclude " + doctorSnippetName + "\n}\n",
-		"continued block opener": "exec /usr/bin/true \\\n" + strings.Repeat(" ", maxSwayConfigLine) + "{\ninclude " + doctorSnippetName + "\n}\n",
+		"block opener":           "exec /usr/bin/true " + strings.Repeat(" ", maxSwayConfigLine) + "{\ninclude config.d/" + doctorSnippetName + "\n}\n",
+		"continued block opener": "exec /usr/bin/true \\\n" + strings.Repeat(" ", maxSwayConfigLine) + "{\ninclude config.d/" + doctorSnippetName + "\n}\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			root := writeSwayConfig(t, source)
-			snippet := filepath.Join(filepath.Dir(root), doctorSnippetName)
+			snippet := filepath.Join(filepath.Dir(root), "config.d", doctorSnippetName)
 			original := renderManagedSnippet("/usr/bin/sway-session", []integrationKind{integrationDaemon, integrationRestore})
 			if err := os.WriteFile(snippet, original, 0o600); err != nil {
 				t.Fatal(err)
@@ -100,7 +100,7 @@ func TestDoctorDoesNotUseIncludeEvidenceAfterInspectionBound(t *testing.T) {
 func TestDoctorIncludeBlockRequiresExplicitAdoption(t *testing.T) {
 	for _, gap := range []string{"", "\n \t\n"} {
 		root := writeStandardSwayConfig(t, ShortcutsNone, true)
-		source := "include " + doctorSnippetName + "\n" + gap + "{\n}\n"
+		source := "include config.d/" + doctorSnippetName + "\n" + gap + "{\n}\n"
 		if err := os.WriteFile(root, []byte(source), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -130,7 +130,7 @@ func TestDoctorIncludeBlockRequiresExplicitAdoption(t *testing.T) {
 
 func TestDoctorEscapedSpaceBracePreservesRealInclude(t *testing.T) {
 	root := writeStandardSwayConfig(t, ShortcutsNone, true)
-	source := "exec /usr/bin/printf \\ {\ninclude " + doctorSnippetName + "\n"
+	source := "exec /usr/bin/printf \\ {\ninclude config.d/" + doctorSnippetName + "\n"
 	if err := os.WriteFile(root, []byte(source), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -152,12 +152,12 @@ func TestDoctorEscapedSpaceBracePreservesRealInclude(t *testing.T) {
 
 func TestDoctorUnicodeFilenameDoesNotGrantDirectIncludeAuthority(t *testing.T) {
 	root := writeStandardSwayConfig(t, ShortcutsNone, true)
-	foreign := filepath.Join(filepath.Dir(root), doctorSnippetName+"\u00a0")
+	foreign := filepath.Join(filepath.Dir(root), "config.d", doctorSnippetName+"\u00a0")
 	originalForeign := "# distinct foreign file\n"
 	if err := os.WriteFile(foreign, []byte(originalForeign), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	source := "include " + doctorSnippetName + "\u00a0\n"
+	source := "include config.d/" + doctorSnippetName + "\u00a0\n"
 	if err := os.WriteFile(root, []byte(source), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -189,14 +189,14 @@ func TestDoctorUnicodeFilenameDoesNotGrantDirectIncludeAuthority(t *testing.T) {
 
 func TestDoctorNULSourceCannotGrantRepairAuthority(t *testing.T) {
 	for _, source := range []string{
-		"exec /usr/bin/true {\x00opaque\ninclude " + doctorSnippetName + "\n}\n",
-		"include " + doctorSnippetName + "\n# corrupted comment\x00\n",
+		"exec /usr/bin/true {\x00opaque\ninclude config.d/" + doctorSnippetName + "\n}\n",
+		"include config.d/" + doctorSnippetName + "\n# corrupted comment\x00\n",
 	} {
 		root := writeStandardSwayConfig(t, ShortcutsNone, true)
 		if err := os.WriteFile(root, []byte(source), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		snippet := filepath.Join(filepath.Dir(root), doctorSnippetName)
+		snippet := filepath.Join(filepath.Dir(root), "config.d", doctorSnippetName)
 		original, err := os.ReadFile(snippet)
 		if err != nil {
 			t.Fatal(err)

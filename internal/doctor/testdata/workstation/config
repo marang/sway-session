@@ -35,4 +35,4 @@ exec swayidle -w \
     resume 'true'
 include conf.d/*.conf
 # Owned standard integration, independently inspected from foreign sources.
-include 50-sway-session-doctor.conf
+include config.d/50-sway-session-doctor.conf

@@ -310,10 +310,10 @@ func loadStoredRegistryRows(ctx context.Context, database *stateDatabase) (map[s
 		return nil, false, 0, fmt.Errorf("begin stored registry snapshot: %w", err)
 	}
 	defer tx.Rollback()
-	return loadStoredRegistryRowsTransaction(ctx, tx)
+	return loadStoredRegistryRowsTransaction(ctx, tx, commitStateRead)
 }
 
-func loadStoredRegistryRowsTransaction(ctx context.Context, tx *sql.Tx) (map[string]storedContextRow, bool, int64, error) {
+func loadStoredRegistryRowsTransaction(ctx context.Context, tx *sql.Tx, finish func(context.Context, *sql.Tx) error) (map[string]storedContextRow, bool, int64, error) {
 	var revision int64
 	if err := tx.QueryRowContext(ctx, "SELECT registry_revision FROM state_meta WHERE id = 1").Scan(&revision); err != nil {
 		return nil, false, 0, fmt.Errorf("load stored registry revision: %w", err)
@@ -346,7 +346,7 @@ func loadStoredRegistryRowsTransaction(ctx context.Context, tx *sql.Tx) (map[str
 	if err := existingRows.Close(); err != nil {
 		return nil, false, 0, fmt.Errorf("close stored context keys: %w", err)
 	}
-	if err := commitStateRead(ctx, tx); err != nil {
+	if err := finish(ctx, tx); err != nil {
 		return nil, false, 0, fmt.Errorf("finish stored registry snapshot: %w", err)
 	}
 	return existing, indicators == 1, revision, nil

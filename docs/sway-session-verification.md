@@ -469,8 +469,15 @@ These tests use disposable SQLite roots and require no compositor.
 
 Registry snapshot commits also retain `context.Canceled` or
 `context.DeadlineExceeded` when `database/sql` claims its automatic rollback
-before `Commit`. A SQLite driver wrapper triggers cancellation after the final
-rows close and waits for that ordering; it does not fabricate a commit error.
+before `Commit`. A SQLite driver wrapper triggers cancellation in the final
+rows close. A test context delays propagation to recreate the window between
+the parent's `Done` channel closing and transaction cancellation. After
+`Rows.Close` releases its query and driver locks, the injected final-commit
+callback releases propagation, waits at most five seconds for the real SQLite
+rollback to finish, and calls the production read-commit helper. No transaction
+operation runs inside the driver rows-close callback, and deferred cleanup
+releases every delayed cancellation callback. The test does not fabricate a
+commit error.
 The existing read-commit test checks that a closed transaction with a live
 context still reports `sql.ErrTxDone`. The terminal-close deadline test verifies
 that an expired observation retains the active context and pending candidate,
@@ -479,7 +486,8 @@ checks eventual completion across bounded batches:
 
 ```sh
 GOTOOLCHAIN=go1.26.5 go test -race ./internal/session \
-  -run '^(TestStoredRegistrySnapshotCancellationAfterRowsClose|TestReadCommitCancellationRetainsItsCauseAfterRollback)$' -count=10
+  -run '^(TestStoredRegistrySnapshotCancellationAfterRowsClose|TestReadCommitCancellationRetainsItsCauseAfterRollback)$' \
+  -count=20 -cpu=1,2,4 -shuffle=319 -timeout=180s
 GOTOOLCHAIN=go1.26.5 go test -race ./cmd/sway-session \
   -run '^(TestObservedTerminalCloseDeadlineRetainsCandidateAndArchivesOnRetry|TestObservedTerminalCloseArchivesEveryCandidateBeyondOneBatch)$' -count=10
 ```

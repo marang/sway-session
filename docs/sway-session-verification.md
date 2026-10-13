@@ -310,6 +310,28 @@ GOTOOLCHAIN=go1.26.5 go test ./internal/doctor ./cmd/sway-session -run Doctor
 GOTOOLCHAIN=go1.26.5 go test -race ./internal/doctor ./cmd/sway-session
 ~~~
 
+Identity-boundary tests inject individual process-token, UID/command, private
+lock, held-lock and executable failures through the actual lock/binary checks.
+They require bounded phase/reason evidence and errno without leaking private
+probe payloads through the existing JSON fields. Real bounded reads accept
+65,536-byte records and reject 65,537-byte records for each procfs boundary;
+an unreadable lock snapshot and a readable snapshot without the expected holder
+have distinct outcomes. Transient pinning rejection followed by successful final
+revalidation remains unavailable and performs no metadata read. Final rejection
+discards already read daemon metadata and successful inode/digest claims.
+Underlying read/open errors remain discoverable internally with `errors.Is`.
+
+`TestDoctorBuildIdentifiesRealHeldLockProcessAfterExecutableReplacement` retains
+the actual disposable helper, real held-lock observation, pinned old executable
+and post-replacement Warning/restart assertions. Its 30-second build,
+3-second readiness, 1.5-second probe and 64 KiB proc-read budgets are unchanged.
+Before LAB-272 implementation, 30 exact Go 1.26.5 repetitions passed. Passing
+repetitions do not identify the historical intermittent CI trigger: LAB-272
+improves rejected-observation diagnostics, without claiming a reproduced kernel
+cause, production fix or larger timeout. A future recurrence reports its fixed
+initial/pinning/final reason, errno or bounded-read outcome and immediate final
+revalidation result for the same retained process/lock identity.
+
 Use disposable configuration and XDG roots for end-to-end repair checks.
 Preview new setup with `--fix sway.integration --adopt-standard` and confirm no
 file changed or was created. New setup must produce startup-only; explicitly

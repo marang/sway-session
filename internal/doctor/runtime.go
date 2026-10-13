@@ -342,6 +342,11 @@ type daemonObservation struct {
 	runtimeDirectory *os.File
 }
 
+var (
+	errProcReadBound    = errors.New("read exceeds bound")
+	errLockHolderAbsent = errors.New("no matching lock")
+)
+
 func inspectDaemonLock(runtime privateDirectoryObservation) daemonObservation {
 	if runtime.selectionErr != nil || runtime.path == "" {
 		return daemonObservation{check: unavailableCheck("daemon.lock", "Daemon lock", "The runtime directory is unavailable, so daemon lock state cannot be inspected.")}
@@ -356,22 +361,27 @@ func inspectDaemonLock(runtime privateDirectoryObservation) daemonObservation {
 	lockStat, err := inspectPrivateObjectAt(runtime.directory, "daemon.lock", unix.S_IFREG, statefile.RegularFileMode)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return daemonObservation{check: Check{ID: "daemon.lock", Title: "Daemon lock", Status: Unavailable, Detail: "No daemon lock file exists; no daemon is proven to be running.", Evidence: []string{"path=" + path}}}
+			return daemonObservation{check: rejectedIdentityCheck(Check{ID: "daemon.lock", Title: "Daemon lock", Status: Unavailable, Detail: "No daemon lock file exists; no daemon is proven to be running.", Evidence: []string{"path=" + path}}, "initial", rejectDaemonIdentity("private-lock-read", err))}
 		}
-		return daemonObservation{check: privateObjectErrorCheck("daemon.lock", "Daemon lock", "The daemon lock is not an owner-only single-link regular file.", path, "single-link owner-only regular file mode 0600", lockStat, "Stop and inspect the lock holder before correcting this path; never replace it while a daemon may be running.")}
+		return daemonObservation{check: rejectedIdentityCheck(privateObjectErrorCheck("daemon.lock", "Daemon lock", "The daemon lock is not an owner-only single-link regular file.", path, "single-link owner-only regular file mode 0600", lockStat, "Stop and inspect the lock holder before correcting this path; never replace it while a daemon may be running."), "initial", rejectDaemonIdentity("private-lock-read", err))}
 	}
 	pid, err := lockedByPID(&lockStat)
 	if err != nil {
-		return daemonObservation{check: Check{ID: "daemon.lock", Title: "Daemon lock", Status: Unavailable, Detail: "The daemon lock file exists, but no held advisory lock could be proven.", Hint: "Start or restart the daemon if persistent-session service is expected.", Evidence: []string{"path=" + path}}}
+		return daemonObservation{check: rejectedIdentityCheck(Check{ID: "daemon.lock", Title: "Daemon lock", Status: Unavailable, Detail: "The daemon lock file exists, but no held advisory lock could be proven.", Hint: "Start or restart the daemon if persistent-session service is expected.", Evidence: []string{"path=" + path}}, "initial", rejectHeldLock(err))}
 	}
 	startTime, stampErr := daemonStartTime(pid)
-	if stampErr != nil || !sameUID(pid) || !daemonCommand(pid) {
-		return daemonObservation{check: Check{ID: "daemon.lock", Title: "Daemon lock", Status: Unavailable, Detail: "A process holds the lock, but it is not proven to be this user's sway-session daemon.", Hint: "Inspect the same-user lock holder before restarting the daemon.", Evidence: []string{"path=" + path, fmt.Sprintf("pid=%d", pid)}}}
+	if stampErr != nil {
+		err = rejectProcessToken(stampErr)
+	} else if err = verifyDaemonUID(pid); err == nil {
+		err = verifyDaemonCommand(pid)
+	}
+	if err != nil {
+		return daemonObservation{check: rejectedIdentityCheck(Check{ID: "daemon.lock", Title: "Daemon lock", Status: Unavailable, Detail: "A process holds the lock, but it is not proven to be this user's sway-session daemon.", Hint: "Inspect the same-user lock holder before restarting the daemon.", Evidence: []string{"path=" + path, fmt.Sprintf("pid=%d", pid)}}, "initial", err)}
 	}
 	observation := daemonObservation{pid: pid, valid: true, startTime: startTime, lockStat: lockStat, runtimeDirectory: runtime.directory,
 		check: Check{ID: "daemon.lock", Title: "Daemon lock", Status: OK, Detail: "A same-user sway-session daemon holds the advisory lock.", Evidence: []string{"path=" + path, fmt.Sprintf("pid=%d", pid), "held"}}}
-	if !daemonIdentityUnchanged(observation) {
-		return daemonObservation{check: unavailableCheck("daemon.lock", "Daemon lock", "The lock holder or process identity changed during observation; run doctor again.")}
+	if err := verifyDaemonIdentity(observation); err != nil {
+		return daemonObservation{check: rejectedIdentityCheck(unavailableCheck("daemon.lock", "Daemon lock", "The lock holder or process identity changed during observation; run doctor again."), "final", err)}
 	}
 	return observation
 }
@@ -382,37 +392,57 @@ func inspectDaemonBinary(ctx context.Context, options Options, observation daemo
 		cliBuild = *options.CLIBuild
 	}
 	daemonEvidence := []string{"Daemon build: unknown (no verified live executable)."}
+	var identityEvidence []string
 	// Always identify the executing CLI, even when no daemon is running.
 	defer func() {
+		check.Evidence = append(check.Evidence, identityEvidence...)
 		check.Evidence = append(check.Evidence, buildEvidence("Executing CLI", cliBuild)...)
 		check.Evidence = append(check.Evidence, daemonEvidence...)
 	}()
 	if !observation.valid {
-		return unavailableCheck("daemon.binary", "Daemon binary", "A live sway-session daemon binary cannot be proven without a verified held daemon lock.")
+		return rejectedIdentityCheck(unavailableCheck("daemon.binary", "Daemon binary", "A live sway-session daemon binary cannot be proven without a verified held daemon lock."), "initial", rejectDaemonIdentity("observation-invalid", nil))
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	probeContext, cancel := context.WithTimeout(ctx, runtimeProbeTimeout)
 	defer cancel()
-	if !daemonIdentityUnchanged(observation) {
+	var running os.FileInfo
+	var runningFile *os.File
+	// A rejected early observation stays rejected even if the immediate final
+	// observation recovers. This records diagnostics, never retries acceptance.
+	defer func() {
+		if runningFile != nil {
+			defer runningFile.Close()
+		}
+		var identityErr error
+		if running == nil {
+			identityErr = verifyDaemonIdentity(observation)
+		} else {
+			identityErr = verifyDaemonExecutable(observation, running)
+		}
+		if identityErr != nil {
+			identityEvidence = append(identityEvidence, identityRejectionEvidence("final", identityErr))
+			daemonEvidence = []string{"Daemon build: unknown (process, executable, or held lock changed during observation)."}
+			check = unavailableCheck("daemon.binary", "Daemon binary", "The daemon identity changed during binary inspection; run doctor again.")
+		} else if len(identityEvidence) != 0 {
+			identityEvidence = append(identityEvidence, identityRejectionEvidence("final", nil))
+		}
+	}()
+	if err := verifyDaemonIdentity(observation); err != nil {
+		identityEvidence = append(identityEvidence, identityRejectionEvidence("initial", err))
 		return unavailableCheck("daemon.binary", "Daemon binary", "The daemon lock holder or process identity changed; run doctor again.")
 	}
 	runningExecutable := filepath.Join("/proc", strconv.Itoa(observation.pid), "exe")
-	runningFile, running, err := runtimeProbes.openBinary(runningExecutable)
+	runningFile, pinned, err := runtimeProbes.openBinary(runningExecutable)
 	if err != nil {
+		identityEvidence = append(identityEvidence, identityRejectionEvidence("pinning", rejectDaemonIdentity("executable-open", err)))
 		daemonEvidence = []string{"Daemon build: unknown (live executable unreadable or not a bounded regular file)."}
 		return unavailableCheck("daemon.binary", "Daemon binary", "The verified daemon's executable cannot be read as a bounded regular file.")
 	}
-	defer runningFile.Close()
-	// Reject PID reuse, exec, or lock changes both before and after observations.
-	defer func() {
-		if !daemonExecutableUnchanged(observation, running) {
-			daemonEvidence = []string{"Daemon build: unknown (process, executable, or held lock changed during observation)."}
-			check = unavailableCheck("daemon.binary", "Daemon binary", "The daemon identity changed during binary inspection; run doctor again.")
-		}
-	}()
-	if !daemonExecutableUnchanged(observation, running) {
+	running = pinned
+	if err := verifyDaemonExecutable(observation, running); err != nil {
+		identityEvidence = append(identityEvidence, identityRejectionEvidence("pinning", err))
 		return unavailableCheck("daemon.binary", "Daemon binary", "The daemon identity changed while pinning its executable; run doctor again.")
 	}
 	metadata, metadataErr := runtimeProbes.readBuild(probeContext, runningFile)
@@ -679,7 +709,7 @@ func lockedByPID(stat *unix.Stat_t) (int, error) {
 		}
 		return pid, nil
 	}
-	return 0, errors.New("no matching lock")
+	return 0, errLockHolderAbsent
 }
 
 func unixMajorMinor(device uint64) (uint64, uint64) {
@@ -697,27 +727,33 @@ func sameLockDeviceInode(value string, major, minor, inode uint64) bool {
 	return majorErr == nil && minorErr == nil && inodeErr == nil && gotMajor == major && gotMinor == minor && gotInode == inode
 }
 
-func sameUID(pid int) bool {
+func verifyDaemonUID(pid int) error {
 	data, err := readBounded(filepath.Join("/proc", strconv.Itoa(pid), "status"), maxProcRead)
 	if err != nil {
-		return false
+		return rejectDaemonIdentity("process-uid-read", err)
 	}
 	for _, line := range strings.Split(string(data), "\n") {
 		if !strings.HasPrefix(line, "Uid:") {
 			continue
 		}
 		fields := strings.Fields(line)
-		return len(fields) >= 2 && fields[1] == strconv.Itoa(os.Geteuid())
+		if len(fields) >= 2 && fields[1] == strconv.Itoa(os.Geteuid()) {
+			return nil
+		}
+		return rejectDaemonIdentity("process-uid-mismatch", nil)
 	}
-	return false
+	return rejectDaemonIdentity("process-uid-mismatch", nil)
 }
 
-func daemonCommand(pid int) bool {
+func verifyDaemonCommand(pid int) error {
 	data, err := readBounded(filepath.Join("/proc", strconv.Itoa(pid), "cmdline"), maxProcRead)
 	if err != nil {
-		return false
+		return rejectDaemonIdentity("process-command-read", err)
 	}
-	return isDaemonCommand(strings.Split(strings.TrimSuffix(string(data), "\x00"), "\x00"))
+	if !isDaemonCommand(strings.Split(strings.TrimSuffix(string(data), "\x00"), "\x00")) {
+		return rejectDaemonIdentity("process-command-mismatch", nil)
+	}
+	return nil
 }
 
 func isDaemonCommand(args []string) bool {
@@ -770,7 +806,7 @@ func readFileBounded(path string, limit int) ([]byte, error) {
 		return nil, err
 	}
 	if len(data) > limit {
-		return nil, errors.New("read exceeds bound")
+		return nil, errProcReadBound
 	}
 	return data, nil
 }

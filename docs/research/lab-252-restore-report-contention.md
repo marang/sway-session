@@ -45,9 +45,8 @@ test then passed 3/3 under the same race/CPU/toolchain settings (0.56, 0.55 and
 comparison remain in that fixture. The committed contention/uncertain-COMMIT
 cases passed three race repetitions (package 2.817 s); the unchanged batching
 integration and new injected-yield guard together passed three repetitions
-(package 16.090 s). The complete Go 1.26.5 `make verify` gate and independent
-Adversarial Implementation and Spec/Evidence reviews passed without retained
-findings.
+(package 16.090 s). These were the first revision's local results, before the
+runner exposed the additional test timing assumption below.
 
 ## Scoped contract and regression changes
 
@@ -76,9 +75,33 @@ coverage commits one actual pending-token CAS per fresh observation, then
 rejects the next update with an injected deadline. It checks every durable
 completion, unchanged failed token, retained cursor and exact next-pass
 resumption until all 65 contexts finish. This proves cursor/resumption behavior
-under controlled I/O rejection, not the original wall-time trigger. Its actual
-journal reads and first writes still depend on the unchanged 250 ms context;
-an earlier real I/O exhaustion fails distinctly instead of skipping proof.
+under controlled I/O rejection, not the original wall-time trigger. It uses
+Go's [controlled test clock](https://go.dev/pkg/testing/synctest/) for this
+semantic scenario, retaining real public SQLite writes while elapsed filesystem
+or scheduling latency cannot replace the chosen injected yield. The original
+batching integration runs outside that clock and retains real-deadline coverage.
+
+## Runner-observed test timing correction
+
+[Initial PR CI](https://github.com/marang/sway-session/actions/runs/38459898727)
+at `cd372fbf2ca8b97233d03ff26c8f126232b406c3` rejected the new injected-yield
+test on pass 27. It had committed the 27th outcome successfully; then the real
+250 ms context expired before the intended second updater callback. The observer
+correctly yielded with no error, but the test incorrectly required that callback
+to occur. This was a timing assumption in the newly added test, not evidence of
+lost progress or reproduction of the older batch-starvation symptom.
+
+A temporary overlay inserted one 300 ms syscall pause immediately after the
+first successful public update, outside its SQLite transaction. The same
+one-callback failure then reproduced locally. Wrapping only the semantic test
+in `testing/synctest.Test` removed that dependence without changing the updater,
+cursor, token or durable-state assertions, deadlines or production code. The
+corrected focused race test passed three repetitions (package 12.760 s); the
+same physical-pause overlay also passed three (package 14.856 s). Both
+independent reviewers checked this delta. The actual busy-wait fixtures and
+original batching integration continue to use real time.
+The complete Go 1.26.5 `make verify` gate passed again after this correction;
+independent delta reviews retained no findings.
 
 ## Focused commands
 

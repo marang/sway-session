@@ -5,12 +5,20 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	sessionstate "github.com/marang/sway-session/internal/session"
 )
 
 func TestRestoreReportInjectedIOYieldResumesAllContexts(t *testing.T) {
+	// Test cursor semantics with controlled Go time. Real filesystem latency
+	// must not replace the chosen injected yield with an unrelated timer yield.
+	// The original batching integration separately exercises real deadlines.
+	synctest.Test(t, testRestoreReportInjectedIOYieldResumesAllContexts)
+}
+
+func testRestoreReportInjectedIOYieldResumesAllContexts(t *testing.T) {
 	ids := make([]sessionstate.ContextID, restoreReportBatch+1)
 	for i := range ids {
 		id, err := sessionstate.NewContextID()
@@ -61,10 +69,9 @@ func TestRestoreReportInjectedIOYieldResumesAllContexts(t *testing.T) {
 		t.Fatal("yield before the first write advanced the cursor or changed durable outcomes")
 	}
 
-	// The injected errors do not deliberately consume wall time. Actual journal
-	// reads and the first public write still have the unchanged 250ms budget;
-	// an earlier real I/O yield must fail distinctly instead of skipping proof.
-	// The existing real-store batching test retains the actual 250ms coverage.
+	// The injected errors do not advance controlled time. Reads and writes keep
+	// their production context budget; the unchanged batching integration runs
+	// outside synctest and retains actual 250ms deadline coverage.
 	committed := make(map[sessionstate.ContextID]string)
 	previousCompleted := 0
 	totalCalls := calls

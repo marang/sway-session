@@ -27,6 +27,21 @@ The gate covers:
 - git whitespace checks; and
 - the version-1 title-indicator golden wire fixture.
 
+To measure the complete gate with bounded overlap of independent checks:
+
+~~~sh
+GOTOOLCHAIN=go1.26.5 python3 -B scripts/verify-profile.py \
+  --output /tmp/sway-session-verify-profile
+~~~
+
+Use a fresh output directory. The profile includes each required command's
+wall time, Go JSON package events, compilation/linking/scheduling waits before
+test binaries start, and actual test execution durations. Test and race commands
+remain uncached (`-count=1`); expensive Go commands run sequentially. CI saves
+module downloads, the pinned staticcheck binary, and a progressively updated
+compiled/race cache separately. Read-only verification proofs are uploaded only
+after the complete gate and GoReleaser configuration check succeed.
+
 CI additionally runs GoReleaser configuration validation. A release candidate
 must also run a clean GoReleaser snapshot and inspect every archive, DEB, and
 RPM so only sway-session and the documented integration assets are present.
@@ -41,8 +56,8 @@ absence of paths accidentally created by shell word splitting. They use no
 privilege escalation or production installation directory.
 
 `make release-gate-check` runs isolated local Git fixtures, cross-workflow
-publication contracts, and the actual GitHub release rerun script against a
-mock API. The actual AUR version guards, publication step and standalone
+publication contracts, compatible main-CI proof selection, artifact integrity,
+and the actual immutable GitHub asset publisher against a mock API. The actual AUR version guards, publication step and standalone
 metadata-sync step also run against private file-only Git remotes and a fake
 GitHub CLI. They check stale reruns, unchanged reruns, accepted version and
 package-revision updates, empty bootstrap repositories and malformed metadata;

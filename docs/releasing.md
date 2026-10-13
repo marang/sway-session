@@ -46,38 +46,82 @@ ownership transition test.
 
 ## Automated publication gate
 
-CI, `publish-release.yml`, and `publish-aur.yml` share the read-only
-`verify.yml` workflow. Release jobs first resolve the strict version tag to its
-full commit, require an exact checkout and main ancestry, then verify that
-commit with `make verify` and GoReleaser configuration validation. The verified
-commit output is written only after all checks succeed. Publication depends on
-successful verification and matching commit outputs; a missing, failed,
-cancelled, skipped or running verification cannot authorize publication.
+A tag starts one `publish-release.yml` pipeline. It resolves the strict version
+tag to its full commit and requires an exact checkout and main ancestry.
+`verify-release.yml` first looks for compatible completed main-CI evidence for
+that exact commit. It accepts only the canonical repository's successful
+`ci.yml` push to main, the current run attempt, and an unexpired proof artifact
+whose archive digest, workflow source, verification contract and actual pinned
+Go toolchain match. Pull-request checks, cache hits, missing artifacts and
+failed, skipped or running checks cannot authorize publication.
 
-Manual AUR publication is accepted only through `publish-aur.yml` on `main`.
+If compatible evidence is unavailable, the pipeline calls the complete
+read-only `verify.yml` gate once. The aggregation job publishes a commit output
+only when the reused proof or fresh successful verification matches the
+resolved commit. GitHub and AUR jobs depend on this same output. CI still runs
+fresh unit and race tests with `-count=1`; compiled caches never substitute for
+successful test execution. Profiling and cache measurements are recorded in
+[the LAB-329 evidence](research/lab-329-verify-performance.md).
+
+The read-only artifact job uses GoReleaser 2.18.2 with
+`release --clean --skip=publish,announce`, the explicit
+`GORELEASER_CURRENT_TAG`, and the commit timestamp. It builds Linux amd64 and
+arm64 archives, DEBs and RPMs once. The staged manifest binds version, full
+commit, source tree and build inputs, toolchain, GoReleaser version, target
+architectures and every file's SHA-256. The checker inspects each package's ELF
+architecture, embedded build identity and Go toolchain, and requires the same
+binary bytes across package formats for each architecture.
+
+Jobs transfer only inspected assets and their manifest using the immutable
+Actions artifact ID. An independent read-only handoff job compares the manifest
+digest from the producing job and verifies the transferred packages again.
+The GitHub publisher performs the same checks and revalidates the tag before
+uploading those bytes; it does not rebuild. Only that job receives a
+write-capable GitHub token. Verification and builds receive no publication
+secrets; AUR and metadata-sync secrets stay in their respective publishing jobs.
+
+Manual AUR publication remains `publish-aur.yml` on main. It invokes the common
+pipeline with target `aur`, which performs no unnecessary GoReleaser build.
 Its requested tag can be older than main: verification and the Arch package
-build both check out the resolved tag commit, never the dispatch commit. The
-generated package source URL and source directory use that full commit too,
-so changing the tag after checkout cannot substitute a different source tree.
-Current tag-based and previously pinned package templates are supported;
-unrecognized source or directory templates are rejected before publication.
-The existing checksum, non-root package build, metadata handoff and SSH host-key
-checks still apply. No publishing secrets are passed to verification or CI.
-Only the GitHub publisher receives a write-capable GitHub token.
+build both check out the resolved tag commit, never the dispatch commit.
+New workflow helpers are staged from the immutable workflow-source commit,
+so historical source checkouts do not need to contain those helpers. Historical
+Makefiles still run their complete original verification gate serially.
 
-The GitHub publisher passes the resolved tag explicitly as
-`GORELEASER_CURRENT_TAG`. When multiple version tags share a verified commit,
-GoReleaser therefore builds and publishes the version checked by the release
-guard instead of independently selecting the highest tag on that commit.
+`aur-package.yml` retains the separate non-root Arch source build, package
+checks, checksum and commit-pinned source URL/directories, metadata handoff and
+SSH host-key checks. Its PIE source build is required and is not replaced by
+GoReleaser's binary packages. Current tag-based and previously pinned recipe
+templates are supported; unknown templates are rejected before publication.
 
-Repeating a gated run retains its exact commit. GitHub publication checks for
-an existing release and leaves already published artifacts intact; an existing
-draft requires explicit recovery. AUR publication keeps the existing
-no-change guard and serialization, and rejects a version older than the
-current AUR metadata before copying or pushing files. Identical package files
-at the same version remain a successful no-op; changed files at that version
-require a reviewed package revision. A repository with no refs and neither
-package file can receive its first publication.
+For recovery, rerun failed jobs in the original pipeline so they consume the
+successful build job's retained artifact ID. Release artifacts are retained
+for 14 days: resume a partial publication within that window. After expiry,
+a partial release requires explicit recovery; a complete matching release
+can be restored directly without rebuilding. The publisher hashes every
+existing release asset before mutation and uploads only missing matching
+files; it never deletes or replaces published assets. An existing draft,
+`starter` asset or conflicting file requires explicit recovery. AUR keeps
+serialization and its no-change guard: older versions are rejected, identical
+same-version package files are a no-op, and changed published files require a
+reviewed package revision. An empty repository with neither package file may
+receive its first publication.
+
+An isolated handoff run is available without creating a public tag or release:
+
+~~~sh
+gh workflow run publish-release.yml --ref <candidate-branch> \
+  -f validation-only=true
+~~~
+
+It uses a checkout-local `v0.0.0` tag, executes verification, builds and checks
+the actual package artifact across jobs, and skips both publishers. Add `-f exercise-recovery=true` to make the first validation handoff fail
+intentionally after its byte checks. Then run `gh run rerun <run-id> --failed`: the
+successful verifier and builder stay complete, and the handoff checks their
+original artifact ID, manifest and producer-attempt output. The job summary
+records producer and consumer attempts. The ordinary validation dispatch has no
+intentional failure. Publication from a manual dispatch still requires main and
+an existing immutable tag.
 
 The comparison reads `.SRCINFO` as data: numeric epoch (absent means zero),
 dotted numeric version, then numeric package revision with an optional
@@ -167,7 +211,7 @@ unless that behavior was tested. Do not recommend --overwrite.
 
 ## GitHub release
 
-Both publishing workflows reject a tag whose commit is not reachable from
+The common pipeline rejects a tag whose commit is not reachable from
 origin/main. After every precondition passes:
 
 ~~~sh
@@ -187,7 +231,7 @@ Inspect the published release and checksums before treating it as available.
 
 ## AUR publication and metadata sync
 
-The tag also starts the AUR workflow:
+The shared pipeline also calls the AUR source-package workflow:
 
 1. validate the strict vMAJOR.MINOR.PATCH tag and main ancestry;
 2. replace version/checksum and pin source/directories to the verified commit;

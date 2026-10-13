@@ -1,0 +1,112 @@
+name: Reuse compatible main verification or verify fresh
+
+on:
+  workflow_call:
+    inputs:
+      commit:
+        required: true
+        type: string
+    outputs:
+      commit:
+        value: ${{ jobs.accept.outputs.commit }}
+      origin:
+        value: ${{ jobs.accept.outputs.origin }}
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  lookup:
+    runs-on: ubuntu-latest
+    outputs:
+      commit: ${{ steps.proof.outputs.commit }}
+      origin: ${{ steps.proof.outputs.origin }}
+    env:
+      VERIFY_COMMIT: ${{ inputs.commit }}
+    steps:
+      - name: Checkout immutable workflow tooling
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - name: Stage trusted proof reader
+        run: cp scripts/release-gate/verification_proof.py "$RUNNER_TEMP/verification_proof.py"
+      - name: Checkout requested source
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.commit }}
+          persist-credentials: false
+      - name: Setup exact Go toolchain
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Select completed compatible main-CI proof
+        id: proof
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -B "$RUNNER_TEMP/verification_proof.py" select --commit "$VERIFY_COMMIT" --output "$RUNNER_TEMP/reused-proof.json" >> "$GITHUB_OUTPUT"
+      - name: Retain selected proof provenance
+        if: ${{ steps.proof.outputs.commit == inputs.commit }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: reused-verification-proof-${{ inputs.commit }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/reused-proof.json
+          retention-days: 14
+          if-no-files-found: error
+      - name: Report selected main-CI evidence
+        if: ${{ steps.proof.outputs.commit == inputs.commit }}
+        env:
+          SOURCE_RUN: ${{ steps.proof.outputs.run_id }}
+          SOURCE_ARTIFACT: ${{ steps.proof.outputs.artifact_id }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          proof = json.loads((Path(os.environ['RUNNER_TEMP']) / 'reused-proof.json').read_text())
+          run, artifact = os.environ['SOURCE_RUN'], os.environ['SOURCE_ARTIFACT']
+          assert run.isdigit() and artifact.isdigit()
+          attempt = proof['run_attempt']
+          assert type(attempt) is int and attempt > 0
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              summary.write(f"Reused completed [main-CI run {run}, attempt {attempt}](https://github.com/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{run}/attempts/{attempt}), proof artifact ID `{artifact}`.\n")
+          PY
+
+  fresh:
+    needs: lookup
+    if: ${{ needs.lookup.outputs.commit != inputs.commit }}
+    uses: ./.github/workflows/verify.yml
+    with:
+      commit: ${{ inputs.commit }}
+
+  accept:
+    needs: [lookup, fresh]
+    # This is the sole aggregation point that may run after a skipped fallback.
+    # Failed/cancelled lookup or verification can never produce acceptance.
+    if: ${{ always() && needs.lookup.result == 'success' && (needs.fresh.result == 'success' || needs.fresh.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    outputs:
+      commit: ${{ steps.accepted.outputs.commit }}
+      origin: ${{ steps.accepted.outputs.origin }}
+    steps:
+      - name: Require matching completed evidence
+        id: accepted
+        env:
+          EXPECTED_COMMIT: ${{ inputs.commit }}
+          REUSED_COMMIT: ${{ needs.lookup.outputs.commit }}
+          FRESH_COMMIT: ${{ needs.fresh.outputs.commit }}
+          FRESH_RESULT: ${{ needs.fresh.result }}
+          REUSED_ORIGIN: ${{ needs.lookup.outputs.origin }}
+        run: |
+          [[ "$EXPECTED_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          if [ "$REUSED_COMMIT" = "$EXPECTED_COMMIT" ] && [ "$FRESH_RESULT" = skipped ]; then
+            test "$REUSED_ORIGIN" = ci-push-main
+            origin=$REUSED_ORIGIN
+          elif [ "$FRESH_COMMIT" = "$EXPECTED_COMMIT" ] && [ "$FRESH_RESULT" = success ]; then
+            origin=fresh-verification
+          else
+            echo 'No matching completed verification authorizes this release.' >&2
+            exit 1
+          fi
+          printf 'commit=%s\norigin=%s\n' "$EXPECTED_COMMIT" "$origin" >> "$GITHUB_OUTPUT"

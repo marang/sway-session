@@ -52,7 +52,7 @@ class AURSourceTest(unittest.TestCase):
         self.bin.mkdir()
         self.requests = self.root / "archive-requests.txt"
         self.template = (ROOT / "PKGBUILD").read_text(encoding="utf-8")
-        workflow = yaml.safe_load((ROOT / ".github/workflows/publish-aur.yml").read_text(encoding="utf-8"))
+        workflow = yaml.safe_load((ROOT / ".github/workflows/aur-package.yml").read_text(encoding="utf-8"))
         steps = workflow["jobs"]["build"]["steps"]
         self.rewrite = next(step["run"] for step in steps if step["name"] == "Bump PKGBUILD version and checksum")
         self.validate = next(step["run"] for step in steps if step["name"] == "Validate release tag and main ancestry")

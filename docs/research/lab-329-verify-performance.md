@@ -105,8 +105,8 @@ Both complete verification gates passed.
 The warm complete gate is 41.35% faster than its same-commit cold run and 41.13%
 faster than the repeated-main 308.850 s baseline. This pair isolates cache
 warming: the runner's old `.NOTPARALLEL` behavior still serialized both lanes.
-The final recursive-lane revision therefore requires its own runner measurement
-before attributing any further improvement to overlapping checks.
+The final recursive-lane observation below confirms the corrected overlap;
+this pair does not isolate any further improvement from that scheduling change.
 
 All three new caches missed on attempt 1. Attempt 2 restored the 82 MB module
 snapshot, the 204 MB compiled/race snapshot ending in `38448952436-1`, and the
@@ -133,6 +133,25 @@ rerun and returned HTTP 404 despite its original successful-upload log. The
 cold timings above are taken from the retained job log and its per-target
 summary. No cold package-start JSON measurements are reconstructed or assumed.
 
+## Final recursive-lane runner observation
+
+[Run 38453054175](https://github.com/marang/sway-session/actions/runs/38453054175)
+passed on branch revision `af04c7d90f92c6b43a961d405d44165c031ded68`, checking
+PR merge commit `903a8f445437e70ca470425b643c5a51057c8afd` with Go 1.26.5
+and four CPUs. Its complete gate took 176.238 s: ordinary tests 30.907 s,
+race tests 129.847 s, vet 0.224 s and staticcheck 14.413 s. All 13 checks
+ran successfully. The log shows both recursive serial lanes starting together
+after formatting; the 21.980 s release-gate suite overlaps ordinary tests.
+The runner restored the preceding compiled snapshot and saved a new snapshot
+ending in `38453054175-1`. Profile artifact ID `11841822371` records the run.
+
+The first package began after 1.194 s for ordinary tests and 1.205 s for race
+tests. `internal/session` started after 2.771 s and executed for 28.124 s
+ordinarily, then started after 3.817 s and executed for 126.017 s with race
+detection. This is an additional successful warm observation of the corrected
+scheduler, not a same-commit cold/warm pair or an isolated estimate of its
+speedup; the comparable cache pair above remains the speedup evidence.
+
 ## Metadata-only PR investigation
 
 The AUR sync changes only PKGBUILD and .SRCINFO, but those files control source
@@ -155,3 +174,41 @@ matching published release can be restored without another package build. The
 separate Arch source/PIE build and its package tests remain mandatory; they are
 not counted as redundant binary packaging. Isolated validation dispatches skip
 both publishers and demonstrate this graph without creating a public version.
+
+## Observed Actions handoff and failed-job recovery
+
+[Run 38453072324](https://github.com/marang/sway-session/actions/runs/38453072324)
+used branch commit `af04c7d90f92c6b43a961d405d44165c031ded68` with
+`validation-only=true` and `exercise-recovery=true`. The branch had no canonical
+main-push proof, so lookup succeeded without a match and the complete fresh gate
+ran once, taking 252.102 s. Acceptance forwarded that exact commit. One
+read-only GoReleaser build produced all six packages for checkout-local
+`v0.0.0`; both publishers were skipped.
+
+The independent handoff downloaded artifact ID `11840648785` and checked the
+producer's manifest SHA-256
+`b250420da0312c1483e5a815916b2faac694b1bd532387db3b5296ed2c0b90b2`,
+package bytes, architectures, build stamps and equal binaries across formats.
+The uploaded artifact archive digest was
+`fca4b51876df5b6388891f7e8b45ab5086c43ff65956c724a5823260add4a22e`.
+Attempt 1 then failed at the opt-in recovery step, after successful byte
+verification, as intended.
+
+`gh run rerun 38453072324 --failed` completed successfully on attempt 2.
+The handoff consumed the same artifact ID, archive digest and manifest digest,
+with retained producer attempt 1 and consumer attempt 2. The Actions job API
+retained the original verifier timestamps (19:13:32–19:18:42 UTC) and producer
+timestamps (19:18:51–19:19:46 UTC); the new consumer ran at 19:21:25–19:21:36
+UTC. GitHub copies successful job records into the later attempt with new job
+IDs, so those IDs alone are not evidence of rerunning upstream work. No second
+verification or package build ran. Both publishers remained skipped.
+
+The actual uploaded packages were also downloaded and verified against a clean
+local checkout of that exact commit. An independent reviewer checked all six
+packages and executed all three extracted amd64 binaries' `version --json`
+commands with disposable empty XDG roots and no Sway connection. This source
+identity is separate from the earlier scratch-build evidence. No public tag,
+GitHub release, AUR write or package installation was performed by this
+validation. Compatible main-proof reuse and the separate mandatory Arch source
+build remain distinct from this branch's observed fresh-verification and
+binary-artifact handoff paths.

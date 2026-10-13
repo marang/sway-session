@@ -158,6 +158,19 @@ Sway IPC, daemon identity and broker liveness checks retain independent runtime
 results; source inspection neither proves effective bindings or load order nor
 guarantees a successful next login.
 
+Doctor's daemon lock and executable checks report rejected identity observations
+in their existing evidence fields. Fixed reasons identify the initial, pinning
+or final boundary and the process-token, UID/command, private-lock, held-lock
+or executable check. Read failures preserve their underlying errors internally;
+public evidence contains only bounded categories, errno and read-limit outcomes,
+never process records, argv, environment or arbitrary error payloads. A readable
+lock snapshot without the holder differs from an unreadable or oversized one.
+An immediate final observation records whether an earlier rejection persists
+or recovers; it never converts that rejected inspection into success. Metadata
+still comes from the pinned executable and is discarded when final identity
+revalidation fails. Check IDs, JSON shape, statuses and observation budgets stay
+unchanged.
+
 RepairOptions makes creation/recovery and direct-include insertion conditional
 on explicit adoption. New profiles default to startup-only; an unspecified
 shortcut selection preserves an existing supported profile. Explicit

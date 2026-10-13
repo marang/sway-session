@@ -254,11 +254,13 @@ func TestRestoreReportConcurrentProofUpdates(t *testing.T) {
 	for _, update := range updates {
 		wg.Go(func() {
 			<-start
-			ok, err := store.UpdateContext(t.Context(), o.Source, o.ContextID, o.AttemptID, update)
-			if err == nil && !ok {
-				err = errors.New("matching token ignored")
-			}
-			results <- err
+			results <- retryRestoreTestWrite(t.Context(), func(ctx context.Context) error {
+				ok, err := store.UpdateContext(ctx, o.Source, o.ContextID, o.AttemptID, update)
+				if err == nil && !ok {
+					return errors.New("matching token ignored")
+				}
+				return err
+			})
 		})
 	}
 	close(start)
@@ -290,13 +292,17 @@ func TestRestoreReportConcurrentReplacementRejectsOldWriter(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Go(func() {
 		<-start
-		results <- store.BeginExplicitContext(t.Context(), []RestoreOutcome{newer})
+		results <- retryRestoreTestWrite(t.Context(), func(ctx context.Context) error {
+			return store.BeginExplicitContext(ctx, []RestoreOutcome{newer})
+		})
 	})
 	wg.Go(func() {
 		<-start
 		// Either this commits before replacement or its old token is ignored.
-		_, err := store.UpdateContext(t.Context(), old.Source, old.ContextID, old.AttemptID, restoreTestUpdate(old))
-		results <- err
+		results <- retryRestoreTestWrite(t.Context(), func(ctx context.Context) error {
+			_, err := store.UpdateContext(ctx, old.Source, old.ContextID, old.AttemptID, restoreTestUpdate(old))
+			return err
+		})
 	})
 	close(start)
 	wg.Wait()

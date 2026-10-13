@@ -7,8 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
-	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -39,37 +39,49 @@ func TestStoredRegistrySnapshotCancellationAfterRowsClose(t *testing.T) {
 				want = context.DeadlineExceeded
 			}
 			defer cancel()
-			var tx *sql.Tx
-			connector := &snapshotCancelConnector{dsn: database.dsn, afterClose: func() error {
+			// Hold child cancellation until Rows.Close has returned. This
+			// deterministically recreates the parent-Done/transaction-live
+			// window in which the old reentrant Commit probe could deadlock.
+			delayed := &snapshotCancelContext{Context: ctx, resume: make(chan struct{})}
+			defer delayed.release()
+			rolledBack := make(chan error, 1)
+			connector := &snapshotCancelConnector{dsn: database.dsn, rolledBack: rolledBack, afterClose: func() error {
 				if deadlineExpired {
-					<-ctx.Done()
+					select {
+					case <-ctx.Done():
+					case <-time.After(5 * time.Second):
+						return errors.New("snapshot deadline did not expire")
+					}
 				} else {
 					cancel()
 				}
-				// Commit does not mutate a cancelled transaction. Wait until the
-				// real database/sql rollback has claimed it, while Rows.Close
-				// still prevents the driver's rollback from completing.
-				deadline := time.Now().Add(5 * time.Second)
-				for time.Now().Before(deadline) {
-					err := tx.Commit()
-					if errors.Is(err, sql.ErrTxDone) {
-						return nil
-					}
-					if !errors.Is(err, want) {
-						return fmt.Errorf("cancelled Commit probe: %w", err)
-					}
-					runtime.Gosched()
-				}
-				return errors.New("cancellation rollback did not claim the read transaction")
+				return nil
 			}}
 			db := sql.OpenDB(connector)
 			defer db.Close()
-			tx, err = db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+			tx, err := db.BeginTx(delayed, &sql.TxOptions{ReadOnly: true})
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer tx.Rollback()
-			rows, _, _, err := loadStoredRegistryRowsTransaction(ctx, tx)
+			// Release every delayed callback before transaction/database cleanup,
+			// including when row loading or the bounded wait fails.
+			defer delayed.release()
+			rows, _, _, err := loadStoredRegistryRowsTransaction(delayed, tx, func(ctx context.Context, tx *sql.Tx) error {
+				// Rows.Close has now released its query and driver locks. Wait
+				// for the real automatic rollback, then exercise the production
+				// final commit's translation of ErrTxDone to the request cause.
+				delayed.release()
+				select {
+				case err := <-rolledBack:
+					if err != nil {
+						return fmt.Errorf("automatic snapshot rollback: %w", err)
+					}
+				case <-time.After(5 * time.Second):
+					return errors.New("automatic snapshot rollback did not finish")
+				}
+				return commitStateRead(ctx, tx)
+			})
 			if !errors.Is(err, want) || !strings.HasPrefix(err.Error(), "finish stored registry snapshot:") {
 				t.Fatalf("snapshot error = %v, want %v at Commit after automatic rollback", err, want)
 			}
@@ -80,11 +92,34 @@ func TestStoredRegistrySnapshotCancellationAfterRowsClose(t *testing.T) {
 	}
 }
 
-// Only the final result's Close is instrumented; all queries and transaction
-// lifecycle operations run through SQLite and database/sql unchanged.
+// Value hides the parent's cancellation implementation so context.WithCancel
+// uses AfterFunc. The callback gate delays propagation without replacing the
+// real cancellation or database/sql rollback.
+type snapshotCancelContext struct {
+	context.Context
+	resume chan struct{}
+	once   sync.Once
+}
+
+func (*snapshotCancelContext) Value(any) any { return nil }
+
+func (ctx *snapshotCancelContext) AfterFunc(callback func()) func() bool {
+	return context.AfterFunc(ctx.Context, func() {
+		<-ctx.resume
+		callback()
+	})
+}
+
+func (ctx *snapshotCancelContext) release() {
+	ctx.once.Do(func() { close(ctx.resume) })
+}
+
+// The final result's Close triggers cancellation and the driver's Rollback
+// reports completion; all SQL and transaction operations still use SQLite.
 type snapshotCancelConnector struct {
 	dsn        string
 	afterClose func() error
+	rolledBack chan<- error
 }
 
 func (connector *snapshotCancelConnector) Connect(context.Context) (driver.Conn, error) {
@@ -92,7 +127,7 @@ func (connector *snapshotCancelConnector) Connect(context.Context) (driver.Conn,
 	if err != nil {
 		return nil, err
 	}
-	return &snapshotCancelConn{Conn: conn, afterClose: connector.afterClose}, nil
+	return &snapshotCancelConn{Conn: conn, afterClose: connector.afterClose, rolledBack: connector.rolledBack}, nil
 }
 
 func (*snapshotCancelConnector) Driver() driver.Driver { return &sqlite.Driver{} }
@@ -100,10 +135,26 @@ func (*snapshotCancelConnector) Driver() driver.Driver { return &sqlite.Driver{}
 type snapshotCancelConn struct {
 	driver.Conn
 	afterClose func() error
+	rolledBack chan<- error
 }
 
 func (conn *snapshotCancelConn) BeginTx(ctx context.Context, options driver.TxOptions) (driver.Tx, error) {
-	return conn.Conn.(driver.ConnBeginTx).BeginTx(ctx, options)
+	tx, err := conn.Conn.(driver.ConnBeginTx).BeginTx(ctx, options)
+	if err != nil {
+		return nil, err
+	}
+	return &snapshotCancelTx{Tx: tx, rolledBack: conn.rolledBack}, nil
+}
+
+type snapshotCancelTx struct {
+	driver.Tx
+	rolledBack chan<- error
+}
+
+func (tx *snapshotCancelTx) Rollback() error {
+	err := tx.Tx.Rollback()
+	tx.rolledBack <- err
+	return err
 }
 
 func (conn *snapshotCancelConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {

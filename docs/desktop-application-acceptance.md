@@ -99,13 +99,44 @@ introduced.
 
 ## Contract reconciliation and explicit deferrals
 
-`app list` reports registered application contexts and durable policy. `app
-status [--socket PATH]` reports the focused application's registration; it does
-not accept a context argument. Global `status` adds observed application
-presence and placement, with unknown values for ambiguous groups. These are
-different observations, not the complete original list of pending, missing,
-ambiguous and degraded lifecycle explanations. That remaining product work is
-tracked in [LAB-250](https://linear.app/riotbox/issue/LAB-250/explain-desktop-application-lifecycle-and-restore-states-in-app).
+[LAB-250](https://linear.app/riotbox/issue/LAB-250/explain-desktop-application-lifecycle-and-restore-states-in-app)
+delivers the remaining desktop inventory explanation contract through additive
+commands. Bare `app list` preserves its offline saved-registration output and
+JSON contexts envelope. Bare `app status [--socket PATH]` preserves focused
+registration behavior, including the unregistered-window message.
+
+- `app list --inventory [--socket PATH]` explains all saved application contexts.
+- `app status --context UUID_OR_EXACT_LABEL [--socket PATH]` explains one saved
+  application, regardless of active, archived or desired-open state.
+- `app status --inventory [--socket PATH]` explains the focused registered
+  application and requires Sway for selection.
+
+List inventory and explicit context selection remain usable offline. Optional
+presence and launcher observations share a three-second deadline after the
+saved database snapshot closes. Unknown evidence remains unknown, including
+nullable window counts and visibility; observed absence is distinct from saved
+closed state. Ambiguous presence never supplies a guessed placement anchor.
+Global `status` continues to provide its established live placement surface.
+
+The inventory separates durable restore policy, live presence, launcher
+validation, recorded launch guards and restore outcomes. It reuses existing
+policy, group-identity and launcher validators. Flatpak validity additionally
+requires an observed installation; validity is not a launch guarantee. A
+recorded conservative duplicate-launch guard is not proof of an in-flight
+process. Automatic and explicit pending outcomes retain their separate sources,
+proof stages and current/changed/unknown identity applicability. Window mapping
+is not proof of completed placement or layout. Saved placement-only fidelity
+and recorded layout failure or timeout are explained without reconstructing a
+new live eligibility decision.
+
+The opt-in JSON result exposes a versioned `applications` projection with
+`contexts:[]`. It omits approved launcher paths, process arguments, environment
+and socket identity; labels and workspaces remain operational data. Reading
+inventory does not launch, approve, repair or mutate session metadata. This is
+a logical state-read contract, not a promise that SQLite never touches an
+existing WAL or other database files. Fixture tests cover offline/unknown,
+observed/ambiguous, pending/proof, launcher trust, privacy, compatibility and
+read-only completion behavior. They do not add real-application acceptance.
 
 The broader real-app matrix is explicitly deferred to
 [LAB-253](https://linear.app/riotbox/issue/LAB-253/complete-real-chrome-and-slack-lifecycle-and-reboot-acceptance): graphical

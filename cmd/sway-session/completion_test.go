@@ -210,6 +210,22 @@ func TestCompletionContextDescriptionShowsUsefulMetadataWithoutPrivateLauncherPa
 
 func TestCompletionContextsFollowCommandEligibility(t *testing.T) {
 	deps := testDependencies(t)
+	deps.newSwayClient = func(string) swayRequester {
+		t.Fatal("completion observed Sway")
+		return nil
+	}
+	deps.desktopCatalog = func() (sessionstate.DesktopCatalog, error) {
+		t.Fatal("completion loaded the desktop catalog")
+		return sessionstate.DesktopCatalog{}, nil
+	}
+	deps.resolveSystem = func(string) (string, error) {
+		t.Fatal("completion resolved a launcher executable")
+		return "", nil
+	}
+	deps.verifyFlatpak = func(sessionstate.Launcher) error {
+		t.Fatal("completion probed a Flatpak installation")
+		return nil
+	}
 	root, err := deps.stateRoot()
 	if err != nil {
 		t.Fatal(err)
@@ -230,7 +246,7 @@ func TestCompletionContextsFollowCommandEligibility(t *testing.T) {
 		{
 			ID: "33333333-3333-4333-8333-333333333333", Label: "Active Desktop", State: sessionstate.ContextActive,
 			Launcher: sessionstate.Launcher{Kind: sessionstate.LauncherDesktop, DesktopID: "org.example.Active.desktop", DesktopOrigin: sessionstate.DesktopEntrySystem, DesktopPath: "/usr/share/applications/org.example.Active.desktop"},
-			App:      &sessionstate.Application{Identity: sessionstate.ApplicationIdentity{Protocol: sessionstate.WindowWayland, WaylandAppID: "org.example.Active"}, DesiredOpen: true, RestorePolicy: sessionstate.ApplicationRestoreFollow},
+			App:      &sessionstate.Application{Identity: sessionstate.ApplicationIdentity{Protocol: sessionstate.WindowWayland, WaylandAppID: "org.example.Active"}, DesiredOpen: false, RestorePolicy: sessionstate.ApplicationRestoreFollow},
 		},
 		{
 			ID: "44444444-4444-4444-8444-444444444444", Label: "Archived Flatpak", State: sessionstate.ContextArchived,
@@ -242,6 +258,11 @@ func TestCompletionContextsFollowCommandEligibility(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	saved, err := sessionstate.ReadRegistrySnapshotContext(t.Context(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	tests := map[string][]string{
 		"archive":         {string(contexts[0].ID), string(contexts[2].ID)},
 		"activate":        {string(contexts[1].ID), string(contexts[3].ID)},
@@ -250,6 +271,7 @@ func TestCompletionContextsFollowCommandEligibility(t *testing.T) {
 		"purge":           {string(contexts[0].ID), string(contexts[1].ID)},
 		"terminal-status": {string(contexts[0].ID), string(contexts[1].ID)},
 		"app-forget":      {string(contexts[2].ID), string(contexts[3].ID)},
+		"app-status":      {string(contexts[2].ID), string(contexts[3].ID)},
 	}
 	for command, want := range tests {
 		t.Run(command, func(t *testing.T) {
@@ -261,6 +283,13 @@ func TestCompletionContextsFollowCommandEligibility(t *testing.T) {
 				t.Fatalf("unexpected completion result code=%d values=%v stderr=%q", code, got, stderr.String())
 			}
 		})
+	}
+	after, err := sessionstate.ReadRegistrySnapshotContext(t.Context(), root)
+	if err != nil || !reflect.DeepEqual(saved, after) {
+		t.Fatalf("completion changed registry: err=%v before=%+v after=%+v", err, saved, after)
+	}
+	if starter := deps.processStarter.(*recordingStarter); len(starter.calls) != 0 {
+		t.Fatal("completion started a launcher")
 	}
 }
 

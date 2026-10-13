@@ -107,7 +107,8 @@ _sway_session_marker_is_value() {
 			start=2
 			case $app_command in
 				register-focused|rebind-focused) value_options=' --socket --desktop-id ' ;;
-				register-workspace|status|forget) value_options=' --socket ' ;;
+				register-workspace|list|forget) value_options=' --socket ' ;;
+				status) value_options=' --socket --context ' ;;
 			esac
 			;;
 	esac
@@ -132,6 +133,26 @@ _sway_session_marker_is_value() {
 		esac
 	done
 	((pending))
+}
+
+_sway_session_app_inventory_arguments_valid() {
+	local pending='' word
+	app_inventory=0 app_inventory_value=''
+	for word in "${arguments[@]:2}"; do
+		if [[ -n $pending ]]; then
+			pending=''
+			continue
+		fi
+		case $word in
+			--socket|--context) pending=$word ;;
+			--inventory|--inventory=true|--inventory=1) app_inventory=1 ;;
+			--inventory=false|--inventory=0) app_inventory=0 ;;
+			--socket=*|--context=*|--json|-h|--help) ;;
+			*) return 1 ;;
+		esac
+	done
+	app_inventory_value=$pending
+	return 0
 }
 
 _sway_session_doctor_arguments_valid() {
@@ -378,7 +399,7 @@ _sway_session() {
 				'') _sway_session_static 'contexts --json -h --help' ;;
 				contexts)
 					if [[ -z ${arguments[2]-} ]]; then
-						_sway_session_static 'archive activate restore restore-active purge terminal-status app-forget'
+						_sway_session_static 'archive activate restore restore-active purge terminal-status app-forget app-status'
 					elif [[ $cur == -* ]]; then
 						_sway_session_static '--json -h --help'
 					fi
@@ -403,12 +424,25 @@ _sway_session() {
 				confirm|pin|unpin|archive|activate)
 					_sway_session_static '--json -h --help'
 					;;
-				status)
-					case ${arguments[-1]-} in --socket) _sway_session_files; return 0;; esac
-					_sway_session_static '--socket --json -h --help'
-					;;
-				list)
-					_sway_session_static '--json -h --help'
+				status|list)
+					local app_inventory=0 app_inventory_value=''
+					_sway_session_app_inventory_arguments_valid || return 0
+					case $app_inventory_value in
+						--socket) _sway_session_files; return 0 ;;
+						--context) [[ $app_command == status ]] && _sway_session_contexts app-status "$cur"; return 0 ;;
+					esac
+					if [[ $app_command == status ]]; then
+						if [[ $cur == --context=* ]]; then
+							_sway_session_contexts app-status "${cur#--context=}"
+							for index in "${!COMPREPLY[@]}"; do COMPREPLY[index]="--context=${COMPREPLY[index]}"; done
+							return 0
+						fi
+						_sway_session_static '--context --inventory --socket --json -h --help'
+					elif ((app_inventory)); then
+						_sway_session_static '--inventory --socket --json -h --help'
+					else
+						_sway_session_static '--inventory --json -h --help'
+					fi
 					;;
 				rebind-focused)
 					case ${arguments[-1]-} in --socket) _sway_session_files; return 0;; esac

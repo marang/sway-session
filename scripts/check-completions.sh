@@ -57,6 +57,10 @@ if [ "${SWAY_SESSION_COMPLETION_FAIL:-}" = 1 ]; then
 	exit 3
 fi
 if [ "$#" -eq 3 ] && [ "$1" = completion ] && [ "$2" = contexts ]; then
+	if [ "$3" = app-status ]; then
+		printf '%s\t%s\n' '22222222-2222-4222-8222-222222222222' 'Archived app · archived · flatpak:org.example.App'
+		exit 0
+	fi
 	if [ "$3" = restore-active ]; then
 		printf '%s\t%s\n' \
 			'11111111-1111-4111-8111-111111111111' 'First $(touch "$SWAY_SESSION_COMPLETION_SENTINEL") · active · herdr:first'
@@ -240,6 +244,47 @@ if [[ " ${COMPREPLY[*]} " != *' terminal-status '* ]]; then
 fi
 
 unset SWAY_SESSION_COMPLETION_FAIL
+# Application inventory selects a saved context only through --context.
+for invocation in 'app status --context' 'app status --inventory --socket /tmp/sway.sock --context' 'app status --context --json' '--json app status --context' '--config /tmp/config app status --context'; do
+    read -r -a COMP_WORDS <<<"sway-session $invocation "
+    COMP_WORDS+=('222')
+    COMP_CWORD=$((${#COMP_WORDS[@]} - 1))
+    _sway_session
+    [[ ${#COMPREPLY[@]} == 1 && ${COMPREPLY[0]} == 22222222-2222-4222-8222-222222222222 ]] || { echo 'bash app status used the wrong context scope' >&2; exit 1; }
+done
+COMP_WORDS=(sway-session app status --context=222)
+COMP_CWORD=3
+_sway_session
+[[ ${#COMPREPLY[@]} == 1 && ${COMPREPLY[0]} == --context=22222222-2222-4222-8222-222222222222 ]] || exit 1
+for label in 'Release work' -- --socket; do
+    COMP_WORDS=(sway-session app status --context "$label" '')
+    COMP_CWORD=5
+    _sway_session
+    [[ " ${COMPREPLY[*]} " == *' --inventory '* && " ${COMPREPLY[*]} " == *' --context '* ]] || { echo 'bash app context label changed option parsing' >&2; exit 1; }
+    [[ " ${COMPREPLY[*]} " != *' 22222222-2222-4222-8222-222222222222 '* ]] || exit 1
+done
+for invocation in 'app list' 'app list --inventory=false'; do
+    read -r -a COMP_WORDS <<<"sway-session $invocation "
+    COMP_WORDS+=('')
+    COMP_CWORD=$((${#COMP_WORDS[@]} - 1))
+    _sway_session
+    [[ " ${COMPREPLY[*]} " == *' --inventory '* && " ${COMPREPLY[*]} " != *' --socket '* ]] || exit 1
+done
+for invocation in 'app list --inventory' 'app list --inventory --socket=--' 'app list --inventory --socket --'; do
+    read -r -a COMP_WORDS <<<"sway-session $invocation "
+    COMP_WORDS+=('')
+    COMP_CWORD=$((${#COMP_WORDS[@]} - 1))
+    _sway_session
+    [[ " ${COMPREPLY[*]} " == *' --socket '* ]] || { echo 'bash inventory socket value changed option parsing' >&2; exit 1; }
+done
+for invocation in 'app status' 'app status unexpected' 'app list --inventory --'; do
+    read -r -a COMP_WORDS <<<"sway-session $invocation "
+    COMP_WORDS+=('222')
+    COMP_CWORD=$((${#COMP_WORDS[@]} - 1))
+    _sway_session
+    [[ ${#COMPREPLY[@]} == 0 ]] || { echo 'bash app inventory offered positional selection' >&2; exit 1; }
+done
+
 COMP_WORDS=(sway-session terminal status 111)
 COMP_CWORD=3
 _sway_session
@@ -621,6 +666,53 @@ if (( ${captured_values[(Ie)--socket]} == 0 )) || (( ${captured_values[(Ie)--req
 	exit 1
 fi
 unset SWAY_SESSION_COMPLETION_FAIL
+# Application inventory selects a saved context only through --context.
+for invocation in 'app status --context' 'app status --inventory --socket /tmp/sway.sock --context' 'app status --context --json' '--json app status --context' '--config /tmp/config app status --context'; do
+    words=(sway-session ${(z)invocation})
+    words+=('222')
+    CURRENT=${#words}
+    captured_values=()
+    _sway-session
+    [[ ${#captured_values[@]} == 1 && ${captured_values[1]} == 22222222-2222-4222-8222-222222222222 ]] || { echo 'zsh app status used the wrong context scope' >&2; exit 1; }
+done
+words=(sway-session app status --context=222)
+CURRENT=4
+captured_values=()
+    _sway-session
+[[ ${#captured_values[@]} == 1 && ${captured_values[1]} == 22222222-2222-4222-8222-222222222222 ]] || exit 1
+for label in 'Release work' -- --socket; do
+    words=(sway-session app status --context "$label" '')
+    CURRENT=6
+    captured_values=()
+    _sway-session
+    [[ " ${captured_values[*]} " == *' --inventory '* && " ${captured_values[*]} " == *' --context '* ]] || { echo 'zsh app context label changed option parsing' >&2; exit 1; }
+    [[ " ${captured_values[*]} " != *' 22222222-2222-4222-8222-222222222222 '* ]] || exit 1
+done
+for invocation in 'app list' 'app list --inventory=false'; do
+    words=(sway-session ${(z)invocation})
+    words+=('')
+    CURRENT=${#words}
+    captured_values=()
+    _sway-session
+    [[ " ${captured_values[*]} " == *' --inventory '* && " ${captured_values[*]} " != *' --socket '* ]] || exit 1
+done
+for invocation in 'app list --inventory' 'app list --inventory --socket=--' 'app list --inventory --socket --'; do
+    words=(sway-session ${(z)invocation})
+    words+=('')
+    CURRENT=${#words}
+    captured_values=()
+    _sway-session
+    [[ " ${captured_values[*]} " == *' --socket '* ]] || { echo 'zsh inventory socket value changed option parsing' >&2; exit 1; }
+done
+for invocation in 'app status' 'app status unexpected' 'app list --inventory --'; do
+    words=(sway-session ${(z)invocation})
+    words+=('222')
+    CURRENT=${#words}
+    captured_values=()
+    _sway-session
+    [[ " ${captured_values[*]} " != *' 22222222-2222-4222-8222-222222222222 '* ]] || { echo 'zsh app inventory offered positional selection' >&2; exit 1; }
+done
+
 
 captured_values=()
 captured_descriptions=()
@@ -1002,6 +1094,48 @@ test ! -e "$STATE_COMPLETION_CALLS"; or exit 1
 EOF
 	output=$(PATH="$temporary:$PATH" SWAY_SESSION_COMPLETION_SENTINEL="$sentinel" \
 		fish -c "source '$fish_completion'; __sway_session_contexts restore")
+	PATH="$temporary:$PATH" FISH_COMPLETION_FILE="$fish_completion" fish <<'EOF'
+source "$FISH_COMPLETION_FILE"
+function state_values --argument-names invocation
+    complete -C "$invocation" | string split -f 1 \t
+end
+for invocation in 'sway-session app status --context ' 'sway-session app status --inventory --socket /tmp/sway.sock --context ' 'sway-session app status --context --json ' 'sway-session --json app status --context ' 'sway-session --config /tmp/config app status --context '
+    set candidates (state_values "$invocation")
+    contains -- 22222222-2222-4222-8222-222222222222 $candidates; or begin
+        echo 'fish app status omitted a saved application UUID' >&2
+        exit 1
+    end
+    contains -- 11111111-1111-4111-8111-111111111111 $candidates; and exit 1
+end
+set candidates (state_values 'sway-session app status --context=222')
+contains -- --context=22222222-2222-4222-8222-222222222222 $candidates; or exit 1
+for label in "'Release work'" -- --socket
+    set candidates (state_values "sway-session app status --context $label --")
+    contains -- --inventory $candidates; and contains -- --context $candidates; or begin
+        echo 'fish app context label changed option parsing' >&2
+        exit 1
+    end
+end
+for invocation in 'sway-session app list --' 'sway-session app list --inventory=false --'
+    set candidates (state_values "$invocation")
+    contains -- --inventory $candidates; or exit 1
+    contains -- --socket $candidates; and exit 1
+end
+for invocation in 'sway-session app list --inventory --' 'sway-session app list --inventory --socket=-- --' 'sway-session app list --inventory --socket -- --'
+    set candidates (state_values "$invocation")
+    contains -- --socket $candidates; or begin
+        echo 'fish inventory socket value changed option parsing' >&2
+        exit 1
+    end
+end
+for invocation in 'sway-session app status 222' 'sway-session app status unexpected 222' 'sway-session app list --inventory -- 222'
+    set candidates (state_values "$invocation")
+    test (count $candidates) -eq 0; or begin
+        echo 'fish app inventory offered positional selection' >&2
+        exit 1
+    end
+end
+EOF
 	doctor_fix_output=$(fish -c "source '$fish_completion'; complete -C 'sway-session doctor --fix sway.integration --'")
 	case $doctor_fix_output in
 	*--check*) echo 'fish doctor offered --check after --fix' >&2; exit 1 ;;

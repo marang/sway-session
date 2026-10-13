@@ -269,6 +269,10 @@ type DesktopApplicationLauncher struct {
 	StateRoot     string
 	Starter       ProcessStarter
 	VerifyFlatpak func(Launcher) error
+	// ObservationRunner and ObservationResolveSystem are read-only,
+	// cancellation-aware inventory boundaries, independent of Launch.
+	ObservationRunner        CommandOutputRunner
+	ObservationResolveSystem func(string) (string, error)
 }
 
 func (launcher DesktopApplicationLauncher) Launch(context Context) error {
@@ -309,12 +313,12 @@ func (launcher DesktopApplicationLauncher) SpecContext(ctx context.Context, sess
 		return ProcessSpec{}, err
 	}
 	if err := sessionContext.Validate(); err != nil {
-		return ProcessSpec{}, fmt.Errorf("validate context: %w", err)
+		return ProcessSpec{}, launcherValidationFailure(ApplicationLauncherInvalid, "launcher_context_invalid", fmt.Errorf("validate context: %w", err))
 	}
 	switch sessionContext.Launcher.Kind {
 	case LauncherDesktop:
 		if launcher.GIO != systemGIOExecutable {
-			return ProcessSpec{}, fmt.Errorf("gio launcher must be %s", systemGIOExecutable)
+			return ProcessSpec{}, launcherValidationFailure(ApplicationLauncherInvalid, "launcher_command_invalid", fmt.Errorf("gio launcher must be %s", systemGIOExecutable))
 		}
 		path, environment, err := revalidateDesktopLaunchContext(ctx, sessionContext.Launcher, launcher.StateRoot)
 		if err != nil {
@@ -323,7 +327,7 @@ func (launcher DesktopApplicationLauncher) SpecContext(ctx context.Context, sess
 		return ProcessSpec{Name: launcher.GIO, Arguments: []string{"launch", path}, Environment: environment}, nil
 	case LauncherFlatpak:
 		if launcher.Flatpak != systemFlatpakExecutable {
-			return ProcessSpec{}, fmt.Errorf("flatpak launcher must be %s", systemFlatpakExecutable)
+			return ProcessSpec{}, launcherValidationFailure(ApplicationLauncherInvalid, "launcher_command_invalid", fmt.Errorf("flatpak launcher must be %s", systemFlatpakExecutable))
 		}
 		installation := "--system"
 		if sessionContext.Launcher.FlatpakInstallation == FlatpakUser {
@@ -331,7 +335,7 @@ func (launcher DesktopApplicationLauncher) SpecContext(ctx context.Context, sess
 		}
 		return ProcessSpec{Name: launcher.Flatpak, Arguments: []string{"run", installation, sessionContext.Launcher.FlatpakID}, Environment: []string{"PATH=/usr/local/bin:/usr/bin"}}, nil
 	default:
-		return ProcessSpec{}, fmt.Errorf("desktop launcher does not support context launcher kind %q", sessionContext.Launcher.Kind)
+		return ProcessSpec{}, launcherValidationFailure(ApplicationLauncherInvalid, "launcher_kind_invalid", fmt.Errorf("desktop launcher does not support context launcher kind %q", sessionContext.Launcher.Kind))
 	}
 }
 
@@ -346,43 +350,47 @@ func revalidateDesktopLaunchContext(ctx context.Context, launcher Launcher, stat
 	case DesktopEntrySystem:
 		data, err := readTrustedRegularFile(launcher.DesktopPath, 0, true, MaxDesktopEntrySize)
 		if err != nil {
-			return "", nil, fmt.Errorf("system desktop entry changed trust: %w", err)
+			return "", nil, launcherFileFailure(fmt.Errorf("system desktop entry changed trust: %w", err), ApplicationLauncherInvalid, "desktop_entry_untrusted", "desktop_entry_missing")
 		}
 		parsed, hidden, err := parseDesktopEntry(data)
 		if err != nil || hidden {
 			if err == nil {
 				err = errors.New("desktop entry is hidden")
 			}
-			return "", nil, err
+			return "", nil, launcherValidationFailure(ApplicationLauncherInvalid, "desktop_entry_invalid", err)
 		}
 		if err := rejectAdministrativeDesktopEntry(parsed); err != nil {
-			return "", nil, err
+			return "", nil, launcherValidationFailure(ApplicationLauncherInvalid, "desktop_entry_invalid", err)
 		}
 		return launcher.DesktopPath, []string{"PATH=/usr/local/bin:/usr/bin"}, nil
 	case DesktopEntryUser:
 		directory := filepath.Join(stateRoot, desktopApprovalDirectory)
 		if filepath.Dir(launcher.ApprovedDesktopPath) != directory {
-			return "", nil, errors.New("approved desktop snapshot is outside the private approval directory")
+			return "", nil, launcherValidationFailure(ApplicationLauncherInvalid, "approval_invalid", errors.New("approved desktop snapshot is outside the private approval directory"))
 		}
 		source, err := readTrustedRegularFile(launcher.DesktopPath, uint32(os.Geteuid()), false, MaxDesktopEntrySize)
 		if err != nil {
 			if contextErr := ctx.Err(); contextErr != nil {
 				return "", nil, contextErr
 			}
-			return "", nil, errors.New("user desktop entry changed and requires explicit reapproval")
+			classified := launcherFileFailure(err, ApplicationLauncherReapprovalRequired, "desktop_entry_changed", "desktop_entry_missing")
+			return "", nil, &launcherValidationError{classified.observation, errors.New("user desktop entry changed and requires explicit reapproval")}
 		}
 		if sha256Hex(source) != launcher.DesktopEntrySHA256 {
-			return "", nil, errors.New("user desktop entry changed and requires explicit reapproval")
+			return "", nil, launcherValidationFailure(ApplicationLauncherReapprovalRequired, "desktop_entry_changed", errors.New("user desktop entry changed and requires explicit reapproval"))
 		}
 		snapshot, err := statefile.ReadPrivateFileContext(ctx, directory, filepath.Base(launcher.ApprovedDesktopPath))
 		if err != nil {
 			if contextErr := ctx.Err(); contextErr != nil {
 				return "", nil, contextErr
 			}
-			return "", nil, errors.New("approved desktop snapshot is missing or changed")
+			if errors.Is(err, os.ErrPermission) {
+				return "", nil, launcherValidationFailure(ApplicationLauncherUnknown, "permission_denied", errors.New("approved desktop snapshot is missing or changed"))
+			}
+			return "", nil, launcherValidationFailure(ApplicationLauncherReapprovalRequired, "approval_missing_or_changed", errors.New("approved desktop snapshot is missing or changed"))
 		}
 		if sha256Hex(snapshot) != launcher.DesktopEntrySHA256 {
-			return "", nil, errors.New("approved desktop snapshot is missing or changed")
+			return "", nil, launcherValidationFailure(ApplicationLauncherReapprovalRequired, "approval_missing_or_changed", errors.New("approved desktop snapshot is missing or changed"))
 		}
 		environment := []string{"PATH=/usr/local/bin:/usr/bin"}
 		if launcher.ApprovedExecutablePath != "" {
@@ -391,15 +399,16 @@ func revalidateDesktopLaunchContext(ctx context.Context, launcher Launcher, stat
 				if contextErr := ctx.Err(); contextErr != nil {
 					return "", nil, contextErr
 				}
-				return "", nil, errors.New("approved user executable changed and requires explicit reapproval")
+				classified := launcherFileFailure(err, ApplicationLauncherReapprovalRequired, "approved_executable_changed", "approved_executable_missing")
+				return "", nil, &launcherValidationError{classified.observation, errors.New("approved user executable changed and requires explicit reapproval")}
 			}
 			if digest != launcher.ApprovedExecutableSHA256 {
-				return "", nil, errors.New("approved user executable changed and requires explicit reapproval")
+				return "", nil, launcherValidationFailure(ApplicationLauncherReapprovalRequired, "approved_executable_changed", errors.New("approved user executable changed and requires explicit reapproval"))
 			}
 		}
 		return launcher.ApprovedDesktopPath, environment, nil
 	default:
-		return "", nil, fmt.Errorf("unsupported desktop entry origin %q", launcher.DesktopOrigin)
+		return "", nil, launcherValidationFailure(ApplicationLauncherInvalid, "desktop_origin_invalid", fmt.Errorf("unsupported desktop entry origin %q", launcher.DesktopOrigin))
 	}
 }
 

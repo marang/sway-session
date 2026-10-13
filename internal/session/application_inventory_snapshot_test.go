@@ -231,6 +231,7 @@ func TestApplicationInventorySnapshotHonorsCancellation(t *testing.T) {
 	if _, err := ReadApplicationInventorySnapshotContext(ctx, root); !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled snapshot: %v", err)
 	}
+	//lint:ignore SA1012 Exercise the explicit nil-context rejection boundary.
 	if _, err := ReadApplicationInventorySnapshotContext(nil, root); err == nil {
 		t.Fatal("nil context accepted")
 	}

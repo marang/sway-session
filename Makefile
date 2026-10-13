@@ -9,63 +9,72 @@ GO_LDFLAGS += -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.modifi
 GO_LDFLAGS += -X github.com/marang/sway-session/internal/buildmetadata.Stamp=sway-session-build-v1|$(VERSION)|$(COMMIT)|$(MODIFIED)|end-sway-session-build-v1
 GO_FILES := $(shell find cmd internal scripts -name '*.go' -type f)
 DOC_ROOT := $(PREFIX)/share/doc/sway-session
+VERIFY_RUN = $(if $(VERIFY_PROFILE_DIR),python3 -B scripts/verify-profile.py --step $@ --output "$(VERIFY_PROFILE_DIR)" --,)
 
-.PHONY: build install clean fmt fmt-check test race vet lint apparmor-check completion-check packaging-check standalone-check diff-check verify lifecycle-check vm-harness-check vm-reboot-check release-gate-check
+.PHONY: build install clean fmt fmt-check test race vet lint apparmor-check completion-check packaging-check standalone-check diff-check verify verify-go verify-other lifecycle-check vm-harness-check vm-reboot-check release-gate-check
+
+# A caller may use -j2 to overlap small independent checks with the Go lane.
+# Keep compilation, ordinary tests, race tests, vet and staticcheck sequential
+# so they do not compete for the same runner CPU and memory.
+.NOTPARALLEL: verify-go verify-other
 
 fmt:
 	gofmt -w $(GO_FILES)
 
 fmt-check:
-	@test -z "$$(gofmt -l $(GO_FILES))" || { \
+	@$(VERIFY_RUN) sh -c 'test -z "$$(gofmt -l $(GO_FILES))" || { \
 		echo "Go files need formatting:"; \
 		gofmt -l $(GO_FILES); \
 		exit 1; \
-	}
+	}'
 
 test:
-	go test -count=1 ./...
+	$(VERIFY_RUN) go test -count=1 ./...
 
 race:
-	go test -race -count=1 ./...
+	$(VERIFY_RUN) go test -race -count=1 ./...
 
 vet:
-	go vet ./...
+	$(VERIFY_RUN) go vet ./...
 
 lint:
-	staticcheck ./...
+	$(VERIFY_RUN) staticcheck ./...
 
 apparmor-check:
-	sh scripts/check-apparmor-policy.sh
+	$(VERIFY_RUN) sh scripts/check-apparmor-policy.sh
 
 completion-check:
-	sh scripts/check-completions.sh
+	$(VERIFY_RUN) sh scripts/check-completions.sh
 
 packaging-check:
-	sh scripts/check-packaging.sh
+	$(VERIFY_RUN) sh scripts/check-packaging.sh
 
 standalone-check:
-	sh scripts/check-standalone-boundary.sh
+	$(VERIFY_RUN) sh scripts/check-standalone-boundary.sh
 
 build:
-	CGO_ENABLED=0 go build $(GO_BUILD_FLAGS) -ldflags='$(GO_LDFLAGS)' -o sway-session ./cmd/sway-session
+	$(VERIFY_RUN) env CGO_ENABLED=0 go build $(GO_BUILD_FLAGS) -ldflags='$(GO_LDFLAGS)' -o sway-session ./cmd/sway-session
 
 diff-check:
-	git diff --check
-	git diff --cached --check
+	$(VERIFY_RUN) sh -c 'git diff --check && git diff --cached --check'
 
 lifecycle-check:
 	sh scripts/verify-lifecycle.sh
 
 vm-harness-check:
-	python3 -B -m unittest discover -s scripts/vm-reboot -p 'test_*.py'
+	$(VERIFY_RUN) python3 -B -m unittest discover -s scripts/vm-reboot -p 'test_*.py'
 
 vm-reboot-check:
 	python3 -B scripts/verify-vm-reboot.py $(VM_ARGS)
 
 release-gate-check:
-	python3 -B -m unittest discover -s scripts/release-gate -p 'test_*.py'
+	$(VERIFY_RUN) python3 -B -m unittest discover -s scripts/release-gate -p 'test_*.py'
 
-verify: fmt-check test race vet lint apparmor-check completion-check packaging-check standalone-check vm-harness-check release-gate-check build diff-check
+verify-go: test race vet lint build
+
+verify-other: apparmor-check completion-check packaging-check standalone-check vm-harness-check release-gate-check diff-check
+
+verify: fmt-check verify-go verify-other
 
 install: build
 	install -d "$(PREFIX)/bin"

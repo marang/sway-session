@@ -16,7 +16,7 @@ import yaml
 
 
 ROOT = Path(__file__).resolve().parents[2]
-WORKFLOW = ROOT / ".github/workflows/publish-aur.yml"
+WORKFLOW = ROOT / ".github/workflows/aur-package.yml"
 JOB_STEPS = {
     "publish-aur": ("Reject stale package metadata", "Commit & push to AUR"),
     "sync-pkgbuild": ("Reject stale repository metadata", "Update exact release metadata and open PR"),

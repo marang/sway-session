@@ -51,7 +51,9 @@ class InstallTest(unittest.TestCase):
                 command.append(f"DOC_ROOT={doc_root}")
             env = os.environ.copy()
             # This is a fresh make invocation, not a recursive jobserver child.
-            for key in ("MAKEFLAGS", "MFLAGS", "MAKELEVEL"):
+            # Its builds belong to the packaging check's timing; they must not
+            # overwrite the outer verification build's profile.
+            for key in ("MAKEFLAGS", "MFLAGS", "MAKELEVEL", "VERIFY_PROFILE_DIR"):
                 env.pop(key, None)
             result = subprocess.run(command, cwd=build, env=env, capture_output=True, text=True, timeout=180)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

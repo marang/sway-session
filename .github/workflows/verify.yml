@@ -22,6 +22,21 @@ jobs:
     env:
       VERIFY_COMMIT: ${{ inputs.commit }}
     steps:
+      # Historical recovery targets may predate the profiling/proof helpers.
+      # Stage them from the immutable caller workflow source before checking
+      # out the requested application commit; never fetch mutable main here.
+      - name: Checkout immutable workflow tooling without persisted credentials
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+
+      - name: Stage verification tooling
+        run: |
+          mkdir -p "$RUNNER_TEMP/verification-tooling"
+          cp scripts/verify-profile.py "$RUNNER_TEMP/verification-tooling/verify-profile.py"
+          cp scripts/release-gate/verification_proof.py "$RUNNER_TEMP/verification-tooling/verification_proof.py"
+
       - name: Checkout exact commit without persisted credentials
         uses: actions/checkout@v5
         with:
@@ -34,24 +49,101 @@ jobs:
           test "$(git rev-parse HEAD)" = "$VERIFY_COMMIT"
 
       - name: Setup Go
+        id: go
         uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+          cache: false
+
+      - name: Locate Go caches
+        id: cache-paths
+        run: |
+          printf 'modules=%s\n' "$(go env GOMODCACHE)" >> "$GITHUB_OUTPUT"
+          printf 'build=%s\n' "$(go env GOCACHE)" >> "$GITHUB_OUTPUT"
+          printf 'tools=%s/bin/staticcheck\n' "$(go env GOPATH)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore module downloads
+        id: modules
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ steps.cache-paths.outputs.modules }}
+          key: modules-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.go.outputs.go-version }}-${{ hashFiles('go.mod', 'go.sum') }}
+
+      # Go's compiled cache changes with source and includes race builds. A
+      # unique primary key lets each successful run save its updated contents;
+      # a stable prefix restores the most recent compatible successful run.
+      - name: Restore compiled and race cache
+        id: compiled
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ steps.cache-paths.outputs.build }}
+          key: build-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.go.outputs.go-version }}-${{ hashFiles('go.mod', 'go.sum') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            build-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.go.outputs.go-version }}-${{ hashFiles('go.mod', 'go.sum') }}-
+
+      - name: Restore staticcheck binary
+        id: staticcheck
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ steps.cache-paths.outputs.tools }}
+          key: staticcheck-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.go.outputs.go-version }}-v0.7.0
 
       - name: Install staticcheck
+        if: steps.staticcheck.outputs.cache-hit != 'true'
         run: go install honnef.co/go/tools/cmd/staticcheck@v0.7.0
 
       - name: Install verification tools
         run: sudo apt-get update && sudo apt-get install --yes fish jq zsh python3-yaml
 
       - name: Verify
-        run: make verify
+        run: python3 -B "$RUNNER_TEMP/verification-tooling/verify-profile.py" --output "$RUNNER_TEMP/verify-profile"
 
       - name: Check GoReleaser configuration
         uses: goreleaser/goreleaser-action@v7
         with:
-          version: "~> v2"
+          version: "v2.18.2"
           args: check
+
+      - name: Save module downloads
+        if: steps.modules.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ steps.cache-paths.outputs.modules }}
+          key: ${{ steps.modules.outputs.cache-primary-key }}
+
+      - name: Save updated compiled and race cache
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ steps.cache-paths.outputs.build }}
+          key: ${{ steps.compiled.outputs.cache-primary-key }}
+
+      - name: Save staticcheck binary
+        if: steps.staticcheck.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ steps.cache-paths.outputs.tools }}
+          key: ${{ steps.staticcheck.outputs.cache-primary-key }}
+
+      - name: Create verification proof
+        run: python3 -B "$RUNNER_TEMP/verification-tooling/verification_proof.py" create --commit "$VERIFY_COMMIT" --output "$RUNNER_TEMP/verification-proof.json"
+
+      - name: Upload verification proof
+        uses: actions/upload-artifact@v4
+        with:
+          name: verification-proof-${{ inputs.commit }}
+          path: ${{ runner.temp }}/verification-proof.json
+          overwrite: true
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Upload verification profile
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verification-profile-${{ inputs.commit }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/verify-profile
+          retention-days: 14
+          if-no-files-found: warn
 
       - name: Record verified commit
         id: verified

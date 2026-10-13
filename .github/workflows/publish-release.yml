@@ -1,15 +1,48 @@
-name: Verified GitHub release
+name: Verified release pipeline
 
 on:
   push:
-    tags:
-      - "v*"
+    tags: ["v*"]
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+      target:
+        default: all
+        type: string
+      validation-only:
+        default: false
+        type: boolean
+    secrets:
+      AUR_PRIVATE_KEY:
+        required: false
+      RELEASE_SYNC_TOKEN:
+        required: false
+      AUR_COMMIT_NAME:
+        required: false
+      AUR_COMMIT_EMAIL:
+        required: false
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Existing immutable tag (unused for isolated handoff validation)
+        type: string
+      target:
+        default: all
+        type: choice
+        options: [all, aur]
+      validation-only:
+        description: Build and check artifact handoff without publishing
+        default: true
+        type: boolean
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
-  group: github-release-${{ github.ref }}
+  group: release-pipeline-${{ inputs.version || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
@@ -18,74 +51,205 @@ jobs:
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
       commit: ${{ steps.tag.outputs.commit }}
+    env:
+      VALIDATION_ONLY: ${{ inputs.validation-only == true }}
+      VERSION: ${{ inputs.version || github.ref_name }}
+      EXPECTED_COMMIT: ${{ github.event_name == 'push' && github.sha || '' }}
+      TARGET: ${{ inputs.target || 'all' }}
     steps:
-      - name: Checkout workflow source without persisted credentials
+      - name: Checkout immutable workflow source without persisted credentials
         uses: actions/checkout@v5
         with:
+          ref: ${{ github.workflow_sha }}
           fetch-depth: 0
           persist-credentials: false
-
-      - name: Resolve immutable release tag on main
+      - name: Resolve immutable release or isolated validation candidate
         id: tag
-        env:
-          VERSION: ${{ github.ref_name }}
-          EXPECTED_COMMIT: ${{ github.sha }}
-        run: sh scripts/resolve-release-tag.sh "$VERSION" "$EXPECTED_COMMIT" >> "$GITHUB_OUTPUT"
+        run: |
+          case "$TARGET" in all|aur) ;; *) exit 1 ;; esac
+          if [ "$VALIDATION_ONLY" = true ]; then
+            [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
+            printf 'tag=v0.0.0\ncommit=%s\n' "$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+          else
+            if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+              test "$GITHUB_REF" = refs/heads/main
+            fi
+            cp scripts/resolve-release-tag.sh "$RUNNER_TEMP/resolve-release-tag.sh"
+            git checkout --detach "refs/tags/$VERSION"
+            if [ -n "$EXPECTED_COMMIT" ]; then
+              sh "$RUNNER_TEMP/resolve-release-tag.sh" "$VERSION" "$EXPECTED_COMMIT" >> "$GITHUB_OUTPUT"
+            else
+              sh "$RUNNER_TEMP/resolve-release-tag.sh" "$VERSION" >> "$GITHUB_OUTPUT"
+            fi
+          fi
 
   verify:
     needs: resolve
-    uses: ./.github/workflows/verify.yml
+    uses: ./.github/workflows/verify-release.yml
     with:
       commit: ${{ needs.resolve.outputs.commit }}
 
-  goreleaser:
+  artifacts:
     needs: [resolve, verify]
-    if: ${{ needs.verify.outputs.commit == needs.resolve.outputs.commit }}
+    if: ${{ needs.verify.outputs.commit == needs.resolve.outputs.commit && (inputs.target != 'aur' || inputs.validation-only == true) }}
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+      manifest-sha256: ${{ steps.manifest.outputs.sha256 }}
     env:
       RELEASE_TAG: ${{ needs.resolve.outputs.tag }}
       RELEASE_COMMIT: ${{ needs.resolve.outputs.commit }}
+      VALIDATION_ONLY: ${{ inputs.validation-only == true }}
     steps:
+      - name: Checkout immutable workflow tooling
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - name: Stage trusted artifact checker
+        run: |
+          cp scripts/release-gate/release_artifacts.py "$RUNNER_TEMP/release_artifacts.py"
+          cp scripts/resolve-release-tag.sh "$RUNNER_TEMP/resolve-release-tag.sh"
       - name: Checkout verified commit without persisted credentials
         uses: actions/checkout@v5
         with:
           ref: ${{ needs.resolve.outputs.commit }}
           fetch-depth: 0
           persist-credentials: false
-
-      - name: Revalidate immutable tag before publication
-        run: sh scripts/resolve-release-tag.sh "$RELEASE_TAG" "$RELEASE_COMMIT"
-
-      - name: Publish each immutable release only once
-        id: release
-        uses: actions/github-script@v8
-        with:
-          script: |
-            try {
-              const { data } = await github.rest.repos.getReleaseByTag({
-                ...context.repo, tag: process.env.RELEASE_TAG
-              });
-              if (data.draft) throw new Error('An existing draft needs explicit recovery before publication.');
-              core.info('This immutable tag already has a published release; leaving its artifacts intact.');
-              core.setOutput('publish', 'false');
-            } catch (error) {
-              if (error.status !== 404) throw error;
-              core.setOutput('publish', 'true');
-            }
-
+      - name: Revalidate immutable candidate and pin build timestamp
+        run: |
+          test "$(git rev-parse HEAD)" = "$RELEASE_COMMIT"
+          if [ "$VALIDATION_ONLY" = true ]; then
+            git tag "$RELEASE_TAG" "$RELEASE_COMMIT"
+          else
+            sh "$RUNNER_TEMP/resolve-release-tag.sh" "$RELEASE_TAG" "$RELEASE_COMMIT"
+          fi
+          printf 'SOURCE_DATE_EPOCH=%s\n' "$(git show -s --format=%ct HEAD)" >> "$GITHUB_ENV"
       - name: Setup Go
         uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-
-      - name: Run GoReleaser
-        if: ${{ steps.release.outputs.publish == 'true' }}
+      - name: Reuse an already complete immutable release
+        id: restored
+        if: ${{ inputs.validation-only != true }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -B "$RUNNER_TEMP/release_artifacts.py" restore --output "$RUNNER_TEMP/release-assets" --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT" --goreleaser-version 2.18.2 --repo "$GITHUB_REPOSITORY" >> "$GITHUB_OUTPUT"
+      - name: Build release files once without publication credentials
+        if: ${{ steps.restored.outputs.restored != 'true' }}
         uses: goreleaser/goreleaser-action@v7
         with:
-          version: "~> v2"
-          args: release --clean
+          version: "2.18.2"
+          args: release --clean --skip=publish,announce
         env:
           GORELEASER_CURRENT_TAG: ${{ needs.resolve.outputs.tag }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Inspect standalone packages and bind every file digest
+        id: manifest
+        run: |
+          git diff --exit-code
+          if [ "$RESTORED" = true ]; then
+            python3 -B "$RUNNER_TEMP/release_artifacts.py" verify --directory "$RUNNER_TEMP/release-assets" --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT" --goreleaser-version 2.18.2
+          else
+            python3 -B "$RUNNER_TEMP/release_artifacts.py" stage --dist dist --output "$RUNNER_TEMP/release-assets" --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT" --goreleaser-version 2.18.2
+          fi
+          printf 'sha256=%s\n' "$(sha256sum "$RUNNER_TEMP/release-assets/release-manifest.json" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+        env:
+          RESTORED: ${{ steps.restored.outputs.restored }}
+      - name: Upload only checked release assets
+        id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets-${{ needs.resolve.outputs.tag }}-${{ needs.resolve.outputs.commit }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/release-assets
+          retention-days: 14
+          if-no-files-found: error
+
+  handoff:
+    needs: [resolve, verify, artifacts]
+    if: ${{ needs.verify.outputs.commit == needs.resolve.outputs.commit }}
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ needs.resolve.outputs.tag }}
+      RELEASE_COMMIT: ${{ needs.resolve.outputs.commit }}
+      MANIFEST_SHA256: ${{ needs.artifacts.outputs.manifest-sha256 }}
+    steps:
+      - name: Checkout trusted artifact checker
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - name: Stage checker
+        run: cp scripts/release-gate/release_artifacts.py "$RUNNER_TEMP/release_artifacts.py"
+      - name: Checkout candidate build inputs
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.resolve.outputs.commit }}
+          persist-credentials: false
+      - name: Download exact immutable artifact ID
+        uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ needs.artifacts.outputs.artifact-id }}
+          merge-multiple: true
+          path: release-assets
+      - name: Independently check transferred bytes and package identities
+        run: |
+          [[ "$MANIFEST_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          test "$(sha256sum release-assets/release-manifest.json | cut -d' ' -f1)" = "$MANIFEST_SHA256"
+          python3 -B "$RUNNER_TEMP/release_artifacts.py" verify --directory release-assets --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT" --goreleaser-version 2.18.2
+
+  github-release:
+    needs: [resolve, verify, artifacts, handoff]
+    if: ${{ needs.verify.outputs.commit == needs.resolve.outputs.commit && inputs.validation-only != true }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    env:
+      RELEASE_TAG: ${{ needs.resolve.outputs.tag }}
+      RELEASE_COMMIT: ${{ needs.resolve.outputs.commit }}
+      MANIFEST_SHA256: ${{ needs.artifacts.outputs.manifest-sha256 }}
+    steps:
+      - name: Checkout immutable publisher tooling
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - name: Stage trusted publisher and tag guard
+        run: |
+          cp scripts/release-gate/release_artifacts.py "$RUNNER_TEMP/release_artifacts.py"
+          cp scripts/resolve-release-tag.sh "$RUNNER_TEMP/resolve-release-tag.sh"
+      - name: Checkout verified commit without persisted credentials
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.resolve.outputs.commit }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Revalidate immutable tag before publication
+        run: sh "$RUNNER_TEMP/resolve-release-tag.sh" "$RELEASE_TAG" "$RELEASE_COMMIT"
+      - name: Download exact checked artifact ID
+        uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ needs.artifacts.outputs.artifact-id }}
+          merge-multiple: true
+          path: release-assets
+      - name: Publish checked files without rebuilding or replacing assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [[ "$MANIFEST_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          test "$(sha256sum release-assets/release-manifest.json | cut -d' ' -f1)" = "$MANIFEST_SHA256"
+          python3 -B "$RUNNER_TEMP/release_artifacts.py" publish --directory release-assets --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT" --goreleaser-version 2.18.2 --repo "$GITHUB_REPOSITORY"
+
+  aur:
+    needs: [resolve, verify]
+    if: ${{ needs.verify.outputs.commit == needs.resolve.outputs.commit && inputs.validation-only != true }}
+    uses: ./.github/workflows/aur-package.yml
+    with:
+      tag: ${{ needs.resolve.outputs.tag }}
+      commit: ${{ needs.resolve.outputs.commit }}
+      verified-commit: ${{ needs.verify.outputs.commit }}
+    secrets:
+      AUR_PRIVATE_KEY: ${{ secrets.AUR_PRIVATE_KEY }}
+      RELEASE_SYNC_TOKEN: ${{ secrets.RELEASE_SYNC_TOKEN }}
+      AUR_COMMIT_NAME: ${{ secrets.AUR_COMMIT_NAME }}
+      AUR_COMMIT_EMAIL: ${{ secrets.AUR_COMMIT_EMAIL }}

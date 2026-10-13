@@ -375,14 +375,7 @@ func writeRestoreReport(writer io.Writer, report restoreReportCommandResult) err
 }
 
 func latestCLIRestoreOutcomes(report sessionstate.RestoreReport) map[sessionstate.ContextID]sessionstate.RestoreOutcome {
-	latest := make(map[sessionstate.ContextID]sessionstate.RestoreOutcome)
-	for _, record := range report.Outcomes {
-		previous, exists := latest[record.ContextID]
-		if !exists || record.StartedAt.After(previous.StartedAt) || (record.StartedAt.Equal(previous.StartedAt) && record.Source == "explicit") {
-			latest[record.ContextID] = record
-		}
-	}
-	return latest
+	return sessionstate.LatestRestoreOutcomes(report)
 }
 
 func decorateTerminalRestoreHistory(ctx context.Context, deps dependencies, items []terminalInventoryResult) *commandFailure {

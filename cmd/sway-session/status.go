@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"slices"
 
 	sessionstate "github.com/marang/sway-session/internal/session"
 )
@@ -45,16 +44,7 @@ func executeStatus(ctx context.Context, arguments []string, deps dependencies) (
 		return commandResult{}, failure("sway_tree", "observe live application placement", "Sway returned an invalid tree root. Check that --socket PATH or SWAYSOCK selects a running Sway compositor; live placement could not be observed.")
 	}
 
-	// Restore observes only active applications. Status includes archived
-	// registrations too, without changing their stored lifecycle or policy.
-	observationRegistry := environment.registry
-	observationRegistry.Contexts = slices.Clone(environment.registry.Contexts)
-	for index := range observationRegistry.Contexts {
-		observationRegistry.Contexts[index].State = sessionstate.ContextActive
-		observationRegistry.Contexts[index].ArchivedAt = nil
-		observationRegistry.Contexts[index].Lifecycle = nil
-	}
-	groups, err := sessionstate.ObserveApplicationGroups(environment.tree, observationRegistry)
+	groups, err := sessionstate.ObserveRegisteredApplicationGroups(environment.tree, environment.registry)
 	if err != nil {
 		return commandResult{}, failure("application_observation", "observe live application placement", err.Error()+". Check Sway application identities and context marks; live placement could not be determined.")
 	}

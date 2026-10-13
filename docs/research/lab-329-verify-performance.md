@@ -44,6 +44,10 @@ CI invokes the same `make verify` target with two jobs. Its Go prerequisite lane
 serializes ordinary tests, race tests, vet, staticcheck and the static build.
 The second lane serializes the independent configuration/harness checks. This
 bounds command concurrency and overlaps those checks with the longer Go lane.
+Both lanes are recursive `make --jobs=1` commands behind one formatting barrier.
+This works on GNU Make 4.3 and 4.4. A prior named `.NOTPARALLEL` implementation
+serialized the entire gate on Ubuntu's Make 4.3; the runner measurements below
+exposed this and prompted the explicit recursive-lane fix.
 GoReleaser's configuration check is pinned to v2.18.2, the version used to build
 shared release archives.
 
@@ -72,12 +76,62 @@ result caching or adding a second diagnostic-only test execution.
 
 The focused profiler tests verify exit-code propagation, failed-test diagnostic
 preservation, retained race/uncached flags, bounded complete-gate invocation,
-serial historical gates and rejection of stale profile output. A local Go 1.26.5 ordinary-test profile ran
+serial historical gates and rejection of stale profile output. Scheduler fixture
+tests exercise the actual Makefile with observable replacement commands: every
+one of the 13 required checks runs once, formatting completes before the lanes,
+each lane stays serial, concurrency is exactly two under `-j2` and one under
+the default serial invocation, and a failed race check fails the gate and stops
+its Go successors. All seven tests pass with both local GNU Make 4.4.1 and
+[official GNU Make 4.3](https://ftp.gnu.org/gnu/make/make-4.3.tar.gz), built into
+`/tmp` without installing system packages.
+
+A local Go 1.26.5 ordinary-test profile ran
 all 13 packages successfully in 19.880 s; it is workstation evidence, not a
 GitHub-runner speed comparison.
 
-Cold and warm GitHub-runner profiles must be recorded after the integrated
-branch is pushed. No speed claim is based on the local timing above.
+## Measured cold and warm runner pair
+
+The first integrated branch revision was `4f199e7feea1a8ca6faa2bc8755e76cd9b2d330e`.
+Both attempts checked out the same PR merge commit,
+`586c590c01638b6c3ea241fef61acba074c7fe06`, on GitHub-hosted Ubuntu with
+Go 1.26.5. The available warm profile records four CPUs and default GOMAXPROCS.
+Both complete verification gates passed.
+
+| [Run 38448952436](https://github.com/marang/sway-session/actions/runs/38448952436) | Complete make verify | Ordinary tests | Race tests | Vet | Staticcheck |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| [Attempt 1, cold caches](https://github.com/marang/sway-session/actions/runs/38448952436/attempts/1) | 309.967 s | 86.770 s | 181.475 s | 6.392 s | 13.963 s |
+| [Attempt 2, warm caches](https://github.com/marang/sway-session/actions/runs/38448952436/attempts/2) | 181.809 s | 26.013 s | 123.261 s | 0.201 s | 13.868 s |
+
+The warm complete gate is 41.35% faster than its same-commit cold run and 41.13%
+faster than the repeated-main 308.850 s baseline. This pair isolates cache
+warming: the runner's old `.NOTPARALLEL` behavior still serialized both lanes.
+The final recursive-lane revision therefore requires its own runner measurement
+before attributing any further improvement to overlapping checks.
+
+All three new caches missed on attempt 1. Attempt 2 restored the 82 MB module
+snapshot, the 204 MB compiled/race snapshot ending in `38448952436-1`, and the
+8 MB staticcheck binary. Its successful cache-save log wrote a new compiled
+snapshot ending in `38448952436-2`, proving a warm restore updates the snapshot
+instead of retaining the stale primary key.
+
+The downloaded attempt-2 profile artifact, ID `11839444961`, provides actual
+package start and execution measurements:
+
+| Warm command | Before first package execution | Slowest package | Package start delay | Actual package execution |
+| --- | ---: | --- | ---: | ---: |
+| Ordinary tests | 0.944 s | `internal/session` | 2.070 s | 23.937 s |
+| Race tests | 1.213 s | `internal/session` | 3.685 s | 119.568 s |
+
+The warm race command spends most of its wall time actually executing the
+remaining race checks. This prevents a build-cache speedup from being mistaken
+for reduced test coverage. Initial compilation/linking waits and package
+execution measurements for later revisions are also printed in the job log and
+step summary, so they remain auditable when an artifact is unavailable.
+
+Attempt-1 artifact `11839528670` was absent from the artifact API after the full
+rerun and returned HTTP 404 despite its original successful-upload log. The
+cold timings above are taken from the retained job log and its per-target
+summary. No cold package-start JSON measurements are reconstructed or assumed.
 
 ## Metadata-only PR investigation
 

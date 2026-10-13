@@ -80,7 +80,7 @@ def profile(output):
     # commands compete; per-command wrappers are only available on new sources.
     jobs = 2 if "VERIFY_PROFILE_DIR" in Path("Makefile").read_text(encoding="utf-8") else 1
     started = time.monotonic()
-    # Make's two serial prerequisite lanes bound concurrency to two commands.
+    # Make's two recursive serial lanes bound concurrency to two commands.
     returncode = subprocess.call(
         ["make", f"--jobs={jobs}", "--output-sync=target", "verify"], env=environment)
     result = {"schema": 1, "wall_seconds": round(time.monotonic() - started, 3),
@@ -101,7 +101,26 @@ def profile(output):
     summary.extend(f"| {step['target']} | {step['wall_seconds']:.3f} |"
                    for step in result["steps"])
     summary.append(f"| Complete make verify | {result['wall_seconds']:.3f} |")
+    summary.extend(["", "| Test command | Before first execution (s) | Slowest package | Execution (s) |",
+                    "| --- | ---: | --- | ---: |"])
+    for step in result["steps"]:
+        packages = step.get("packages", {})
+        if packages:
+            package, measurement = max(packages.items(), key=lambda item: item[1].get("execution_seconds", 0))
+            summary.append(f"| {step['target']} | {step.get('initial_pre_execution_seconds')} | "
+                           f"{package} | {measurement.get('execution_seconds')} |")
+    summary.extend(["", "| Test command | Package | Before execution (s) | Execution (s) |",
+                    "| --- | --- | ---: | ---: |"])
+    for step in result["steps"]:
+        for package, measurement in sorted(step.get("packages", {}).items()):
+            wait = measurement.get("pre_execution_seconds")
+            execution = measurement.get("execution_seconds")
+            summary.append(f"| {step['target']} | {package} | "
+                           f"{wait if wait is not None else 'unavailable'} | "
+                           f"{execution if execution is not None else 'unavailable'} |")
     summary.extend(["", f"Toolchain: `{result['toolchain']}`", "",
+                    f"Commit: `{result['commit']}`; CPUs: {result['cpu_count']}; "
+                    f"GOMAXPROCS: `{result['gomaxprocs']}`; make jobs: {jobs}.", "",
                     "Tests use `-count=1`; race detection remains enabled. "
                     "Go JSON package events and pre-execution waits are in the artifact."])
     print("\n".join(summary), flush=True)

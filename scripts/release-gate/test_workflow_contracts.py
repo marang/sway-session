@@ -237,7 +237,8 @@ class WorkflowContractsTest(unittest.TestCase):
             self.assertEqual(downloads[0]["with"]["artifact-ids"], "${{ needs.artifacts.outputs.artifact-id }}")
             self.assertNotIn("name", downloads[0]["with"])
             self.assertEqual(job["env"]["MANIFEST_SHA256"], "${{ needs.artifacts.outputs.manifest-sha256 }}")
-            script = job["steps"][-1]["run"]
+            script = next(step["run"] for step in job["steps"]
+                          if 'release_artifacts.py" ' + operation in step.get("run", ""))
             self.assertIn('test "$(sha256sum release-assets/release-manifest.json', script)
             self.assertIn('"$MANIFEST_SHA256"', script)
             self.assertIn('release_artifacts.py" ' + operation, script)
@@ -354,6 +355,27 @@ class VerificationAggregationTest(unittest.TestCase):
     def test_inputs_and_outputs_are_bound_to_required_jobs(self):
         self.assertEqual(self.step["env"], {"EXPECTED_COMMIT": "${{ inputs.commit }}", "REUSED_COMMIT": "${{ needs.lookup.outputs.commit }}", "FRESH_COMMIT": "${{ needs.fresh.outputs.commit }}", "FRESH_RESULT": "${{ needs.fresh.result }}", "REUSED_ORIGIN": "${{ needs.lookup.outputs.origin }}"})
         self.assertEqual(self.job["outputs"]["commit"], "${{ steps.accepted.outputs.commit }}")
+
+
+class IsolatedRecoveryTest(unittest.TestCase):
+    def test_failure_probe_is_validation_only_and_requires_original_producer(self):
+        workflow = load_workflow("publish-release.yml")
+        job = workflow["jobs"]["handoff"]
+        step = named_step(job, "Exercise failed-job recovery for isolated validation")
+        self.assertEqual(expression(step["if"]), expression(
+            "${{ inputs.validation-only == true && inputs.exercise-recovery == true }}"))
+        self.assertEqual(job["env"]["SOURCE_ATTEMPT"],
+                         "${{ needs.artifacts.outputs.producer-attempt }}")
+        self.assertEqual(workflow["jobs"]["artifacts"]["outputs"]["producer-attempt"],
+                         "${{ steps.manifest.outputs.attempt }}")
+        for attempt, producer, expected in (("1", "1", 1), ("2", "1", 0), ("2", "2", 1)):
+            with self.subTest(attempt=attempt, producer=producer):
+                process = subprocess.run(
+                    ["/bin/bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", step["run"]],
+                    env={"PATH": "/usr/bin:/bin", "GITHUB_RUN_ATTEMPT": attempt,
+                         "SOURCE_ATTEMPT": producer}, capture_output=True, text=True,
+                    timeout=10, check=False)
+                self.assertEqual(process.returncode, expected, process.stdout + process.stderr)
 
 
 if __name__ == "__main__":

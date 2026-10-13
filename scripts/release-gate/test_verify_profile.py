@@ -6,6 +6,9 @@ import io
 import json
 import os
 from pathlib import Path
+import shlex
+import shutil
+import subprocess
 import tempfile
 import unittest
 from unittest import mock
@@ -79,6 +82,73 @@ class VerifyProfileTest(unittest.TestCase):
             (output / "test.json").write_text('{"exit_code": 0}')
             with self.assertRaisesRegex(ValueError, "must be empty"):
                 PROFILE.profile(output)
+
+
+class VerifySchedulingTest(unittest.TestCase):
+    """Exercise the real Makefile graph with observable, inexpensive commands."""
+
+    go_lane = ["test", "race", "vet", "lint", "build"]
+    other_lane = ["apparmor-check", "completion-check", "packaging-check",
+                  "standalone-check", "vm-harness-check", "release-gate-check", "diff-check"]
+
+    def run_gate(self, jobs, fail=""):
+        make = os.environ.get("VERIFY_TEST_MAKE", shutil.which("make"))
+        self.assertIsNotNone(make)
+        root = Path(__file__).resolve().parents[2]
+        with tempfile.TemporaryDirectory() as temporary:
+            temporary = Path(temporary)
+            events = temporary / "events.jsonl"
+            worker = temporary / "worker.py"
+            worker.write_text(
+                "import json, os, sys, time\n"
+                "target = sys.argv[1]\n"
+                "fd = os.open(os.environ['VERIFY_FIXTURE_LOG'], os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)\n"
+                "for action in ['start', 'end']:\n"
+                "    os.write(fd, (json.dumps({'target': target, 'action': action}) + '\\n').encode())\n"
+                "    if action == 'start': time.sleep(0.07)\n"
+                "os.close(fd)\n"
+                "sys.exit(4 if target == os.environ.get('VERIFY_FIXTURE_FAIL') else 0)\n")
+            overlay = temporary / "fixture.mk"
+            overlay.write_text("".join(
+                f"{target}:\n\t@python3 {shlex.quote(str(worker))} $@\n"
+                for target in ["fmt-check"] + self.go_lane + self.other_lane))
+            invocation = [make, "-f", str(root / "Makefile"), "-f", str(overlay)]
+            result = subprocess.run(
+                invocation + [f"--jobs={jobs}", f"MAKE={shlex.join(invocation)}", "verify"],
+                cwd=root, env=dict(os.environ, VERIFY_FIXTURE_LOG=str(events), VERIFY_FIXTURE_FAIL=fail),
+                capture_output=True, text=True, timeout=20)
+            return result, [json.loads(line) for line in events.read_text().splitlines()]
+
+    def test_complete_gate_has_two_bounded_serial_lanes_and_one_format_barrier(self):
+        for jobs in [1, 2]:
+            with self.subTest(jobs=jobs):
+                result, events = self.run_gate(jobs)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                starts = [event["target"] for event in events if event["action"] == "start"]
+                self.assertCountEqual(starts, ["fmt-check"] + self.go_lane + self.other_lane)
+                self.assertEqual(events[:2], [{"target": "fmt-check", "action": "start"},
+                                              {"target": "fmt-check", "action": "end"}])
+                active = set()
+                maximum = 0
+                for event in events:
+                    target = event["target"]
+                    if event["action"] == "start":
+                        active.add(target)
+                        maximum = max(maximum, len(active))
+                        for lane in [self.go_lane, self.other_lane]:
+                            self.assertLessEqual(len(active.intersection(lane)), 1)
+                    else:
+                        active.remove(target)
+                self.assertEqual(maximum, jobs)
+                for lane in [self.go_lane, self.other_lane]:
+                    self.assertEqual([target for target in starts if target in lane], lane)
+
+    def test_failed_go_lane_stops_its_successors_and_fails_the_gate(self):
+        result, events = self.run_gate(2, fail="race")
+        self.assertNotEqual(result.returncode, 0)
+        starts = [event["target"] for event in events if event["action"] == "start"]
+        self.assertIn("race", starts)
+        self.assertFalse(set(starts).intersection({"vet", "lint", "build"}))
 
 
 if __name__ == "__main__":

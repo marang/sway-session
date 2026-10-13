@@ -13,11 +13,6 @@ VERIFY_RUN = $(if $(VERIFY_PROFILE_DIR),python3 -B scripts/verify-profile.py --s
 
 .PHONY: build install clean fmt fmt-check test race vet lint apparmor-check completion-check packaging-check standalone-check diff-check verify verify-go verify-other lifecycle-check vm-harness-check vm-reboot-check release-gate-check
 
-# A caller may use -j2 to overlap small independent checks with the Go lane.
-# Keep compilation, ordinary tests, race tests, vet and staticcheck sequential
-# so they do not compete for the same runner CPU and memory.
-.NOTPARALLEL: verify-go verify-other
-
 fmt:
 	gofmt -w $(GO_FILES)
 
@@ -70,11 +65,16 @@ vm-reboot-check:
 release-gate-check:
 	$(VERIFY_RUN) python3 -B -m unittest discover -s scripts/release-gate -p 'test_*.py'
 
-verify-go: test race vet lint build
+# Recursive serial lanes work on GNU Make 4.3 as well as 4.4. Named
+# .NOTPARALLEL prerequisites only serialize individual targets on Make 4.4;
+# Make 4.3 would serialize the entire gate, defeating CI's bounded overlap.
+verify-go: fmt-check
+	+$(MAKE) --no-print-directory --jobs=1 test race vet lint build
 
-verify-other: apparmor-check completion-check packaging-check standalone-check vm-harness-check release-gate-check diff-check
+verify-other: fmt-check
+	+$(MAKE) --no-print-directory --jobs=1 apparmor-check completion-check packaging-check standalone-check vm-harness-check release-gate-check diff-check
 
-verify: fmt-check verify-go verify-other
+verify: verify-go verify-other
 
 install: build
 	install -d "$(PREFIX)/bin"

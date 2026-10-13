@@ -14,6 +14,9 @@ on:
       validation-only:
         default: false
         type: boolean
+      exercise-recovery:
+        default: false
+        type: boolean
     secrets:
       AUR_PRIVATE_KEY:
         required: false
@@ -35,6 +38,10 @@ on:
       validation-only:
         description: Build and check artifact handoff without publishing
         default: true
+        type: boolean
+      exercise-recovery:
+        description: Fail the first validation handoff to check failed-job recovery
+        default: false
         type: boolean
 
 permissions:
@@ -96,6 +103,7 @@ jobs:
     outputs:
       artifact-id: ${{ steps.upload.outputs.artifact-id }}
       manifest-sha256: ${{ steps.manifest.outputs.sha256 }}
+      producer-attempt: ${{ steps.manifest.outputs.attempt }}
     env:
       RELEASE_TAG: ${{ needs.resolve.outputs.tag }}
       RELEASE_COMMIT: ${{ needs.resolve.outputs.commit }}
@@ -153,6 +161,7 @@ jobs:
             python3 -B "$RUNNER_TEMP/release_artifacts.py" stage --dist dist --output "$RUNNER_TEMP/release-assets" --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT" --goreleaser-version 2.18.2
           fi
           printf 'sha256=%s\n' "$(sha256sum "$RUNNER_TEMP/release-assets/release-manifest.json" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          printf 'attempt=%s\n' "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
         env:
           RESTORED: ${{ steps.restored.outputs.restored }}
       - name: Upload only checked release assets
@@ -172,6 +181,8 @@ jobs:
       RELEASE_TAG: ${{ needs.resolve.outputs.tag }}
       RELEASE_COMMIT: ${{ needs.resolve.outputs.commit }}
       MANIFEST_SHA256: ${{ needs.artifacts.outputs.manifest-sha256 }}
+      SOURCE_ARTIFACT_ID: ${{ needs.artifacts.outputs.artifact-id }}
+      SOURCE_ATTEMPT: ${{ needs.artifacts.outputs.producer-attempt }}
     steps:
       - name: Checkout trusted artifact checker
         uses: actions/checkout@v5
@@ -196,6 +207,16 @@ jobs:
           [[ "$MANIFEST_SHA256" =~ ^[0-9a-f]{64}$ ]]
           test "$(sha256sum release-assets/release-manifest.json | cut -d' ' -f1)" = "$MANIFEST_SHA256"
           python3 -B "$RUNNER_TEMP/release_artifacts.py" verify --directory release-assets --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT" --goreleaser-version 2.18.2
+          printf 'Verified artifact ID `%s`, producer attempt `%s`, consumer attempt `%s`, manifest SHA-256 `%s`.\n' "$SOURCE_ARTIFACT_ID" "$SOURCE_ATTEMPT" "$GITHUB_RUN_ATTEMPT" "$MANIFEST_SHA256" >> "$GITHUB_STEP_SUMMARY"
+      - name: Exercise failed-job recovery for isolated validation
+        if: ${{ inputs.validation-only == true && inputs.exercise-recovery == true }}
+        run: |
+          if [ "$GITHUB_RUN_ATTEMPT" = 1 ]; then
+            echo 'Intentional validation-only failure; rerun failed jobs to consume the original successful artifact.' >&2
+            exit 1
+          fi
+          test "$SOURCE_ATTEMPT" = 1
+          echo 'Retained producer output and immutable artifact verified after failed-job rerun.'
 
   github-release:
     needs: [resolve, verify, artifacts, handoff]

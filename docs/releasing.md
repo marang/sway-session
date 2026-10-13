@@ -115,8 +115,13 @@ gh workflow run publish-release.yml --ref <candidate-branch> \
 ~~~
 
 It uses a checkout-local `v0.0.0` tag, executes verification, builds and checks
-the actual package artifact across jobs, and skips both publishers. Publication
-from a manual dispatch still requires main and an existing immutable tag.
+the actual package artifact across jobs, and skips both publishers. Add `-f exercise-recovery=true` to make the first validation handoff fail
+intentionally after its byte checks. Then run `gh run rerun <run-id> --failed`: the
+successful verifier and builder stay complete, and the handoff checks their
+original artifact ID, manifest and producer-attempt output. The job summary
+records producer and consumer attempts. The ordinary validation dispatch has no
+intentional failure. Publication from a manual dispatch still requires main and
+an existing immutable tag.
 
 The comparison reads `.SRCINFO` as data: numeric epoch (absent means zero),
 dotted numeric version, then numeric package revision with an optional

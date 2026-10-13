@@ -192,7 +192,10 @@ func validateRestoreRecords(source string, records []RestoreOutcome) error {
 }
 
 // write serializes journal reads and effects with BEGIN IMMEDIATE. Mutations
-// contain only SQLite and pure validation; all errors roll back optional DDL too.
+// contain only SQLite and pure validation. Known rejected writes roll back
+// optional DDL too; an uncertain COMMIT may already be visible and needs fresh
+// observation rather than automatic replay. Runtime contention remains bounded
+// and visible to callers through IsStateDatabaseBusy.
 func (store RestoreReportStore) write(ctx context.Context, create bool, mutate func(*stateWriteTransaction) error) error {
 	if ctx == nil {
 		return errors.New("restore report context is nil")

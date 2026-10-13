@@ -301,6 +301,17 @@ coverage. The
 separates that evidence from real Chrome/Slack and full guest-reboot acceptance.
 The original LAB-134 delivery did not itself implement those later fixes.
 
+## Restore-report contention
+
+Restore-report concurrency evidence and the unchanged bounded-contention
+contract are recorded in the
+[LAB-252 measurements](https://github.com/marang/sway-session/blob/main/docs/research/lab-252-restore-report-contention.md).
+Known busy test replays retain the stale-token/full-replacement assertions;
+cancellation and uncertain COMMIT outcomes are not replayed. Production keeps
+its 250 ms busy/diagnostic budgets. The historical batching wall-time trigger
+remains unresolved; controlled I/O-yield coverage complements the unchanged
+real-store batching integration.
+
 ## Doctor checks
 
 Run the focused shared-service, CLI, and TUI tests before the full gate:

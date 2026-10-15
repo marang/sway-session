@@ -147,6 +147,15 @@ class JSONAndCheckpoints(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             desktop.checkpoint_response(dict(absence, x=1, y=1), capability)
 
+    def test_capability_approval_acknowledges_inspection_without_pointer_input(self):
+        checkpoint = dict(self.checkpoint(), kind='capability', actions=['approve', 'ui-input'])
+        response = {'checkpoint': checkpoint['id'], 'action': 'approve'}
+        self.assertEqual(desktop.checkpoint_response(response, checkpoint), response)
+        with self.assertRaises(RuntimeError):
+            desktop.checkpoint_response(dict(response, x=100, y=20), checkpoint)
+        with self.assertRaises(RuntimeError):
+            desktop.checkpoint_response(response, self.checkpoint())
+
 
 class DesktopTransport(unittest.TestCase):
     @contextmanager

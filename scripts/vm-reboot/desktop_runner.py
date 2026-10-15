@@ -63,7 +63,9 @@ def checkpoint_response(value, checkpoint):
             or value['action'] not in checkpoint['actions']):
         raise RuntimeError('desktop controller: invalid response')
     coordinates = {'x', 'y'} <= value.keys()
-    if ('x' in value) != ('y' in value) or (value['action'] in ('cancel', 'approve', 'ui-input')) != coordinates:
+    needs_pointer = (value['action'] in ('cancel', 'ui-input')
+                     or (value['action'] == 'approve' and checkpoint['kind'] == 'approval'))
+    if ('x' in value) != ('y' in value) or needs_pointer != coordinates:
         raise RuntimeError('desktop controller: invalid pointer response')
     if coordinates and not (type(value['x']) is int and 0 <= value['x'] < 1280
                             and type(value['y']) is int and 0 <= value['y'] < 720):

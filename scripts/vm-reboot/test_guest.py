@@ -2,7 +2,12 @@
 import copy
 import importlib.util
 import json
+import os
 from pathlib import Path
+import stat
+import subprocess
+import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -11,6 +16,20 @@ guest = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(guest)
 
 class GuestReports(unittest.TestCase):
+    def test_desktop_pam_profile_supplies_actual_session_type_before_sway(self):
+        with tempfile.TemporaryDirectory() as directory:
+            profile = Path(directory) / 'profile'
+            for desktop in [False, True]:
+                profile.write_text(guest.login_profile(desktop=desktop))
+                # No tty is attached, so this sources only the exports and never
+                # launches Sway. Inspect only explicit public fixture settings.
+                result = subprocess.run(['/usr/bin/bash', '--noprofile', '--norc', '-c',
+                    '. "$1"; printf "%s,%s,%s" "${XDG_CURRENT_DESKTOP-}" "${XDG_SESSION_TYPE-}" "${XDG_DATA_DIRS-}"',
+                    'fixture-profile', str(profile)], env={'HOME': directory}, stdin=subprocess.DEVNULL,
+                    capture_output=True, check=True, timeout=5)
+                expected = 'sway,wayland,/home/ss-test/.local/share/flatpak/exports/share:/usr/local/share:/usr/share' if desktop else ',,'
+                self.assertEqual(result.stdout.decode(), expected)
+
     def test_non_kvm_refusal_precedes_any_fixture_mutation(self):
         calls = []
         def probe(argv, **kwargs):
@@ -49,6 +68,47 @@ class GuestReports(unittest.TestCase):
             if change == 'duplicate': rows.append(rows[0])
             with self.assertRaises(RuntimeError):
                 guest.doctor_evidence(altered)
+
+    def test_desktop_doctor_must_verify_fixed_approval_callback_candidate(self):
+        report = {'doctor': {'checks': [
+            {'id': 'daemon.lock', 'status': 'ok', 'evidence': ['pid=123']},
+            {'id': 'daemon.binary', 'status': 'ok',
+             'evidence': ['pid=123', 'path=/usr/bin/sway-session', 'digest match']} ]}}
+        self.assertEqual(guest.doctor_evidence(report, candidate=Path('/usr/bin/sway-session'))[0], 123)
+        with self.assertRaises(RuntimeError):
+            guest.doctor_evidence(report)
+        for destination in ['/tmp/sway-session', '/usr/bin/../bin/sway-session', '/usr/bin/other']:
+            with self.assertRaises(RuntimeError):
+                guest.doctor_evidence(report, candidate=Path(destination))
+
+    def test_desktop_session_routing_loads_actual_bytes_and_rejects_stale_boot(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            routing = home / '.local/state/fixture-session-env.json'
+            routing.parent.mkdir(parents=True)
+            socket = Path('/run/user') / str(os.getuid()) / 'sway-ipc.fixture.sock'
+            bus = Path('/tmp/dbus-lab253fixture')
+            account = SimpleNamespace(pw_uid=os.getuid())
+            environment = {'DBUS_SESSION_BUS_ADDRESS': 'unix:path=' + str(bus),
+                           'XDG_CURRENT_DESKTOP': 'sway', 'XDG_SESSION_TYPE': 'wayland', 'DISPLAY': ':0',
+                           'XDG_DATA_DIRS': '/home/ss-test/.local/share/flatpak/exports/share:/usr/local/share:/usr/share'}
+            value = {'boot_id': Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
+                     'socket': str(socket), 'environment': environment}
+            original_lstat = Path.lstat
+
+            def observed_lstat(path, *args, **kwargs):
+                if path == bus:
+                    return SimpleNamespace(st_mode=stat.S_IFSOCK | 0o600, st_uid=account.pw_uid)
+                return original_lstat(path, *args, **kwargs)
+
+            routing.write_bytes(json.dumps(value).encode('utf-8'))
+            routing.chmod(0o600)
+            with patch.object(guest, 'HOME', home), patch.object(Path, 'lstat', observed_lstat):
+                self.assertEqual(guest.desktop_environment(account, socket), environment)
+                value['boot_id'] = 'different-boot'
+                routing.write_bytes(json.dumps(value).encode('utf-8'))
+                with self.assertRaisesRegex(RuntimeError, 'another compositor or boot'):
+                    guest.desktop_environment(account, socket)
 
     def test_inhibitor_must_belong_to_the_candidate_daemon(self):
         row={'who':'sway-session','uid':1000,'pid':123,'what':'shutdown:sleep','mode':'delay'}

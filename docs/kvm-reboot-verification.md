@@ -1,4 +1,4 @@
-# Automated KVM reboot acceptance
+# KVM reboot acceptance
 
 `make vm-reboot-check` creates one disposable Arch Linux KVM guest, installs the
 candidate, and verifies two normal guest reboots. It never reboots the host or
@@ -120,6 +120,120 @@ python3 -B scripts/verify-vm-reboot.py --check-evidence /tmp/my-vm-evidence/resu
 
 The evidence-checking command validates an existing report. It cannot establish
 that a new VM run occurred or make an arbitrary supplied report trustworthy.
+
+## Desktop scenario and visual checkpoints
+
+The default scenario above remains the automatic two-terminal fixture.
+`--scenario desktop` selects the separate LAB-253 Chrome/Slack matrix. It uses
+a 6 GiB guest and 32 GiB sparse disk, the same real PAM/logind startup, workspace
+98, empty guest profiles, native Chrome from the manifest's SHA-256-pinned
+official Debian payload, and a normally verified user Flatpak Slack installation
+from Flathub. No browser package, profile, input device, tracing instance or
+desktop configuration is installed on the host. Only the guest reboots.
+
+After cloud-init and application installation, one acknowledged regular setup
+reboot activates any upgraded kernel before the matrix begins. This happens
+before registration and the immutable baseline. The report records it separately
+as `setup_reboot`/`setup_reboots:1`; both required acceptance reboots still follow
+the baseline and are counted as `guest_reboots:2`. All four boot IDs must be
+distinct. Versions, sources and ordered layout remain exact across the three
+acceptance observations.
+
+```sh
+GOTOOLCHAIN=go1.26.5 make vm-reboot-check \
+  VM_ARGS='--scenario desktop --desktop-control /tmp/new-desktop-control --output /tmp/new-desktop-evidence'
+```
+
+`--chrome /absolute/package.deb` reuses the exact manifest-pinned payload.
+The vendor download URL is rolling; if its bytes change, the checksum gate
+fails. Keep a verified cached payload or update the manifest digest through a
+reviewed change. The installed app versions, Chrome payload digest, Flatpak
+remote URL, ref and commit are recorded and must stay unchanged across boots.
+The desktop candidate is installed at `/usr/bin/sway-session`, the production
+graphical approval callback path. The terminal fixture retains its existing
+`/usr/local/bin` installation.
+
+Visual checkpoints require actual inspection of the disposable guest UI. The
+runner writes `request.json` and `screen.png` into the new private control
+directory and waits for a matching `response.json`. Read the request, inspect
+that screenshot, and atomically write a response with the exact checkpoint ID,
+one permitted action, and pointer coordinates when required. For example:
+
+```json
+{"checkpoint":"gui.chrome.cancel","action":"cancel","x":1250,"y":18}
+```
+
+Coordinates are illustrative; inspect the current image before choosing them.
+Approval actions and `ui-input` send real Sway pointer input. A capability
+`approve` acknowledges the inspected flow without coordinates; `not-exposed`
+likewise records an inspection without a click. A guest-only virtual pointer
+supplies the pointer capability missing from a device-free headless seat. It
+does not replace the production approval presenter or invoke its callback
+directly. Capability checkpoints distinguish an application UI that is actually
+absent in an empty profile from an unavailable automation prerequisite.
+Checkpoint screenshots and responses are removed with the private control
+directory during cleanup and never enter the evidence directory.
+
+The desktop checker requires all explicit protocol, stock-entry, graphical
+approval/cancel, material reapproval, ambiguity, optional picker, Follow close,
+and Pinned close/restart/reload results. The pinned vendor Debian Chrome entry
+has one `StartupWMClass` key and is tested separately from the user-local GUI
+fixture. A deliberately malformed disposable entry proves duplicate-key
+rejection. The earlier Arch entry with duplicated keys remains unsupported;
+metadata is never silently repaired. Slack XWayland without compositor-reported
+sandbox identity remains an explicit unsupported case.
+
+Successful main starts are measured inside the guest with a dedicated bounded
+`sched_process_exec`/fork/exit trace instance. The recorder checks event loss and
+tracks process incarnations, descendants, exit and PID reuse. Its
+`fixed-normal-launchers-v1` classification counts the unchanged approved
+GIO/user-Flatpak launch routes. Slack's pinned entry/wrapper/helper chain counts
+as a main start. A positively observed Flatpak portal and helper-only chain
+classifies a separate sandbox helper executing the same Slack ELF. Helper
+executions are exported separately; unknown Slack origins reject the run.
+The installed Slack commit, manifest, entry, Zypak wrapper/helper hashes and
+Zypak source commit are pinned; the root-owned portal hash must remain unchanged
+across observations. Tracing must start before the first portal invocation.
+
+This is a controlled empty-profile measurement, rather than a general process
+accounting guarantee. Filename-only events cannot distinguish an arbitrary
+portal request to start `zypak-helper host` from the sandbox child route.
+Custom portal requests, altered launchers and optional Zypak spawn-latest mode
+are outside this fixture. A second independent normal main chain still counts
+even if its ELF exits before a window sample. A mapped singleton window or saved
+launch guard alone cannot satisfy the start-count requirement.
+Public Chrome version metadata is cached before tracing, so observing versions
+cannot itself add a browser launch.
+
+The Chrome picker flow records sampled canonical presence, matching-window and
+total-window transitions while returning to the same marked main window. A
+picker that leaves the main window mapped does not prove a main-window gap.
+Slack UI capabilities absent from its inspected empty sign-in profile are
+explicit `not_exposed` results; unavailable input or automation is a failure.
+
+Both apps must be intentionally reopened with Follow/desired-open before the
+original baseline. Each of two regular guest reboots must restore that same
+ordered tabbed layout and identities, with exactly one measured start per app,
+three stable observations, current candidate attribution and its actual logind
+inhibitor. Pinned absence through a daemon restart and Sway reload is a separate
+no-watchdog check; it does not substitute for shutdown protection.
+
+Desktop evidence contains only strictly validated structural JSON. Failed runs
+export a fixed reason, stage and cleanup result, optionally accompanied by a
+fixed exception kind and at most six allowlisted harness module/line locations.
+Exception messages, source paths and frame locals are excluded. Browser logs, raw trees, argv,
+environment, browser URLs, screenshots and profiles are not exported. A successful
+`result.json` is written only after the owned VM and temporary state have been
+removed. A post-boot observation that passes the full structural schema is saved
+before comparison with the original baseline, so a failed comparison can retain
+its safe counterexample. Unknown/private fields prevent that export. Partial
+files in a failed run are never a passing acceptance result.
+Synthetic checker/transport tests remain distinct from an actual run:
+
+```sh
+python3 -B scripts/verify-vm-reboot.py --scenario desktop \
+  --check-evidence /tmp/new-desktop-evidence/result.json
+```
 
 ## CI and release use
 

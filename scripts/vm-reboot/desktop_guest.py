@@ -13,7 +13,6 @@ import stat
 import subprocess
 import tarfile
 import time
-import uuid
 from pathlib import Path
 
 import guest
@@ -25,7 +24,6 @@ ENTRY = guest.HOME / '.local/share/applications' / DESKTOP_ID
 PROFILE = guest.HOME / '.config/lab253-chrome'
 IDENTITY_KEYS = ['protocol', 'app_id', 'x11_class', 'x11_instance', 'sandbox_app_id',
                  'sandbox_engine', 'sandbox_instance_present']
-PHASE_STATE = guest.ROOT / 'desktop-phases.json'
 
 
 def user(account, argv, socket, *, timeout=20):
@@ -35,6 +33,24 @@ def user(account, argv, socket, *, timeout=20):
 
 def cli(account, socket, *args):
     return guest.read_json(user(account, [CANDIDATE, '--json', *args], socket))
+
+
+def cli_attempt(account, socket, *args):
+    """Retain failed CLI JSON privately; the transport normally discards it."""
+    output = guest.HOME / '.cache/lab253/cli-result.json'
+    errors = output.with_name('cli-error.json')
+    write_user(account, output, '{}\n')
+    write_user(account, errors, '{}\n')
+    status = user(account, ['/bin/sh', '-c',
+                           'out="$1"; err="$2"; shift 2; "$@" > "$out" 2> "$err"; printf "%s" "$?"',
+                           'lab253-cli', output, errors, CANDIDATE, '--json', *args], socket)
+    guest.require(re.fullmatch(r'[0-9]{1,3}', status) is not None, 'invalid_cli_exit_status')
+    if int(status) != 0:
+        output = errors
+    info = output.lstat()
+    guest.require(stat.S_ISREG(info.st_mode) and info.st_size <= guest.LIMIT and not info.st_mode & 0o077,
+                  'invalid_private_cli_reply')
+    return int(status), guest.read_json(output.read_text())
 
 
 def probe(account, socket):
@@ -229,7 +245,8 @@ def versions(account, socket):
 
 
 def install_apps(run_id, account, chrome_sha256):
-    guest.require(re.fullmatch(r'[a-f0-9]{64}', chrome_sha256) is not None, 'invalid_chrome_digest')
+    guest.require(isinstance(chrome_sha256, str) and re.fullmatch(r'[a-f0-9]{64}', chrome_sha256) is not None,
+                  'invalid_chrome_digest')
     package = guest.ROOT / 'google-chrome.deb'
     guest.private_artifact(package)
     guest.require(guest.digest(package) == chrome_sha256, 'chrome_package_digest_mismatch')
@@ -287,7 +304,8 @@ def install_apps(run_id, account, chrome_sha256):
     version_path = guest.ROOT / 'desktop-chrome-version'
     version_path.write_text(chrome_version + '\n')
     version_path.chmod(0o600)
-    desktop_trace.install(run_id)
+    slack_files = (guest.HOME / '.local/share/flatpak/app/com.slack.Slack/current/active/files').resolve()
+    desktop_trace.install(run_id, slack_files=slack_files)
     values = versions(account, socket)
     remote = user(account, ['flatpak', 'remotes', '--user', '--columns=name,url'], socket)
     sources = [line.split('\t')[1] for line in remote.splitlines()
@@ -306,8 +324,10 @@ def install_apps(run_id, account, chrome_sha256):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=['install', 'versions', 'probe', 'gui-open', 'gui-click'])
+    parser.add_argument('command', choices=['install', 'phases', 'versions', 'probe', 'gui-open', 'gui-click'])
     parser.add_argument('--chrome-sha256')
+    parser.add_argument('--checkpoint')
+    parser.add_argument('--action', choices=['cancel', 'approve', 'ui-input', 'not-exposed'])
     parser.add_argument('--role', choices=['chrome', 'slack'], default='chrome')
     parser.add_argument('--approve', action='store_true')
     parser.add_argument('--visually-inspected', action='store_true')
@@ -317,6 +337,11 @@ def main():
     run_id, account = guest.guard()
     if args.command == 'install':
         print(json.dumps(install_apps(run_id, account, args.chrome_sha256)))
+        return
+    if args.command == 'phases':
+        import desktop_phases
+        print(json.dumps(desktop_phases.run(run_id, account, checkpoint_id=args.checkpoint, action=args.action,
+                                            x=args.x, y=args.y, inspected=args.visually_inspected)))
         return
     socket = guest.guest_socket(account)
     if args.command == 'versions':

@@ -1,12 +1,19 @@
 import importlib.util
+import copy
 import sys
 from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parent))
 import desktop_guest as desktop
 import desktop_trace as trace
+import desktop_phases as phases
+
+
+def recorder():
+    return trace.Incarnations(sources={**trace.SOURCE_PINS, 'portal_sha256': 'a' * 64})
 
 
 def fork(parent, child):
@@ -22,8 +29,19 @@ def exit_process(pid):
 
 
 class ProcessTraceTests(unittest.TestCase):
+    def test_each_kernel_loss_counter_fails_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            stats = root / 'per_cpu/cpu0/stats'
+            stats.parent.mkdir(parents=True)
+            for selected in ['overrun', 'commit overrun', 'dropped events']:
+                stats.write_text('\n'.join(f'{key}: {int(key == selected)}' for key in
+                                           ['overrun', 'commit overrun', 'dropped events']))
+                with self.subTest(selected=selected), self.assertRaises(RuntimeError):
+                    trace.overrun(root)
+
     def test_independent_short_root_counts_while_helpers_and_reexec_do_not(self):
-        record = trace.Incarnations()
+        record = recorder()
         for line in [fork(1, 20), execute(20, '/opt/google/chrome/chrome'),
                      fork(20, 21), execute(21, '/opt/google/chrome/chrome'),
                      execute(20, '/opt/google/chrome/chrome'),
@@ -33,15 +51,19 @@ class ProcessTraceTests(unittest.TestCase):
         self.assertNotIn('private', str(record.state('boot')))
 
     def test_dead_parent_descendant_keeps_incarnation_and_recycled_pid_is_fresh(self):
-        record = trace.Incarnations()
-        for line in [fork(1, 20), execute(20, '/app/extra/slack/slack'), fork(20, 21),
-                     exit_process(20), execute(21, '/app/extra/slack/slack'),
-                     fork(1, 20), execute(20, '/app/extra/slack/slack')]:
+        record = recorder()
+        for line in [fork(1, 20), execute(20, '/app/bin/com.slack.Slack'),
+                     execute(20, '/app/bin/zypak-wrapper'), execute(20, '/app/bin/zypak-helper'),
+                     execute(20, '/app/extra/slack'), fork(20, 21),
+                     exit_process(20), execute(21, '/app/extra/slack'),
+                     fork(1, 20), execute(20, '/app/bin/com.slack.Slack'),
+                     execute(20, '/app/bin/zypak-wrapper'), execute(20, '/app/bin/zypak-helper'),
+                     execute(20, '/app/extra/slack')]:
             record.consume(line)
         self.assertEqual(record.starts['slack'], 2)
 
     def test_exec_thread_leader_remapping_does_not_double_count(self):
-        record = trace.Incarnations()
+        record = recorder()
         for line in [fork(1, 20), execute(20, '/opt/google/chrome/chrome'), fork(20, 21),
                      execute(20, '/opt/google/chrome/chrome', old=21)]:
             record.consume(line)
@@ -49,7 +71,7 @@ class ProcessTraceTests(unittest.TestCase):
         self.assertNotIn(21, record.processes)
 
     def test_callback_requires_swaynag_process_ancestry(self):
-        record = trace.Incarnations()
+        record = recorder()
         for line in [fork(1, 10), execute(10, '/usr/bin/sway-session'),
                      fork(1, 20), execute(20, '/usr/bin/swaynag'), fork(20, 21),
                      execute(21, '/bin/sh'), fork(21, 22), execute(22, '/usr/bin/sway-session')]:
@@ -59,11 +81,13 @@ class ProcessTraceTests(unittest.TestCase):
     def test_unknown_events_and_malformed_exec_fail_closed(self):
         for line in ['task: sched_process_exec: unexpected', 'task: sys_enter_execve: argv=private']:
             with self.subTest(line=line), self.assertRaises(RuntimeError):
-                trace.Incarnations().consume(line)
+                recorder().consume(line)
 
     def test_trace_scope_cannot_cross_boot_or_regress(self):
-        before = {'boot_id': 'a', 'events': 10, 'starts': {'chrome': 1, 'slack': 0}}
-        after = {'boot_id': 'b', 'events': 20, 'starts': {'chrome': 1, 'slack': 0}}
+        before = recorder().state('a')
+        before.update(events=10, starts={'chrome': 1, 'slack': 0})
+        after = copy.deepcopy(before)
+        after.update(boot_id='b', events=20)
         with self.assertRaises(RuntimeError):
             trace.delta(before, after)
         after['boot_id'], after['starts']['chrome'] = 'a', 0
@@ -72,6 +96,47 @@ class ProcessTraceTests(unittest.TestCase):
 
 
 class GUIControllerTests(unittest.TestCase):
+    def test_picker_completion_cannot_claim_exposure_without_actual_extra_window(self):
+        samples = [{'presence': 'present', 'window_count': 1, 'total_windows': 2,
+                    'desired_open': True, 'anchor_preserved': True}] * 3
+        state = {'capability': {'inspections': 2, 'origin': {}, 'samples': samples}}
+        with patch.object(phases, 'capability_samples'), patch.object(phases.trace, 'snapshot', return_value={}), \
+             patch.object(phases.trace, 'delta', return_value={'starts': {'chrome': 0, 'slack': 0}}), \
+             self.assertRaises(RuntimeError):
+            phases.respond_capability(state, 'run', None, None, 'picker.chrome', 'approve', None, None)
+
+    def test_picker_completion_rejects_lost_known_anchor_or_intent(self):
+        for field in ['anchor_preserved', 'desired_open']:
+            samples = [{'presence': 'present', 'window_count': count, 'total_windows': count + 1,
+                        'desired_open': True, 'anchor_preserved': True} for count in [1, 2, 1]]
+            samples[1][field] = False
+            state = {'capability': {'inspections': 2, 'origin': {}, 'samples': samples}}
+            with self.subTest(field=field), patch.object(phases, 'capability_samples'), \
+                 patch.object(phases.trace, 'snapshot', return_value={}), \
+                 patch.object(phases.trace, 'delta', return_value={'starts': {'chrome': 0, 'slack': 0}}), \
+                 self.assertRaises(RuntimeError):
+                phases.respond_capability(state, 'run', None, None, 'picker.chrome', 'approve', None, None)
+
+    def test_version_observation_never_executes_chrome_inside_trace_scope(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'desktop-chrome-version').write_text('155.0.8059.79\n')
+            def user(_account, argv, _socket):
+                if argv[:3] == ['flatpak', 'list', '--user']:
+                    return 'com.slack.Slack\t4.52.178\n'
+                return 'app/com.slack.Slack/x86_64/stable\n' if '--show-ref' in argv else 'a' * 64
+            def command(argv):
+                return 'Flatpak 1.18.4\n' if argv[0] == 'flatpak' else '\n'.join(name + ' 1.0' for name in argv[2:])
+            with patch.object(desktop.guest, 'ROOT', root), patch.object(desktop.guest, 'private_artifact'), \
+                 patch.object(desktop.guest, 'versions', return_value={'packages': {}, 'herdr': 'herdr 0.9.2'}), \
+                 patch.object(desktop, 'user', side_effect=user) as calls, \
+                 patch.object(desktop.guest, 'command', side_effect=command):
+                value = desktop.versions(None, None)
+            self.assertEqual(value['chrome'], '155.0.8059.79')
+            self.assertEqual(value['herdr'], '0.9.2')
+            self.assertEqual(value['flatpak'], '1.18.4')
+            self.assertTrue(all(call.args[1][0] == 'flatpak' for call in calls.call_args_list))
+
     def test_pointer_rejects_any_coordinate_outside_owned_fixed_output(self):
         for x, y in [(-1, 0), (1280, 0), (0, 720), (True, 10), (None, 5)]:
             with self.subTest(x=x, y=y), patch.object(desktop.guest, 'sway_command') as command:

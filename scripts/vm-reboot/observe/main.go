@@ -2,6 +2,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -27,20 +28,37 @@ func main() {
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("observe", flag.ContinueOnError)
-	flags.SetOutput(stderr)
+	var flagErrors bytes.Buffer
+	flags.SetOutput(&flagErrors)
 	root := flags.String("state-root", "/home/ss-test/.local/state/sway-session", "disposable guest state root")
 	socket := flags.String("socket", "", "exact guest Sway IPC socket")
 	ids := flags.String("expected", "", "two comma-separated context UUIDs in tab order")
+	scenario := flags.String("scenario", "terminal", "terminal or desktop fixture")
+	probe := flags.Bool("probe", false, "read desktop phase observations before the strict baseline")
 	if err := flags.Parse(args); err != nil {
+		if desktopRequested(args) {
+			_, _ = fmt.Fprintln(stderr, "VM observer: invalid_arguments")
+		} else {
+			_, _ = io.Copy(stderr, &flagErrors)
+		}
 		return 1
 	}
 	fail := func(err error) int {
+		if *scenario == "desktop" {
+			err = redactDesktopError(err)
+		}
 		_, _ = fmt.Fprintf(stderr, "VM observer: %v\n", err)
 		return 1
 	}
 	if flags.NArg() != 0 || !filepath.IsAbs(*root) || filepath.Clean(*root) != *root ||
 		!filepath.IsAbs(*socket) || filepath.Clean(*socket) != *socket {
 		return fail(errors.New("use --state-root ABSOLUTE_PATH --socket ABSOLUTE_PATH --expected UUID,UUID"))
+	}
+	if *scenario != "terminal" && *scenario != "desktop" || *probe && *scenario != "desktop" {
+		return fail(errors.New("invalid scenario or probe mode"))
+	}
+	if *scenario == "desktop" {
+		return runDesktop(ctx, *root, *socket, *ids, *probe, stdout, fail)
 	}
 	expected := []session.ContextID{}
 	for _, value := range strings.Split(*ids, ",") {

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"os"
 	"reflect"
@@ -209,8 +210,22 @@ func executeAppConfirm(ctx context.Context, arguments []string, deps dependencie
 func executeAppStatus(ctx context.Context, arguments []string, deps dependencies) (commandResult, *commandFailure) {
 	set := newFlagSet("app status")
 	socketFlag := set.String("socket", "", "Sway IPC socket")
+	selection := set.String("context", "", "saved application UUID or exact label")
+	inventory := set.Bool("inventory", false, "explain focused application's lifecycle")
 	if err := set.Parse(arguments); err != nil || set.NArg() != 0 {
-		return commandResult{}, usageFailure("app", "app status accepts only --socket")
+		return commandResult{}, usageFailure("app", "app status accepts --socket, --context, and --inventory")
+	}
+	contextFlag := false
+	set.Visit(func(flag *flag.Flag) {
+		if flag.Name == "context" {
+			contextFlag = true
+		}
+	})
+	if contextFlag && *selection == "" {
+		return commandResult{}, usageFailure("app", "--context requires a saved application UUID or exact label")
+	}
+	if *inventory || contextFlag {
+		return executeApplicationInventory(ctx, "app status", *socketFlag, *selection, !contextFlag, deps)
 	}
 	environment, commandFailure := loadApplicationEnvironment(ctx, *socketFlag, deps, true, false)
 	if commandFailure != nil {
@@ -228,8 +243,23 @@ func executeAppStatus(ctx context.Context, arguments []string, deps dependencies
 }
 
 func executeAppList(ctx context.Context, arguments []string, deps dependencies) (commandResult, *commandFailure) {
-	if len(arguments) != 0 {
-		return commandResult{}, usageFailure("app", "app list accepts no arguments")
+	set := newFlagSet("app list")
+	inventory := set.Bool("inventory", false, "explain application lifecycle")
+	socket := set.String("socket", "", "Sway IPC socket for inventory")
+	if err := set.Parse(arguments); err != nil || set.NArg() != 0 {
+		return commandResult{}, usageFailure("app", "app list accepts --inventory and optional --socket")
+	}
+	socketFlag := false
+	set.Visit(func(flag *flag.Flag) {
+		if flag.Name == "socket" {
+			socketFlag = true
+		}
+	})
+	if socketFlag && !*inventory {
+		return commandResult{}, usageFailure("app", "app list --socket requires --inventory")
+	}
+	if *inventory {
+		return executeApplicationInventory(ctx, "app list", *socket, "", false, deps)
 	}
 	root, commandFailure := stateRoot(deps)
 	if commandFailure != nil {

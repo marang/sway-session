@@ -73,43 +73,44 @@ type swayRequester interface {
 }
 
 type dependencies struct {
-	restoreReporter           *cliRestoreReporter
-	requireRestoreEligibility bool
-	stateRoot                 func() (string, error)
-	workingDir                func() (string, error)
-	homeDir                   func() (string, error)
-	newContextID              func() (sessionstate.ContextID, error)
-	loadSessionConfig         func(string) (sessionstate.SessionConfig, string, error)
-	herdrPaths                func() (sessionstate.HerdrPaths, error)
-	validateHistory           func(sessionstate.HerdrPaths) error
-	resolveProgram            func(string) (string, error)
-	resolveSystem             func(string) (string, error)
-	desktopCatalog            func() (sessionstate.DesktopCatalog, error)
-	operationStore            func() (sessionstate.ApplicationOperationStore, error)
-	presentApproval           func(string, []sessionstate.ApprovalChoice) error
-	verifyFlatpak             func(sessionstate.Launcher) error
-	newSwayClient             func(string) swayRequester
-	processStarter            sessionstate.ProcessStarter
-	herdrRunner               sessionstate.HerdrCommandRunner
-	initializeHerdr           func(context.Context, sessionstate.Context, []string, herdrinit.Runner) (herdrinit.Result, error)
-	findPendingProcess        func(string, sessionstate.ProcessSpec) ([]int, error)
-	now                       func() time.Time
-	sleep                     func(time.Duration)
-	settleTimeout             time.Duration
-	stabilityDelay            time.Duration
-	stdinTerminal             func() bool
-	reportAgentSession        func(context.Context, io.Reader, func(string) string) error
-	requestStart              func(context.Context, sessionrequest.Request) (sessionrequest.Response, error)
-	runBroker                 func(context.Context, string, func(error)) error
-	runDaemon                 func(context.Context, string, func(error)) error
-	runTerminalManage         terminalManageRunner
-	newDoctor                 func(doctor.Options) doctorOperations
-	runDoctor                 doctorRunner
-	doctorInteractive         func(io.Reader, io.Writer) bool
-	backupState               func(context.Context, string, string) (sessionstate.StateBackupResult, error)
-	recoverState              func(context.Context, string, string, bool) (sessionstate.StateRecoveryResult, error)
-	listLifecycleOperations   func(context.Context, string, string, int, time.Time) (stateOperationsResult, error)
-	runLifecycleOperation     func(context.Context, string, string, bool, string, time.Time, dependencies) (sessionstate.LifecycleOutcome, error)
+	restoreReporter            *cliRestoreReporter
+	requireRestoreEligibility  bool
+	stateRoot                  func() (string, error)
+	workingDir                 func() (string, error)
+	homeDir                    func() (string, error)
+	newContextID               func() (sessionstate.ContextID, error)
+	loadSessionConfig          func(string) (sessionstate.SessionConfig, string, error)
+	herdrPaths                 func() (sessionstate.HerdrPaths, error)
+	validateHistory            func(sessionstate.HerdrPaths) error
+	resolveProgram             func(string) (string, error)
+	resolveSystem              func(string) (string, error)
+	desktopCatalog             func() (sessionstate.DesktopCatalog, error)
+	operationStore             func() (sessionstate.ApplicationOperationStore, error)
+	presentApproval            func(string, []sessionstate.ApprovalChoice) error
+	verifyFlatpak              func(sessionstate.Launcher) error
+	observeApplicationLauncher func(context.Context, sessionstate.Context) sessionstate.ApplicationLauncherObservation
+	newSwayClient              func(string) swayRequester
+	processStarter             sessionstate.ProcessStarter
+	herdrRunner                sessionstate.HerdrCommandRunner
+	initializeHerdr            func(context.Context, sessionstate.Context, []string, herdrinit.Runner) (herdrinit.Result, error)
+	findPendingProcess         func(string, sessionstate.ProcessSpec) ([]int, error)
+	now                        func() time.Time
+	sleep                      func(time.Duration)
+	settleTimeout              time.Duration
+	stabilityDelay             time.Duration
+	stdinTerminal              func() bool
+	reportAgentSession         func(context.Context, io.Reader, func(string) string) error
+	requestStart               func(context.Context, sessionrequest.Request) (sessionrequest.Response, error)
+	runBroker                  func(context.Context, string, func(error)) error
+	runDaemon                  func(context.Context, string, func(error)) error
+	runTerminalManage          terminalManageRunner
+	newDoctor                  func(doctor.Options) doctorOperations
+	runDoctor                  doctorRunner
+	doctorInteractive          func(io.Reader, io.Writer) bool
+	backupState                func(context.Context, string, string) (sessionstate.StateBackupResult, error)
+	recoverState               func(context.Context, string, string, bool) (sessionstate.StateRecoveryResult, error)
+	listLifecycleOperations    func(context.Context, string, string, int, time.Time) (stateOperationsResult, error)
+	runLifecycleOperation      func(context.Context, string, string, bool, string, time.Time, dependencies) (sessionstate.LifecycleOutcome, error)
 }
 
 func defaultDependencies(stdin io.Reader) dependencies {
@@ -269,27 +270,28 @@ func runWithContext(ctx context.Context, arguments []string, stdin io.Reader, st
 }
 
 type commandResult struct {
-	Version               int                               `json:"version"`
-	Build                 *buildmetadata.Metadata           `json:"build,omitempty"`
-	Command               string                            `json:"command"`
-	Contexts              []sessionstate.Context            `json:"contexts"`
-	ApplicationPlacements *[]applicationPlacementResult     `json:"application_placements,omitempty"`
-	CompletionCandidates  []completionCandidate             `json:"completion_candidates,omitempty"`
-	Message               string                            `json:"message,omitempty"`
-	Workspace             int                               `json:"workspace,omitempty"`
-	Created               bool                              `json:"created,omitempty"`
-	Actions               []string                          `json:"actions,omitempty"`
-	Terminal              *terminalCommandResult            `json:"terminal,omitempty"`
-	Terminals             *[]terminalInventoryResult        `json:"terminals,omitempty"`
-	RestoreReport         *restoreReportCommandResult       `json:"restore_report,omitempty"`
-	RestorePreview        *restorePreviewResult             `json:"restore_preview,omitempty"`
-	Preview               bool                              `json:"preview,omitempty"`
-	Doctor                *doctor.Report                    `json:"doctor,omitempty"`
-	DoctorPlan            *doctor.Plan                      `json:"doctor_plan,omitempty"`
-	DoctorFix             *doctor.FixResult                 `json:"doctor_fix,omitempty"`
-	StateBackup           *sessionstate.StateBackupResult   `json:"state_backup,omitempty"`
-	StateRecovery         *sessionstate.StateRecoveryResult `json:"state_recovery,omitempty"`
-	StateOperations       *stateOperationsResult            `json:"state_operations,omitempty"`
+	Version               int                                      `json:"version"`
+	Build                 *buildmetadata.Metadata                  `json:"build,omitempty"`
+	Command               string                                   `json:"command"`
+	Contexts              []sessionstate.Context                   `json:"contexts"`
+	ApplicationPlacements *[]applicationPlacementResult            `json:"application_placements,omitempty"`
+	Applications          *[]sessionstate.ApplicationInventoryItem `json:"applications,omitempty"`
+	CompletionCandidates  []completionCandidate                    `json:"completion_candidates,omitempty"`
+	Message               string                                   `json:"message,omitempty"`
+	Workspace             int                                      `json:"workspace,omitempty"`
+	Created               bool                                     `json:"created,omitempty"`
+	Actions               []string                                 `json:"actions,omitempty"`
+	Terminal              *terminalCommandResult                   `json:"terminal,omitempty"`
+	Terminals             *[]terminalInventoryResult               `json:"terminals,omitempty"`
+	RestoreReport         *restoreReportCommandResult              `json:"restore_report,omitempty"`
+	RestorePreview        *restorePreviewResult                    `json:"restore_preview,omitempty"`
+	Preview               bool                                     `json:"preview,omitempty"`
+	Doctor                *doctor.Report                           `json:"doctor,omitempty"`
+	DoctorPlan            *doctor.Plan                             `json:"doctor_plan,omitempty"`
+	DoctorFix             *doctor.FixResult                        `json:"doctor_fix,omitempty"`
+	StateBackup           *sessionstate.StateBackupResult          `json:"state_backup,omitempty"`
+	StateRecovery         *sessionstate.StateRecoveryResult        `json:"state_recovery,omitempty"`
+	StateOperations       *stateOperationsResult                   `json:"state_operations,omitempty"`
 }
 
 type terminalCommandResult struct {
@@ -397,6 +399,9 @@ func writeResult(writer io.Writer, structured bool, result commandResult) error 
 	}
 	if result.ApplicationPlacements != nil {
 		return writeStatus(writer, result)
+	}
+	if result.Applications != nil {
+		return writeApplicationInventory(writer, *result.Applications)
 	}
 	if len(result.CompletionCandidates) != 0 {
 		for _, candidate := range result.CompletionCandidates {
@@ -591,10 +596,13 @@ func writeCommandUsage(writer io.Writer, name string, spec commandSpec) {
 	if name == "app" {
 		_, _ = fmt.Fprintln(writer, "Subcommands: register-focused, register-workspace, confirm, status, list, rebind-focused, reapprove, pin, unpin, archive, activate, forget")
 		_, _ = fmt.Fprintln(writer, "Machine-readable inventory: sway-session --json app list")
+		_, _ = fmt.Fprintln(writer, "Lifecycle inventory: app list --inventory [--socket PATH]; saved intent, live window, launcher validity, and restore proofs remain separate. Optional observations share a 3-second deadline; offline windows are unknown.")
+		_, _ = fmt.Fprintln(writer, "Status: app status [--socket PATH] keeps focused-window semantics; --inventory explains the focused registration; --context UUID_OR_LABEL selects saved inventory even offline.")
+		_, _ = fmt.Fprintln(writer, "--json inventory returns applications with contexts:[]; bare app list retains legacy contexts. Inventory reads state and performs bounded checks without launching or repairing applications.")
 		_, _ = fmt.Fprintln(writer, "Indicators after first registration: ○ unregistered, ◔ pending, ● registered/follow, ▲ pinned/autostart")
 	}
 	if name == "completion" {
-		_, _ = fmt.Fprintln(writer, "Commands: archive, activate, restore, restore-active, purge, terminal-status, app-forget")
+		_, _ = fmt.Fprintln(writer, "Commands: archive, activate, restore, restore-active, purge, terminal-status, app-forget, app-status")
 		_, _ = fmt.Fprintln(writer, "Output: one canonical UUID and presentation-only description per tab-separated line.")
 	}
 }

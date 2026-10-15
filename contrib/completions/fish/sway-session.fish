@@ -75,7 +75,7 @@ function __sway_session_options_open
             return 1
         end
         switch $token
-            case --config --socket --sway-config --fix --shortcuts --desktop-id --session --cwd --label --provider --id --workspace --output --from --retry --cancel --after
+            case --config --context --socket --sway-config --fix --shortcuts --desktop-id --session --cwd --label --provider --id --workspace --output --from --retry --cancel --after
                 set skip_next 1
             case --
                 set global_options_open 0
@@ -125,10 +125,15 @@ function __sway_session_value_state --argument-names required_option
                 case register-focused rebind-focused
                     set value_options --socket --desktop-id
                     set bool_options --yes
-                case register-workspace status forget
+                case register-workspace forget
                     set value_options --socket
-                    test "$app_command[1]" = status
-                    or set bool_options --yes
+                    set bool_options --yes
+                case status
+                    set value_options --socket --context
+                    set bool_options --inventory
+                case list
+                    set value_options --socket
+                    set bool_options --inventory
                 case '*'
                     return 1
             end
@@ -186,6 +191,11 @@ function __sway_session_value_state --argument-names required_option
         if contains -- "$token" $bool_options
             continue
         end
+        if string match -q -- '--*=*' "$token"
+            set -l option (string split -m 1 = -- "$token")[1]
+            contains -- "$option" $value_options $bool_options
+            and continue
+        end
         switch $token
             case --
                 set global_options_open 0
@@ -199,6 +209,10 @@ function __sway_session_value_state --argument-names required_option
             case '*'
                 return 1
         end
+    end
+    if test "$required_option" = __options
+        test $skip_next -eq 0
+        return
     end
     if test -n "$required_option"
         test $skip_next -eq 1
@@ -238,7 +252,11 @@ function __sway_session_command_options
                 case register-workspace
                     printf '%s\n' --socket --yes
                 case status
-                    printf '%s\n' --socket
+                    printf '%s\n' --socket --context --inventory
+                case list
+                    printf '%s\n' --inventory
+                    __sway_session_app_inventory_enabled
+                    and printf '%s\n' --socket
                 case forget
                     printf '%s\n' --socket --yes
             end
@@ -399,13 +417,48 @@ function __sway_session_completion_subcommand_pending
     test $found_command -eq 1
 end
 
+function __sway_session_app_inventory_enabled
+    set -l tokens (commandline -opc)
+    set -l skip_next 0
+    set -l enabled 0
+    for token in $tokens
+        if test $skip_next -eq 1
+            contains -- "$token" --json -h --help
+            and continue
+            set skip_next 0
+            continue
+        end
+        switch $token
+            case --socket --context --config
+                set skip_next 1
+            case --inventory --inventory=true --inventory=1
+                set enabled 1
+            case --inventory=false --inventory=0
+                set enabled 0
+        end
+    end
+    test $enabled -eq 1
+end
+
 function __sway_session_app_subcommand
     set -l tokens (commandline -opc)
     set -e tokens[1]
     set -l found_command 0
+    set -l config_value_pending 0
     while test (count $tokens) -gt 0
         set -l token $tokens[1]
         set -e tokens[1]
+        if test $config_value_pending -eq 1
+            set config_value_pending 0
+            continue
+        end
+        switch $token
+            case --config
+                set config_value_pending 1
+                continue
+            case '--config=*'
+                continue
+        end
         if test $found_command -eq 0
             switch $token
                 case --json -h --help
@@ -719,7 +772,7 @@ complete -c sway-session -n '__sway_session_terminal_subcommand status; and __sw
 complete -c sway-session -n '__sway_session_terminal_subcommand cleanup; and __sway_session_options_open' -l archived-before -x
 
 complete -c sway-session -n '__sway_session_completion_subcommand_pending; and __sway_session_options_open' -a contexts
-complete -c sway-session -n '__sway_session_completion_contexts_pending; and __sway_session_options_open' -a 'archive activate restore restore-active purge terminal-status app-forget'
+complete -c sway-session -n '__sway_session_completion_contexts_pending; and __sway_session_options_open' -a 'archive activate restore restore-active purge terminal-status app-forget app-status'
 
 complete -c sway-session -n '__sway_session_is_command app; and __sway_session_options_open; and not __sway_session_app_subcommand >/dev/null' -a 'register-focused register-workspace confirm status list rebind-focused reapprove pin unpin archive activate forget'
 complete -c sway-session -n '__sway_session_is_app_subcommand register-focused; and __sway_session_options_open' -l socket -r -F
@@ -727,7 +780,13 @@ complete -c sway-session -n '__sway_session_is_app_subcommand register-focused; 
 complete -c sway-session -n '__sway_session_is_app_subcommand register-focused; and __sway_session_options_open' -l yes
 complete -c sway-session -n '__sway_session_is_app_subcommand register-workspace; and __sway_session_options_open' -l socket -r -F
 complete -c sway-session -n '__sway_session_is_app_subcommand register-workspace; and __sway_session_options_open' -l yes
-complete -c sway-session -n '__sway_session_is_app_subcommand status; and __sway_session_options_open' -l socket -r -F
+complete -c sway-session -n '__sway_session_is_app_subcommand status; and __sway_session_value_state __options' -l socket -r -F
+complete -c sway-session -n '__sway_session_is_app_subcommand status; and __sway_session_value_state __options' -l context -x -a '(__sway_session_contexts app-status)' -d 'Inspect a saved application by UUID or exact label'
+complete -c sway-session -n '__sway_session_is_app_subcommand status; and __sway_session_value_state --context' -a '(__sway_session_contexts app-status)'
+complete -c sway-session -n '__sway_session_is_app_subcommand status; and __sway_session_value_state __options' -l inventory -d 'Explain the focused registered application'
+complete -c sway-session -n '__sway_session_is_app_subcommand list; and __sway_session_value_state __options' -l inventory -d 'Explain all saved application contexts'
+complete -c sway-session -n '__sway_session_is_app_subcommand list; and __sway_session_value_state __options; and __sway_session_app_inventory_enabled' -l socket -r -F
+complete -c sway-session -n '__sway_session_is_app_subcommand status; and __sway_session_value_state --socket; or __sway_session_is_app_subcommand list; and __sway_session_value_state --socket' -F
 complete -c sway-session -n '__sway_session_app_context_pending rebind-focused; and __sway_session_options_open' -l socket -r -F
 complete -c sway-session -n '__sway_session_app_context_pending rebind-focused; and __sway_session_options_open' -l desktop-id -x
 complete -c sway-session -n '__sway_session_app_context_pending rebind-focused; and __sway_session_options_open' -l yes

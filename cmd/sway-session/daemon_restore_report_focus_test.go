@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"reflect"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	sessionstate "github.com/marang/sway-session/internal/session"
@@ -56,6 +57,14 @@ func assertRestoreReportObservationPreserved(t *testing.T, runtime *sessionRunti
 	}
 }
 
+// restoreReportFocusClock isolates focus proofs from real filesystem latency.
+// The batching integration separately exercises actual report I/O deadlines.
+func restoreReportFocusClock(test func(*testing.T)) func(*testing.T) {
+	return func(t *testing.T) {
+		synctest.Test(t, test)
+	}
+}
+
 func TestRestoreReportCompletesInactiveWorkspaceWithLocalFocus(t *testing.T) {
 	for _, test := range []struct {
 		name         string
@@ -64,7 +73,7 @@ func TestRestoreReportCompletesInactiveWorkspaceWithLocalFocus(t *testing.T) {
 		{name: "initial_and_after_deadline", observations: []time.Duration{0, restoreReportTimeout + time.Second}},
 		{name: "first_observation_after_deadline", observations: []time.Duration{restoreReportTimeout + time.Second}},
 	} {
-		t.Run(test.name, func(t *testing.T) {
+		t.Run(test.name, restoreReportFocusClock(func(t *testing.T) {
 			registry, snapshot, tree := restoreReportLocalFocusFixture(t)
 			runtime, now := restoreReportRuntime(t, registry, snapshot)
 			before, err := json.Marshal(tree)
@@ -90,7 +99,7 @@ func TestRestoreReportCompletesInactiveWorkspaceWithLocalFocus(t *testing.T) {
 				}
 				assertRestoreReportObservationPreserved(t, runtime, tree, before, snapshot)
 			}
-		})
+		}))
 	}
 }
 
@@ -102,7 +111,7 @@ func TestRestoreReportRejectsIncorrectInactiveWorkspaceLocalFocus(t *testing.T) 
 		{name: "wrong_selected_context", focus: []int64{41, 42}},
 		{name: "malformed_focus_path", focus: []int64{777, 42, 41}},
 	} {
-		t.Run(test.name, func(t *testing.T) {
+		t.Run(test.name, restoreReportFocusClock(func(t *testing.T) {
 			registry, snapshot, tree := restoreReportLocalFocusFixture(t)
 			tree.Nodes[0].Nodes[0].Focus = test.focus
 			runtime, now := restoreReportRuntime(t, registry, snapshot)
@@ -133,6 +142,6 @@ func TestRestoreReportRejectsIncorrectInactiveWorkspaceLocalFocus(t *testing.T) 
 				}
 				assertRestoreReportObservationPreserved(t, runtime, tree, before, snapshot)
 			}
-		})
+		}))
 	}
 }

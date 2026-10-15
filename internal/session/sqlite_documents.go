@@ -757,30 +757,34 @@ func (store LayoutStore) LoadIntoContext(ctx context.Context, target *LayoutSnap
 		return err
 	}
 	defer database.Close()
-	var payloadLength int64
-	if err := database.db.QueryRowContext(ctx, "SELECT length(payload) FROM layout_state WHERE id = 1").Scan(&payloadLength); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return os.ErrNotExist
-		}
-		return fmt.Errorf("measure layout: %w", err)
-	}
-	if payloadLength > maxDatabasePayloadBytes {
-		return fmt.Errorf("layout payload is too large: %d bytes exceeds %d", payloadLength, maxDatabasePayloadBytes)
-	}
-	var encodingVersion int
-	var payload []byte
-	if err := database.db.QueryRowContext(ctx, "SELECT encoding_version, payload FROM layout_state WHERE id = 1").Scan(&encodingVersion, &payload); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return os.ErrNotExist
-		}
-		return fmt.Errorf("load layout: %w", err)
-	}
-	candidate, err := decodeStoredLayoutSnapshot("layout", encodingVersion, payload)
+	candidate, err := loadLayoutSnapshotQuery(ctx, database.db)
 	if err != nil {
 		return err
 	}
 	*target = candidate
 	return nil
+}
+
+func loadLayoutSnapshotQuery(ctx context.Context, queryer stateQueryer) (LayoutSnapshot, error) {
+	var payloadLength int64
+	if err := queryer.QueryRowContext(ctx, "SELECT length(payload) FROM layout_state WHERE id = 1").Scan(&payloadLength); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return LayoutSnapshot{}, os.ErrNotExist
+		}
+		return LayoutSnapshot{}, fmt.Errorf("measure layout: %w", err)
+	}
+	if payloadLength > maxDatabasePayloadBytes {
+		return LayoutSnapshot{}, fmt.Errorf("layout payload is too large: %d bytes exceeds %d", payloadLength, maxDatabasePayloadBytes)
+	}
+	var encodingVersion int
+	var payload []byte
+	if err := queryer.QueryRowContext(ctx, "SELECT encoding_version, payload FROM layout_state WHERE id = 1").Scan(&encodingVersion, &payload); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return LayoutSnapshot{}, os.ErrNotExist
+		}
+		return LayoutSnapshot{}, fmt.Errorf("load layout: %w", err)
+	}
+	return decodeStoredLayoutSnapshot("layout", encodingVersion, payload)
 }
 
 var ErrApplicationSessionConflict = errors.New("application session changed concurrently")
@@ -1058,54 +1062,65 @@ func (store ApplicationSessionStore) LoadIntoContext(ctx context.Context, target
 		return fmt.Errorf("begin application session snapshot: %w", err)
 	}
 	defer tx.Rollback()
-	candidate := ApplicationSessionState{Version: ApplicationSessionSchemaVersion, Attempts: []ApplicationLaunchAttempt{}}
-	if err := tx.QueryRowContext(ctx, "SELECT compositor_id FROM application_session WHERE id = 1").Scan(&candidate.CompositorID); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			if _, _, err := loadStoredApplicationAdoptions(ctx, tx, ""); err != nil {
-				return err
-			}
-			if err := commitStateRead(ctx, tx); err != nil {
-				return fmt.Errorf("finish absent application session snapshot: %w", err)
-			}
-			return os.ErrNotExist
-		}
-		return fmt.Errorf("load application session: %w", err)
+	candidate, loadErr := loadApplicationSessionQuery(ctx, tx)
+	if loadErr != nil && !errors.Is(loadErr, os.ErrNotExist) {
+		return loadErr
 	}
-	rows, err := tx.QueryContext(ctx, "SELECT context_id, started_at FROM application_launch_attempts ORDER BY context_id")
+	if err := commitStateRead(ctx, tx); err != nil {
+		if errors.Is(loadErr, os.ErrNotExist) {
+			return fmt.Errorf("finish absent application session snapshot: %w", err)
+		}
+		return fmt.Errorf("finish application session snapshot: %w", err)
+	}
+	if loadErr != nil {
+		return loadErr
+	}
+	*target = candidate
+	return nil
+}
+
+func loadApplicationSessionQuery(ctx context.Context, queryer stateQueryer) (ApplicationSessionState, error) {
+	candidate := ApplicationSessionState{Version: ApplicationSessionSchemaVersion, Attempts: []ApplicationLaunchAttempt{}}
+	if err := queryer.QueryRowContext(ctx, "SELECT compositor_id FROM application_session WHERE id = 1").Scan(&candidate.CompositorID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			if _, _, err := loadStoredApplicationAdoptions(ctx, queryer, ""); err != nil {
+				return candidate, err
+			}
+			return candidate, os.ErrNotExist
+		}
+		return candidate, fmt.Errorf("load application session: %w", err)
+	}
+	rows, err := queryer.QueryContext(ctx, "SELECT context_id, started_at FROM application_launch_attempts ORDER BY context_id")
 	if err != nil {
-		return fmt.Errorf("load application launch attempts: %w", err)
+		return candidate, fmt.Errorf("load application launch attempts: %w", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var id ContextID
 		var startedAt string
 		if err := rows.Scan(&id, &startedAt); err != nil {
-			return fmt.Errorf("scan application launch attempt: %w", err)
+			return candidate, fmt.Errorf("scan application launch attempt: %w", err)
 		}
 		parsed, err := time.Parse(time.RFC3339Nano, startedAt)
 		if err != nil {
-			return fmt.Errorf("decode application launch attempt for %s: %w", id, err)
+			return candidate, fmt.Errorf("decode application launch attempt for %s: %w", id, err)
 		}
 		candidate.Attempts = append(candidate.Attempts, ApplicationLaunchAttempt{ContextID: id, StartedAt: parsed.UTC()})
 	}
 	if err := rows.Err(); err != nil {
-		return fmt.Errorf("load application launch attempts: %w", err)
+		return candidate, fmt.Errorf("load application launch attempts: %w", err)
 	}
 	if err := rows.Close(); err != nil {
-		return fmt.Errorf("close application launch attempts: %w", err)
+		return candidate, fmt.Errorf("close application launch attempts: %w", err)
 	}
-	_, candidate.Adoptions, err = loadStoredApplicationAdoptions(ctx, tx, candidate.CompositorID)
+	_, candidate.Adoptions, err = loadStoredApplicationAdoptions(ctx, queryer, candidate.CompositorID)
 	if err != nil {
-		return err
+		return candidate, err
 	}
 	if err := candidate.Validate(); err != nil {
-		return fmt.Errorf("validate application session: %w", err)
+		return candidate, fmt.Errorf("validate application session: %w", err)
 	}
-	if err := commitStateRead(ctx, tx); err != nil {
-		return fmt.Errorf("finish application session snapshot: %w", err)
-	}
-	*target = candidate
-	return nil
+	return candidate, nil
 }
 
 type TerminalActivityStore struct{ root string }

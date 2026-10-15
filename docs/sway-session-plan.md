@@ -480,6 +480,37 @@ matches are rejected. System entries are root-owned launch material. Approved
 user-local entries are copied into owner-only immutable snapshots; later source
 or executable changes require reapproval.
 
+Application inventory is an additive read surface. Bare `app list` retains
+its saved-context output and bare `app status` retains focused registration
+selection. `app list --inventory [--socket PATH]` explains every saved
+application; `app status --context UUID_OR_EXACT_LABEL [--socket PATH]` selects
+one saved application in any state. These succeed offline with explicitly
+unknown observations. `app status --inventory [--socket PATH]` requires Sway to
+select the focused application. List's `--socket` requires `--inventory`.
+
+The new JSON projection uses the versioned command envelope with
+`applications` and `contexts:[]`; legacy bare list contexts remain unchanged.
+It separates policy, presence, launcher validity, recorded duplicate-launch
+guards, saved placement fidelity, and last/pending restore outcomes. Nullable
+observations distinguish unavailable evidence from zero windows or false
+visibility. Ambiguous groups provide no anchor. Restore outcomes retain proof
+stage, source and current/changed/unknown identity applicability, with automatic
+and explicit pending records separate. Saved placement-only layout and recorded
+layout failure/timeout explain degraded fidelity; inventory does not run a
+separate live launch or layout eligibility engine.
+
+Inventory reads registry, layout, application-session and optional restore
+journal evidence in one owner-only database snapshot and closes it before
+external calls. Optional observations share a three-second deadline. Launcher
+validity uses the shared trust validator plus a current installed-Flatpak probe,
+without a launch guarantee. A recorded guard is conservative duplicate-attempt
+evidence, not proof of a pending process. Inventory never launches, approves,
+repairs or changes session metadata; the read contract does not promise
+filesystem-immutable SQLite access. The projection excludes approved paths,
+argv, environment and socket identity while retaining labels and workspaces.
+Completion reads only the registry and offers all application states through
+`--context`, using the `app-status` scope without compositor or launcher calls.
+
 Every matching eligible top-level is one application presence group. Multiple
 indistinguishable windows prove presence but do not provide an anchor. Only an
 existing stable mark or one unique match permits placement. Follow mode enables
@@ -691,7 +722,6 @@ Codebase → Sway Session label:
 - LAB-89: stronger sandboxing for broker-created agent sessions.
 - LAB-93: stable native Wayland per-window identity.
 - LAB-94: explicit privileged desktop restore design.
-- LAB-250: complete desktop inventory lifecycle explanations.
 - LAB-252: investigate bounded restore-report CI contention.
 - LAB-253: remaining real Chrome/Slack lifecycle and guest reboot acceptance.
 

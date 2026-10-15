@@ -197,6 +197,40 @@ sway-session app archive CONTEXT
 sway-session app activate CONTEXT
 ```
 
+Inspect saved applications and their restore evidence with:
+
+```sh
+sway-session app list --inventory
+sway-session app status --context CONTEXT_UUID_OR_EXACT_LABEL
+sway-session app status --inventory
+sway-session --json app list --inventory
+```
+
+Bare `app list` keeps its saved registration output. Bare `app status` keeps
+reporting the focused application's registration; `--inventory` explains that
+focused application and still requires Sway. `--context` explicitly selects a
+saved application, including archived or closed contexts. Inventory list and
+context selection work offline, with unavailable observations reported as
+unknown. Add `--socket PATH` to select the observation socket; list requires
+`--inventory` with this option.
+
+Inventory separates next-login policy, observed window presence, launcher
+validation, and recorded restore outcomes. Closed desired-open state differs
+from an observed absent window. Ambiguous groups never select an anchor.
+Launcher validity reflects current shared validation and, for Flatpak, an
+installation probe; it does not guarantee a successful launch. Recorded launch
+guards prevent duplicate attempts conservatively and do not prove a pending
+process. Pending automatic and explicit attempts retain their proof stages;
+a mapped window alone does not prove placement or layout completion. Saved
+placement-only layout and recorded layout failures explain fidelity limits.
+
+These commands do not launch applications, approve launchers, repair state or
+assess whether the daemon can launch immediately. They read one saved-state
+snapshot before optional observations, which share a three-second deadline.
+The opt-in JSON envelope includes `applications` and an empty `contexts` array.
+It omits approved launcher paths, arguments, environment and compositor socket
+identity, while retaining labels and workspace placement as operational data.
+
 Use `app rebind-focused CONTEXT` to associate a replacement window, or
 `app reapprove CONTEXT` after an approved launcher or executable changes.
 `app forget --yes CONTEXT_UUID` removes the registration.

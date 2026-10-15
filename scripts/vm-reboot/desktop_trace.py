@@ -25,7 +25,7 @@ TRACE = Path('/sys/kernel/tracing')
 MAX_EVENTS = 1000000
 MAX_PROCESSES = 65536
 EXECUTABLES = {'/opt/google/chrome/chrome': 'chrome',
-               '/app/extra/slack/slack': 'slack'}
+               '/app/extra/slack': 'slack'}
 
 
 class Incarnations:

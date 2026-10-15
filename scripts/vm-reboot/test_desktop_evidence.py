@@ -4,6 +4,7 @@ import unittest
 
 from desktop_evidence import (validate_desktop_baseline, validate_desktop_evidence,
                               validate_desktop_observation)
+from desktop_trace import SOURCE_PINS
 
 CHROME = '0bc6a128-e421-4f86-90b9-e42c187b143a'
 SLACK = 'ef4b0a27-7a43-477e-9721-823c86e090a5'
@@ -13,9 +14,22 @@ BOOTS = ['fa074a61-5fb7-4899-9739-f93df26a5ff7', '41363ed9-35cd-47b6-b6a3-375b0f
 ARTIFACT = {'sha256': 'a' * 64, 'build': {'product_version': '0.1.0-dev', 'commit': 'b' * 40, 'modified': False}}
 
 
+def sources():
+    return dict(SOURCE_PINS, portal_sha256='8' * 64)
+
+
 def trace(starts):
     return {'complete': True, 'measurement': 'sched_process_exec_fork_exit',
-            'starts': {'chrome': starts, 'slack': starts}}
+            'starts': {'chrome': starts, 'slack': starts}, 'classification': 'fixed-normal-launchers-v1',
+            'helpers': {'slack': 1}, 'unclassified': 0, 'sources': sources()}
+
+
+def picker():
+    return {'ui_inspected': True, 'empty_profile': True, 'picker_exposed': True,
+            'observed_presence_sequence': ['present'], 'observed_window_counts': [1, 2, 1],
+            'observed_total_windows': [2, 3, 2], 'main_anchor_preserved': True,
+            'main_window_gap_observed': False, 'desired_open_preserved': True,
+            'samples': 28, 'launch_trace': trace(0)}
 
 
 def health(pid=700):
@@ -52,8 +66,8 @@ def baseline():
                 versions={'kernel': '6.17.1-arch1-1', 'packages': {'sway': '1.12-1', 'python': '3.14.7-1',
                           'dbus': '1.16.2-1', 'openssh': '10.6p1-1', 'polkit': '127-1', 'flatpak': '1.18.4-1'},
                           'systemd': 'systemd 262 (262-1-arch)', 'herdr': '0.9.2', 'observer_sha256': 'c' * 64,
-                          'chrome': '155.0.8059.79', 'slack': '4.52.155', 'flatpak': '1.18.4',
-                          'slack_ref': 'app/com.slack.Slack/x86_64/stable', 'slack_commit': 'd' * 64})
+                          'chrome': '155.0.8059.79', 'slack': '4.52.178', 'flatpak': '1.18.4',
+                          'slack_ref': 'app/com.slack.Slack/x86_64/stable', 'slack_commit': SOURCE_PINS['slack_commit']})
 
 
 def fixture():
@@ -96,8 +110,11 @@ def fixture():
     phase('ambiguity.slack', {'ui_inspected': True, 'empty_profile': True, 'second_window_exposed': False,
                             'automation_available': True}, 'not_exposed', 'empty_profile_ui_absent')
     for role, context_id in [('chrome', CHROME), ('slack', SLACK)]:
-        phase('picker.' + role, {'ui_inspected': True, 'empty_profile': True, 'picker_exposed': False,
-                               'automation_available': True}, 'not_exposed', 'empty_profile_ui_absent')
+        if role == 'chrome':
+            phase('picker.chrome', picker())
+        else:
+            phase('picker.slack', {'ui_inspected': True, 'empty_profile': True, 'picker_exposed': False,
+                                   'automation_available': True}, 'not_exposed', 'empty_profile_ui_absent')
         phase('follow.' + role, {'context_id': context_id, 'context_state': 'active', 'policy': 'follow',
               'present_before': True, 'fresh_close_event': True, 'absent_after': True, 'absence_ms': 3001,
               'production_close_grace_ms': 2000, 'steady_samples': 3, 'desired_open': False,
@@ -118,7 +135,7 @@ def fixture():
             'artifact': copy.deepcopy(ARTIFACT), 'base_image_sha256': '1' * 64, 'herdr_sha256': '2' * 64,
             'qemu_version': 'QEMU emulator version 11.1.2', 'app_assets': {
                 'chrome': {'version': '155.0.8059.79', 'source': 'https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb', 'sha256': '3' * 64},
-                'slack': {'version': '4.52.155', 'source': 'https://dl.flathub.org/repo/', 'origin': 'flathub', 'ref': 'app/com.slack.Slack/x86_64/stable', 'commit': 'd' * 64}},
+                'slack': {'version': '4.52.178', 'source': 'https://dl.flathub.org/repo/', 'origin': 'flathub', 'ref': 'app/com.slack.Slack/x86_64/stable', 'commit': SOURCE_PINS['slack_commit']}},
             'phases': phases, 'observations': observations,
             'reboot_requests': [{'accepted': True, 'method': 'guest systemd timer -> systemctl reboot',
                                  'before_boot_id': BOOTS[i], 'after_boot_id': BOOTS[i + 1]} for i in range(2)],
@@ -133,6 +150,12 @@ def replace(value, path, replacement):
 
 
 class DesktopEvidence(unittest.TestCase):
+    def test_classified_helpers_may_vary_without_changing_main_start_contract(self):
+        value = fixture()
+        value['observations'][1]['launch_trace']['helpers']['slack'] = 9
+        value['phases']['ambiguity.chrome']['facts']['launch_trace']['helpers']['slack'] = 3
+        self.assertTrue(validate_desktop_evidence(value)['passed'])
+
     def test_complete_report_and_public_helpers(self):
         evidence = fixture()
         checks = validate_desktop_evidence(evidence)
@@ -143,16 +166,18 @@ class DesktopEvidence(unittest.TestCase):
         evidence['checks'] = checks
         self.assertEqual(validate_desktop_evidence(evidence), checks)
 
-    def test_exposed_picker_requires_the_observed_gap_and_preserved_intent(self):
-        evidence = fixture()
-        evidence['phases']['picker.chrome'] = {'status': 'passed', 'reason': 'verified', 'facts': {
-            'ui_inspected': True, 'empty_profile': True, 'picker_exposed': True,
-            'presence_sequence': ['present', 'transient', 'absent', 'present'], 'gap_ms': 230,
-            'desired_open_preserved': True, 'launch_trace': trace(0)}}
-        validate_desktop_evidence(evidence)
-        evidence['phases']['picker.chrome']['facts']['desired_open_preserved'] = False
-        with self.assertRaises(RuntimeError):
-            validate_desktop_evidence(evidence)
+    def test_exposed_picker_requires_actual_chooser_and_retained_main_observations(self):
+        validate_desktop_evidence(fixture())
+        for key, replacement in [
+                ('observed_presence_sequence', ['present', 'transient', 'absent', 'present']),
+                ('observed_window_counts', [1, 1]), ('observed_total_windows', [2, 2]),
+                ('main_anchor_preserved', False), ('main_window_gap_observed', True),
+                ('desired_open_preserved', False), ('samples', 2)]:
+            with self.subTest(key=key):
+                evidence = fixture()
+                evidence['phases']['picker.chrome']['facts'][key] = replacement
+                with self.assertRaises(RuntimeError):
+                    validate_desktop_evidence(evidence)
 
     def test_meaningful_negative_mutations(self):
         cases = [
@@ -189,6 +214,12 @@ class DesktopEvidence(unittest.TestCase):
             (('observations', 1, 'launch_trace', 'complete'), False),
             (('observations', 1, 'launch_trace', 'starts', 'chrome'), 2),
             (('observations', 1, 'launch_trace', 'measurement'), 'durable_guard'),
+            (('observations', 1, 'launch_trace', 'classification'), 'all-executable-roots'),
+            (('observations', 1, 'launch_trace', 'helpers', 'slack'), -1),
+            (('observations', 1, 'launch_trace', 'unclassified'), 1),
+            (('observations', 1, 'launch_trace', 'sources', 'portal_sha256'), '9' * 64),
+            (('observations', 0, 'launch_trace', 'sources', 'slack_commit'), '9' * 64),
+            (('phases', 'ambiguity.chrome', 'facts', 'launch_trace', 'sources', 'wrapper_sha256'), '9' * 64),
             (('reboot_requests', 0, 'accepted'), False),
             (('reboot_requests', 0, 'method'), 'qmp system_reset'),
             (('reboot_requests', 1, 'before_boot_id'), BOOTS[0]),

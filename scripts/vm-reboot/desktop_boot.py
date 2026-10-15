@@ -60,11 +60,17 @@ def boot_id():
 
 def checked_snapshot(value):
     require(type(value) is dict and set(value) == {
-        'boot_id', 'starts', 'callbacks', 'events', 'barrier', 'measurement'})
+        'boot_id', 'starts', 'callbacks', 'events', 'barrier', 'measurement',
+        'classification', 'helpers', 'unclassified', 'sources'})
     canonical_uuid(value['boot_id'])
     canonical_uuid(value['barrier'], v4=True)
     require(value['measurement'] == desktop_trace.MEASUREMENT
             and type(value['starts']) is dict and set(value['starts']) == {'chrome', 'slack'})
+    require(value['classification'] == desktop_evidence.CLASSIFICATION
+            and type(value['helpers']) is dict and set(value['helpers']) == {'slack'}
+            and type(value['helpers']['slack']) is int and 0 <= value['helpers']['slack'] <= 1000000
+            and type(value['unclassified']) is int and value['unclassified'] == 0)
+    desktop_evidence._sources(value['sources'])
     for number in [*value['starts'].values(), value['callbacks'], value['events']]:
         require(type(number) is int and 0 <= number <= 1000000)
     return value
@@ -145,7 +151,9 @@ def launch_trace(run_id, scope):
     # The root guest recorder is armed before getty on cold boots. These are
     # actual total observed root incarnations, not durable launch-guard rows.
     return {'complete': True, 'measurement': desktop_trace.MEASUREMENT,
-            'starts': dict(current['starts'])}
+            'starts': dict(current['starts']), 'classification': current['classification'],
+            'helpers': dict(current['helpers']), 'unclassified': current['unclassified'],
+            'sources': dict(current['sources'])}
 
 
 def sample(run_id, account, harness, scope):

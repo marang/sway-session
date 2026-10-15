@@ -23,6 +23,9 @@ PACKAGES = {'sway', 'alacritty', 'mesa', 'ttf-dejavu', 'python', 'jq', 'sqlite',
             'openssh', 'polkit', 'flatpak', 'bubblewrap', 'xorg-xwayland', 'grim',
             'wtype', 'noto-fonts', 'xdg-desktop-portal', 'xdg-desktop-portal-wlr'}
 SLACK_REF = 'app/com.slack.Slack/x86_64/stable'
+CLASSIFICATION = 'fixed-normal-launchers-v1'
+SOURCE_FIELDS = {'version', 'slack_commit', 'manifest_sha256', 'entry_sha256', 'wrapper_sha256',
+                 'helper_sha256', 'zypak_source_commit', 'portal_sha256'}
 # Chrome exposes the controlled empty guest profile in its X11 instance. Only
 # this fixture-owned literal is allowed in addition to ordinary identity tokens.
 CHROME_X11_INSTANCE = 'google-chrome (/home/ss-test/.config/lab253-chrome)'
@@ -172,10 +175,23 @@ def _identity(value, role, protocol='wayland', unsupported=False):
         _eq(value['sandbox_instance_present'], False)
 
 
+def _sources(value):
+    _keys(value, SOURCE_FIELDS)
+    _eq(value['version'], 1)
+    _eq(value['zypak_source_commit'], '693a71c5ffa80ec9c9ce2ae03b1ccc493c698e53')
+    for key in SOURCE_FIELDS - {'version', 'zypak_source_commit'}:
+        _sha(value[key])
+
+
 def _trace(value, starts):
-    _keys(value, {'complete', 'measurement', 'starts'})
+    _keys(value, {'complete', 'measurement', 'starts', 'classification', 'helpers', 'unclassified', 'sources'})
     _eq(value['complete'], True)
     _eq(value['measurement'], 'sched_process_exec_fork_exit')
+    _eq(value['classification'], CLASSIFICATION)
+    _keys(value['helpers'], {'slack'})
+    _number(value['helpers']['slack'])
+    _eq(value['unclassified'], 0)
+    _sources(value['sources'])
     _keys(value['starts'], set(ROLES))
     for role in ROLES:
         _eq(value['starts'][role], starts)
@@ -238,6 +254,7 @@ def _baseline(value):
     _versions(value['versions'])
     _health({key: value[key] for key in HEALTH})
     _trace(value['launch_trace'], 1)
+    _eq(value['launch_trace']['sources']['slack_commit'], value['versions']['slack_commit'])
     _number(value['stable_samples'], 3, 120)
     return ids
 
@@ -261,6 +278,7 @@ def validate_desktop_observation(observation, baseline, run_id, artifact):
     _eq(baseline['artifact'], artifact)
     for key in ('contexts', 'applications', 'live', 'stored', 'versions'):
         _eq(observation[key], baseline[key])
+    _eq(observation['launch_trace']['sources'], baseline['launch_trace']['sources'])
     _eq(observation['inhibitor']['uid'], baseline['inhibitor']['uid'])
 
 
@@ -345,11 +363,16 @@ def _phase(phase_id, value, ids, assets):
         _eq(facts['restore_mode'], 'placement_only')
         _trace(facts['launch_trace'], 0)
     elif family == 'picker':
-        _keys(facts, {'ui_inspected', 'empty_profile', 'picker_exposed', 'presence_sequence', 'gap_ms', 'desired_open_preserved', 'launch_trace'})
-        for key in ('ui_inspected', 'empty_profile', 'picker_exposed', 'desired_open_preserved'):
+        _keys(facts, {'ui_inspected', 'empty_profile', 'picker_exposed', 'observed_presence_sequence',
+                      'observed_window_counts', 'observed_total_windows', 'main_anchor_preserved',
+                      'main_window_gap_observed', 'desired_open_preserved', 'samples', 'launch_trace'})
+        for key in ('ui_inspected', 'empty_profile', 'picker_exposed', 'main_anchor_preserved', 'desired_open_preserved'):
             _eq(facts[key], True)
-        _eq(facts['presence_sequence'], ['present', 'transient', 'absent', 'present'])
-        _number(facts['gap_ms'], 1, 2000)
+        _eq(facts['observed_presence_sequence'], ['present'])
+        _eq(facts['observed_window_counts'], [1, 2, 1])
+        _eq(facts['observed_total_windows'], [2, 3, 2])
+        _eq(facts['main_window_gap_observed'], False)
+        _number(facts['samples'], 3, 4096)
         _trace(facts['launch_trace'], 0)
     else:
         common = {'context_id', 'context_state', 'policy', 'present_before', 'fresh_close_event',
@@ -416,6 +439,9 @@ def validate_desktop_evidence(evidence):
     _keys(evidence['phases'], set(PHASES))
     for phase_id in PHASES:
         _phase(phase_id, evidence['phases'][phase_id], ids, evidence['app_assets'])
+        trace = evidence['phases'][phase_id]['facts'].get('launch_trace')
+        if trace is not None:
+            _eq(trace['sources'], baseline['launch_trace']['sources'])
     # Bind native protocol probes to the original authoritative registered identities.
     for role, app in zip(ROLES, baseline['applications']):
         _eq(evidence['phases']['protocol.' + role + '.wayland']['facts']['identity'],

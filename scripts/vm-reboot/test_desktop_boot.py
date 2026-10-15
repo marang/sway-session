@@ -10,6 +10,7 @@ from contextlib import redirect_stdout
 from unittest.mock import patch
 
 import desktop_boot as boot
+from test_desktop_evidence import sources as source_proof, trace as trace_report
 
 RUN = 'b3dc5c84-4607-49f3-b65d-76e7682f1d0a'
 BOOT = 'fa074a61-5fb7-4899-9739-f93df26a5ff7'
@@ -22,7 +23,8 @@ ARTIFACT = {'sha256': 'a' * 64, 'build': {'product_version': '0.1.0-dev', 'commi
 def snapshot(starts=5, *, boot_id=BOOT, events=100):
     return {'boot_id': boot_id, 'starts': {'chrome': starts, 'slack': starts},
             'callbacks': 3, 'events': events, 'barrier': BARRIER,
-            'measurement': 'sched_process_exec_fork_exit'}
+            'measurement': 'sched_process_exec_fork_exit', 'classification': 'fixed-normal-launchers-v1',
+            'helpers': {'slack': starts}, 'unclassified': 0, 'sources': source_proof()}
 
 
 def scope():
@@ -50,13 +52,12 @@ def report():
         'application_count': 2, 'staging_managed_windows': 0, 'matches_fixture': True,
         'exclusions': ['proportions', 'geometry', 'focus'], 'run_id': RUN, 'boot_id': BOOT,
         'artifact': copy.deepcopy(ARTIFACT), 'stable_samples': 3,
-        'launch_trace': {'complete': True, 'measurement': 'sched_process_exec_fork_exit',
-                         'starts': {'chrome': 1, 'slack': 1}},
+        'launch_trace': trace_report(1),
         'versions': {'kernel': '6.17.1-arch1-1', 'packages': {'sway': '1.12-1', 'python': '3.14.7-1',
             'dbus': '1.16.2-1', 'openssh': '10.6p1-1', 'polkit': '127-1', 'flatpak': '1.18.4-1'},
             'systemd': 'systemd 262 (262-1-arch)', 'herdr': '0.9.2', 'observer_sha256': 'c' * 64,
-            'chrome': '155.0.8059.39', 'slack': '4.52.155', 'flatpak': '1.18.4',
-            'slack_ref': 'app/com.slack.Slack/x86_64/stable', 'slack_commit': 'd' * 64},
+            'chrome': '155.0.8059.79', 'slack': '4.52.178', 'flatpak': '1.18.4',
+            'slack_ref': 'app/com.slack.Slack/x86_64/stable', 'slack_commit': source_proof()['slack_commit']},
         'daemon_binary_current': True, 'delay_inhibitor': True, 'daemon_pid': 700,
         'doctor': [{'id': 'daemon.lock', 'status': 'ok'}, {'id': 'daemon.binary', 'status': 'ok'}],
         'inhibitor': {'who': 'sway-session', 'uid': 1000, 'pid': 700, 'what': 'shutdown:sleep', 'mode': 'delay'},

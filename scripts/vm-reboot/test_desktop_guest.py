@@ -98,6 +98,26 @@ class ProcessTraceTests(unittest.TestCase):
 
 
 class GUIControllerTests(unittest.TestCase):
+    def test_cold_session_waits_for_socket_routing_and_candidate_health_before_phase_effects(self):
+        socket = Path('/run/user/1000/sway-ipc.1000.50.sock')
+        with patch.object(phases.guest, 'guest_socket', side_effect=[RuntimeError('not ready'), socket, socket]), \
+             patch.object(phases.guest, 'desktop_environment', side_effect=[RuntimeError('not ready'), {}]), \
+             patch.object(phases.guest, 'health', return_value={}) as health, \
+             patch.object(phases.time, 'monotonic', side_effect=[0, 1, 2, 3]), \
+             patch.object(phases.time, 'sleep'), patch.object(phases.d, 'pointer_ready') as pointer:
+            self.assertEqual(phases.session_socket('owner'), socket)
+        health.assert_called_once_with('owner', socket, candidate=Path('/usr/bin/sway-session'))
+        pointer.assert_not_called()
+
+    def test_cold_session_timeout_prevents_pointer_and_phase_mutations(self):
+        with patch.object(phases.guest, 'guest_socket', side_effect=RuntimeError('not ready')), \
+             patch.object(phases.time, 'monotonic', side_effect=[0, 1, 61]), \
+             patch.object(phases.time, 'sleep'), patch.object(phases.d, 'pointer_ready') as pointer, \
+             patch.object(phases, 'save') as save, self.assertRaises(RuntimeError):
+            phases.run('run', 'owner')
+        pointer.assert_not_called()
+        save.assert_not_called()
+
     def test_picker_completion_cannot_claim_exposure_without_actual_extra_window(self):
         samples = [{'presence': 'present', 'window_count': 1, 'total_windows': 2,
                     'desired_open': True, 'anchor_preserved': True}] * 3

@@ -397,8 +397,19 @@ def final_baseline(state, run_id, account, socket):
     state['complete'] = True
 
 
+def session_socket(account):
+    # SSH can start before the independent getty -> Sway -> routing publisher.
+    # Retry only these read-only prerequisites, never a phase with effects.
+    def ready():
+        socket = guest.guest_socket(account)
+        guest.desktop_environment(account, socket)
+        guest.health(account, socket, candidate=d.CANDIDATE)
+        return socket
+    return guest.until_ready(ready, time.monotonic() + 60)
+
+
 def run(run_id, account, *, checkpoint_id=None, action=None, x=None, y=None, inspected=False):
-    socket = guest.guest_socket(account)
+    socket = session_socket(account)
     d.pointer_ready(run_id, account, socket)
     if STATE.exists():
         guest.private_artifact(STATE)

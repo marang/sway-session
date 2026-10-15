@@ -24,6 +24,64 @@ ENTRY = guest.HOME / '.local/share/applications' / DESKTOP_ID
 PROFILE = guest.HOME / '.config/lab253-chrome'
 IDENTITY_KEYS = ['protocol', 'app_id', 'x11_class', 'x11_instance', 'sandbox_app_id',
                  'sandbox_engine', 'sandbox_instance_present']
+GUARD_PASSED = False
+FAILURE_MODULES = frozenset({'guest', 'transport', 'desktop_guest', 'desktop_trace',
+                             'desktop_pointer', 'desktop_lifecycle', 'desktop_phases',
+                             'desktop_boot', 'desktop_environment', 'desktop_evidence'})
+INSTALLED_ROOT = Path('/opt/sway-session-test')
+
+
+def failure_summary(error):
+    """Project exceptions to bounded source locations, never their contents."""
+    kinds = ((subprocess.TimeoutExpired, 'TimeoutExpired'), (OSError, 'OSError'),
+             (KeyError, 'KeyError'), (ValueError, 'ValueError'), (RuntimeError, 'RuntimeError'))
+    kind = next((name for cls, name in kinds if isinstance(error, cls)), None)
+    guest.require(kind is not None, 'unsupported_diagnostic_exception')
+    # A redacted helper can wrap an assertion. Its original context contains
+    # useful trusted source locations; no messages or frame locals are read.
+    seen = set()
+    current = error
+    for _ in range(8):
+        seen.add(id(current))
+        nested = current.__cause__ or current.__context__
+        if nested is None or id(nested) in seen:
+            break
+        current = nested
+    allowed = {str(INSTALLED_ROOT / (name + '.py')): name for name in FAILURE_MODULES}
+    frames, traceback = [], current.__traceback__
+    for _ in range(256):
+        if traceback is None:
+            break
+        module = allowed.get(traceback.tb_frame.f_code.co_filename)
+        if module is not None and 1 <= traceback.tb_lineno <= 10000:
+            frames.append({'module': module, 'line': traceback.tb_lineno})
+        traceback = traceback.tb_next
+    return {'version': 1, 'kind': kind, 'frames': frames[-6:]}
+
+
+def failure_root():
+    guest.require(GUARD_PASSED and os.geteuid() == 0 and guest.ROOT == INSTALLED_ROOT,
+                  'untrusted_diagnostic_root')
+    info = guest.ROOT.lstat()
+    guest.require(guest.ROOT.resolve() == guest.ROOT and stat.S_ISDIR(info.st_mode)
+                  and info.st_uid == 0 and not info.st_mode & 0o022, 'untrusted_diagnostic_root')
+    guest.private_artifact(guest.ROOT / 'run-id')
+    return guest.ROOT
+
+
+def write_failure(error):
+    try:
+        root = failure_root()
+        payload = json.dumps(failure_summary(error)) + '\n'
+        temporary = root / '.desktop-failure.json.new'
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(descriptor, 'w') as output:
+            os.fchmod(output.fileno(), 0o600)
+            output.write(payload)
+        os.replace(temporary, root / 'desktop-failure.json')
+    except Exception:
+        # Diagnostics may never replace the original failure or relax guards.
+        pass
 
 
 def user(account, argv, socket, *, timeout=20):
@@ -323,6 +381,8 @@ def install_apps(run_id, account, chrome_sha256):
 
 
 def main():
+    global GUARD_PASSED
+    GUARD_PASSED = False
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('command', choices=['install', 'phases', 'versions', 'probe', 'gui-open', 'gui-click'])
     parser.add_argument('--chrome-sha256')
@@ -335,6 +395,7 @@ def main():
     parser.add_argument('--y', type=int)
     args = parser.parse_args()
     run_id, account = guest.guard()
+    GUARD_PASSED = True
     if args.command == 'install':
         print(json.dumps(install_apps(run_id, account, args.chrome_sha256)))
         return
@@ -363,7 +424,8 @@ def main():
 if __name__ == '__main__':
     try:
         main()
-    except (RuntimeError, OSError, ValueError, KeyError, subprocess.TimeoutExpired):
+    except (RuntimeError, OSError, ValueError, KeyError, subprocess.TimeoutExpired) as error:
         # Raw subprocess errors may contain browser output. Never export them.
+        write_failure(error)
         print(json.dumps({'failed': True, 'reason': 'desktop_guest_prerequisite_or_assertion'}))
         raise SystemExit(1)

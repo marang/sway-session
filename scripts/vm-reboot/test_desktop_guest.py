@@ -3,6 +3,8 @@ import copy
 import sys
 from pathlib import Path
 import tempfile
+import json
+import subprocess
 import unittest
 from unittest.mock import patch
 
@@ -156,6 +158,88 @@ class GUIControllerTests(unittest.TestCase):
         with patch.object(desktop, 'probe') as probe, self.assertRaises(RuntimeError):
             desktop.register_action('run', None, None, 'chrome', approve=True, x=10, y=10)
         probe.assert_not_called()
+
+
+class FailureDiagnosticTests(unittest.TestCase):
+    def raised(self, filename, message='PRIVATE-URL-ARGV-ENV-PROFILE'):
+        namespace = {}
+        exec(compile('def fail(n):\n if n: return fail(n-1)\n raise RuntimeError(' + repr(message) + ')\n',
+                     filename, 'exec'), namespace)
+        try:
+            namespace['fail'](12)
+        except RuntimeError as error:
+            return error
+
+    def test_private_contents_never_appear_and_only_six_exact_trusted_frames_remain(self):
+        error = self.raised('/opt/sway-session-test/desktop_phases.py')
+        value = desktop.failure_summary(error)
+        self.assertEqual(set(value), {'version', 'kind', 'frames'})
+        self.assertEqual(value['version'], 1)
+        self.assertEqual(value['kind'], 'RuntimeError')
+        self.assertEqual(len(value['frames']), 6)
+        self.assertTrue(all(set(frame) == {'module', 'line'} and frame['module'] == 'desktop_phases'
+                            and type(frame['line']) is int and 1 <= frame['line'] <= 10000
+                            for frame in value['frames']))
+        rendered = json.dumps(value)
+        self.assertNotIn('PRIVATE', rendered)
+        self.assertNotIn('/opt/', rendered)
+        self.assertNotIn('fail', rendered)
+
+    def test_basename_and_normalized_alias_cannot_impersonate_installed_source(self):
+        for filename in ['/tmp/desktop_phases.py', '/opt/sway-session-test/../sway-session-test/desktop_phases.py',
+                         '/opt/sway-session-test/desktop_unknown.py']:
+            with self.subTest(filename=filename):
+                self.assertEqual(desktop.failure_summary(self.raised(filename))['frames'], [])
+
+    def test_os_subclass_and_timeout_have_fixed_kinds_without_exception_strings(self):
+        for error, expected in [(FileNotFoundError('PRIVATE'), 'OSError'),
+                                (subprocess.TimeoutExpired(['PRIVATE'], 1, output=b'PRIVATE', stderr=b'PRIVATE'),
+                                 'TimeoutExpired')]:
+            value = desktop.failure_summary(error)
+            self.assertEqual(value['kind'], expected)
+            self.assertNotIn('PRIVATE', json.dumps(value))
+
+    def test_redacted_wrappers_keep_only_trusted_inner_source_locations(self):
+        inner = self.raised('/opt/sway-session-test/desktop_lifecycle.py')
+        try:
+            try:
+                raise inner
+            except RuntimeError:
+                raise RuntimeError('PRIVATE wrapped error') from None
+        except RuntimeError as outer:
+            value = desktop.failure_summary(outer)
+        self.assertTrue(value['frames'])
+        self.assertTrue(all(frame['module'] == 'desktop_lifecycle' for frame in value['frames']))
+        self.assertNotIn('PRIVATE', json.dumps(value))
+
+    def test_private_diagnostic_is_atomic_mode600_and_never_contains_exception_contents(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with patch.object(desktop, 'failure_root', return_value=root):
+                desktop.write_failure(self.raised('/opt/sway-session-test/desktop_guest.py'))
+            path = root / 'desktop-failure.json'
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(json.loads(path.read_text())['kind'], 'RuntimeError')
+            self.assertNotIn('PRIVATE', path.read_text())
+            self.assertFalse((root / '.desktop-failure.json.new').exists())
+
+    def test_failed_guard_prevents_any_diagnostic_mutation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with patch.object(desktop, 'GUARD_PASSED', False), patch.object(desktop.guest, 'ROOT', root):
+                desktop.write_failure(RuntimeError('PRIVATE'))
+            self.assertEqual(list(root.iterdir()), [])
+
+    def test_existing_temporary_symlink_cannot_redirect_diagnostic(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            victim = root / 'victim'
+            victim.write_text('original')
+            (root / '.desktop-failure.json.new').symlink_to(victim)
+            with patch.object(desktop, 'failure_root', return_value=root):
+                desktop.write_failure(RuntimeError('PRIVATE'))
+            self.assertEqual(victim.read_text(), 'original')
+            self.assertFalse((root / 'desktop-failure.json').exists())
 
 
 if __name__ == '__main__':

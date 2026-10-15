@@ -50,6 +50,18 @@ class GuestReports(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 guest.doctor_evidence(altered)
 
+    def test_desktop_doctor_must_verify_fixed_approval_callback_candidate(self):
+        report = {'doctor': {'checks': [
+            {'id': 'daemon.lock', 'status': 'ok', 'evidence': ['pid=123']},
+            {'id': 'daemon.binary', 'status': 'ok',
+             'evidence': ['pid=123', 'path=/usr/bin/sway-session', 'digest match']} ]}}
+        self.assertEqual(guest.doctor_evidence(report, candidate=Path('/usr/bin/sway-session'))[0], 123)
+        with self.assertRaises(RuntimeError):
+            guest.doctor_evidence(report)
+        for destination in ['/tmp/sway-session', '/usr/bin/../bin/sway-session', '/usr/bin/other']:
+            with self.assertRaises(RuntimeError):
+                guest.doctor_evidence(report, candidate=Path(destination))
+
     def test_inhibitor_must_belong_to_the_candidate_daemon(self):
         row={'who':'sway-session','uid':1000,'pid':123,'what':'shutdown:sleep','mode':'delay'}
         want = dict(row)

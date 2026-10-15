@@ -74,7 +74,15 @@ def guard():
     return run_id, account
 
 
-def doctor_evidence(report):
+def candidate_path(candidate):
+    candidate = Path(candidate)
+    require(candidate in (CANDIDATE, Path('/usr/bin/sway-session')),
+            'unsupported fixture candidate destination')
+    return candidate
+
+
+def doctor_evidence(report, *, candidate=CANDIDATE):
+    candidate = candidate_path(candidate)
     rows = report.get('doctor', {}).get('checks', [])
     selected = []
     pids = []
@@ -88,7 +96,7 @@ def doctor_evidence(report):
         require(len(found) == 1, f'doctor {check_id} omitted an unambiguous daemon PID')
         pids.append(found[0])
         if check_id == 'daemon.binary':
-            require('path=' + str(CANDIDATE) in evidence
+            require('path=' + str(candidate) in evidence
                     and ('inode match' in evidence or 'digest match' in evidence),
                     'doctor did not verify the installed candidate artifact')
         selected.append({'id': check_id, 'status': row['status']})
@@ -126,10 +134,11 @@ def digest(path):
         return hashlib.file_digest(source, 'sha256').hexdigest()
 
 
-def artifact_identity():
-    private_artifact(CANDIDATE, executable=True)
-    build = read_json(command([CANDIDATE, '--json', 'version']))['build']
-    return {'sha256': digest(CANDIDATE),
+def artifact_identity(*, candidate=CANDIDATE):
+    candidate = candidate_path(candidate)
+    private_artifact(candidate, executable=True)
+    build = read_json(command([candidate, '--json', 'version']))['build']
+    return {'sha256': digest(candidate),
             'build': {key: build[key] for key in ['product_version', 'commit', 'modified']}}
 
 
@@ -149,7 +158,10 @@ def load_harness(run_id):
     return value
 
 
-def install(run_id, account):
+def install(run_id, account, *, candidate=CANDIDATE, desktop=False):
+    candidate = candidate_path(candidate)
+    require(not desktop or candidate == Path('/usr/bin/sway-session'),
+            'desktop approval requires the fixed /usr/bin candidate')
     require(not HARNESS.exists(), 'fixture is already installed; provision a fresh VM for a new run')
     for name in ['guest.py', 'transport.py', 'sway-session', 'observe', 'herdr']:
         private_artifact(ROOT / name)
@@ -158,7 +170,7 @@ def install(run_id, account):
     for program in ['sway', 'swaymsg', 'alacritty', 'dbus-run-session', 'agetty', 'runuser', 'busctl', 'systemd-inhibit', 'pkcheck']:
         require(shutil.which(program, path='/usr/bin'), f'guest package tool is missing: {program}')
     for name in ['sway-session', 'herdr']:
-        target = Path('/usr/local/bin') / name
+        target = candidate if name == 'sway-session' else Path('/usr/local/bin/herdr')
         require(not target.is_symlink(), f'unsafe executable destination: {target}')
         shutil.copyfile(ROOT / name, target)
         target.chmod(0o755)
@@ -185,14 +197,19 @@ def install(run_id, account):
     user_file('.config/sway-session/config.toml',
               'version = 2\n[terminal]\nadapter = "alacritty"\nsession_manager = "herdr"\n')
     user_file('.config/herdr/config.toml', '[experimental]\npane_history = true\n')
-    user_file('.config/sway/config', '''xwayland disable
-output HEADLESS-1 resolution 1280x800
-font pango:DejaVu Sans Mono 10
+    if desktop:
+        private_artifact(ROOT / 'desktop_environment.py')
+        extra = 'exec --no-startup-id /usr/bin/python3 /opt/sway-session-test/desktop_environment.py\n'
+    else:
+        extra = ''
+    user_file('.config/sway/config', f'''xwayland {"enable" if desktop else "disable"}
+output HEADLESS-1 resolution {"1280x720" if desktop else "1280x800"}
+font pango:DejaVu Sans {"12" if desktop else "Mono 10"}
 workspace 98
-exec --no-startup-id /usr/local/bin/sway-session daemon
-exec --no-startup-id /usr/local/bin/sway-session restore
-bindsym Mod4+Return exec --no-startup-id /usr/local/bin/sway-session terminal --new
-bindsym Mod4+Shift+Return exec --no-startup-id /usr/local/bin/sway-session terminal --ephemeral
+{extra}exec --no-startup-id {candidate} daemon
+exec --no-startup-id {candidate} restore
+bindsym Mod4+Return exec --no-startup-id {candidate} terminal --new
+bindsym Mod4+Shift+Return exec --no-startup-id {candidate} terminal --ephemeral
 ''')
     user_file('.bash_profile', '''# Disposable KVM fixture: a real getty/PAM/logind login owns Sway.
 umask 077
@@ -211,7 +228,7 @@ fi
 ExecStart=
 ExecStart=/usr/bin/agetty --autologin ss-test --noclear %I $TERM
 ''')
-    write_harness({'version': 1, 'run_id': run_id, 'artifact': artifact_identity(),
+    write_harness({'version': 1, 'run_id': run_id, 'artifact': artifact_identity(candidate=candidate),
                    'expected_ids': [], 'baseline_started': False,
                    'startup': 'getty@tty1/PAM/logind -> Bash -> headless Sway -> candidate daemon + one-shot restore'})
     command(['systemctl', 'daemon-reload'])
@@ -236,7 +253,41 @@ def guest_socket(account):
     return sockets[0]
 
 
-def user_command(account, argv, socket):
+def desktop_environment(account, socket):
+    path = HOME / '.local/state/fixture-session-env.json'
+    info = path.lstat()
+    require(path.resolve() == path and stat.S_ISREG(info.st_mode)
+            and info.st_uid == account.pw_uid and info.st_nlink == 1
+            and not info.st_mode & 0o077 and 0 < info.st_size <= 1024,
+            'fixture session routing file is not private and bounded')
+    with path.open('rb') as source:
+        encoded = source.read(1025)
+    require(len(encoded) <= 1024, 'fixture session routing exceeds byte budget')
+    value = read_json(encoded)
+    require(set(value) == {'boot_id', 'socket', 'environment'}
+            and value['boot_id'] == Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+            and value['socket'] == str(socket), 'fixture session routing belongs to another compositor or boot')
+    environment = value['environment']
+    require(isinstance(environment, dict)
+            and set(environment) in ({'DBUS_SESSION_BUS_ADDRESS', 'XDG_CURRENT_DESKTOP', 'XDG_SESSION_TYPE'},
+                                     {'DBUS_SESSION_BUS_ADDRESS', 'XDG_CURRENT_DESKTOP', 'XDG_SESSION_TYPE', 'DISPLAY'})
+            and environment['XDG_CURRENT_DESKTOP'] == 'sway'
+            and environment['XDG_SESSION_TYPE'] == 'wayland', 'invalid fixture session routing')
+    address = environment['DBUS_SESSION_BUS_ADDRESS']
+    require(isinstance(address, str)
+            and re.fullmatch(r'unix:path=/(?:tmp/dbus-[A-Za-z0-9]+|run/user/[0-9]+/bus)', address),
+            'invalid fixture session bus address')
+    bus = Path(address[len('unix:path='):])
+    info = bus.lstat()
+    require(bus.resolve() == bus and stat.S_ISSOCK(info.st_mode) and info.st_uid == account.pw_uid,
+            'fixture session bus is not owned by ss-test')
+    if 'DISPLAY' in environment:
+        require(isinstance(environment['DISPLAY'], str)
+                and re.fullmatch(r':[0-9]{1,4}', environment['DISPLAY']), 'invalid fixture X display')
+    return environment
+
+
+def user_command(account, argv, socket, *, extra_env=None, timeout=20):
     runtime = socket.parent
     displays = [p for p in runtime.glob('wayland-*') if stat.S_ISSOCK(p.lstat().st_mode)]
     require(len(displays) == 1, 'expected exactly one fixture Wayland display')
@@ -249,8 +300,15 @@ def user_command(account, argv, socket):
         'XDG_DATA_HOME': str(HOME / '.local/share'), 'XDG_CACHE_HOME': str(HOME / '.cache'),
         'LIBGL_ALWAYS_SOFTWARE': '1', 'GALLIUM_DRIVER': 'llvmpipe',
     }
+    if extra_env:
+        require(set(extra_env) <= {'DISPLAY', 'DBUS_SESSION_BUS_ADDRESS', 'XDG_CURRENT_DESKTOP', 'XDG_SESSION_TYPE'},
+                'unsupported fixture session environment key')
+        require(all(isinstance(value, str) and 0 < len(value) <= 256
+                    and '\x00' not in value and '\n' not in value for value in extra_env.values()),
+                'invalid fixture session environment value')
+        environment.update(extra_env)
     return command(['runuser', '-u', USER, '--', '/usr/bin/env', '-i',
-                    *[f'{key}={value}' for key, value in environment.items()], *argv], timeout=20)
+                    *[f'{key}={value}' for key, value in environment.items()], *argv], timeout=timeout)
 
 
 def login_evidence(pid):
@@ -276,10 +334,11 @@ def login_evidence(pid):
     return values
 
 
-def health(account, socket):
-    report = read_json(user_command(account, [CANDIDATE, '--json', 'doctor', '--check',
+def health(account, socket, *, candidate=CANDIDATE):
+    candidate = candidate_path(candidate)
+    report = read_json(user_command(account, [candidate, '--json', 'doctor', '--check',
                            '--socket', socket, '--sway-config', HOME / '.config/sway/config'], socket))
-    pid, checks = doctor_evidence(report)
+    pid, checks = doctor_evidence(report, candidate=candidate)
     try:
         output = command(['systemd-inhibit', '--list', '--no-pager', '--json=short'])
     except RuntimeError as error:

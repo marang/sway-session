@@ -84,6 +84,18 @@ def write_failure(error):
         pass
 
 
+def clear_failure():
+    path = failure_root() / 'desktop-failure.json'
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return
+    guest.require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1 and not info.st_mode & 0o077
+                  and 0 < info.st_size <= 4096, 'untrusted_previous_diagnostic')
+    guest.private_artifact(path)
+    path.unlink()
+
+
 def user(account, argv, socket, *, timeout=20):
     return guest.user_command(account, argv, socket,
                               extra_env=guest.desktop_environment(account, socket), timeout=timeout)
@@ -396,6 +408,7 @@ def main():
     args = parser.parse_args()
     run_id, account = guest.guard()
     GUARD_PASSED = True
+    clear_failure()
     if args.command == 'install':
         print(json.dumps(install_apps(run_id, account, args.chrome_sha256)))
         return

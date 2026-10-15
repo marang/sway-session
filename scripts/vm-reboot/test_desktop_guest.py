@@ -161,6 +161,33 @@ class GUIControllerTests(unittest.TestCase):
 
 
 class FailureDiagnosticTests(unittest.TestCase):
+    def test_each_guarded_operation_clears_previous_failure_before_success(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with patch.object(desktop, 'failure_root', return_value=root), \
+                 patch.object(desktop.guest, 'private_artifact'), \
+                 patch.object(desktop.guest, 'guard', return_value=('run', 'account')), \
+                 patch.object(desktop, 'install_apps', side_effect=[RuntimeError('PRIVATE old'), {'installed': True}]), \
+                 patch.object(sys, 'argv', ['desktop_guest.py', 'install', '--chrome-sha256', 'a' * 64]):
+                try:
+                    desktop.main()
+                except RuntimeError as error:
+                    desktop.write_failure(error)
+                self.assertTrue((root / 'desktop-failure.json').exists())
+                with patch('builtins.print'):
+                    desktop.main()
+                self.assertFalse((root / 'desktop-failure.json').exists())
+
+    def test_previous_diagnostic_symlink_is_rejected_without_following_it(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            victim = root / 'victim'
+            victim.write_text('PRIVATE')
+            (root / 'desktop-failure.json').symlink_to(victim)
+            with patch.object(desktop, 'failure_root', return_value=root), self.assertRaises(RuntimeError):
+                desktop.clear_failure()
+            self.assertEqual(victim.read_text(), 'PRIVATE')
+
     def raised(self, filename, message='PRIVATE-URL-ARGV-ENV-PROFILE'):
         namespace = {}
         exec(compile('def fail(n):\n if n: return fail(n-1)\n raise RuntimeError(' + repr(message) + ')\n',

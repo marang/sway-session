@@ -138,15 +138,20 @@ existing WAL or other database files. Fixture tests cover offline/unknown,
 observed/ambiguous, pending/proof, launcher trust, privacy, compatibility and
 read-only completion behavior. They do not add real-application acceptance.
 
-The broader real-app matrix is explicitly deferred to
-[LAB-253](https://linear.app/riotbox/issue/LAB-253/complete-real-chrome-and-slack-lifecycle-and-reboot-acceptance): graphical
-confirmation/cancellation, actual profile-picker gaps and indistinguishable
-multi-window restoration, Follow close under real logind shutdown protection,
-and Chrome/Slack across two regular guest reboots. Deterministic and private
-compositor tests cover the relevant decisions but do not substitute for those
-application-specific runs. Stock malformed desktop-entry compatibility also
-needs its own decision; silently accepting duplicate trust metadata is not an
-acceptance fix.
+The [LAB-253 real guest matrix](research/lab-253-desktop-reboot-acceptance.md),
+completed 2026-10-15, adds actual graphical confirmation/cancellation, material
+reapproval, Chrome multiwindow ambiguity with safe layout degradation, Follow
+close under real logind protection, Pinned no-watchdog checks and Chrome/Slack
+through two regular acceptance reboots. It records Chrome's actual chooser
+with its main window retained; no main-window gap is claimed. Slack's empty
+profile exposed neither optional multiwindow nor picker UI, and its XWayland
+registration remains unsupported without observed sandbox identity.
+
+The pinned vendor Debian Chrome entry was well formed and accepted; a separate
+malformed duplicate-key fixture was rejected. The historical malformed Arch
+entry remains unsupported. These version/distribution-specific results do not
+loosen trust validation. The new opt-in KVM scenario uses real applications;
+its ordinary synthetic checker tests alone remain insufficient acceptance.
 
 The separate roadmap gates remain LAB-89 (first-process confinement and cold
 resume), LAB-93 (durable unique client window tags), and LAB-94 (privileged

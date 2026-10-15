@@ -722,8 +722,13 @@ Codebase → Sway Session label:
 - LAB-89: stronger sandboxing for broker-created agent sessions.
 - LAB-93: stable native Wayland per-window identity.
 - LAB-94: explicit privileged desktop restore design.
-- LAB-252: investigate bounded restore-report CI contention.
-- LAB-253: remaining real Chrome/Slack lifecycle and guest reboot acceptance.
+- LAB-180: bounded named-environment and manager design; implementation paused.
+
+The [LAB-252 contention investigation](research/lab-252-restore-report-contention.md)
+and [LAB-253 real Chrome/Slack acceptance](research/lab-253-desktop-reboot-acceptance.md)
+record their delivered scope and evidence limits. LAB-253 includes two regular
+acceptance reboots after a separately recorded setup reboot; its optional UI
+non-exposure and unsupported Slack XWayland case remain explicit.
 
 The [native window-tag audit](https://github.com/marang/sway-session/blob/main/docs/research/xdg-toplevel-tag-audit.md) records that
 Sway 1.12 already exposes client tags. Duplicate/mutable tag semantics and

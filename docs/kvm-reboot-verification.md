@@ -166,9 +166,12 @@ directory during cleanup and never enter the evidence directory.
 
 The desktop checker requires all explicit protocol, stock-entry, graphical
 approval/cancel, material reapproval, ambiguity, optional picker, Follow close,
-and Pinned close/restart/reload results. It retains the strict malformed stock
-desktop-entry rejection and the unsupported Flatpak XWayland identity boundary;
-neither a user-local fixture entry nor native Chrome proves those paths.
+and Pinned close/restart/reload results. The pinned vendor Debian Chrome entry
+has one `StartupWMClass` key and is tested separately from the user-local GUI
+fixture. A deliberately malformed disposable entry proves duplicate-key
+rejection. The earlier Arch entry with duplicated keys remains unsupported;
+metadata is never silently repaired. Slack XWayland without compositor-reported
+sandbox identity remains an explicit unsupported case.
 
 App-root starts are measured inside the guest with a dedicated bounded
 `sched_process_exec`/fork/exit trace instance. The recorder checks event loss,

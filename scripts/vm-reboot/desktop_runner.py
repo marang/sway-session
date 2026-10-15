@@ -141,7 +141,7 @@ def run_desktop(runner, args):
         runner.require(runner.qmp(root / 'qmp.sock', 'query-kvm')['enabled'] is True, 'desktop guest requires KVM')
         for local, name in [(candidate, 'sway-session'), (observer, 'observe'), (herdr, 'herdr'), (chrome, 'google-chrome.deb')]:
             guest.upload(local, '/opt/sway-session-test/' + name)
-        for name in ['guest.py', 'transport.py', 'desktop_environment.py', 'desktop_guest.py', 'desktop_trace.py',
+        for name in ['guest.py', 'transport.py', 'desktop_environment.py', 'desktop_evidence.py', 'desktop_guest.py', 'desktop_trace.py',
                      'desktop_pointer.py', 'desktop_lifecycle.py', 'desktop_phases.py', 'desktop_boot.py']:
             guest.upload(runner.FIXTURE / name, '/opt/sway-session-test/' + name)
         guest.ssh('cd /opt/sway-session-test && python3 -c ' + shlex.quote(

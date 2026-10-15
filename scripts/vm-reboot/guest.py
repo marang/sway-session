@@ -263,7 +263,7 @@ def desktop_environment(account, socket):
     with path.open('rb') as source:
         encoded = source.read(1025)
     require(len(encoded) <= 1024, 'fixture session routing exceeds byte budget')
-    value = read_json(encoded)
+    value = read_json(encoded.decode('utf-8'))
     require(set(value) == {'boot_id', 'socket', 'environment'}
             and value['boot_id'] == Path('/proc/sys/kernel/random/boot_id').read_text().strip()
             and value['socket'] == str(socket), 'fixture session routing belongs to another compositor or boot')

@@ -722,7 +722,10 @@ Codebase → Sway Session label:
 - LAB-89: stronger sandboxing for broker-created agent sessions.
 - LAB-93: stable native Wayland per-window identity.
 - LAB-94: explicit privileged desktop restore design.
-- LAB-180: bounded named-environment and manager design; implementation paused.
+
+The [LAB-180 named-environment design](named-work-environments.md) defines the
+bounded first Reach slice and later optional scopes. Implementation is paused;
+it introduces no runtime feature or release commitment.
 
 The [LAB-252 contention investigation](research/lab-252-restore-report-contention.md)
 and [LAB-253 real Chrome/Slack acceptance](research/lab-253-desktop-reboot-acceptance.md)

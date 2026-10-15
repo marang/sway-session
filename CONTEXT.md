@@ -44,3 +44,28 @@ It does not establish whether a process is currently running.
 **Placement-only restore**:
 A saved workspace arrangement that retains application placement without a
 recoverable exact layout.
+
+### Planned work organization
+
+**Work environment**:
+A user-named, nonowning collection of persistent contexts. Its members may also
+belong to other work environments.
+_Avoid_: Workspace, cloned session
+
+**Primary member**:
+The explicitly chosen context through which a work environment is reached.
+
+**Reach**:
+The intent to focus available work and open eligible missing members while
+preserving their existing arrangement and lifecycle intent.
+_Avoid_: Restore layout
+
+**Last-used arrangement**:
+The most recently observed outer arrangement of work contexts.
+
+**Named layout**:
+A deliberately saved outer arrangement, independent of later observations.
+
+**Template**:
+A description of the initial structure of new work, independent of existing
+live sessions and their contents.

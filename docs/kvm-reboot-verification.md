@@ -156,7 +156,9 @@ one permitted action, and pointer coordinates when required. For example:
 ```
 
 Coordinates are illustrative; inspect the current image before choosing them.
-The controller sends real Sway pointer input. A guest-only virtual pointer
+Approval actions and `ui-input` send real Sway pointer input. A capability
+`approve` acknowledges the inspected flow without coordinates; `not-exposed`
+likewise records an inspection without a click. A guest-only virtual pointer
 supplies the pointer capability missing from a device-free headless seat. It
 does not replace the production approval presenter or invoke its callback
 directly. Capability checkpoints distinguish an application UI that is actually
@@ -173,14 +175,33 @@ rejection. The earlier Arch entry with duplicated keys remains unsupported;
 metadata is never silently repaired. Slack XWayland without compositor-reported
 sandbox identity remains an explicit unsupported case.
 
-App-root starts are measured inside the guest with a dedicated bounded
-`sched_process_exec`/fork/exit trace instance. The recorder checks event loss,
-tracks process incarnations and descendants, and exports only counts and
-completeness. This measurement is scoped to the controlled empty-profile launch
-routes; it is not a general browser process-accounting API. A mapped singleton
-window or saved launch guard alone cannot satisfy the start-count requirement.
+Successful main starts are measured inside the guest with a dedicated bounded
+`sched_process_exec`/fork/exit trace instance. The recorder checks event loss and
+tracks process incarnations, descendants, exit and PID reuse. Its
+`fixed-normal-launchers-v1` classification counts the unchanged approved
+GIO/user-Flatpak launch routes. Slack's pinned entry/wrapper/helper chain counts
+as a main start. A positively observed Flatpak portal and helper-only chain
+classifies a separate sandbox helper executing the same Slack ELF. Helper
+executions are exported separately; unknown Slack origins reject the run.
+The installed Slack commit, manifest, entry, Zypak wrapper/helper hashes and
+Zypak source commit are pinned; the root-owned portal hash must remain unchanged
+across observations. Tracing must start before the first portal invocation.
+
+This is a controlled empty-profile measurement, rather than a general process
+accounting guarantee. Filename-only events cannot distinguish an arbitrary
+portal request to start `zypak-helper host` from the sandbox child route.
+Custom portal requests, altered launchers and optional Zypak spawn-latest mode
+are outside this fixture. A second independent normal main chain still counts
+even if its ELF exits before a window sample. A mapped singleton window or saved
+launch guard alone cannot satisfy the start-count requirement.
 Public Chrome version metadata is cached before tracing, so observing versions
 cannot itself add a browser launch.
+
+The Chrome picker flow records sampled canonical presence, matching-window and
+total-window transitions while returning to the same marked main window. A
+picker that leaves the main window mapped does not prove a main-window gap.
+Slack UI capabilities absent from its inspected empty sign-in profile are
+explicit `not_exposed` results; unavailable input or automation is a failure.
 
 Both apps must be intentionally reopened with Follow/desired-open before the
 original baseline. Each of two regular guest reboots must restore that same

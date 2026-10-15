@@ -24,8 +24,16 @@ PACKAGES = {'sway', 'alacritty', 'mesa', 'ttf-dejavu', 'python', 'jq', 'sqlite',
             'wtype', 'noto-fonts', 'xdg-desktop-portal', 'xdg-desktop-portal-wlr'}
 SLACK_REF = 'app/com.slack.Slack/x86_64/stable'
 CLASSIFICATION = 'fixed-normal-launchers-v1'
-SOURCE_FIELDS = {'version', 'slack_commit', 'manifest_sha256', 'entry_sha256', 'wrapper_sha256',
-                 'helper_sha256', 'zypak_source_commit', 'portal_sha256'}
+SOURCE_PINS = {
+    'version': 1,
+    'slack_commit': 'a12a31786186231c99d2b4703f9017be95cf18e7eb452d7ab5b338f272b26f25',
+    'manifest_sha256': '2f06951f787f2a5e7bf0cf13c1aa6fc5b9bc267921ab89815069b9f64f341ee8',
+    'entry_sha256': 'cf864104da3c4280541332fa8da8859ed6113055b22aaad3d4c68843ff648602',
+    'wrapper_sha256': '766e0a6f5eedc28c66653d65c1de4aa44af6b8e083ee25ea639e90648e8163dd',
+    'helper_sha256': 'dbe941f4baf7fbc35c891048414e1b9468d030e035556f1bdba2eeef96bfaf20',
+    'zypak_source_commit': '693a71c5ffa80ec9c9ce2ae03b1ccc493c698e53',
+}
+SOURCE_FIELDS = set(SOURCE_PINS) | {'portal_sha256'}
 # Chrome exposes the controlled empty guest profile in its X11 instance. Only
 # this fixture-owned literal is allowed in addition to ordinary identity tokens.
 CHROME_X11_INSTANCE = 'google-chrome (/home/ss-test/.config/lab253-chrome)'
@@ -177,10 +185,9 @@ def _identity(value, role, protocol='wayland', unsupported=False):
 
 def _sources(value):
     _keys(value, SOURCE_FIELDS)
-    _eq(value['version'], 1)
-    _eq(value['zypak_source_commit'], '693a71c5ffa80ec9c9ce2ae03b1ccc493c698e53')
-    for key in SOURCE_FIELDS - {'version', 'zypak_source_commit'}:
-        _sha(value[key])
+    for key, expected in SOURCE_PINS.items():
+        _eq(value[key], expected)
+    _sha(value['portal_sha256'])
 
 
 def _trace(value, starts):

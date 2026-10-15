@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 import guest
+from desktop_evidence import SOURCE_PINS
 
 MEASUREMENT = 'sched_process_exec_fork_exit'
 STATE = guest.ROOT / 'desktop-trace-state.json'
@@ -35,15 +36,7 @@ WRAPPERS = {'/app/bin/zypak-wrapper', '/app/bin/zypak-wrapper.sh'}
 HELPER = '/app/bin/zypak-helper'
 SLACK = '/app/extra/slack'
 SOURCE_FILE = guest.ROOT / 'desktop-trace-sources.json'
-SOURCE_PINS = {
-    'version': 1,
-    'slack_commit': 'a12a31786186231c99d2b4703f9017be95cf18e7eb452d7ab5b338f272b26f25',
-    'manifest_sha256': '2f06951f787f2a5e7bf0cf13c1aa6fc5b9bc267921ab89815069b9f64f341ee8',
-    'entry_sha256': 'cf864104da3c4280541332fa8da8859ed6113055b22aaad3d4c68843ff648602',
-    'wrapper_sha256': '766e0a6f5eedc28c66653d65c1de4aa44af6b8e083ee25ea639e90648e8163dd',
-    'helper_sha256': 'dbe941f4baf7fbc35c891048414e1b9468d030e035556f1bdba2eeef96bfaf20',
-    'zypak_source_commit': '693a71c5ffa80ec9c9ce2ae03b1ccc493c698e53',
-}
+
 # Primary implementation: Zypak v2025.09 at the source commit above, specifically
 # zypak-wrapper.sh, src/base/launcher.cc, and the spawn_launcher_delegate.
 # File hashes pin the actual installed package rather than a moving upstream ref.

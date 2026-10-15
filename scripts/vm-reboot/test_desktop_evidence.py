@@ -327,6 +327,22 @@ class DesktopEvidence(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             validate_desktop_evidence(evidence)
 
+    def test_consistent_unsupported_classifier_sources_are_rejected(self):
+        for key, expected in SOURCE_PINS.items():
+            evidence = fixture()
+            replacement = 2 if type(expected) is int else '0' * len(expected)
+            traces = [row['launch_trace'] for row in evidence['observations']]
+            traces += [row['facts']['launch_trace'] for row in evidence['phases'].values()
+                       if 'launch_trace' in row['facts']]
+            for trace in traces:
+                trace['sources'][key] = replacement
+            if key == 'slack_commit':
+                evidence['app_assets']['slack']['commit'] = replacement
+                for observation in evidence['observations']:
+                    observation['versions']['slack_commit'] = replacement
+            with self.subTest(key=key), self.assertRaises(RuntimeError):
+                validate_desktop_evidence(evidence)
+
 
 if __name__ == '__main__':
     unittest.main()

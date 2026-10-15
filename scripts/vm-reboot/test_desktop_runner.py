@@ -66,6 +66,20 @@ class JSONAndCheckpoints(unittest.TestCase):
                 'private_screenshot': '/home/ss-test/.cache/lab253/approve.png',
                 'actions': ['cancel', 'approve']}
 
+    def test_failure_diagnostics_allow_only_known_source_frames_and_fixed_error_kinds(self):
+        good = {'version': 1, 'kind': 'RuntimeError',
+                'frames': [{'module': 'desktop_phases', 'line': 199}]}
+        self.assertEqual(desktop.failure_diagnostic(good), good)
+        for changes in [{'kind': PRIVATE}, {'version': True}, {'message': PRIVATE},
+                        {'frames': [{'module': '/private/profile.py', 'line': 1}]},
+                        {'frames': [{'module': 'desktop_phases', 'line': True}]},
+                        {'frames': [{'module': 'desktop_phases', 'line': 10001}]},
+                        {'frames': [{'module': 'desktop_phases', 'line': 1, 'locals': PRIVATE}]},
+                        {'frames': good['frames'] * 7}]:
+            with self.subTest(changes=changes), self.assertRaises(RuntimeError) as caught:
+                desktop.failure_diagnostic(dict(good, **changes))
+            self.assertNotIn(PRIVATE, str(caught.exception))
+
     def test_checkpoint_request_limits_private_paths_actions_and_fields(self):
         value = self.checkpoint()
         self.assertEqual(desktop.checkpoint_request(value), value)
@@ -159,7 +173,7 @@ class JSONAndCheckpoints(unittest.TestCase):
 
 class DesktopTransport(unittest.TestCase):
     @contextmanager
-    def flow(self, *, failure=None, close_error=None, remove_error=None, malformed_phase=False):
+    def flow(self, *, failure=None, close_error=None, remove_error=None, malformed_phase=False, diagnostic=None):
         """Exercise the real run_desktop orchestration and real evidence checker."""
         with tempfile.TemporaryDirectory(prefix='lab253-runner-test-') as directory:
             base = Path(directory)
@@ -198,6 +212,8 @@ class DesktopTransport(unittest.TestCase):
 
                 def ssh(self, request, **kwargs):
                     self.requests.append(request)
+                    if request == 'cat /opt/sway-session-test/desktop-failure.json':
+                        return json.dumps(diagnostic).encode()
                     if 'desktop_guest.py install ' in request:
                         return json.dumps({'installed': True, 'app_assets': bundle['app_assets']}).encode()
                     if request == 'python3 /opt/sway-session-test/desktop_guest.py phases':
@@ -309,6 +325,21 @@ class DesktopTransport(unittest.TestCase):
                 self.assertNotIn(PRIVATE, stdout.getvalue() + stderr.getvalue() + str(caught.exception) + json.dumps(report))
                 self.assertIn('remove-owned-vm', events)
                 self.assertIn('remove-control', events)
+
+    def test_failure_exports_only_validated_source_locations_after_cleanup(self):
+        good = {'version': 1, 'kind': 'RuntimeError', 'frames': [{'module': 'desktop_guest', 'line': 50}]}
+        for diagnostic in [good, dict(good, message=PRIVATE),
+                           dict(good, frames=[{'module': PRIVATE, 'line': 1}])]:
+            with self.subTest(diagnostic=diagnostic), self.flow(
+                    failure=RuntimeError(PRIVATE), diagnostic=diagnostic) as values:
+                args, root, control, output, events, stdout, stderr, peers = values
+                with self.assertRaises(RuntimeError):
+                    desktop.run_desktop(runner, args)
+                report = json.loads((output / 'failure.json').read_text())
+                self.assertEqual(report.get('diagnostic'), good if diagnostic == good else None)
+                self.assertFalse(root.exists())
+                self.assertFalse(control.exists())
+                self.assertNotIn(PRIVATE, json.dumps(report) + stdout.getvalue() + stderr.getvalue())
 
     def test_unknown_private_phase_fields_are_rejected_after_cleanup(self):
         with self.flow(malformed_phase=True) as values:

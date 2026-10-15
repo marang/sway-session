@@ -42,6 +42,23 @@ def read_report_file(path, *, limit=LIMIT):
         return read_report(source.read(limit + 1), limit=limit)
 
 
+def failure_diagnostic(value):
+    modules = {'guest', 'transport', 'desktop_guest', 'desktop_trace', 'desktop_pointer',
+               'desktop_lifecycle', 'desktop_phases', 'desktop_boot', 'desktop_environment', 'desktop_evidence'}
+    kinds = {'RuntimeError', 'OSError', 'ValueError', 'KeyError', 'TimeoutExpired'}
+    if (type(value) is not dict or set(value) != {'version', 'kind', 'frames'}
+            or type(value['version']) is not int or value['version'] != 1
+            or type(value['kind']) is not str or value['kind'] not in kinds
+            or type(value['frames']) is not list or len(value['frames']) > 6):
+        raise RuntimeError('desktop diagnostic: invalid shape')
+    for frame in value['frames']:
+        if (type(frame) is not dict or set(frame) != {'module', 'line'}
+                or type(frame['module']) is not str or frame['module'] not in modules
+                or type(frame['line']) is not int or not 1 <= frame['line'] <= 10000):
+            raise RuntimeError('desktop diagnostic: invalid frame')
+    return value
+
+
 def checkpoint_request(value):
     allowed = {'cancel', 'approve', 'ui-input', 'not-exposed'}
     if (type(value) is not dict or set(value) != {'id', 'kind', 'private_screenshot', 'actions'}
@@ -128,7 +145,7 @@ def run_desktop(runner, args):
     control.mkdir(mode=0o700)
     root = Path(tempfile.mkdtemp(prefix='ss-desktop-kvm-'))
     run_id = str(uuid.uuid4())
-    guest, failure, cleanup_ok, stage = None, False, True, 'prepare'
+    guest, failure, cleanup_ok, stage, diagnostic = None, False, True, 'prepare', None
     evidence = {'version': 1, 'scenario': 'desktop', 'source': 'qemu-kvm', 'run_id': run_id,
                 'observations': [], 'reboot_requests': []}
     print('Desktop VM evidence: ' + str(output), flush=True)
@@ -175,6 +192,12 @@ def run_desktop(runner, args):
         stage = 'validate'
     except (Exception, KeyboardInterrupt):
         failure = True
+        if guest:
+            try:
+                diagnostic = failure_diagnostic(read_report(guest.ssh(
+                    'cat /opt/sway-session-test/desktop-failure.json', timeout=5), limit=4096))
+            except (Exception, KeyboardInterrupt):
+                pass
     finally:
         try:
             if guest:
@@ -188,9 +211,12 @@ def run_desktop(runner, args):
                 cleanup_ok = False
     evidence['cleanup'] = {'vm_closed': cleanup_ok, 'temporary_state_removed': cleanup_ok}
     if failure or not cleanup_ok:
-        runner.save(output / 'failure.json', {'version': 1, 'scenario': 'desktop', 'run_id': run_id,
+        report = {'version': 1, 'scenario': 'desktop', 'run_id': run_id,
                     'reason': 'desktop_setup_or_assertion_failed' if failure else 'owned_cleanup_failed',
-                    'stage': stage, 'cleanup': evidence['cleanup']})
+                    'stage': stage, 'cleanup': evidence['cleanup']}
+        if diagnostic is not None:
+            report['diagnostic'] = diagnostic
+        runner.save(output / 'failure.json', report)
         raise RuntimeError('desktop scenario failed; typed failure report: ' + str(output / 'failure.json')) from None
     try:
         evidence['checks'] = validate_desktop_evidence(evidence)

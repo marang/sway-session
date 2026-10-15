@@ -211,7 +211,9 @@ inhibitor. Pinned absence through a daemon restart and Sway reload is a separate
 no-watchdog check; it does not substitute for shutdown protection.
 
 Desktop evidence contains only strictly validated structural JSON. Failed runs
-export a fixed reason, stage and cleanup result; browser logs, raw trees, argv,
+export a fixed reason, stage and cleanup result, optionally accompanied by a
+fixed exception kind and at most six allowlisted harness module/line locations.
+Exception messages, source paths and frame locals are excluded. Browser logs, raw trees, argv,
 environment, browser URLs, screenshots and profiles are not exported. A successful
 `result.json` is written only after the owned VM and temporary state have been
 removed. Synthetic checker/transport tests remain distinct from an actual run:

@@ -39,7 +39,7 @@ func desktopFixture(t *testing.T) (session.Registry, session.LayoutSnapshot, *sw
 		node.AppID = &appID
 		node.Focused = index == 0
 		if index == 1 {
-			sandbox, engine, instance := "com.slack.Slack", "flatpak", "PRIVATE-SANDBOX-INSTANCE"
+			sandbox, engine, instance := "com.slack.Slack", "org.flatpak", "PRIVATE-SANDBOX-INSTANCE"
 			node.SandboxAppID, node.SandboxEngine, node.SandboxInstance = &sandbox, &engine, &instance
 		}
 	}
@@ -161,6 +161,10 @@ func TestDesktopObservationRejectsChangedFixture(t *testing.T) {
 		{"low workspace", func(_ *session.Registry, _ *session.LayoutSnapshot, tree *swayipc.TreeNode) { tree.Nodes[0].Name = "1" }},
 		{"unbounded sandbox engine", func(_ *session.Registry, _ *session.LayoutSnapshot, tree *swayipc.TreeNode) {
 			value := "PRIVATE ENGINE"
+			tree.Nodes[0].Nodes[1].SandboxEngine = &value
+		}},
+		{"unobserved sandbox engine alias", func(_ *session.Registry, _ *session.LayoutSnapshot, tree *swayipc.TreeNode) {
+			value := "flatpak"
 			tree.Nodes[0].Nodes[1].SandboxEngine = &value
 		}},
 	} {

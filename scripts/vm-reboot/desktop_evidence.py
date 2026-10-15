@@ -162,7 +162,7 @@ def _identity(value, role, protocol='wayland', unsupported=False):
         _eq(value['app_id'], '')
     if role == 'slack' and not unsupported:
         _eq(value['sandbox_app_id'], 'com.slack.Slack')
-        _eq(value['sandbox_engine'], 'flatpak')
+        _eq(value['sandbox_engine'], 'org.flatpak')
         _eq(value['sandbox_instance_present'], True)
     elif unsupported:
         _eq(value['sandbox_app_id'], '')

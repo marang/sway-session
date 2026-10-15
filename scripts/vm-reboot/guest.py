@@ -159,6 +159,11 @@ def load_harness(run_id):
 
 
 def login_profile(*, desktop=False):
+    exports = ''
+    if desktop:
+        from desktop_environment import DATA_DIRS
+        exports = ('export XDG_CURRENT_DESKTOP=sway XDG_SESSION_TYPE=wayland\n'
+                   'export XDG_DATA_DIRS=' + DATA_DIRS + '\n')
     return '''# Disposable KVM fixture: a real getty/PAM/logind login owns Sway.
 umask 077
 export PATH=/usr/local/bin:/usr/bin SHELL=/bin/bash
@@ -166,7 +171,7 @@ export XDG_CONFIG_HOME="$HOME/.config" XDG_STATE_HOME="$HOME/.local/state"
 export XDG_DATA_HOME="$HOME/.local/share" XDG_CACHE_HOME="$HOME/.cache"
 export WLR_BACKENDS=headless WLR_HEADLESS_OUTPUTS=1 WLR_RENDERER=pixman
 export WLR_LIBINPUT_NO_DEVICES=1 LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe
-''' + ('export XDG_CURRENT_DESKTOP=sway XDG_SESSION_TYPE=wayland\n' if desktop else '') + '''if [ "$(tty)" = /dev/tty1 ] && [ -z "${SWAYSOCK:-}" ]; then
+''' + exports + '''if [ "$(tty)" = /dev/tty1 ] && [ -z "${SWAYSOCK:-}" ]; then
     exec /usr/bin/dbus-run-session /usr/bin/sway --config "$HOME/.config/sway/config" >> "$XDG_STATE_HOME/sway-fixture.log" 2>&1
 fi
 '''
@@ -258,6 +263,7 @@ def guest_socket(account):
 
 
 def desktop_environment(account, socket):
+    from desktop_environment import DATA_DIRS
     path = HOME / '.local/state/fixture-session-env.json'
     info = path.lstat()
     require(path.resolve() == path and stat.S_ISREG(info.st_mode)
@@ -273,10 +279,11 @@ def desktop_environment(account, socket):
             and value['socket'] == str(socket), 'fixture session routing belongs to another compositor or boot')
     environment = value['environment']
     require(isinstance(environment, dict)
-            and set(environment) in ({'DBUS_SESSION_BUS_ADDRESS', 'XDG_CURRENT_DESKTOP', 'XDG_SESSION_TYPE'},
-                                     {'DBUS_SESSION_BUS_ADDRESS', 'XDG_CURRENT_DESKTOP', 'XDG_SESSION_TYPE', 'DISPLAY'})
+            and set(environment) in ({'DBUS_SESSION_BUS_ADDRESS', 'XDG_CURRENT_DESKTOP', 'XDG_SESSION_TYPE', 'XDG_DATA_DIRS'},
+                                     {'DBUS_SESSION_BUS_ADDRESS', 'XDG_CURRENT_DESKTOP', 'XDG_SESSION_TYPE', 'XDG_DATA_DIRS', 'DISPLAY'})
             and environment['XDG_CURRENT_DESKTOP'] == 'sway'
-            and environment['XDG_SESSION_TYPE'] == 'wayland', 'invalid fixture session routing')
+            and environment['XDG_SESSION_TYPE'] == 'wayland'
+            and environment['XDG_DATA_DIRS'] == DATA_DIRS, 'invalid fixture session routing')
     address = environment['DBUS_SESSION_BUS_ADDRESS']
     require(isinstance(address, str)
             and re.fullmatch(r'unix:path=/(?:tmp/dbus-[A-Za-z0-9]+|run/user/[0-9]+/bus)', address),
@@ -305,7 +312,7 @@ def user_command(account, argv, socket, *, extra_env=None, timeout=20):
         'LIBGL_ALWAYS_SOFTWARE': '1', 'GALLIUM_DRIVER': 'llvmpipe',
     }
     if extra_env:
-        require(set(extra_env) <= {'DISPLAY', 'DBUS_SESSION_BUS_ADDRESS', 'XDG_CURRENT_DESKTOP', 'XDG_SESSION_TYPE'},
+        require(set(extra_env) <= {'DISPLAY', 'DBUS_SESSION_BUS_ADDRESS', 'XDG_CURRENT_DESKTOP', 'XDG_SESSION_TYPE', 'XDG_DATA_DIRS'},
                 'unsupported fixture session environment key')
         require(all(isinstance(value, str) and 0 < len(value) <= 256
                     and '\x00' not in value and '\n' not in value for value in extra_env.values()),

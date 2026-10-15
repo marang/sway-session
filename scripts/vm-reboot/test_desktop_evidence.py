@@ -32,7 +32,7 @@ def identity(role, protocol='wayland'):
             'x11_class': ('Google-chrome' if role == 'chrome' else 'com.slack.Slack') if protocol == 'xwayland' else '',
             'x11_instance': ('google-chrome (/home/ss-test/.config/lab253-chrome)' if role == 'chrome' else 'com.slack.slack') if protocol == 'xwayland' else '',
             'sandbox_app_id': 'com.slack.Slack' if role == 'slack' and protocol == 'wayland' else '',
-            'sandbox_engine': 'flatpak' if role == 'slack' and protocol == 'wayland' else '',
+            'sandbox_engine': 'org.flatpak' if role == 'slack' and protocol == 'wayland' else '',
             'sandbox_instance_present': role == 'slack' and protocol == 'wayland'}
 
 
@@ -180,6 +180,7 @@ class DesktopEvidence(unittest.TestCase):
             (('observations', 1, 'applications', 0, 'anchor_marked'), False),
             (('observations', 1, 'applications', 0, 'app_id'), 'sway-session.' + CHROME),
             (('observations', 1, 'applications', 1, 'sandbox_app_id'), ''),
+            (('observations', 1, 'applications', 1, 'sandbox_engine'), 'flatpak'),
             (('observations', 1, 'applications', 1, 'sandbox_instance_present'), False),
             (('observations', 1, 'versions', 'chrome'), '154.0.0.0'),
             (('observations', 1, 'live', 'workspaces', 0, 'name'), '1'),

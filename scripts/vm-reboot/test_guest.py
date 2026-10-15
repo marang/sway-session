@@ -22,12 +22,13 @@ class GuestReports(unittest.TestCase):
             for desktop in [False, True]:
                 profile.write_text(guest.login_profile(desktop=desktop))
                 # No tty is attached, so this sources only the exports and never
-                # launches Sway. Inspect only the two explicit public settings.
+                # launches Sway. Inspect only explicit public fixture settings.
                 result = subprocess.run(['/usr/bin/bash', '--noprofile', '--norc', '-c',
-                    '. "$1"; printf "%s,%s" "${XDG_CURRENT_DESKTOP-}" "${XDG_SESSION_TYPE-}"',
+                    '. "$1"; printf "%s,%s,%s" "${XDG_CURRENT_DESKTOP-}" "${XDG_SESSION_TYPE-}" "${XDG_DATA_DIRS-}"',
                     'fixture-profile', str(profile)], env={'HOME': directory}, stdin=subprocess.DEVNULL,
                     capture_output=True, check=True, timeout=5)
-                self.assertEqual(result.stdout.decode(), 'sway,wayland' if desktop else ',')
+                expected = 'sway,wayland,/home/ss-test/.local/share/flatpak/exports/share:/usr/local/share:/usr/share' if desktop else ',,'
+                self.assertEqual(result.stdout.decode(), expected)
 
     def test_non_kvm_refusal_precedes_any_fixture_mutation(self):
         calls = []
@@ -89,7 +90,8 @@ class GuestReports(unittest.TestCase):
             bus = Path('/tmp/dbus-lab253fixture')
             account = SimpleNamespace(pw_uid=os.getuid())
             environment = {'DBUS_SESSION_BUS_ADDRESS': 'unix:path=' + str(bus),
-                           'XDG_CURRENT_DESKTOP': 'sway', 'XDG_SESSION_TYPE': 'wayland', 'DISPLAY': ':0'}
+                           'XDG_CURRENT_DESKTOP': 'sway', 'XDG_SESSION_TYPE': 'wayland', 'DISPLAY': ':0',
+                           'XDG_DATA_DIRS': '/home/ss-test/.local/share/flatpak/exports/share:/usr/local/share:/usr/share'}
             value = {'boot_id': Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
                      'socket': str(socket), 'environment': environment}
             original_lstat = Path.lstat

@@ -347,7 +347,7 @@ func projectDesktopIdentity(identity session.ApplicationIdentity, node *swayipc.
 	if node.SandboxEngine != nil {
 		engine = *node.SandboxEngine
 	}
-	if engine != "" && engine != "flatpak" {
+	if engine != "" && engine != "org.flatpak" {
 		return desktopIdentity{}, desktopError("unsupported_sandbox_engine")
 	}
 	return desktopIdentity{Protocol: identity.Protocol, AppID: identity.WaylandAppID, X11Class: identity.X11Class, X11Instance: identity.X11Instance, SandboxAppID: identity.SandboxAppID, SandboxEngine: engine, SandboxInstancePresent: node.SandboxInstance != nil && *node.SandboxInstance != ""}, nil

@@ -9,6 +9,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+DATA_DIRS = '/home/ss-test/.local/share/flatpak/exports/share:/usr/local/share:/usr/share'
+
 
 def publish():
     virtualization = subprocess.run(['/usr/bin/systemd-detect-virt', '--vm'],
@@ -27,6 +29,8 @@ def publish():
     display = os.environ.get('DISPLAY', '')
     if os.environ.get('XDG_CURRENT_DESKTOP') != 'sway' or os.environ.get('XDG_SESSION_TYPE') != 'wayland':
         raise RuntimeError('fixture desktop environment was not exported before Sway startup')
+    if os.environ.get('XDG_DATA_DIRS') != DATA_DIRS:
+        raise RuntimeError('fixture Flatpak catalog was not exported before Sway startup')
     if not re.fullmatch(r'unix:path=/(?:tmp/dbus-[A-Za-z0-9]+|run/user/[0-9]+/bus)', address):
         raise RuntimeError('unsupported private session bus address')
     if display and not re.fullmatch(r':[0-9]{1,4}', display):
@@ -34,7 +38,8 @@ def publish():
     value = {'boot_id': Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
              'socket': os.environ['SWAYSOCK'],
              'environment': {'DBUS_SESSION_BUS_ADDRESS': address,
-                             'XDG_CURRENT_DESKTOP': 'sway', 'XDG_SESSION_TYPE': 'wayland'}}
+                             'XDG_CURRENT_DESKTOP': 'sway', 'XDG_SESSION_TYPE': 'wayland',
+                             'XDG_DATA_DIRS': DATA_DIRS}}
     if display:
         value['environment']['DISPLAY'] = display
     descriptor, temporary = tempfile.mkstemp(prefix='.fixture-env-', dir=directory)

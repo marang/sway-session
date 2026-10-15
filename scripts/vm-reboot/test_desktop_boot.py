@@ -42,7 +42,7 @@ def report():
         applications.append({'role': role, 'context_id': IDS[index], 'desired_open': True, 'policy': 'follow',
             'protocol': 'wayland', 'app_id': 'google-chrome' if index == 0 else 'com.slack.Slack',
             'x11_class': '', 'x11_instance': '', 'sandbox_app_id': '' if index == 0 else 'com.slack.Slack',
-            'sandbox_engine': '' if index == 0 else 'flatpak', 'sandbox_instance_present': index == 1,
+            'sandbox_engine': '' if index == 0 else 'org.flatpak', 'sandbox_instance_present': index == 1,
             'presence': 'present', 'window_count': 1, 'anchor_marked': True})
     return {'version': 1, 'scenario': 'desktop', 'workspace': '98',
         'contexts': [{'id': value, 'state': 'active'} for value in IDS],

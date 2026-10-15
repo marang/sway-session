@@ -30,7 +30,7 @@ def health(pid=700):
 def identity(role, protocol='wayland'):
     return {'protocol': protocol, 'app_id': ('google-chrome' if role == 'chrome' else 'com.slack.Slack') if protocol == 'wayland' else '',
             'x11_class': ('Google-chrome' if role == 'chrome' else 'com.slack.Slack') if protocol == 'xwayland' else '',
-            'x11_instance': ('google-chrome' if role == 'chrome' else 'com.slack.slack') if protocol == 'xwayland' else '',
+            'x11_instance': ('google-chrome (/home/ss-test/.config/lab253-chrome)' if role == 'chrome' else 'com.slack.slack') if protocol == 'xwayland' else '',
             'sandbox_app_id': 'com.slack.Slack' if role == 'slack' and protocol == 'wayland' else '',
             'sandbox_engine': 'flatpak' if role == 'slack' and protocol == 'wayland' else '',
             'sandbox_instance_present': role == 'slack' and protocol == 'wayland'}
@@ -52,7 +52,7 @@ def baseline():
                 versions={'kernel': '6.17.1-arch1-1', 'packages': {'sway': '1.12-1', 'python': '3.14.7-1',
                           'dbus': '1.16.2-1', 'openssh': '10.6p1-1', 'polkit': '127-1', 'flatpak': '1.18.4-1'},
                           'systemd': 'systemd 262 (262-1-arch)', 'herdr': '0.9.2', 'observer_sha256': 'c' * 64,
-                          'chrome': '155.0.8059.39', 'slack': '4.52.155', 'flatpak': '1.18.4',
+                          'chrome': '155.0.8059.79', 'slack': '4.52.155', 'flatpak': '1.18.4',
                           'slack_ref': 'app/com.slack.Slack/x86_64/stable', 'slack_commit': 'd' * 64})
 
 
@@ -62,8 +62,13 @@ def fixture():
     def phase(name, facts, status='passed', reason='verified'):
         phases[name] = {'status': status, 'reason': reason, 'facts': facts}
 
-    phase('stock.chrome', {'version': '155.0.8059.39', 'duplicate_startup_wmclass_count': 2,
-                          'stock_catalog_rejected': True, 'rejection': 'duplicate_recognized_key',
+    phase('stock.chrome', {'version': '155.0.8059.79', 'source': 'vendor_debian_package',
+                          'startup_wmclass_count': 1, 'stock_catalog_accepted': True,
+                          'stock_registration_accepted': True,
+                          'malformed_fixture_duplicate_startup_wmclass_count': 2,
+                          'malformed_fixture_catalog_rejected': True,
+                          'malformed_fixture_registration_rejected': True,
+                          'malformed_fixture_rejection': 'duplicate_recognized_key',
                           'fixture_catalog_origin': 'user_local', 'fixture_launcher_kind': 'desktop_entry'})
     for role in ['chrome', 'slack']:
         for protocol in ['wayland', 'xwayland']:
@@ -112,7 +117,7 @@ def fixture():
     return {'version': 1, 'scenario': 'desktop', 'source': 'qemu-kvm', 'run_id': RUN,
             'artifact': copy.deepcopy(ARTIFACT), 'base_image_sha256': '1' * 64, 'herdr_sha256': '2' * 64,
             'qemu_version': 'QEMU emulator version 11.1.2', 'app_assets': {
-                'chrome': {'version': '155.0.8059.39', 'source': 'https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb', 'sha256': '3' * 64},
+                'chrome': {'version': '155.0.8059.79', 'source': 'https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb', 'sha256': '3' * 64},
                 'slack': {'version': '4.52.155', 'source': 'https://dl.flathub.org/repo/', 'origin': 'flathub', 'ref': 'app/com.slack.Slack/x86_64/stable', 'commit': 'd' * 64}},
             'phases': phases, 'observations': observations,
             'reboot_requests': [{'accepted': True, 'method': 'guest systemd timer -> systemctl reboot',
@@ -194,8 +199,22 @@ class DesktopEvidence(unittest.TestCase):
             (('phases', 'gui.chrome.approve', 'facts', 'visually_inspected'), False),
             (('phases', 'gui.chrome.approve', 'facts', 'repeat_context_id'), SLACK),
             (('phases', 'gui.slack.approve', 'facts', 'approval_material_after'), 2),
-            (('phases', 'stock.chrome', 'facts', 'duplicate_startup_wmclass_count'), 1),
-            (('phases', 'stock.chrome', 'facts', 'stock_catalog_rejected'), False),
+            (('phases', 'stock.chrome', 'facts', 'startup_wmclass_count'), 2),
+            (('phases', 'stock.chrome', 'facts', 'source'), 'host_distro_package'),
+            (('phases', 'stock.chrome', 'facts', 'stock_catalog_accepted'), False),
+            (('phases', 'stock.chrome', 'facts', 'stock_registration_accepted'), False),
+            (('phases', 'stock.chrome', 'facts', 'malformed_fixture_duplicate_startup_wmclass_count'), 1),
+            (('phases', 'stock.chrome', 'facts', 'malformed_fixture_catalog_rejected'), False),
+            (('phases', 'stock.chrome', 'facts', 'malformed_fixture_registration_rejected'), False),
+            (('phases', 'stock.chrome', 'facts', 'malformed_fixture_rejection'), 'unsupported'),
+            (('phases', 'protocol.chrome.xwayland', 'facts', 'identity', 'x11_instance'),
+             'google-chrome (/home/markus/.config/google-chrome)'),
+            (('phases', 'protocol.chrome.xwayland', 'facts', 'identity', 'x11_instance'),
+             'google-chrome (/home/ss-test/.config/uncontrolled-profile)'),
+            (('phases', 'protocol.slack.xwayland', 'facts', 'identity', 'x11_instance'),
+             'google-chrome (/home/ss-test/.config/lab253-chrome)'),
+            (('observations', 0, 'applications', 0, 'x11_instance'),
+             'google-chrome (/home/ss-test/.config/lab253-chrome)'),
             (('phases', 'trust.chrome.reapprove', 'facts', 'blocked_launch_starts'), 1),
             (('phases', 'trust.chrome.reapprove', 'facts', 'cancel_preserved_digest'), False),
             (('phases', 'trust.chrome.reapprove', 'facts', 'approval_digest_after'), 'e' * 64),
@@ -226,6 +245,7 @@ class DesktopEvidence(unittest.TestCase):
     def test_missing_unknown_private_and_placeholder_data_are_rejected(self):
         for mutate in [
                 lambda e: e['phases'].pop('pinned.slack'),
+                lambda e: e['phases']['stock.chrome']['facts'].pop('malformed_fixture_registration_rejected'),
                 lambda e: e['observations'][0].pop('applications'),
                 lambda e: e['observations'][0].update(terminal_count=2),
                 lambda e: e.update(error='secret-private-content'),

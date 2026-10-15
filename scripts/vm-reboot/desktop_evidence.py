@@ -23,6 +23,9 @@ PACKAGES = {'sway', 'alacritty', 'mesa', 'ttf-dejavu', 'python', 'jq', 'sqlite',
             'openssh', 'polkit', 'flatpak', 'bubblewrap', 'xorg-xwayland', 'grim',
             'wtype', 'noto-fonts', 'xdg-desktop-portal', 'xdg-desktop-portal-wlr'}
 SLACK_REF = 'app/com.slack.Slack/x86_64/stable'
+# Chrome exposes the controlled empty guest profile in its X11 instance. Only
+# this fixture-owned literal is allowed in addition to ordinary identity tokens.
+CHROME_X11_INSTANCE = 'google-chrome (/home/ss-test/.config/lab253-chrome)'
 OBSERVATION = {'version', 'scenario', 'workspace', 'contexts', 'applications', 'live', 'stored',
                'application_count', 'staging_managed_windows', 'matches_fixture', 'exclusions',
                'run_id', 'boot_id', 'artifact', 'versions', 'launch_trace', 'stable_samples'} | HEALTH
@@ -145,6 +148,9 @@ def _identity(value, role, protocol='wayland', unsupported=False):
     _keys(value, IDENTITY)
     _eq(value['protocol'], protocol)
     for name in IDENTITY - {'sandbox_instance_present'}:
+        if (role == 'chrome' and protocol == 'xwayland' and name == 'x11_instance'
+                and value[name] == CHROME_X11_INSTANCE):
+            continue
         _token(value[name], empty=True)
     _require(type(value['sandbox_instance_present']) is bool, 'invalid sandbox instance evidence')
     if protocol == 'wayland':
@@ -294,12 +300,19 @@ def _phase(phase_id, value, ids, assets):
         _eq(status, 'passed')
         _eq(value['reason'], 'verified')
     if family == 'stock':
-        _keys(facts, {'version', 'duplicate_startup_wmclass_count', 'stock_catalog_rejected',
-                      'rejection', 'fixture_catalog_origin', 'fixture_launcher_kind'})
+        _keys(facts, {'version', 'source', 'startup_wmclass_count', 'stock_catalog_accepted',
+                      'stock_registration_accepted', 'malformed_fixture_duplicate_startup_wmclass_count',
+                      'malformed_fixture_catalog_rejected', 'malformed_fixture_registration_rejected',
+                      'malformed_fixture_rejection', 'fixture_catalog_origin', 'fixture_launcher_kind'})
         _eq(facts['version'], assets['chrome']['version'])
-        _number(facts['duplicate_startup_wmclass_count'], 2, 32)
-        _eq(facts['stock_catalog_rejected'], True)
-        _eq(facts['rejection'], 'duplicate_recognized_key')
+        _eq(facts['source'], 'vendor_debian_package')
+        _eq(facts['startup_wmclass_count'], 1)
+        _eq(facts['stock_catalog_accepted'], True)
+        _eq(facts['stock_registration_accepted'], True)
+        _eq(facts['malformed_fixture_duplicate_startup_wmclass_count'], 2)
+        _eq(facts['malformed_fixture_catalog_rejected'], True)
+        _eq(facts['malformed_fixture_registration_rejected'], True)
+        _eq(facts['malformed_fixture_rejection'], 'duplicate_recognized_key')
         _eq(facts['fixture_catalog_origin'], 'user_local')
         _eq(facts['fixture_launcher_kind'], 'desktop_entry')
     elif family == 'protocol':

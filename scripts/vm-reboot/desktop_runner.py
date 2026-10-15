@@ -170,6 +170,10 @@ def run_desktop(runner, args):
         runner.require(type(installed) is dict and set(installed) == {'installed', 'app_assets'} and installed['installed'] is True,
                        'desktop apps were not installed')
         evidence['app_assets'] = installed['app_assets']
+        # Cloud-init upgrades packages, including the kernel. Settle that OS
+        # transition before taking the immutable acceptance baseline.
+        stage = 'setup_reboot'
+        evidence['setup_reboot'] = runner.request_reboot(guest, guest.wait(), 0)
         stage = 'phases'
         phases = collect_phases(runner, guest, control, run_id)
         evidence['phases'] = phases['phases']
@@ -184,10 +188,13 @@ def run_desktop(runner, args):
             request = runner.request_reboot(guest, evidence['observations'][-1]['boot_id'], index)
             evidence['reboot_requests'].append(request)
             observation = read_report(guest.ssh('python3 /opt/sway-session-test/desktop_boot.py observe', timeout=240))
+            # Preserve only independently schema-validated structural evidence
+            # if the subsequent comparison with the original baseline fails.
+            validate_desktop_baseline(observation)
+            runner.save(output / ('after' + str(index) + '.json'), observation)
             runner.require(observation['boot_id'] == request['after_boot_id'], 'desktop boot attribution differs')
             validate_desktop_observation(observation, baseline, run_id, evidence['artifact'])
             evidence['observations'].append(observation)
-            runner.save(output / ('after' + str(index) + '.json'), observation)
             print('Desktop guest reboot ' + str(index) + ': original Follow layout and measured launches verified', flush=True)
         stage = 'validate'
     except (Exception, KeyboardInterrupt):

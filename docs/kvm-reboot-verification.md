@@ -131,6 +131,14 @@ official Debian payload, and a normally verified user Flatpak Slack installation
 from Flathub. No browser package, profile, input device, tracing instance or
 desktop configuration is installed on the host. Only the guest reboots.
 
+After cloud-init and application installation, one acknowledged regular setup
+reboot activates any upgraded kernel before the matrix begins. This happens
+before registration and the immutable baseline. The report records it separately
+as `setup_reboot`/`setup_reboots:1`; both required acceptance reboots still follow
+the baseline and are counted as `guest_reboots:2`. All four boot IDs must be
+distinct. Versions, sources and ordered layout remain exact across the three
+acceptance observations.
+
 ```sh
 GOTOOLCHAIN=go1.26.5 make vm-reboot-check \
   VM_ARGS='--scenario desktop --desktop-control /tmp/new-desktop-control --output /tmp/new-desktop-evidence'
@@ -216,7 +224,11 @@ fixed exception kind and at most six allowlisted harness module/line locations.
 Exception messages, source paths and frame locals are excluded. Browser logs, raw trees, argv,
 environment, browser URLs, screenshots and profiles are not exported. A successful
 `result.json` is written only after the owned VM and temporary state have been
-removed. Synthetic checker/transport tests remain distinct from an actual run:
+removed. A post-boot observation that passes the full structural schema is saved
+before comparison with the original baseline, so a failed comparison can retain
+its safe counterexample. Unknown/private fields prevent that export. Partial
+files in a failed run are never a passing acceptance result.
+Synthetic checker/transport tests remain distinct from an actual run:
 
 ```sh
 python3 -B scripts/verify-vm-reboot.py --scenario desktop \

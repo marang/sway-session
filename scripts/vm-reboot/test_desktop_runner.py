@@ -173,7 +173,8 @@ class JSONAndCheckpoints(unittest.TestCase):
 
 class DesktopTransport(unittest.TestCase):
     @contextmanager
-    def flow(self, *, failure=None, close_error=None, remove_error=None, malformed_phase=False, diagnostic=None):
+    def flow(self, *, failure=None, close_error=None, remove_error=None, malformed_phase=False,
+             diagnostic=None, postboot=None, setup_error=None):
         """Exercise the real run_desktop orchestration and real evidence checker."""
         with tempfile.TemporaryDirectory(prefix='lab253-runner-test-') as directory:
             base = Path(directory)
@@ -205,7 +206,7 @@ class DesktopTransport(unittest.TestCase):
                     events.append('start')
 
                 def wait(self, *args, **kwargs):
-                    return reports.BOOTS[self.index]
+                    return reports.BOOTS[self.index] if 'setup_reboot' in events else reports.SETUP_BOOT
 
                 def upload(self, local, target):
                     assert target.startswith('/opt/sway-session-test/')
@@ -225,7 +226,12 @@ class DesktopTransport(unittest.TestCase):
                         return json.dumps({'complete': True, 'phases': phases,
                                            'expected_ids': [reports.CHROME, reports.SLACK]}).encode()
                     if 'desktop_boot.py baseline ' in request or request.endswith('desktop_boot.py observe'):
-                        return json.dumps(bundle['observations'][self.index]).encode()
+                        observation = copy.deepcopy(bundle['observations'][self.index])
+                        if self.index == 1 and postboot == 'kernel':
+                            observation['versions']['kernel'] = '7.2.8-arch1-1'
+                        if self.index == 1 and postboot == 'private':
+                            observation['private_message'] = PRIVATE
+                        return json.dumps(observation).encode()
                     return b''
 
                 def close(self):
@@ -240,6 +246,12 @@ class DesktopTransport(unittest.TestCase):
                 return tuple(base / name for name in ['image', 'herdr', 'candidate', 'observer'])
 
             def reboot(peer, before, index):
+                if index == 0:
+                    assert before == reports.SETUP_BOOT
+                    events.append('setup_reboot')
+                    if setup_error:
+                        raise setup_error
+                    return copy.deepcopy(bundle['setup_reboot'])
                 assert before == reports.BOOTS[index - 1]
                 peer.index = index
                 events.append('reboot' + str(index))
@@ -286,7 +298,7 @@ class DesktopTransport(unittest.TestCase):
     def test_success_exports_only_structural_files_after_owned_cleanup(self):
         with self.flow() as (args, root, control, output, events, stdout, stderr, peers):
             desktop.run_desktop(runner, args)
-            self.assertEqual(events, ['start', 'reboot1', 'reboot2', 'close', 'remove-owned-vm', 'remove-control', 'result'])
+            self.assertEqual(events, ['start', 'setup_reboot', 'reboot1', 'reboot2', 'close', 'remove-owned-vm', 'remove-control', 'result'])
             self.assertEqual({path.name for path in output.iterdir()}, {'before.json', 'after1.json', 'after2.json', 'result.json'})
             result = json.loads((output / 'result.json').read_text())
             self.assertTrue(result['checks']['passed'])
@@ -340,6 +352,33 @@ class DesktopTransport(unittest.TestCase):
                 self.assertFalse(root.exists())
                 self.assertFalse(control.exists())
                 self.assertNotIn(PRIVATE, json.dumps(report) + stdout.getvalue() + stderr.getvalue())
+
+    def test_failed_boot_comparison_preserves_only_schema_valid_structural_observation(self):
+        for postboot in ['kernel', 'private']:
+            with self.subTest(postboot=postboot), self.flow(postboot=postboot) as values:
+                args, root, control, output, events, stdout, stderr, peers = values
+                with self.assertRaises(RuntimeError):
+                    desktop.run_desktop(runner, args)
+                self.assertEqual((output / 'after1.json').exists(), postboot == 'kernel')
+                self.assertFalse((output / 'result.json').exists())
+                self.assertNotIn('reboot2', events)
+                self.assertFalse(root.exists())
+                self.assertFalse(control.exists())
+                self.assertNotIn(PRIVATE, ''.join(path.read_text() for path in output.iterdir()))
+
+    def test_failed_setup_reboot_stops_before_registration_and_cleans_owned_state(self):
+        with self.flow(setup_error=RuntimeError(PRIVATE)) as values:
+            args, root, control, output, events, stdout, stderr, peers = values
+            with self.assertRaises(RuntimeError):
+                desktop.run_desktop(runner, args)
+            report = json.loads((output / 'failure.json').read_text())
+            self.assertEqual(report['stage'], 'setup_reboot')
+            self.assertEqual(report['cleanup'], {'vm_closed': True, 'temporary_state_removed': True})
+            self.assertFalse(root.exists())
+            self.assertFalse(control.exists())
+            self.assertFalse((output / 'result.json').exists())
+            self.assertFalse(any('desktop_guest.py phases' in command for command in peers[0].requests))
+            self.assertNotIn(PRIVATE, json.dumps(report) + stdout.getvalue() + stderr.getvalue())
 
     def test_unknown_private_phase_fields_are_rejected_after_cleanup(self):
         with self.flow(malformed_phase=True) as values:

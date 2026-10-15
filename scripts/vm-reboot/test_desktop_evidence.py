@@ -11,6 +11,7 @@ SLACK = 'ef4b0a27-7a43-477e-9721-823c86e090a5'
 RUN = 'b3dc5c84-4607-49f3-b65d-76e7682f1d0a'
 BOOTS = ['fa074a61-5fb7-4899-9739-f93df26a5ff7', '41363ed9-35cd-47b6-b6a3-375b0fc90736',
          '417ba301-b410-4451-9c24-8abc7a36ab73']
+SETUP_BOOT = 'e780e1f4-ac0b-476f-938f-e1d4fb538c52'
 ARTIFACT = {'sha256': 'a' * 64, 'build': {'product_version': '0.1.0-dev', 'commit': 'b' * 40, 'modified': False}}
 
 
@@ -137,6 +138,8 @@ def fixture():
                 'chrome': {'version': '155.0.8059.79', 'source': 'https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb', 'sha256': '3' * 64},
                 'slack': {'version': '4.52.178', 'source': 'https://dl.flathub.org/repo/', 'origin': 'flathub', 'ref': 'app/com.slack.Slack/x86_64/stable', 'commit': SOURCE_PINS['slack_commit']}},
             'phases': phases, 'observations': observations,
+            'setup_reboot': {'accepted': True, 'method': 'guest systemd timer -> systemctl reboot',
+                             'before_boot_id': SETUP_BOOT, 'after_boot_id': BOOTS[0]},
             'reboot_requests': [{'accepted': True, 'method': 'guest systemd timer -> systemctl reboot',
                                  'before_boot_id': BOOTS[i], 'after_boot_id': BOOTS[i + 1]} for i in range(2)],
             'cleanup': {'vm_closed': True, 'temporary_state_removed': True}}
@@ -161,6 +164,7 @@ class DesktopEvidence(unittest.TestCase):
         checks = validate_desktop_evidence(evidence)
         self.assertTrue(checks['passed'])
         self.assertEqual(checks['guest_reboots'], 2)
+        self.assertEqual(checks['setup_reboots'], 1)
         validate_desktop_baseline(evidence['observations'][0])
         validate_desktop_observation(evidence['observations'][1], evidence['observations'][0], RUN, ARTIFACT)
         evidence['checks'] = checks
@@ -341,6 +345,15 @@ class DesktopEvidence(unittest.TestCase):
                 for observation in evidence['observations']:
                     observation['versions']['slack_commit'] = replacement
             with self.subTest(key=key), self.assertRaises(RuntimeError):
+                validate_desktop_evidence(evidence)
+
+    def test_setup_reboot_cannot_replace_an_acceptance_reboot(self):
+        for changes in [{'accepted': False}, {'accepted': 1}, {'method': 'qmp system_reset'},
+                        {'before_boot_id': BOOTS[0]}, {'before_boot_id': BOOTS[1]},
+                        {'after_boot_id': BOOTS[1]}, {'before_boot_id': 'invalid'}]:
+            evidence = fixture()
+            evidence['setup_reboot'].update(changes)
+            with self.subTest(changes=changes), self.assertRaises(RuntimeError):
                 validate_desktop_evidence(evidence)
 
 

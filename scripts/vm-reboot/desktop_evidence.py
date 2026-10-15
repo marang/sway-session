@@ -414,7 +414,7 @@ def validate_desktop_evidence(evidence):
     _bounded(evidence)
     _keys(evidence, {'version', 'scenario', 'source', 'run_id', 'artifact', 'base_image_sha256',
                      'herdr_sha256', 'qemu_version', 'app_assets', 'phases', 'observations',
-                     'reboot_requests', 'cleanup'}, {'checks'})
+                     'setup_reboot', 'reboot_requests', 'cleanup'}, {'checks'})
     _eq(evidence['version'], 1)
     _eq(evidence['scenario'], 'desktop')
     _eq(evidence['source'], 'qemu-kvm')
@@ -438,6 +438,12 @@ def validate_desktop_evidence(evidence):
         _eq(versions['slack_commit'], evidence['app_assets']['slack']['commit'])
     boots = [observation['boot_id'] for observation in observations]
     _require(len(set(boots)) == 3, 'expected three distinct boot UUIDs')
+    setup = evidence['setup_reboot']
+    _keys(setup, {'accepted', 'method', 'before_boot_id', 'after_boot_id'})
+    _uuid(setup['before_boot_id'])
+    _require(setup['before_boot_id'] not in boots, 'setup boot overlaps acceptance boots')
+    _eq(setup, {'accepted': True, 'method': 'guest systemd timer -> systemctl reboot',
+                'before_boot_id': setup['before_boot_id'], 'after_boot_id': boots[0]})
     requests = evidence['reboot_requests']
     _require(type(requests) is list and len(requests) == 2, 'expected two regular reboot requests')
     for index, request in enumerate(requests):
@@ -455,7 +461,7 @@ def validate_desktop_evidence(evidence):
             {key: app[key] for key in IDENTITY})
         _eq(evidence['phases']['follow.' + role]['facts']['health']['inhibitor']['uid'], baseline['inhibitor']['uid'])
     _eq(evidence['cleanup'], {'vm_closed': True, 'temporary_state_removed': True})
-    checks = {'passed': True, 'scenario': 'desktop', 'guest_reboots': 2, 'target_workspace': '98',
+    checks = {'passed': True, 'scenario': 'desktop', 'setup_reboots': 1, 'guest_reboots': 2, 'target_workspace': '98',
               'managed_windows': 2, 'phase_count': 18, 'production_notebook_tested': False}
     if 'checks' in evidence:
         _eq(evidence['checks'], checks)

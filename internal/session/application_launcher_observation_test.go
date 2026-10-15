@@ -124,13 +124,31 @@ func observationTrustedResolver(name string) (string, error) {
 }
 
 func TestApplicationLauncherObservationClassifiesMissingSystemDesktop(t *testing.T) {
+	id, err := NewContextID()
+	if err != nil {
+		t.Fatal(err)
+	}
 	item := flatpakApplicationContext("org.example.Private", "org.example.Private")
 	item.ID = testContextID
 	item.App.Identity.SandboxAppID = ""
-	item.Launcher = Launcher{Kind: LauncherDesktop, DesktopOrigin: DesktopEntrySystem, DesktopID: "org.example.Missing.desktop", DesktopPath: filepath.Join("/usr/share/applications", filepath.Base(t.TempDir())+"-missing.desktop")}
+	// No runner-specific parent directory may reject trust before ENOENT is
+	// observed. The UUID path at the filesystem root does not create a file.
+	item.Launcher = Launcher{Kind: LauncherDesktop, DesktopOrigin: DesktopEntrySystem, DesktopID: "org.example.Missing.desktop", DesktopPath: filepath.Join("/", "sway-session-missing-"+string(id)+".desktop")}
 	launcher := DesktopApplicationLauncher{GIO: systemGIOExecutable, ObservationResolveSystem: observationTrustedResolver}
 	if got := launcher.ObserveContext(context.Background(), item); got != (ApplicationLauncherObservation{ApplicationLauncherMissing, "desktop_entry_missing"}) {
 		t.Fatalf("observation=%+v", got)
+	}
+	// An untrusted ancestor must still fail closed, even if its child is absent.
+	parent := filepath.Join(t.TempDir(), "untrusted")
+	if err := os.Mkdir(parent, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(parent, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	item.Launcher.DesktopPath = filepath.Join(parent, "missing.desktop")
+	if got := launcher.ObserveContext(context.Background(), item); got != (ApplicationLauncherObservation{ApplicationLauncherInvalid, "desktop_entry_untrusted"}) {
+		t.Fatalf("untrusted ancestor observation=%+v", got)
 	}
 }
 

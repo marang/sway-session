@@ -1,6 +1,11 @@
 # LAB-89: AGS / Herdr broker-created pane confinement contract
 
-Research date: **2026-10-03**. Scope: upstream launch, configuration overlays,
+Original audit: **2026-10-03**. Latest recheck:
+**[2026-10-15](#upstream-recheck--2026-10-15)**; the gate remains unmet. The
+sections before that recheck preserve the original audit's source pins and
+evidence scope.
+
+Original scope: upstream launch, configuration overlays,
 mounts, agent identification, shell panes, restart/resume, and uncertain launch
 outcomes. This is a source-and-documentation investigation, not a live security
 validation.
@@ -268,6 +273,130 @@ were executed for this research. No tests, build, live integration, or access
 denial checks were run. The parent's separate verification is not claimed as
 evidence for this report.
 
+## Upstream recheck — 2026-10-15
+
+**Decision: the implementation gate remains unmet.** This recheck updates the
+2026-10-03 evidence above; it does not authorize a security wrapper or change the
+accepted experimental limitation. A documentation update is warranted because
+AGS now offers approved host-side startup hooks, including under lockdown.
+That capability adds a relevant pre-container trust boundary; it is not the
+joint Herdr confinement contract required by LAB-89. [AGS v0.27.0][R27-release].
+
+### Current pins and comparison scope
+
+Public GitHub release and commit metadata and pinned source archives were read
+on **2026-10-15**. Only inert source/documentation files were downloaded under
+`/tmp`; no upstream build, installation, hook, container, or live session ran.
+
+| Upstream | Version / ref | Commit timestamp (UTC) | Exact commit |
+| --- | --- | --- | --- |
+| AGS | Latest stable **v0.27.0**, also current `main` | 2026-10-13 09:16:59 | [`87859cb70b1deca3ae7ca8d07bfb8c115bb640c8`][R27-ags-pin] |
+| Herdr | Latest stable **v0.9.5** | 2026-10-14 15:56:41 | [`2ecf19a92fc3a7fff75b6ce3655ef04f4625ec01`][R27-herdr-stable] |
+| Herdr | Current `master`, newer than v0.9.5 | 2026-10-14 17:18:21 | [`916fcf8de029c6cac965b50f3cdb9687cd7d1537`][R27-herdr-head] |
+
+Release publication times are **2026-10-13 09:19:09 UTC** for AGS and
+**2026-10-14 16:07:28 UTC** for Herdr. Herdr v0.9.5 describes itself as a hotfix
+for v0.9.4. [AGS release][R27-release], [Herdr release][R27-h-release].
+
+AGS stable and head are the same commit. Herdr's split/start/layout handlers,
+PTY launch source and vendored command builder, snapshot/restore implementation,
+deferred resume and argv validation, managed-agent state, and session/agent
+documentation were compared between the new stable and head pins: these files
+are byte-identical. Their pane/agent request schema sources differ because head
+adds shared CLI projection declarations; the inspected split/start fields and
+resume restriction remain equivalent. Implementation links below use head;
+they do not imply unreleased CLI refactoring is in v0.9.5.
+[Stable schemas][R27-stable-schemas], [head schemas][R27-schemas],
+[stable agent schema][R27-stable-agent-schema], [head agent schema][R27-agent-schema].
+
+The previous audit's selected Herdr source files were compared directly against
+the new head, using the files at each exact commit. The layout handler, pane
+snapshot schema, deferred resume, and session-state documentation remain
+byte-identical to the prior head.
+The source comparison found no new confinement policy field or lifecycle path
+in the inspected changed launch/restore code. [Prior snapshot][R27-prior-snapshot],
+[current snapshot][R27-snapshot], [prior resume][R27-prior-resume],
+[current resume][R27-resume], [current restore][R27-restore].
+
+### Material changes and their limits
+
+**AGS host prepare hooks are new.** Global and project `[[prepare_hook]]` lists
+accumulate. Before container creation, approved executables receive a versioned
+JSON context and can contribute environment values, generated read-only files,
+bind mounts, and 1Password references. Approval binds declaration, argv,
+entrypoint contents, and project scope; execution uses a private copy of approved
+entrypoint bytes. Separate repository-overlay trust does not grant hook
+execution approval. Unknown/new/changed hooks fail noninteractively, and an
+untrusted discovered overlay declaring hooks fails rather than silently
+skipping them. [Hook protocol and trust][R27-hooks],
+[launch order][R27-lifecycle], [overlay loading][R27-load].
+
+These are deliberate host-user executable approvals. Interpreters, dynamic
+libraries, imported/sourced code, interpreter-script arguments, and resources
+loaded by approved code are **not transitively content tracked**. Approved hooks
+still run with host-user authority under `--lockdown`; lockdown rejects surviving
+hook bind mounts and secret references, while allowing protected literal env
+and generated files. It does not constrain what approved host code can itself
+read or change. Therefore a broker policy would also need an authoritative
+host-hook policy and transitive trust boundary before launch. This is a gate
+requirement, not a claim that hooks bypass their documented approval mechanism.
+[Documented trust limits and lockdown][R27-hooks],
+[configuration contract][R27-hook-config].
+
+The hook `launch_id` identifies the prepare phase, **not the container name**.
+Only `prepare` is implemented; `started` and `finished` are reserved. Hooks have
+bounded execution/cancellation but no AGS-managed external-service lifecycle or
+automatic retry. Deliberately daemonized or regrouped processes and external
+side effects remain the approved hook's responsibility. This is not a durable
+pane/container receipt or proof of complete rollback. [Hook lifecycle and
+resource ownership][R27-hooks].
+
+**Herdr has improved input validation and clarified readiness limits.** Its
+agent-start path now validates the input submission before setting managed
+state and queueing the shell command. It still starts the selected built-in
+agent by sending input to an existing shell. Current documentation explains
+that screen detection can report unfamiliar approval prompts as idle, idle
+status does not authorize approval, and agent state does not prove background
+work has finished. These improvements do not attest sandbox entry or container
+ownership. [Agent start][R27-start], [status documentation][R27-agent-doc].
+
+The documented `HERDR_AGENT=<agent>` hint for a host-visible wrapper was already
+present at the prior pin. It selects an existing screen manifest for that
+foreground process and cannot be observed if set only inside a VM/container.
+It is useful recognition support, **not a newly introduced AGS integration** or
+confinement/readiness attestation. The optional `child-groups` process-detection
+mode is explicitly best effort. [Wrapper recognition][R27-agent-doc],
+[Linux environment observation][R27-hint].
+
+### Gate checked against current source
+
+| Required boundary | Current evidence | Assessment |
+| --- | --- | --- |
+| First process, absolute argv, authoritative environment | `pane.split` still has cwd/env and constructs the configured shell; `agent.start` still sends a built-in executable command to a shell. `layout.apply` retains real direct argv launch. Its command builder inherits the server environment, applies selected removals/overrides, and injects Herdr identity/control variables. No environment reset/allowlist is expressed in these request fields. [Split][R27-split], [start][R27-start], [argv][R27-argv], [inherited environment][R27-env], [pane environment][R27-pane-env]. | Direct argv remains useful, but there is no supported broker-wide first-process/environment policy. |
+| Trusted configuration only | AGS run options still have `--config` and `--lockdown` without an overlay-disable policy. The loader resolves `.ags/config.toml` from the repository/worktree root and merges an approved overlay. Ordinary overlay trust still records the canonical root, not current overlay contents; hook approval adds a separate check for hooks. [Options][R27-options], [loader][R27-load], [root trust][R27-trust]. | An explicit base file does not unconditionally exclude repository-controlled sandbox policy. |
+| Exact minimal mounts and homes | AGS keeps writable workdir and discovered external Git metadata mounts; explicit extra directories remain possible in lockdown. Ordinary runs also add configured homes/mounts, runtime/cache and bridge resources. Runtime generations can mount read-only; development pnpm caches are worktree-scoped, and protected cache exposure is rejected. These safeguards do not define the broker's complete approved mount/socket set. [Plan][R27-plan], [cache/mount policy][R27-mounts], [lockdown staging][R27-lockdown]. | No joint contract excluding all private homes/state and broad host-control capabilities was found. |
+| Confined shell and durable cold restore/resume | AGS retains `--agent shell`, but Herdr snapshot panes still restore as shells; the pane schema stores no launch environment, mount set or confinement identity. Deferred resume spawns the configured shell before sending argv; custom resume still requires a bare command name and rejects absolute paths. Saved launch argv is retained for imported handoff runtime, not replayed as a confinement policy on cold restore. [Session behavior][R27-session], [snapshot][R27-snapshot], [resume][R27-resume], [validation][R27-validation], [restore][R27-restore]. | Agent and shell roles, replacement shells, cold restore and resume still lack the required shared fail-closed policy. |
+| Uncertain launches and recovery | Managed-agent timeout still clears its name without terminating the possibly running command. Layout construction retains local tab/runtime rollback. Herdr correlation IDs and AGS prepare IDs are not a shared durable launch identity; no pane/container/policy recovery receipt was found in the inspected request, launch and hook contracts. [Pending state][R27-pending], [layout rollback][R27-layout], [request][R27-request], [hook protocol][R27-hooks]. | Lost replies and timeout cannot be treated as failed-before-launch or safely retried blindly. |
+
+The negative integration findings are bounded: AGS README, architecture,
+configuration, command/startup-hook documentation and launch/trust/plan sources;
+Herdr current integration, agent-support/agent, session-state and socket API
+documentation plus the cited schemas, launch, detection and restore sources.
+No AGS-specific joint launch/restore/recovery contract was found there. This is
+an inference from those inspected public surfaces at the pins above, not a
+claim about every issue, private integration, possible composition, or future
+version. [AGS architecture][R27-architecture], [Herdr integrations][R27-integrations],
+[Herdr socket API][R27-socket-doc].
+
+Retain the [six minimum gate requirements](#minimum-gate-before-implementation),
+with host-hook policy authority now explicitly part of requirement 2. Requirement
+6 still needs separate adversarial and live evidence after a supported contract
+exists. LAB-89 remains open pending upstream support; continue independent
+roadmap work. No adversarial access-denial, cold restart, real compositor,
+AGS/Herdr end-to-end, or hook-execution validation was performed for this
+source-only recheck. Repository verification, if run for the research update, is
+separate evidence and cannot establish process confinement.
+
 [AGS-repo]: https://github.com/thomaspeklak/agent-sandbox
 [AGS-commit]: https://github.com/thomaspeklak/agent-sandbox/commit/d2d66e209be102126064c40640552ff3a92016d9
 [AGS-release]: https://github.com/thomaspeklak/agent-sandbox/releases/tag/v0.24.1
@@ -327,3 +456,43 @@ evidence for this report.
 [H-layout-rollback]: https://github.com/herdrdev/herdr/blob/5da0a01e1eedda054db0c81dd3a780000c40d9f0/src/app/api/layouts.rs#L505-L525
 [H-request]: https://github.com/herdrdev/herdr/blob/5da0a01e1eedda054db0c81dd3a780000c40d9f0/src/api/schema.rs#L35-L40
 [H-dispatch]: https://github.com/herdrdev/herdr/blob/5da0a01e1eedda054db0c81dd3a780000c40d9f0/src/api/server.rs#L515-L563
+
+[R27-release]: https://github.com/thomaspeklak/agent-sandbox/releases/tag/v0.27.0
+[R27-ags-pin]: https://github.com/thomaspeklak/agent-sandbox/commit/87859cb70b1deca3ae7ca8d07bfb8c115bb640c8
+[R27-herdr-stable]: https://github.com/herdrdev/herdr/commit/2ecf19a92fc3a7fff75b6ce3655ef04f4625ec01
+[R27-herdr-head]: https://github.com/herdrdev/herdr/commit/916fcf8de029c6cac965b50f3cdb9687cd7d1537
+[R27-h-release]: https://github.com/herdrdev/herdr/releases/tag/v0.9.5
+[R27-hooks]: https://github.com/thomaspeklak/agent-sandbox/blob/87859cb70b1deca3ae7ca8d07bfb8c115bb640c8/docs/STARTUP_HOOKS.md
+[R27-hook-config]: https://github.com/thomaspeklak/agent-sandbox/blob/87859cb70b1deca3ae7ca8d07bfb8c115bb640c8/docs/CONFIG.md#L560-L573
+[R27-lifecycle]: https://github.com/thomaspeklak/agent-sandbox/blob/87859cb70b1deca3ae7ca8d07bfb8c115bb640c8/crates/ags/src/lifecycle.rs#L38-L115
+[R27-load]: https://github.com/thomaspeklak/agent-sandbox/blob/87859cb70b1deca3ae7ca8d07bfb8c115bb640c8/crates/ags/src/lifecycle_config.rs#L6-L67
+[R27-trust]: https://github.com/thomaspeklak/agent-sandbox/blob/87859cb70b1deca3ae7ca8d07bfb8c115bb640c8/crates/ags/src/trust.rs#L74-L118
+[R27-options]: https://github.com/thomaspeklak/agent-sandbox/blob/87859cb70b1deca3ae7ca8d07bfb8c115bb640c8/crates/ags/src/cli_types.rs#L7-L23
+[R27-plan]: https://github.com/thomaspeklak/agent-sandbox/blob/87859cb70b1deca3ae7ca8d07bfb8c115bb640c8/crates/ags/src/plan/build.rs#L173-L363
+[R27-mounts]: https://github.com/thomaspeklak/agent-sandbox/blob/87859cb70b1deca3ae7ca8d07bfb8c115bb640c8/crates/ags/src/plan/build_workdir.rs#L110-L190
+[R27-lockdown]: https://github.com/thomaspeklak/agent-sandbox/blob/87859cb70b1deca3ae7ca8d07bfb8c115bb640c8/crates/ags/src/lockdown.rs#L97-L264
+[R27-architecture]: https://github.com/thomaspeklak/agent-sandbox/blob/87859cb70b1deca3ae7ca8d07bfb8c115bb640c8/docs/ARCHITECTURE.md
+[R27-stable-schemas]: https://github.com/herdrdev/herdr/blob/2ecf19a92fc3a7fff75b6ce3655ef04f4625ec01/src/api/schema/panes.rs#L18-L42
+[R27-schemas]: https://github.com/herdrdev/herdr/blob/916fcf8de029c6cac965b50f3cdb9687cd7d1537/src/api/schema/panes.rs#L21-L40
+[R27-stable-agent-schema]: https://github.com/herdrdev/herdr/blob/2ecf19a92fc3a7fff75b6ce3655ef04f4625ec01/src/api/schema/agents.rs#L166-L177
+[R27-agent-schema]: https://github.com/herdrdev/herdr/blob/916fcf8de029c6cac965b50f3cdb9687cd7d1537/src/api/schema/agents.rs#L185-L199
+[R27-start]: https://github.com/herdrdev/herdr/blob/916fcf8de029c6cac965b50f3cdb9687cd7d1537/src/app/agents.rs#L145-L235
+[R27-split]: https://github.com/herdrdev/herdr/blob/916fcf8de029c6cac965b50f3cdb9687cd7d1537/src/app/api/panes.rs#L34-L107
+[R27-argv]: https://github.com/herdrdev/herdr/blob/916fcf8de029c6cac965b50f3cdb9687cd7d1537/src/pane.rs#L2456-L2498
+[R27-env]: https://github.com/herdrdev/herdr/blob/916fcf8de029c6cac965b50f3cdb9687cd7d1537/vendor/portable-pty/src/cmdbuilder.rs#L138-L150
+[R27-pane-env]: https://github.com/herdrdev/herdr/blob/916fcf8de029c6cac965b50f3cdb9687cd7d1537/src/pane.rs#L100-L224
+[R27-snapshot]: https://github.com/herdrdev/herdr/blob/916fcf8de029c6cac965b50f3cdb9687cd7d1537/src/persist/snapshot.rs#L99-L129
+[R27-resume]: https://github.com/herdrdev/herdr/blob/916fcf8de029c6cac965b50f3cdb9687cd7d1537/src/app/agent_resume.rs#L226-L317
+[R27-validation]: https://github.com/herdrdev/herdr/blob/916fcf8de029c6cac965b50f3cdb9687cd7d1537/src/agent_resume.rs#L56-L88
+[R27-restore]: https://github.com/herdrdev/herdr/blob/916fcf8de029c6cac965b50f3cdb9687cd7d1537/src/persist/restore.rs#L537-L705
+[R27-pending]: https://github.com/herdrdev/herdr/blob/916fcf8de029c6cac965b50f3cdb9687cd7d1537/src/terminal/state.rs#L2206-L2257
+[R27-layout]: https://github.com/herdrdev/herdr/blob/916fcf8de029c6cac965b50f3cdb9687cd7d1537/src/app/api/layouts.rs#L90-L180
+[R27-request]: https://github.com/herdrdev/herdr/blob/916fcf8de029c6cac965b50f3cdb9687cd7d1537/src/api/schema.rs#L36-L45
+[R27-session]: https://github.com/herdrdev/herdr/blob/916fcf8de029c6cac965b50f3cdb9687cd7d1537/docs/next/website/src/content/docs/session-state.mdx#L7-L115
+[R27-agent-doc]: https://github.com/herdrdev/herdr/blob/916fcf8de029c6cac965b50f3cdb9687cd7d1537/docs/next/website/src/content/docs/agents.mdx#L60-L88
+[R27-hint]: https://github.com/herdrdev/herdr/blob/916fcf8de029c6cac965b50f3cdb9687cd7d1537/src/platform/linux.rs#L787-L797
+[R27-integrations]: https://github.com/herdrdev/herdr/blob/916fcf8de029c6cac965b50f3cdb9687cd7d1537/docs/next/website/src/content/docs/integrations.mdx
+[R27-socket-doc]: https://github.com/herdrdev/herdr/blob/916fcf8de029c6cac965b50f3cdb9687cd7d1537/docs/next/website/src/content/docs/socket-api.mdx
+
+[R27-prior-snapshot]: https://github.com/herdrdev/herdr/blob/5da0a01e1eedda054db0c81dd3a780000c40d9f0/src/persist/snapshot.rs#L99-L121
+[R27-prior-resume]: https://github.com/herdrdev/herdr/blob/5da0a01e1eedda054db0c81dd3a780000c40d9f0/src/app/agent_resume.rs#L226-L317

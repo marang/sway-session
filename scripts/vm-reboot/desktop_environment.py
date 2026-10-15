@@ -5,11 +5,16 @@ import os
 import pwd
 import re
 import stat
+import subprocess
 import tempfile
 from pathlib import Path
 
 
 def publish():
+    virtualization = subprocess.run(['/usr/bin/systemd-detect-virt', '--vm'],
+                                    capture_output=True, timeout=5, check=False)
+    if virtualization.returncode != 0 or virtualization.stdout.strip() != b'kvm':
+        raise RuntimeError('fixture environment publisher requires KVM')
     account = pwd.getpwnam('ss-test')
     home = Path('/home/ss-test')
     if os.geteuid() != account.pw_uid or account.pw_dir != str(home):
@@ -20,6 +25,8 @@ def publish():
         raise RuntimeError('fixture environment directory is not private')
     address = os.environ.get('DBUS_SESSION_BUS_ADDRESS', '').split(',guid=', 1)[0]
     display = os.environ.get('DISPLAY', '')
+    if os.environ.get('XDG_CURRENT_DESKTOP') != 'sway' or os.environ.get('XDG_SESSION_TYPE') != 'wayland':
+        raise RuntimeError('fixture desktop environment was not exported before Sway startup')
     if not re.fullmatch(r'unix:path=/(?:tmp/dbus-[A-Za-z0-9]+|run/user/[0-9]+/bus)', address):
         raise RuntimeError('unsupported private session bus address')
     if display and not re.fullmatch(r':[0-9]{1,4}', display):

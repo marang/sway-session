@@ -81,7 +81,8 @@ def collect_phases(runner, guest, control, run_id):
                            and all(type(item) is str and str(uuid.UUID(item)) == item for item in ids),
                            'desktop phases returned invalid context identities')
             return value
-        runner.require(type(value) is dict and set(value) == {'checkpoint'}, 'desktop phases returned invalid progress')
+        runner.require(type(value) is dict and set(value) == {'complete', 'checkpoint'}
+                       and value['complete'] is False, 'desktop phases returned invalid progress')
         checkpoint = checkpoint_request(value['checkpoint'])
         image = guest.ssh('cat -- ' + shlex.quote(checkpoint['private_screenshot']), timeout=15)
         runner.require(image.startswith(b'\x89PNG\r\n\x1a\n') and len(image) <= runner.LIMIT,

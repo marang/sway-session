@@ -97,7 +97,7 @@ class JSONAndCheckpoints(unittest.TestCase):
         def ssh(command, **kwargs):
             calls.append(command)
             if command == operation:
-                return json.dumps({'checkpoint': checkpoint}).encode()
+                return json.dumps({'complete': False, 'checkpoint': checkpoint}).encode()
             if command.startswith('cat -- '):
                 return b'\x89PNG\r\n\x1a\nsynthetic-private-pixels'
             return json.dumps(complete).encode()

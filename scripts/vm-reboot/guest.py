@@ -158,6 +158,20 @@ def load_harness(run_id):
     return value
 
 
+def login_profile(*, desktop=False):
+    return '''# Disposable KVM fixture: a real getty/PAM/logind login owns Sway.
+umask 077
+export PATH=/usr/local/bin:/usr/bin SHELL=/bin/bash
+export XDG_CONFIG_HOME="$HOME/.config" XDG_STATE_HOME="$HOME/.local/state"
+export XDG_DATA_HOME="$HOME/.local/share" XDG_CACHE_HOME="$HOME/.cache"
+export WLR_BACKENDS=headless WLR_HEADLESS_OUTPUTS=1 WLR_RENDERER=pixman
+export WLR_LIBINPUT_NO_DEVICES=1 LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe
+''' + ('export XDG_CURRENT_DESKTOP=sway XDG_SESSION_TYPE=wayland\n' if desktop else '') + '''if [ "$(tty)" = /dev/tty1 ] && [ -z "${SWAYSOCK:-}" ]; then
+    exec /usr/bin/dbus-run-session /usr/bin/sway --config "$HOME/.config/sway/config" >> "$XDG_STATE_HOME/sway-fixture.log" 2>&1
+fi
+'''
+
+
 def install(run_id, account, *, candidate=CANDIDATE, desktop=False):
     candidate = candidate_path(candidate)
     require(not desktop or candidate == Path('/usr/bin/sway-session'),
@@ -211,17 +225,7 @@ exec --no-startup-id {candidate} restore
 bindsym Mod4+Return exec --no-startup-id {candidate} terminal --new
 bindsym Mod4+Shift+Return exec --no-startup-id {candidate} terminal --ephemeral
 ''')
-    user_file('.bash_profile', '''# Disposable KVM fixture: a real getty/PAM/logind login owns Sway.
-umask 077
-export PATH=/usr/local/bin:/usr/bin SHELL=/bin/bash
-export XDG_CONFIG_HOME="$HOME/.config" XDG_STATE_HOME="$HOME/.local/state"
-export XDG_DATA_HOME="$HOME/.local/share" XDG_CACHE_HOME="$HOME/.cache"
-export WLR_BACKENDS=headless WLR_HEADLESS_OUTPUTS=1 WLR_RENDERER=pixman
-export WLR_LIBINPUT_NO_DEVICES=1 LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe
-if [ "$(tty)" = /dev/tty1 ] && [ -z "${SWAYSOCK:-}" ]; then
-    exec /usr/bin/dbus-run-session /usr/bin/sway --config "$HOME/.config/sway/config" >> "$XDG_STATE_HOME/sway-fixture.log" 2>&1
-fi
-''')
+    user_file('.bash_profile', login_profile(desktop=desktop))
     directory = Path('/etc/systemd/system/getty@tty1.service.d')
     directory.mkdir(parents=True, exist_ok=True)
     (directory / 'ss-test.conf').write_text('''[Service]

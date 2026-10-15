@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import stat
+import subprocess
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -15,6 +16,19 @@ guest = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(guest)
 
 class GuestReports(unittest.TestCase):
+    def test_desktop_pam_profile_supplies_actual_session_type_before_sway(self):
+        with tempfile.TemporaryDirectory() as directory:
+            profile = Path(directory) / 'profile'
+            for desktop in [False, True]:
+                profile.write_text(guest.login_profile(desktop=desktop))
+                # No tty is attached, so this sources only the exports and never
+                # launches Sway. Inspect only the two explicit public settings.
+                result = subprocess.run(['/usr/bin/bash', '--noprofile', '--norc', '-c',
+                    '. "$1"; printf "%s,%s" "${XDG_CURRENT_DESKTOP-}" "${XDG_SESSION_TYPE-}"',
+                    'fixture-profile', str(profile)], env={'HOME': directory}, stdin=subprocess.DEVNULL,
+                    capture_output=True, check=True, timeout=5)
+                self.assertEqual(result.stdout.decode(), 'sway,wayland' if desktop else ',')
+
     def test_non_kvm_refusal_precedes_any_fixture_mutation(self):
         calls = []
         def probe(argv, **kwargs):

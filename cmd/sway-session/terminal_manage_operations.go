@@ -40,20 +40,31 @@ func (operations commandTerminalManageOperations) ObserveActivity(ctx context.Co
 	if len(items) == 0 {
 		return result
 	}
+	local := make([]terminalInventoryResult, 0, len(items))
+	for _, item := range items {
+		if item.Remote != nil {
+			result[item.ContextID] = sessionstate.UnknownTerminalSessionObservation("remote_not_observed")
+		} else {
+			local = append(local, item)
+		}
+	}
+	if len(local) == 0 {
+		return result
+	}
 	manager, err := terminalSessionManager(sessionstate.TerminalSessionManagerHerdr, operations.deps)
 	observer, ok := manager.(sessionstate.TerminalSessionObserver)
 	if err != nil || !ok {
-		for _, item := range items {
+		for _, item := range local {
 			result[item.ContextID] = sessionstate.UnknownTerminalSessionObservation("manager_unsupported")
 		}
 		return result
 	}
-	names := make([]string, 0, len(items))
-	for _, item := range items {
+	names := make([]string, 0, len(local))
+	for _, item := range local {
 		names = append(names, item.Session)
 	}
 	observed := observer.ObserveSessions(ctx, names)
-	for _, item := range items {
+	for _, item := range local {
 		value, found := observed[item.Session]
 		if !found {
 			value = sessionstate.UnknownTerminalSessionObservation("observation_unavailable")
@@ -75,6 +86,9 @@ type commandTerminalManageOperations struct {
 }
 
 func (operations commandTerminalManageOperations) ObservePaneDirectory(ctx context.Context, item terminalInventoryResult) (sessionstate.HerdrDirectoryObservation, error) {
+	if item.Remote != nil {
+		return sessionstate.HerdrDirectoryObservation{}, errors.New("remote pane directories cannot be observed through a local Herdr session")
+	}
 	if operations.deps.herdrPaths == nil || operations.deps.homeDir == nil {
 		return sessionstate.HerdrDirectoryObservation{}, errors.New("herdr directory observation dependencies are unavailable")
 	}

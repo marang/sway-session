@@ -26,6 +26,8 @@ func (roles *terminalRoleFlags) Set(value string) error {
 func executeTerminal(ctx context.Context, arguments []string, stdin io.Reader, stdout io.Writer, structured bool, configPath string, deps dependencies) (commandResult, *commandFailure) {
 	if len(arguments) > 0 {
 		switch arguments[0] {
+		case "forget":
+			return executeTerminalForget(ctx, arguments[1:], deps)
 		case "manage":
 			return executeTerminalManage(ctx, arguments[1:], stdin, stdout, structured, configPath, deps)
 		case "list":
@@ -42,6 +44,9 @@ func executeTerminal(ctx context.Context, arguments []string, stdin io.Reader, s
 	}
 	set := newFlagSet("terminal")
 	project := set.String("project", "", "stable project identity")
+	remoteTarget := set.String("remote", "", "explicit SSH target for a persistent remote terminal")
+	remoteSession := set.String("remote-session", "", "exact remote Herdr session name")
+	machine := set.String("machine", "", "saved Herdr machine ID or unique label")
 	contextFlag := set.String("context", "", "exact registered terminal context UUID")
 	cwdFlag := set.String("cwd", "", "initial working directory")
 	label := set.String("label", "", "presentation label")
@@ -57,6 +62,19 @@ func executeTerminal(ctx context.Context, arguments []string, stdin io.Reader, s
 	set.Visit(func(option *flag.Flag) {
 		provided[option.Name] = true
 	})
+	remoteRequested := provided["remote"] || provided["machine"] || provided["remote-session"]
+	if remoteRequested {
+		if *ephemeral || provided["context"] || (!*newTerminal && !provided["project"]) || len(roles) != 0 {
+			return commandResult{}, usageFailure("terminal", "remote options require --new or --project and cannot be combined with --context, --ephemeral or --role")
+		}
+		if provided["machine"] {
+			if *machine == "" || provided["remote"] || provided["remote-session"] {
+				return commandResult{}, usageFailure("terminal", "--machine requires one ID or unique label and cannot be combined with --remote or --remote-session")
+			}
+		} else if *remoteTarget == "" || *remoteSession == "" {
+			return commandResult{}, usageFailure("terminal", "--remote requires --remote-session with the exact remote session name")
+		}
+	}
 	if *newTerminal && (provided["project"] || provided["context"] || provided["ephemeral"]) {
 		return commandResult{}, usageFailure("terminal", "--new cannot be combined with --project, --context, or --ephemeral")
 	}
@@ -189,8 +207,26 @@ func executeTerminal(ctx context.Context, arguments []string, stdin io.Reader, s
 		SettleTimeout:  deps.settleTimeout,
 		StabilityDelay: deps.stabilityDelay,
 	}
+	var remote *sessionstate.TerminalRemoteBinding
+	if remoteRequested {
+		binding := sessionstate.TerminalRemoteBinding{Target: *remoteTarget, Session: *remoteSession}
+		if *machine != "" {
+			executable, resolveErr := deps.resolveProgram("herdr")
+			if resolveErr != nil {
+				return commandResult{}, failure("remote_binding", "resolve Herdr", resolveErr.Error())
+			}
+			binding, err = (sessionstate.HerdrManager{Executable: executable, Runner: deps.herdrRunner}).ResolveRemoteMachine(ctx, *machine)
+			if err != nil {
+				return commandResult{}, failure("remote_binding", "resolve saved Herdr machine", err.Error())
+			}
+		}
+		if err := binding.Validate(); err != nil {
+			return commandResult{}, usageFailure("terminal", err.Error())
+		}
+		remote = &binding
+	}
 	opened, err := manager.Open(ctx, sessionstate.TerminalOpenRequest{
-		New: *newTerminal, ContextID: contextID, Identity: identity, Adapter: config.Terminal.Adapter, Cwd: cwd, CwdExplicit: cwdExplicit, Label: *label, Focus: true, Roles: roles,
+		Remote: remote, New: *newTerminal, ContextID: contextID, Identity: identity, Adapter: config.Terminal.Adapter, Cwd: cwd, CwdExplicit: cwdExplicit, Label: *label, Focus: true, Roles: roles,
 	})
 	result := terminalOpenCommandResult(opened)
 	if err != nil {
@@ -352,6 +388,7 @@ func terminalOpenCommandResult(opened sessionstate.TerminalOpenResult) commandRe
 		Identity:       identity,
 		Adapter:        opened.Context.Launcher.Terminal.Adapter,
 		Session:        opened.Context.Launcher.Session,
+		Remote:         opened.Context.Launcher.Terminal.Remote,
 		Actions:        opened.Actions,
 		Manager:        opened.Manager,
 		Initialization: opened.Initialization,
@@ -555,6 +592,7 @@ func terminalInventory(contexts []sessionstate.Context, activityState ...session
 			Manager:        sessionstate.TerminalSessionManagerHerdr,
 			State:          context.State,
 			Session:        context.Launcher.Session,
+			Remote:         context.Launcher.Terminal.Remote,
 			Cwd:            context.Launcher.Cwd,
 			CreatedAt:      activity.CreatedAt,
 			LastFocusedAt:  activity.LastFocusedAt,

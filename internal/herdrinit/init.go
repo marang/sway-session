@@ -45,6 +45,9 @@ func Initialize(ctx context.Context, contextValue sessionstate.Context, roles []
 	if contextValue.State != sessionstate.ContextActive || contextValue.Launcher.Kind != sessionstate.LauncherHerdr {
 		return result, errors.New("context is not an active Herdr context")
 	}
+	if contextValue.Launcher.Terminal.Remote != nil {
+		return result, errors.New("remote terminal contexts do not support local pane-role initialization")
+	}
 	if runner == nil {
 		return result, errors.New("herdr command runner is nil")
 	}

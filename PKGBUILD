@@ -66,6 +66,9 @@ package() {
     install -Dm644 docs/lifecycle-recovery.md "$pkgdir/usr/share/doc/$pkgname/docs/lifecycle-recovery.md"
     install -Dm644 docs/research/herdr-plugin-session-deletion.md "$pkgdir/usr/share/doc/$pkgname/docs/research/herdr-plugin-session-deletion.md"
   fi
+  if [[ -f docs/adr/0003-explicit-remote-terminal-bindings.md ]]; then
+    install -Dm644 docs/adr/0003-explicit-remote-terminal-bindings.md "$pkgdir/usr/share/doc/$pkgname/docs/adr/0003-explicit-remote-terminal-bindings.md"
+  fi
   if [[ -f docs/research/lab-374-herdr-remote-restoration.md ]]; then
     install -Dm644 docs/research/lab-374-herdr-remote-restoration.md "$pkgdir/usr/share/doc/$pkgname/docs/research/lab-374-herdr-remote-restoration.md"
   fi

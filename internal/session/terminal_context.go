@@ -19,6 +19,7 @@ var (
 const TerminalContextProvider = "sway-session-terminal"
 
 type TerminalContextRequest struct {
+	Remote      *TerminalRemoteBinding
 	Identity    TerminalIdentity
 	Adapter     TerminalAdapter
 	Cwd         string
@@ -29,6 +30,7 @@ type TerminalContextRequest struct {
 // TerminalInstanceRequest describes a fresh persistent terminal which is
 // addressed by its context UUID rather than a reusable default/project key.
 type TerminalInstanceRequest struct {
+	Remote  *TerminalRemoteBinding
 	Adapter TerminalAdapter
 	Cwd     string
 	Label   string
@@ -110,7 +112,7 @@ func CreateTerminalInstanceContext(registry *Registry, request TerminalInstanceR
 	if registry == nil {
 		return Context{}, errors.New("context registry is nil")
 	}
-	terminal := TerminalLauncher{Adapter: request.Adapter}
+	terminal := TerminalLauncher{Adapter: request.Adapter, Remote: request.Remote}
 	if err := terminal.validate(); err != nil {
 		return Context{}, err
 	}
@@ -140,6 +142,7 @@ func CreateTerminalInstanceContext(registry *Registry, request TerminalInstanceR
 			Cwd:     request.Cwd,
 			Terminal: &TerminalLauncher{
 				Adapter:  request.Adapter,
+				Remote:   cloneTerminalRemote(request.Remote),
 				Instance: true,
 			},
 		},
@@ -156,7 +159,7 @@ func EnsureTerminalContext(registry *Registry, request TerminalContextRequest, n
 	if registry == nil {
 		return Context{}, false, errors.New("context registry is nil")
 	}
-	terminal := TerminalLauncher{Adapter: request.Adapter, Identity: &request.Identity}
+	terminal := TerminalLauncher{Adapter: request.Adapter, Identity: &request.Identity, Remote: request.Remote}
 	if err := terminal.validate(); err != nil {
 		return Context{}, false, err
 	}
@@ -166,6 +169,9 @@ func EnsureTerminalContext(registry *Registry, request TerminalContextRequest, n
 		}
 		if *context.Launcher.Terminal.Identity != request.Identity {
 			continue
+		}
+		if !sameTerminalRemote(context.Launcher.Terminal.Remote, request.Remote) {
+			return Context{}, false, fmt.Errorf("%w: remote binding differs; reopen by --context or choose a different project", ErrTerminalIdentityConflict)
 		}
 		if context.State != ContextActive {
 			return Context{}, false, fmt.Errorf("%w: activate context %s before opening it", ErrTerminalIdentityArchived, context.ID)
@@ -225,6 +231,7 @@ func EnsureTerminalContext(registry *Registry, request TerminalContextRequest, n
 			Cwd:     request.Cwd,
 			Terminal: &TerminalLauncher{
 				Adapter:  request.Adapter,
+				Remote:   cloneTerminalRemote(request.Remote),
 				Identity: &identity,
 			},
 		},

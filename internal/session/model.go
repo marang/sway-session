@@ -46,9 +46,10 @@ const (
 )
 
 type TerminalLauncher struct {
-	Adapter  TerminalAdapter   `json:"adapter"`
-	Identity *TerminalIdentity `json:"identity,omitempty"`
-	Instance bool              `json:"instance,omitempty"`
+	Remote   *TerminalRemoteBinding `json:"remote,omitempty"`
+	Adapter  TerminalAdapter        `json:"adapter"`
+	Identity *TerminalIdentity      `json:"identity,omitempty"`
+	Instance bool                   `json:"instance,omitempty"`
 }
 
 type TerminalIdentity struct {
@@ -548,6 +549,11 @@ func (launcher *Launcher) validateFlatpak() error {
 func (terminal *TerminalLauncher) validate() error {
 	if terminal == nil {
 		return errors.New("terminal configuration is nil")
+	}
+	if terminal.Remote != nil {
+		if err := terminal.Remote.Validate(); err != nil {
+			return err
+		}
 	}
 	switch terminal.Adapter {
 	case TerminalAdapterAlacritty, TerminalAdapterFoot:

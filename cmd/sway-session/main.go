@@ -295,6 +295,7 @@ type commandResult struct {
 }
 
 type terminalCommandResult struct {
+	Remote         *sessionstate.TerminalRemoteBinding         `json:"remote,omitempty"`
 	ContextID      sessionstate.ContextID                      `json:"context_id,omitempty"`
 	Identity       *terminalIdentityResult                     `json:"identity,omitempty"`
 	Adapter        sessionstate.TerminalAdapter                `json:"adapter"`
@@ -312,6 +313,7 @@ type terminalIdentityResult struct {
 }
 
 type terminalInventoryResult struct {
+	Remote           *sessionstate.TerminalRemoteBinding     `json:"remote,omitempty"`
 	WindowPresence   string                                  `json:"window_presence"`
 	WindowObservedAt *time.Time                              `json:"window_observed_at,omitempty"`
 	WindowReason     string                                  `json:"window_reason,omitempty"`
@@ -423,7 +425,11 @@ func writeResult(writer io.Writer, structured bool, result commandResult) error 
 				observed = terminal.Activity.ObservedAt.UTC().Format(time.RFC3339)
 				age = max(time.Since(*terminal.Activity.ObservedAt), 0).Round(time.Second).String()
 			}
-			if _, err := fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\twindow=%s\therdr=%s\tagent=%s\tobserved=%s\tage=%s\treason=%s\n", terminal.ContextID, identity, terminal.Adapter, terminal.State, terminal.Cwd, terminal.WindowPresence, terminal.Activity.SessionState, terminal.Activity.AgentState, observed, age, terminal.Activity.Reason); err != nil {
+			remote := ""
+			if terminal.Remote != nil {
+				remote = "\tremote=" + terminal.Remote.Target + "\tremote_session=" + terminal.Remote.Session + "\tmachine_id=" + terminal.Remote.MachineID
+			}
+			if _, err := fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\twindow=%s\therdr=%s\tagent=%s\tobserved=%s\tage=%s\treason=%s%s\n", terminal.ContextID, identity, terminal.Adapter, terminal.State, terminal.Cwd, terminal.WindowPresence, terminal.Activity.SessionState, terminal.Activity.AgentState, observed, age, terminal.Activity.Reason, remote); err != nil {
 				return err
 			}
 		}
@@ -578,6 +584,7 @@ func writeCommandUsage(writer io.Writer, name string, spec commandSpec) {
 	}
 	if name == "terminal" {
 		_, _ = fmt.Fprintln(writer, "Options: [--new | --context UUID | --project NAME | --ephemeral] [--cwd PATH] [--label LABEL] [--socket PATH] [--role LEFT --role RIGHT]")
+		_, _ = fmt.Fprintln(writer, "Remote cleanup: terminal forget --yes [--socket PATH] UUID after archive/close. Remote: --new or --project NAME with --remote TARGET --remote-session NAME, or --machine ID_OR_LABEL; local --cwd, no --role")
 		_, _ = fmt.Fprintln(writer, "Subcommands: manage [--socket PATH], list, status, cleanup, rename --label NAME <context>, reconfigure [--project NAME] [--socket PATH]")
 	}
 	if name == "doctor" {

@@ -506,7 +506,7 @@ func rollbackCreatedRegistration(root string, request Request, contextValue sess
 
 func requestMatchesContext(request Request, contextValue sessionstate.Context) bool {
 	return contextValue.Label == request.Label && contextValue.Provider == request.Provider &&
-		!sessionstate.IsTerminalInstanceContext(contextValue) &&
+		!sessionstate.IsTerminalInstanceContext(contextValue) && !sessionstate.IsRemoteTerminal(contextValue) &&
 		contextValue.Launcher.Kind == sessionstate.LauncherHerdr && contextValue.Launcher.Session == request.Session &&
 		contextValue.Launcher.Cwd == request.Cwd && contextValue.Launcher.Terminal != nil &&
 		contextValue.Launcher.Terminal.Adapter == sessionstate.TerminalAdapterAlacritty &&

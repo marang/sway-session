@@ -136,7 +136,7 @@ func terminalCloseObservationStillEligible(observation terminalCloseObservation,
 		return false
 	}
 	current := registry.Contexts[index]
-	return activeHerdrTerminal(current) && terminalCloseIdentity(current) == observation.identity && reflect.DeepEqual(current, observation.context)
+	return autoArchivableHerdrTerminal(current) && terminalCloseIdentity(current) == observation.identity && reflect.DeepEqual(current, observation.context)
 }
 
 func removeTerminalCloseObservations(observed map[int64]terminalCloseObservation, contextID sessionstate.ContextID) {
@@ -159,7 +159,7 @@ func observedActiveHerdrTerminals(root *Node, registry sessionstate.Registry, ep
 			continue
 		}
 		contextValue := registry.Contexts[index]
-		if !activeHerdrTerminal(contextValue) {
+		if !autoArchivableHerdrTerminal(contextValue) {
 			continue
 		}
 		observed[window.ContainerID] = terminalCloseObservation{
@@ -186,8 +186,8 @@ func observedByContext(observed map[int64]terminalCloseObservation, id sessionst
 	return terminalCloseObservation{}, false
 }
 
-func activeHerdrTerminal(contextValue sessionstate.Context) bool {
-	return contextValue.State == sessionstate.ContextActive &&
+func autoArchivableHerdrTerminal(contextValue sessionstate.Context) bool {
+	return !sessionstate.IsRemoteTerminal(contextValue) && contextValue.State == sessionstate.ContextActive &&
 		contextValue.Launcher.Kind == sessionstate.LauncherHerdr && contextValue.Launcher.Terminal != nil
 }
 
@@ -200,7 +200,14 @@ func terminalCloseIdentity(contextValue sessionstate.Context) string {
 	if terminal.Identity != nil {
 		identity = terminal.Identity.String()
 	}
-	return string(terminal.Adapter) + "\x00" + identity + "\x00" + contextValue.Launcher.Session
+	if terminal.Remote == nil {
+		return string(terminal.Adapter) + "\x00" + identity + "\x00" + contextValue.Launcher.Session
+	}
+	remote := ""
+	if terminal.Remote != nil {
+		remote = terminal.Remote.Target + "\x00" + terminal.Remote.Session + "\x00" + terminal.Remote.MachineID
+	}
+	return string(terminal.Adapter) + "\x00" + identity + "\x00" + contextValue.Launcher.Session + "\x00" + remote
 }
 
 func (runtime *sessionRuntime) rearmTerminalCloseDeadline() {

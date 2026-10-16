@@ -72,3 +72,11 @@ A deliberately saved outer arrangement, independent of later observations.
 **Template**:
 A description of the initial structure of new work, independent of existing
 live sessions and their contents.
+
+### Remote work
+
+**Remote binding**:
+The explicit association of a persistent terminal context with an SSH target and
+a remote Herdr session. A saved-machine binding additionally identifies the
+Herdr profile whose target and session were selected.
+_Avoid_: Machine label, local session name

@@ -507,6 +507,10 @@ func (model terminalManageModel) handleKey(message tea.KeyPressMsg) (tea.Model, 
 		return model, model.stateCommand(item.ContextID, state, action)
 	case "d":
 		if item, ok := model.selected(); ok {
+			if item.Remote != nil {
+				model.err = errors.New("remote work is preserved; archive here or use sway-session terminal forget --yes " + string(item.ContextID))
+				return model, nil
+			}
 			model.purgeItem = &item
 			model.mode = terminalManagePurgeMode
 			model.err = nil
@@ -603,6 +607,9 @@ func (model terminalManageModel) render() string {
 			}
 			if item, ok := model.selected(); ok && model.mode != terminalManagePurgeMode && model.mode != terminalManageHelpMode {
 				output.WriteString("\nContext " + string(item.ContextID))
+				if item.Remote != nil {
+					output.WriteString("\n" + ansi.Truncate("Remote "+item.Remote.Target+" / "+item.Remote.Session, width, "…"))
+				}
 				output.WriteString("\n" + ansi.Truncate(terminalManageDetail("Next login", terminalManageNextLogin(item)), width, "…"))
 				output.WriteString("\n" + ansi.Truncate(terminalManageDetail("Last change", terminalManageLastChange(item, width)), width, "…"))
 				output.WriteString("\n" + ansi.Truncate(terminalManageDetail("Last restore", terminalManageRestoreResult(item)), width, "…"))
@@ -897,6 +904,12 @@ func (model terminalManageModel) renderDetails(styles terminalManageStyles, widt
 		terminalManageDetail("Herdr", terminalManageSessionEvidence(item.Activity.SessionState)),
 		terminalManageDetail("Agent", terminalManageAgentEvidence(item.Activity.AgentState)),
 		terminalManageDetail("Evidence", terminalManageEvidenceTime(item.Activity)),
+	}
+	if item.Remote != nil {
+		lines = append(lines, terminalManageDetail("Remote", item.Remote.Target+" / "+item.Remote.Session))
+		if item.Remote.MachineID != "" {
+			lines = append(lines, terminalManageDetail("Machine ID", item.Remote.MachineID))
+		}
 	}
 	compact := model.height > 0 && model.height <= 28
 	if !compact || item.RestoreOutcome == nil {
@@ -1269,7 +1282,7 @@ func (model *terminalManageModel) rebuildVisible() {
 	model.visible = model.visible[:0]
 	for index, item := range model.items {
 		haystack := strings.ToLower(strings.Join([]string{
-			terminalManageName(item), item.Label, item.Identity.Project, item.Cwd, item.PaneDirectory, item.Session, string(item.ContextID),
+			terminalManageName(item), item.Label, item.Identity.Project, item.Cwd, item.PaneDirectory, item.Session, string(item.ContextID), terminalManageRemoteSearch(item),
 		}, "\n"))
 		if query == "" || strings.Contains(haystack, query) {
 			model.visible = append(model.visible, index)
@@ -1688,4 +1701,11 @@ func terminalManagePad(value string, width int) string {
 		return value
 	}
 	return value + strings.Repeat(" ", missing)
+}
+
+func terminalManageRemoteSearch(item terminalInventoryResult) string {
+	if item.Remote == nil {
+		return ""
+	}
+	return item.Remote.Target + " " + item.Remote.Session + " " + item.Remote.MachineID
 }

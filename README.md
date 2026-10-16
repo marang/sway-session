@@ -39,7 +39,7 @@ Source installs put the executable in `~/.local/bin`, completion files in
 
 ## Set up Sway and Herdr
 
-For persistent terminals, enable pane history in your Herdr configuration
+For local persistent terminals, enable pane history in your Herdr configuration
 (`~/.config/herdr/config.toml`, or under `$XDG_CONFIG_HOME`):
 
 ```toml
@@ -153,15 +153,48 @@ work. Archiving keeps it.
 
 ### Herdr remote work
 
-Saved Machines in Herdr already reconnect when sway-session reopens the local
-terminal, including after a local reboot while the remote server stays alive.
-SSH must become available again. Herdr shares the last selected machine across
-new frontends; a sway-session context does not pin its own remote machine.
-An offline frontend can show Local while the remote row says reconnecting.
-See the [remote restoration assessment](docs/research/lab-374-herdr-remote-restoration.md)
-for tested behavior, diagnostics and the per-context limitation. Existing purge
-operates on the local named Herdr session; it does not delete a saved remote
-profile or introduce remote-session deletion.
+Bind a persistent terminal to an exact remote Herdr session, either directly or
+through an existing saved Machine:
+
+```sh
+sway-session terminal --project remote-work --remote workbox --remote-session agents --cwd "$HOME"
+herdr machine list --json
+sway-session terminal --new --machine PROFILE_ID --label "Remote agents"
+sway-session terminal --context CONTEXT_UUID
+```
+
+`--cwd` is a local launch directory; remote shells keep their Herdr-owned paths.
+Use an SSH alias, `user@host` or `ssh://user@host:port` for `--remote` and always
+supply `--remote-session`. `--machine` accepts an exact profile ID or unique
+case-sensitive label and pins its ID, target and remote session. Profile renames
+are fine; missing, disabled or retargeted profiles require explicit correction
+or a new context. These options require `--new` or `--project`; reopen by the
+returned context UUID or repeat the same project and remote options.
+
+Both routes attach directly to the saved target, independent of Herdr's shared
+machine selection. Multiple contexts may intentionally show the same remote
+session. Herdr owns SSH authentication, connection handling and remote server
+startup. Missing/incompatible installations may produce Herdr's interactive
+setup confirmation; sway-session never answers it or supplies credentials.
+
+The manager shows the remote route separately from the local window. Remote
+session/agent health remains **unknown** in this first version; a mapped window
+is not proof of connectivity. The global doctor still checks local pane-history
+setup; remote attach itself does not require local history. `--role` initialization and local agent reporting
+are unsupported for remote contexts. Manage the remote panes inside Herdr.
+
+A closed remote window preserves restore eligibility because network failure
+can also close its frontend. Use the manager's archive action (`a`) to stop it
+returning at login. After archiving and closing its window, use
+`sway-session terminal forget --yes CONTEXT_UUID` to remove the registration
+(within Sway, or with `--socket PATH`). Remote purge is refused; remote work and saved profiles remain
+Herdr-owned. Ordinary local terminals retain their existing close/archive rules.
+
+The [original assessment](docs/research/lab-374-herdr-remote-restoration.md)
+records the earlier global-selection behavior. The
+[binding contract](docs/adr/0003-explicit-remote-terminal-bindings.md) records the
+implementation and downgrade boundary: older strict readers reject remote
+contexts; remove those registrations with the newer binary before downgrading.
 
 ### Named work environments
 

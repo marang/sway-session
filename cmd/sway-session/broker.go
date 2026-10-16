@@ -42,7 +42,7 @@ func (initializer sessionRequestTerminalInitializer) Initialize(ctx context.Cont
 				return err
 			}
 			current := registry.Contexts[index]
-			if current.State != sessionstate.ContextActive || current.Launcher.Kind != sessionstate.LauncherHerdr ||
+			if sessionstate.IsRemoteTerminal(current) || current.State != sessionstate.ContextActive || current.Launcher.Kind != sessionstate.LauncherHerdr ||
 				current.Launcher.Session != requested.Launcher.Session || current.Launcher.Cwd != requested.Launcher.Cwd {
 				return errors.New("requested terminal context changed before initialization")
 			}

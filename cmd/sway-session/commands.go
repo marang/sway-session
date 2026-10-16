@@ -250,6 +250,9 @@ func executePurge(ctx context.Context, arguments []string, stdin io.Reader, stde
 		}
 		target = registry.Contexts[index]
 	}
+	if sessionstate.IsRemoteTerminal(target) {
+		return commandResult{}, failure("remote_purge_unsupported", "remote work is not owned by sway-session", "Archive this context, or remove only its registration with sway-session terminal forget --yes "+string(target.ID)+".")
+	}
 	if target.Launcher.Kind != sessionstate.LauncherHerdr {
 		return commandResult{}, failure(
 			"context_kind",
@@ -529,6 +532,10 @@ func restoreTerminalWave(
 		sessionManager, err := terminalSessionManagerForContext(target, deps)
 		if err != nil {
 			operationDiagnostics = append(operationDiagnostics, diagnosticForContext("session_manager", target, err, "Use a supported typed terminal session manager."))
+			continue
+		}
+		if err := sessionstate.PrepareTerminalContext(ctx, sessionManager, target); err != nil {
+			operationDiagnostics = append(operationDiagnostics, diagnosticForContext("remote_binding", target, err, "Check the pinned Herdr machine profile or reopen with an explicit new remote context."))
 			continue
 		}
 		spec, err := sessionManager.BuildProcessSpec(target, terminalExecutable)

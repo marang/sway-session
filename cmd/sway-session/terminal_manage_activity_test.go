@@ -175,12 +175,14 @@ func TestTerminalManageActivityDirectoryUpdatesFilterAndNaming(t *testing.T) {
 	}
 }
 
-func TestTerminalManageActivityLegacyFallbackExplicitUnknown(t *testing.T) {
+func TestTerminalManageActivityWithoutObserverIsExplicitUnknown(t *testing.T) {
 	item := terminalManageTestItem("11111111-1111-4111-8111-111111111111", "", sessionstate.ContextActive)
-	ops := &terminalManageDirectoryTestOperations{terminalManageTestOperations: terminalManageTestOperations{snapshots: [][]terminalInventoryResult{{item}}}, observations: map[sessionstate.ContextID]sessionstate.HerdrDirectoryObservation{item.ContextID: {Directory: "/work/fallback"}}}
-	model := terminalManageRunInit(t, newTerminalManageModel(ops))
-	if len(ops.probed) != 1 || model.items[0].PaneDirectory != "/work/fallback" || model.items[0].Activity.SessionState != "unknown" || model.items[0].Activity.AgentState != "unknown" {
-		t.Fatal("legacy fallback lost naming or implied activity")
+	ops := &terminalManageTestOperations{snapshots: [][]terminalInventoryResult{{item}}}
+	model := newTerminalManageModel(ops)
+	model, probe := terminalManageUpdateWithCommand(t, model, model.Init()())
+	activity := model.items[0].Activity
+	if probe != nil || model.activityPending || model.items[0].PaneDirectory != "" || activity.SessionState != "unknown" || activity.AgentState != "unknown" || activity.Reason != "observer_unavailable" {
+		t.Fatalf("missing observer scheduled work or implied activity: probe=%v activity=%+v", probe != nil, activity)
 	}
 }
 

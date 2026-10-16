@@ -395,11 +395,11 @@ _sway-session() {
 				register-focused)
 					[[ ${arguments[-1]-} == --socket ]] && { _files; return; }
 					[[ ${arguments[-1]-} == --desktop-id ]] && return
-					_sway_session_add --socket --desktop-id --allow-administrative --yes --json -h --help
+					_sway_session_add --socket --desktop-id --yes --json -h --help
 					;;
 				register-workspace)
 					[[ ${arguments[-1]-} == --socket ]] && { _files; return; }
-					_sway_session_add --socket --allow-administrative --yes --json -h --help
+					_sway_session_add --socket --yes --json -h --help
 					;;
 				confirm|pin|unpin|archive|activate)
 					_sway_session_add --json -h --help
@@ -428,14 +428,14 @@ _sway-session() {
 					[[ ${arguments[-1]-} == --socket ]] && { _files; return; }
 					[[ ${arguments[-1]-} == --desktop-id ]] && return
 					if _sway_session_context_pending app-rebind "${arguments[@]:2}"; then
-						_sway_session_add --socket --desktop-id --allow-administrative --yes --json -h --help
+						_sway_session_add --socket --desktop-id --yes --json -h --help
 					else
 						_sway_session_add --json -h --help
 					fi
 					;;
 				reapprove)
 					if _sway_session_context_pending app-reapprove "${arguments[@]:2}"; then
-						_sway_session_add --allow-administrative --yes --json -h --help
+						_sway_session_add --yes --json -h --help
 					else
 						_sway_session_add --json -h --help
 					fi

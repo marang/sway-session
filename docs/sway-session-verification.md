@@ -1089,7 +1089,7 @@ Registered application anchors also support typed scratchpad placement. Native W
 ### Administrative desktop restore acceptance
 
 The [LAB-94 contract](adr/0004-opt-in-administrative-desktop-restore.md) requires
-registration-time opt-in and ordinary policy-driven restore. It does not require
+normal registration and ordinary policy-driven restore. It does not require
 a second sway-session confirmation at launch. Run the focused CLI, strict token,
 grammar and trusted-helper checks as well as `make verify`:
 
@@ -1102,7 +1102,7 @@ GOTOOLCHAIN=go1.26.5 go test -race ./cmd/sway-session ./internal/session \
 Grammar/default-rejection tests need no installed administrative helper.
 Positive trust tests use an installed `/usr/bin/pkexec` or `/usr/bin/sudo`,
 explicitly reporting a missing optional dependency when neither is available;
-they never execute the helper. These tests prove typed permission, digest
+they never execute the helper. These tests prove reviewed launcher identity, digest
 binding, revalidation, cleanup and unchanged ordinary behavior. They do not prove
 a real authentication dialog or application startup.
 
@@ -1116,13 +1116,15 @@ raw terminal/pane output, policy cookies and private state out of evidence.
 A standalone Polkit/helper preflight is a prerequisite observation, not feature
 candidate integration acceptance.
 
-1. Without `--allow-administrative`, `--yes` registration/rebind/reapproval must
-   still reject an administrative starter. With explicit opt-in, preview names
-   the launcher and warns that restore can request authentication again; the
-   typed one-time operation commits only its reviewed desktop/helper/payload
-   identity. Registration itself must not launch the starter. Mutating reviewed
-   material before confirmation must reject that token without changing an
-   unrelated registration, approval or window.
+1. Register/rebind/reapprove a supported administrative starter through the
+   normal confirmation and ordinary `--yes` path. The preview names the launcher
+   and explains possible system authentication. The one-time operation binds
+   reviewed desktop/helper/payload identity; registration never launches it.
+   Mutating reviewed material before confirmation must reject that token
+   without changing unrelated registrations, approvals or windows.
+   Exercise an explicit `--socket` with a different or absent inherited
+   `SWAYSOCK`: confirmation must use the endpoint selected for the preview.
+
 2. Exercise both Follow and Pinned with the saved context absent and eligible.
    Verify exactly one ordinary restore attempt can show the normal session
    agent. There must be no extra sway-session launch-consent UI and no
@@ -1143,18 +1145,18 @@ candidate integration acceptance.
    roll back possibly accepted work to enforce a timeout.
 5. Change the desktop bytes, helper contents or payload contents only inside
    the disposable fixture. Launcher validity must require reapproval, including
-   for a system desktop entry. `reapprove --yes` alone must not renew permission;
-   `reapprove --allow-administrative` must bind newly reviewed material. Inventory
+   for a system desktop entry. ordinary `app reapprove` or `app reapprove --yes` must bind newly reviewed
+   material. Inventory
    exposes its administrative marker without adding authentication outcome
    claims; presence, launcher validity and restore proofs remain separate.
-6. Start a new compositor with eligible opted-in policy and verify a new
+6. Start a new compositor with eligible registered policy and verify a new
    opportunity is possible; retain same-compositor guards across daemon restart.
    Exercise archive/activate and exact-ID forget without treating an auth dialog
    or an unrelated application as the registered window. Archive disables
    eligibility but keeps the strict optional approval payload.
 7. For next-login/reboot claims, use the canonical disposable-VM reboot
    procedure with recorded boot identifiers and startup ordering; a compositor
-   restart or mocked shutdown is insufficient. Verify saved permission and
+   restart or mocked shutdown is insufficient. Verify saved launcher identity and
    intended Follow/Pinned eligibility, ordinary authentication, mapping/placement
    and no duplicate attempt after daemon restart. Record manual corrections and
    unavailable routes explicitly.
@@ -1180,7 +1182,7 @@ candidate integration acceptance.
    from TTY-only failure. No askpass implementation, password transport or global
    policy adjustment may be attributed to sway-session. Terminal/D-Bus routes,
    custom-user options, environment/shell wrappers and indirect payloads remain
-   rejected even with opt-in.
+   rejected during normal registration.
 
 Inspect candidate/package evidence rather than claiming success from these
 instructions. Report unit simulation, actual Unix IPC, private Sway, actual
@@ -1426,3 +1428,16 @@ uncommitted uncertain database outcomes. The recovery-gate test proves state
 recovery remains excluded through compensation and the locks are then released.
 These are deterministic concurrency and fault-injection checks; they do not
 claim a real machine reboot or application-session recovery.
+
+## Audit cleanup regressions (LAB-383)
+
+Normal configuration loads through symlinked files/directories and hardlinks;
+regular-target, FIFO nonblocking, byte-size and strict TOML checks still apply.
+Private-state safety tests use the active file primitives after removal of the
+retired JSON writer. The terminal manager uses its bulk activity observation for
+naming, stale-result rejection, cancellation and remote isolation.
+
+`release-gate-check` exercises standalone validation with disposable modules:
+unrelated hidden worktrees pass, actual production/test imports from the old
+animator module fail, and similarly named unrelated modules remain valid.
+Packaging validation checks behavior without prescribing apt package order.

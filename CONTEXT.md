@@ -47,9 +47,9 @@ recoverable exact layout.
 
 ### Administrative applications
 
-**Administrative restore permission**:
-The user's saved decision to let one approved administrative desktop starter
-participate in its ordinary restore policy. It is independent of authentication
+**Reviewed administrative launcher identity**:
+The desktop entry, system helper and application payload reviewed during normal
+registration or reapproval. The saved identity is independent of authentication
 and authorization by the application's privilege mechanism.
 _Avoid_: Password grant, permanent authorization
 

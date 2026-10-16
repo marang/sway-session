@@ -417,11 +417,11 @@ _sway_session() {
 				register-focused)
 					case ${arguments[-1]-} in --socket) _sway_session_files; return 0;; esac
 					[[ ${arguments[-1]-} == --desktop-id ]] && return 0
-					_sway_session_static '--socket --desktop-id --allow-administrative --yes --json -h --help'
+					_sway_session_static '--socket --desktop-id --yes --json -h --help'
 					;;
 				register-workspace)
 					case ${arguments[-1]-} in --socket) _sway_session_files; return 0;; esac
-					_sway_session_static '--socket --allow-administrative --yes --json -h --help'
+					_sway_session_static '--socket --yes --json -h --help'
 					;;
 				confirm|pin|unpin|archive|activate)
 					_sway_session_static '--json -h --help'
@@ -450,14 +450,14 @@ _sway_session() {
 					case ${arguments[-1]-} in --socket) _sway_session_files; return 0;; esac
 					[[ ${arguments[-1]-} == --desktop-id ]] && return 0
 					if _sway_session_context_pending app-rebind "${arguments[@]:2}"; then
-						_sway_session_static '--socket --desktop-id --allow-administrative --yes --json -h --help'
+						_sway_session_static '--socket --desktop-id --yes --json -h --help'
 					else
 						_sway_session_static '--json -h --help'
 					fi
 					;;
 				reapprove)
 					if _sway_session_context_pending app-reapprove "${arguments[@]:2}"; then
-						_sway_session_static '--allow-administrative --yes --json -h --help'
+						_sway_session_static '--yes --json -h --help'
 					else
 						_sway_session_static '--json -h --help'
 					fi

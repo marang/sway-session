@@ -5,8 +5,9 @@ claims below refer to that dated snapshot. This audit itself authorized no
 implementation and obtained no live authentication acceptance evidence.
 
 **Superseded product proposal:** on **2026-10-16** the user explicitly authorized
-bounded administrative desktop starters with durable per-application
-`--allow-administrative` permission, ordinary Follow/Pinned restore including
+bounded administrative desktop starters through normal application registration
+and reapproval (including `--yes`, as clarified in LAB-383), with ordinary
+Follow/Pinned restore including
 next login, and no additional per-launch confirmation. The stronger per-launch
 consent and login-deferral proposal below is retained as historical reasoning,
 not the current requirement. [ADR 0004](../adr/0004-opt-in-administrative-desktop-restore.md)

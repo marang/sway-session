@@ -333,7 +333,7 @@ func (model *terminalManageModel) updateEnvironment(message tea.Msg) (tea.Cmd, b
 	case tea.WindowSizeMsg:
 		state.input.SetWidth(max(message.Width-8, 1))
 		return nil, false
-	case terminalManageLoadedMsg, terminalManageActivityMsg, terminalManageDirectoryMsg, terminalManageActionMsg, terminalManageMigrationMsg, terminalManagePulseMsg:
+	case terminalManageLoadedMsg, terminalManageActivityMsg, terminalManageActionMsg, terminalManageMigrationMsg, terminalManagePulseMsg:
 		// Focused editors own input events, not the other view's asynchronous
 		// domain messages. Its saved load must still finish before returning.
 		return nil, false

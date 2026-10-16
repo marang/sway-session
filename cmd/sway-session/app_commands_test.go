@@ -809,3 +809,52 @@ func loadRegistryOrEmpty(t *testing.T, deps dependencies) sessionstate.Registry 
 	}
 	return registry
 }
+
+func TestAppApprovalRetainsSelectedSocketAcrossConfirmation(t *testing.T) {
+	for _, command := range []string{"register-focused", "register-workspace", "rebind-focused"} {
+		for _, inherited := range []string{"", "/run/user/1000/other-compositor.sock"} {
+			t.Run(command+"/inherited="+inherited, func(t *testing.T) {
+				t.Setenv("SWAYSOCK", inherited)
+				deps, client, _ := administrativeCommandFixture(t)
+				catalog := testDesktopCatalog(t, map[string]string{
+					"org.example.Admin.desktop": "[Desktop Entry]\nType=Application\nName=Example\nExec=/usr/bin/true\n",
+				}, false)
+				deps.desktopCatalog = func() (sessionstate.DesktopCatalog, error) { return catalog, nil }
+				const selectedSocket = "/run/user/1000/selected-compositor.sock"
+				var sockets []string
+				deps.newSwayClient = func(socket string) swayRequester {
+					sockets = append(sockets, socket)
+					if socket != selectedSocket {
+						t.Fatalf("approval switched compositor: got %q, want %q", socket, selectedSocket)
+					}
+					return client
+				}
+				var choices []sessionstate.ApprovalChoice
+				deps.presentApproval = func(_ string, got []sessionstate.ApprovalChoice) error { choices = got; return nil }
+				args := []string{"app", command, "--socket", selectedSocket}
+				if command == "rebind-focused" {
+					root, _ := deps.stateRoot()
+					previous := sessionstate.Context{ID: testContextID, State: sessionstate.ContextActive,
+						Launcher: sessionstate.Launcher{Kind: sessionstate.LauncherFlatpak, FlatpakID: "org.example.Old", FlatpakInstallation: sessionstate.FlatpakUser},
+						App:      &sessionstate.Application{Identity: sessionstate.ApplicationIdentity{Protocol: sessionstate.WindowWayland, WaylandAppID: "org.example.Old", SandboxAppID: "org.example.Old"}, DesiredOpen: true, RestorePolicy: sessionstate.ApplicationRestorePinned}}
+					if _, err := sessionstate.UpdateRegistry(root, func(registry *sessionstate.Registry) error { return sessionstate.AddContext(registry, previous) }); err != nil {
+						t.Fatal(err)
+					}
+					args = append(args, string(testContextID))
+				}
+				if code, _, stderr := runAdministrativeCommand(t, deps, args...); code != exitSuccess || len(choices) != 1 {
+					t.Fatalf("preview failed: code=%d choices=%v stderr=%s", code, choices, stderr)
+				}
+				if code, _, stderr := runAdministrativeCommand(t, deps, "app", "confirm", choices[0].Token); code != exitSuccess {
+					t.Fatalf("confirmation failed: code=%d stderr=%s", code, stderr)
+				}
+				if len(sockets) < 2 || len(loadTestRegistry(t, deps).Contexts) != 1 {
+					t.Fatalf("confirmation did not apply using captured endpoint: sockets=%v", sockets)
+				}
+				if code, _, _ := runAdministrativeCommand(t, deps, "app", "confirm", choices[0].Token); code != exitOperation {
+					t.Fatal("approval token was replayable")
+				}
+			})
+		}
+	}
+}

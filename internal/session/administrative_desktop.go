@@ -144,7 +144,7 @@ func validateDesktopApprovalOptions(entry DesktopEntry, options DesktopApprovalO
 	}
 	if administrative {
 		if !options.AllowAdministrative {
-			return false, errors.New("administrative desktop starter requires explicit --allow-administrative approval; restoration may request authentication")
+			return false, errors.New("administrative desktop starter requires reviewed launcher identity; restoration may request authentication")
 		}
 		return true, nil
 	}

@@ -44,14 +44,6 @@ type terminalManageActivityMsg struct {
 	observations map[sessionstate.ContextID]sessionstate.TerminalSessionObservation
 }
 
-type terminalManageDirectoryMsg struct {
-	probeID     uint64
-	generation  uint64
-	id          sessionstate.ContextID
-	observation sessionstate.HerdrDirectoryObservation
-	err         error
-}
-
 type terminalWindowPresence uint8
 
 const (
@@ -116,7 +108,6 @@ type terminalManageModel struct {
 	loadID          uint64
 	probeCtx        context.Context
 	probeStop       context.CancelFunc
-	probeQueue      []terminalInventoryResult
 	pending         bool
 	status          string
 	err             error
@@ -215,27 +206,6 @@ func (model terminalManageModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		model.rebuildVisible()
 		model.restoreSelection()
 		return model, nil
-	case terminalManageDirectoryMsg:
-		if message.generation != model.loadID || message.probeID != model.activityID || model.probeCtx == nil || model.probeCtx.Err() != nil {
-			return model, nil
-		}
-		for index := range model.items {
-			item := &model.items[index]
-			if item.ContextID != message.id {
-				continue
-			}
-			if message.err == nil && message.observation.Directory != "" {
-				item.PaneDirectory = message.observation.Directory
-			} else {
-				item.AutoName = terminalManageCreatedName(*item)
-			}
-			break
-		}
-		model.updateDirectoryNames()
-		model.items = sortTerminalManageItems(model.items)
-		model.rebuildVisible()
-		model.restoreSelection()
-		return model, model.nextDirectoryProbe()
 	case terminalManageActionMsg:
 		model.pending = false
 		model.err = message.err
@@ -1418,7 +1388,6 @@ func (model *terminalManageModel) stopProbes() {
 		model.probeStop()
 		model.probeStop = nil
 	}
-	model.probeQueue = nil
 	model.activityPending = false
 }
 
@@ -1431,10 +1400,7 @@ func (model *terminalManageModel) startActivityProbe() tea.Cmd {
 			model.items[index].Activity = sessionstate.TerminalSessionObservation{SessionState: "pending", AgentState: "pending"}
 		}
 	}
-	if !ok {
-		return model.startDirectoryProbes()
-	}
-	if len(model.items) == 0 {
+	if !ok || len(model.items) == 0 {
 		return nil
 	}
 	model.probeCtx, model.probeStop = context.WithTimeout(model.ctx, 3*time.Second)
@@ -1444,42 +1410,6 @@ func (model *terminalManageModel) startActivityProbe() tea.Cmd {
 	items := append([]terminalInventoryResult(nil), model.items...)
 	return func() tea.Msg {
 		return terminalManageActivityMsg{generation: generation, probeID: probeID, observations: observer.ObserveActivity(ctx, items)}
-	}
-}
-
-func (model *terminalManageModel) startDirectoryProbes() tea.Cmd {
-	if model.probeStop != nil {
-		model.probeStop()
-	}
-	model.probeQueue = nil
-	if _, ok := model.operations.(terminalManageDirectoryObserver); !ok {
-		return nil
-	}
-	for _, item := range model.items {
-		if item.State == sessionstate.ContextActive && terminalManageUsesAutoName(item) {
-			model.probeQueue = append(model.probeQueue, item)
-		}
-	}
-	model.probeCtx, model.probeStop = context.WithCancel(model.ctx)
-	model.activityID++
-	return model.nextDirectoryProbe()
-}
-
-func (model *terminalManageModel) nextDirectoryProbe() tea.Cmd {
-	if len(model.probeQueue) == 0 {
-		if model.probeStop != nil {
-			model.probeStop()
-			model.probeStop = nil
-		}
-		return nil
-	}
-	item := model.probeQueue[0]
-	model.probeQueue = model.probeQueue[1:]
-	observer := model.operations.(terminalManageDirectoryObserver)
-	ctx, generation, probeID := model.probeCtx, model.loadID, model.activityID
-	return func() tea.Msg {
-		observation, err := observer.ObservePaneDirectory(ctx, item)
-		return terminalManageDirectoryMsg{generation: generation, probeID: probeID, id: item.ContextID, observation: observation, err: err}
 	}
 }
 

@@ -125,13 +125,14 @@ type Launcher struct {
 	Cwd      string            `json:"cwd,omitempty"`
 	Terminal *TerminalLauncher `json:"terminal,omitempty"`
 
-	DesktopID                string             `json:"desktop_id,omitempty"`
-	DesktopOrigin            DesktopEntryOrigin `json:"desktop_origin,omitempty"`
-	DesktopPath              string             `json:"desktop_path,omitempty"`
-	DesktopEntrySHA256       string             `json:"desktop_entry_sha256,omitempty"`
-	ApprovedDesktopPath      string             `json:"approved_desktop_path,omitempty"`
-	ApprovedExecutablePath   string             `json:"approved_executable_path,omitempty"`
-	ApprovedExecutableSHA256 string             `json:"approved_executable_sha256,omitempty"`
+	DesktopID                string                         `json:"desktop_id,omitempty"`
+	DesktopOrigin            DesktopEntryOrigin             `json:"desktop_origin,omitempty"`
+	DesktopPath              string                         `json:"desktop_path,omitempty"`
+	DesktopEntrySHA256       string                         `json:"desktop_entry_sha256,omitempty"`
+	ApprovedDesktopPath      string                         `json:"approved_desktop_path,omitempty"`
+	ApprovedExecutablePath   string                         `json:"approved_executable_path,omitempty"`
+	ApprovedExecutableSHA256 string                         `json:"approved_executable_sha256,omitempty"`
+	Administrative           *AdministrativeDesktopApproval `json:"administrative,omitempty"`
 
 	FlatpakID           string              `json:"flatpak_id,omitempty"`
 	FlatpakInstallation FlatpakInstallation `json:"flatpak_installation,omitempty"`
@@ -528,6 +529,17 @@ func (launcher *Launcher) validateDesktop() error {
 	default:
 		return fmt.Errorf("unsupported desktop entry origin %q", launcher.DesktopOrigin)
 	}
+	if err := launcher.Administrative.validate(); err != nil {
+		return fmt.Errorf("invalid administrative approval: %w", err)
+	}
+	if launcher.Administrative != nil {
+		if launcher.ApprovedExecutablePath != "" {
+			return errors.New("administrative launcher must not contain user executable approval")
+		}
+		if launcher.DesktopOrigin == DesktopEntryUser && launcher.DesktopEntrySHA256 != launcher.Administrative.DesktopEntrySHA256 {
+			return errors.New("administrative approval must match the approved user desktop entry")
+		}
+	}
 	return nil
 }
 
@@ -583,7 +595,7 @@ func (terminal *TerminalLauncher) validate() error {
 
 func (launcher *Launcher) hasDesktopFields() bool {
 	return launcher.DesktopID != "" || launcher.DesktopOrigin != "" || launcher.DesktopPath != "" ||
-		launcher.DesktopEntrySHA256 != "" || launcher.ApprovedDesktopPath != "" || launcher.ApprovedExecutablePath != "" || launcher.ApprovedExecutableSHA256 != ""
+		launcher.DesktopEntrySHA256 != "" || launcher.ApprovedDesktopPath != "" || launcher.ApprovedExecutablePath != "" || launcher.ApprovedExecutableSHA256 != "" || launcher.Administrative != nil
 }
 
 func (launcher *Launcher) hasFlatpakFields() bool {

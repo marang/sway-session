@@ -1,8 +1,26 @@
-# LAB-94: future privileged desktop restore — research and decision gate
+# LAB-94: privileged desktop restore — historical research and decision gate
 
-Research date: 2026-10-03. Scope: the LAB-94 privileged-desktop restore design reminder.
-LAB-94 is a design reminder. It does **not** authorize privileged restore in v1, an implementation, a workaround, or a ticket completion claim.
-Recommendation: preserve the current rejection boundary until a separately authorized, application-specific design satisfies the gates below.
+Historical research date: **2026-10-03**. All source findings and inspected-code
+claims below refer to that dated snapshot. This audit itself authorized no
+implementation and obtained no live authentication acceptance evidence.
+
+**Superseded product proposal:** on **2026-10-16** the user explicitly authorized
+bounded administrative desktop starters with durable per-application
+`--allow-administrative` permission, ordinary Follow/Pinned restore including
+next login, and no additional per-launch confirmation. The stronger per-launch
+consent and login-deferral proposal below is retained as historical reasoning,
+not the current requirement. [ADR 0004](../adr/0004-opt-in-administrative-desktop-restore.md)
+records the trade-off; [the current plan](../sway-session-plan.md#administrative-desktop-starters)
+owns the implementation contract and [verification](../sway-session-verification.md#administrative-desktop-restore-acceptance)
+owns candidate acceptance. Original primary-source findings and limits remain
+unchanged; they do not become proof that the feature candidate passed live
+integration. The current administrative adapter starts the pinned helper
+directly from the persistent daemon; ordinary entries retain GIO. Bare helper
+names select canonical system paths without PATH search, and arguments are
+reconstructed only from the approved desktop through bounded field-code
+expansion. Earlier GIO-based administrative experiments do not validate this
+changed dispatch path. These current-contract qualifiers leave the historical
+GIO source observations below attached to their original snapshot.
 
 ## Evidence scope and source pins
 
@@ -16,7 +34,7 @@ Recommendation: preserve the current rejection boundary until a separately autho
 - `run0`: [current upstream source](https://github.com/systemd/systemd/blob/main/man/run0.xml), date-pinned, corroborates the authentication model in [systemd v256 source][run0]. No installed-version claim.
 - No privileged application was executed and no user configuration or private identity was inspected. This source audit does not claim live authentication or application acceptance.
 
-## Current behavior verified by source and existing assertions
+## Behavior observed in the 2026-10-03 source snapshot
 
 | Boundary | What the inspected code establishes |
 | --- | --- |
@@ -66,7 +84,7 @@ Trust the selected upstream mechanism, polkit authority/session agent, kernel/co
 | Secret disclosure or forged response | Keep passwords, OTPs, authentication responses, and polkit cookies entirely in the agent/authority path; never persist or forward them through session state, approval tokens, brokers, logs, diagnostics, or environment. [agent contract][agent-wire] |
 | Cancel/timeout/shutdown race | Cancellation of a check is not rollback of an already dispatched operation. Persist conservative intent, stop further effects, and require observed/typed evidence before deciding whether launch occurred. [cancellation API][authority-wire], [existing attempt guard][coordinator] |
 
-## Safe future proposal — design requirements only
+## Historical stronger proposal — superseded consent policy
 
 1. Limit support to named applications and typed operations using an upstream privileged mechanism. Elevated GUIs require a documented integration; arbitrary Exec interpretation stays unsupported. [mechanism guidance][polkit-apps]
 2. Obtain **per-registration consent** to track that exact privileged application, privilege scope, target principal, and restore policy. Registration grants tracking capability, not permanent authorization to execute.
@@ -80,7 +98,7 @@ Trust the selected upstream mechanism, polkit authority/session agent, kernel/co
 Fresh product consent is required even if polkit returns authorization without another password prompt. Whether a fresh credential challenge is also mandatory is a user product decision; cached/implicit grants mean generic polkit use cannot promise that challenge.
 Registration `--yes`, pinning, restore eligibility, or a previously successful password challenge must never silently become forever consent. Do not install passwordless authorization rules or alter/revoke global session grants to manufacture this behavior. [policy][polkit-policy], [application-rule guidance][polkit-apps]
 
-## Proposed typed states and partial mapping
+## Historical proposed typed states and partial mapping
 
 These names describe future semantics, not current wire/schema additions. Authentication phase, dispatch evidence, and window/placement/layout proofs must be independent fields. Existing report allowlists require an explicit compatibility decision. [current report][report]
 
@@ -100,7 +118,7 @@ Use per-context outcomes for a mixed restore batch; one cancellation must not er
 During shutdown/logout/sleep, cancel pending checks, invalidate launch consent, preserve Pinned desired-open, and stop dispatch. A restart/new compositor must not turn an uncertain privileged attempt into an automatic retry; require a new explicit decision and fresh observation.
 Cancellation after acceptance cannot promise to stop the privileged operation or close its windows safely. Preserve partial mapping; never close an independently opened window to enforce an earlier restore plan. [existing race limit][launch-race], [GIO limitation][gio-launch]
 
-## Product decisions, upstream prerequisites, and honest gate
+## Historical product decisions, upstream prerequisites, and gate
 
 | Gate owner | Evidence/decision required before implementation can be authorized |
 | --- | --- |
@@ -110,9 +128,9 @@ Cancellation after acceptance cannot promise to stop the privileged operation or
 | Compositor/application identity | Demonstrate privileged-instance versus ordinary-instance and agent-dialog separation, including Wayland/XWayland, multiple windows, and service activation. LAB-93's documented native metadata gap is a dependency to evaluate, not proof all identity problems will be solved. [project limitation][identity-limit] |
 | sway-session compatibility/security | Separately authorize typed launcher/state/report changes, schema/protocol handling, AppArmor/packaging implications, and review of the narrow boundary. Preserve established brokers and lifecycle/transaction invariants. [repository rules][repo-rules] |
 
-**Gate remains closed:** no selected upstream integration, product decisions, or end-to-end privileged restore evidence was obtained here. Official docs support boundaries and research questions; they do not establish readiness to enable privileged restore.
+**Gate at the 2026-10-03 audit:** no selected upstream integration, product decisions, or end-to-end privileged restore evidence was obtained here. Official docs support boundaries and research questions; they do not establish readiness to enable privileged restore.
 
-## Future verification requirements
+## Verification proposed by the historical audit
 
 - Pure/fixture tests: retain known helper/indirect rejection, explicitly cover `su`/`run0`, and distinguish wrapper/D-Bus/unknown classification from a complete privilege detector; verify desktop/executable/service/action changes revoke consent.
 - Consent/authentication tests: registration cannot launch; every privileged attempt consumes fresh consent; replay/expiry, changed context/policy/session, retained grants, wrong principal, no agent/authority, and denied/cancelled/timed-out challenges remain distinct; never collect/store credential responses.

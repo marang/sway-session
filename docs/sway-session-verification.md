@@ -1086,6 +1086,110 @@ Treat Chrome, Slack, and similar application-internal restoration as app-owned.
 Registered application anchors also support typed scratchpad placement. Native Wayland parent/type limits in Sway
 1.12 remain documented rather than guessed around.
 
+### Administrative desktop restore acceptance
+
+The [LAB-94 contract](adr/0004-opt-in-administrative-desktop-restore.md) requires
+registration-time opt-in and ordinary policy-driven restore. It does not require
+a second sway-session confirmation at launch. Run the focused CLI, strict token,
+grammar and trusted-helper checks as well as `make verify`:
+
+```sh
+GOTOOLCHAIN=go1.26.5 go test -race ./cmd/sway-session ./internal/session \
+  -run 'TestAppAdministrative|TestAppOrdinaryEntry|TestApplicationOperationAdministrative|TestAdministrative' \
+  -count=1
+```
+
+Grammar/default-rejection tests need no installed administrative helper.
+Positive trust tests use an installed `/usr/bin/pkexec` or `/usr/bin/sudo`,
+explicitly reporting a missing optional dependency when neither is available;
+they never execute the helper. These tests prove typed permission, digest
+binding, revalidation, cleanup and unchanged ordinary behavior. They do not prove
+a real authentication dialog or application startup.
+
+Actual authentication acceptance belongs in a disposable VM with a dedicated
+test account, private state and workspace 98 or higher. Use a benign packaged
+fixture whose privileged effect is confined to that VM and whose normal
+application window has a distinct, unambiguous identity. Record the exact
+candidate version/commit/modified flag and executable SHA-256, helper/payload
+identities, Sway, session-agent and privilege-stack versions. Keep credentials,
+raw terminal/pane output, policy cookies and private state out of evidence.
+A standalone Polkit/helper preflight is a prerequisite observation, not feature
+candidate integration acceptance.
+
+1. Without `--allow-administrative`, `--yes` registration/rebind/reapproval must
+   still reject an administrative starter. With explicit opt-in, preview names
+   the launcher and warns that restore can request authentication again; the
+   typed one-time operation commits only its reviewed desktop/helper/payload
+   identity. Registration itself must not launch the starter. Mutating reviewed
+   material before confirmation must reject that token without changing an
+   unrelated registration, approval or window.
+2. Exercise both Follow and Pinned with the saved context absent and eligible.
+   Verify exactly one ordinary restore attempt can show the normal session
+   agent. There must be no extra sway-session launch-consent UI and no
+   assumption that every attempt prompts: cached or policy authorization may
+   differ. Authentication dialogs must not become application anchors.
+3. Dismiss a real test authentication dialog. The fixture must establish no
+   privileged test effect or mapped application. The manager may report launch
+   acceptance followed by mapping uncertainty; it must not claim an observed
+   cancellation or authenticated state. Reconcile repeatedly and restart the
+   daemon in the same compositor, including after the mapping timeout: there
+   must be no second attempt or repeated dialog.
+4. Approve a separate clean attempt through the normal agent. Verify the benign
+   privileged effect independently, then the intended ordinary-user GUI and its
+   unique anchor/placement. Helper process-start acceptance alone does not prove
+   either. Exercise
+   late GUI mapping after `mapping_timeout`; preserve the recorded attempt and
+   permit only the ordinary fresh-observation/layout convergence. Never kill or
+   roll back possibly accepted work to enforce a timeout.
+5. Change the desktop bytes, helper contents or payload contents only inside
+   the disposable fixture. Launcher validity must require reapproval, including
+   for a system desktop entry. `reapprove --yes` alone must not renew permission;
+   `reapprove --allow-administrative` must bind newly reviewed material. Inventory
+   exposes its administrative marker without adding authentication outcome
+   claims; presence, launcher validity and restore proofs remain separate.
+6. Start a new compositor with eligible opted-in policy and verify a new
+   opportunity is possible; retain same-compositor guards across daemon restart.
+   Exercise archive/activate and exact-ID forget without treating an auth dialog
+   or an unrelated application as the registered window. Archive disables
+   eligibility but keeps the strict optional approval payload.
+7. For next-login/reboot claims, use the canonical disposable-VM reboot
+   procedure with recorded boot identifiers and startup ordering; a compositor
+   restart or mocked shutdown is insufficient. Verify saved permission and
+   intended Follow/Pinned eligibility, ordinary authentication, mapping/placement
+   and no duplicate attempt after daemon restart. Record manual corrections and
+   unavailable routes explicitly.
+8. Inspect the administrative process specification and actual private fixture:
+   the persistent daemon must directly parent the exact pinned `/usr/bin`
+   helper, with no transient GIO parent. Ordinary entries must retain their GIO
+   route. Bare helper names must choose the canonical helper even when another
+   PATH entry exists. Validate standalone `%f/%F/%u/%U` omission, `%c` as one
+   argument, `%i` presence/absence, system versus protected-snapshot `%k`, and
+   single-pass literal `%%`. Unknown or embedded dynamic fields, controls and
+   helper arguments above 256 elements or 64 KiB must fail without executing.
+   Expanded Name/Icon/path values must never become shell syntax or new fields.
+9. In a separate private attempt, stop the daemon while real pkexec
+   authentication is pending, then restart it in the same compositor. Observe
+   parent-death/cancellation behavior and preserved no-repeat guard; do not
+   assume the dialog survives. Separately test parent death after the fixture
+   has started its privileged payload and ordinary-user GUI. Record the actual
+   surviving processes/effects and limits; no universal survival or rollback
+   claim follows from either result. Retire evidence from any earlier GIO
+   dispatch candidate and rerun affected authentication/lifecycle scenarios on
+   the direct-helper candidate.
+10. If sudo is exercised, distinguish configured askpass/cache/policy operation
+   from TTY-only failure. No askpass implementation, password transport or global
+   policy adjustment may be attributed to sway-session. Terminal/D-Bus routes,
+   custom-user options, environment/shell wrappers and indirect payloads remain
+   rejected even with opt-in.
+
+Inspect candidate/package evidence rather than claiming success from these
+instructions. Report unit simulation, actual Unix IPC, private Sway, actual
+privilege agent/helper and regular VM reboot as separate proof boundaries. A
+failed or unrun required scenario stays open. Downgrade checks must demonstrate
+that an older strict reader rejects administrative contexts even when archived;
+forget them using the newer binary or restore a private pre-feature backup
+before testing an older reader. Never mix writer versions.
+
 ### Scratchpad application acceptance
 
 `TestSessionRuntimeScratchpadHeadless` captures hidden and shown registered

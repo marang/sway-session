@@ -10,8 +10,9 @@ Sway starts, with their saved workspaces and window layout. Terminals use
 Desktop applications handle their own tabs, documents, and other internal state.
 
 It runs on Linux with Sway. Persistent terminals require Herdr and either
-Alacritty or Foot. Desktop-entry launches use `gio`; Flatpak applications also
-require `flatpak`.
+Alacritty or Foot. Ordinary desktop-entry launches use `gio`; opted-in
+administrative starters use their pinned system helper directly. Flatpak
+applications also require `flatpak`.
 
 ## Install
 
@@ -311,6 +312,54 @@ To keep a registered application in the scratchpad, register it on a normal
 workspace first, then move it to the scratchpad as usual. Its saved anchor
 returns hidden or shown on its saved workspace. Scratchpad cycling order and
 additional application windows may differ after restore.
+
+### Administrative desktop starters
+
+For a supported administrative launcher, focus its normal application window
+and opt in explicitly:
+
+```sh
+sway-session app register-focused --allow-administrative
+sway-session app reapprove --allow-administrative CONTEXT
+```
+
+The same flag is available on `register-workspace` and `rebind-focused`.
+`--yes` alone never opts in. The saved Follow/Pinned policy may then restore the
+unchanged approved starter at login and request normal authentication, without
+another sway-session confirmation. Acceptance or uncertainty, including a
+dismissed authentication dialog, retains a duplicate-launch guard for that
+compositor lifetime through daemon restarts. A new compositor may try again
+when the saved policy is eligible.
+
+Supported desktop `Exec` forms use `/usr/bin/pkexec PAYLOAD` or
+`/usr/bin/sudo [-A|--askpass] PAYLOAD`, with an absolute, direct, root-owned
+payload. Bare `pkexec`/`sudo` are explicit shorthand for those canonical
+`/usr/bin` helpers, without PATH lookup. The existing persistent daemon starts
+the pinned helper directly; ordinary desktop entries still use GIO. Both
+executables must be regular nonsymlink files under trusted
+root-owned paths. Terminal/D-Bus routes, a nonempty desktop `Path` working directory, custom users, environment wrappers,
+shells and indirect payloads remain unsupported. sudo's existing policy, cache
+or askpass setup owns authentication; a TTY-only setup is not made usable and
+sway-session supplies no new askpass mechanism or password transport.
+
+Approval pins the full desktop file and both executable contents, even for
+system entries. Changes require `reapprove --allow-administrative` again.
+Inventory marks administrative registrations without claiming authentication
+status. Process-start acceptance and `mapping_timeout` cannot establish whether
+authentication succeeded or was cancelled. If the daemon exits, pending pkexec
+authentication may be cancelled; continuous authentication or application
+survival is not guaranteed. sway-session collects no credentials and never kills
+possibly accepted work to undo an uncertain result. Arguments come only from the
+approved desktop file through bounded field-code expansion, with no file/URI
+launch inputs; unsupported field forms require correcting and reapproving the
+entry. Literal `#` characters must be quoted or escaped; administrative Exec
+comments are unsupported.
+
+Older binaries reject these registrations even when archived. Before downgrade,
+use the newer binary to forget them or restore a private pre-feature backup;
+never mix writer versions. See the
+[administrative restore decision](docs/adr/0004-opt-in-administrative-desktop-restore.md)
+for the scope and trade-off.
 
 ## Configuration and command help
 

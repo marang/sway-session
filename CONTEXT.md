@@ -45,6 +45,19 @@ It does not establish whether a process is currently running.
 A saved workspace arrangement that retains application placement without a
 recoverable exact layout.
 
+### Administrative applications
+
+**Administrative restore permission**:
+The user's saved decision to let one approved administrative desktop starter
+participate in its ordinary restore policy. It is independent of authentication
+and authorization by the application's privilege mechanism.
+_Avoid_: Password grant, permanent authorization
+
+**Administrative starter**:
+A desktop launcher whose supported privilege helper starts a separately
+identified application payload. Its registration does not identify an
+authentication dialog as an application window.
+
 ### Work organization
 
 **Work environment**:

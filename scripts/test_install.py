@@ -27,6 +27,7 @@ DOC_FILES = (
     "docs/adr/0001-sqlite-session-runtime-state.md",
     "docs/adr/0002-nonowning-work-environments.md",
     "docs/adr/0003-explicit-remote-terminal-bindings.md",
+    "docs/adr/0004-opt-in-administrative-desktop-restore.md",
     "contrib/sway-session/config.toml",
     "contrib/herdr/config.toml",
     "contrib/codex/hooks.json",

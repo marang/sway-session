@@ -338,3 +338,52 @@ func TestApplicationOperationRequiresContextRevisionOnlyForContextMutations(t *t
 		t.Fatal("non-canonical context revision was accepted")
 	}
 }
+
+func TestApplicationOperationAdministrativeOptInIsExplicitAndTokenBound(t *testing.T) {
+	for _, allowed := range []bool{false, true} {
+		t.Run(fmt.Sprint(allowed), func(t *testing.T) {
+			now := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
+			store := ApplicationOperationStore{RuntimeRoot: t.TempDir(), Now: func() time.Time { return now }}
+			operation := ApplicationOperation{Kind: OperationRegister, Items: []ApplicationOperationItem{{
+				ContextID: testContextID, DesktopID: "org.example.App.desktop", AllowAdministrative: allowed,
+				Window: &WindowApplication{ContainerID: 42, Workspace: "98", Identity: ApplicationIdentity{Protocol: WindowWayland, WaylandAppID: "org.example.App"}},
+			}}}
+			if allowed {
+				operation.Items[0].AdministrativeApprovalSHA256 = strings.Repeat("a", 64)
+			}
+			token, err := store.Create(operation)
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(filepath.Join(store.directory(), token+".json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if bytes.Contains(data, []byte(`"allow_administrative"`)) != allowed {
+				t.Fatalf("default operation wire shape or explicit permission changed: %s", data)
+			}
+			consumed, err := store.Consume(token)
+			if err != nil || consumed.Items[0].AllowAdministrative != allowed || consumed.Items[0].AdministrativeApprovalSHA256 != operation.Items[0].AdministrativeApprovalSHA256 {
+				t.Fatalf("one-time approval lost its explicit permission: %+v err=%v", consumed, err)
+			}
+		})
+	}
+}
+
+func TestApplicationOperationAdministrativePermissionRequiresReviewedIdentity(t *testing.T) {
+	now := time.Now().UTC()
+	operation := ApplicationOperation{Version: ApplicationOperationVersion, Kind: OperationReapprove, ExpiresAt: now.Add(time.Minute), Items: []ApplicationOperationItem{{
+		ContextID: testContextID, DesktopID: "org.example.App.desktop", ContextRevision: strings.Repeat("a", 64), AllowAdministrative: true,
+	}}}
+	if err := operation.Validate(now); err == nil {
+		t.Fatal("administrative permission without reviewed identity was accepted")
+	}
+	operation.Items[0].AdministrativeApprovalSHA256 = strings.Repeat("b", 64)
+	if err := operation.Validate(now); err != nil {
+		t.Fatalf("reviewed administrative operation was rejected: %v", err)
+	}
+	operation.Items[0].AllowAdministrative = false
+	if err := operation.Validate(now); err == nil {
+		t.Fatal("reviewed administrative identity without permission was accepted")
+	}
+}

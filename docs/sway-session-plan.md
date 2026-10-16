@@ -480,6 +480,87 @@ matches are rejected. System entries are root-owned launch material. Approved
 user-local entries are copied into owner-only immutable snapshots; later source
 or executable changes require reapproval.
 
+### Administrative desktop starters
+
+LAB-94's [accepted decision](adr/0004-opt-in-administrative-desktop-restore.md)
+adds explicit per-registration administrative permission. `app register-focused`,
+`register-workspace`, `rebind-focused` and `reapprove` accept
+`--allow-administrative`; generic `--yes` never grants it. The flag marks only an
+actually recognized administrative starter. Ordinary entries retain their
+ordinary approval and payload. Rebinding or reapproving administrative launch
+material requires the flag again.
+
+Supported direct desktop `Exec` prefixes are `/usr/bin/pkexec` and
+`/usr/bin/sudo`, the latter with an optional single `-A` or `--askpass` option,
+followed by a clean absolute payload executable. Bare `pkexec`/`sudo` is explicit
+shorthand for the corresponding canonical `/usr/bin` helper, without PATH
+lookup. Both helper and payload must be root-owned regular nonsymlink
+executables under trusted root-owned ancestors. Other helper options, custom
+users, `Terminal=true`, D-Bus activation, a nonempty desktop `Path` working
+directory, environment/shell wrappers and indirect
+payloads are rejected. A normal sudo policy/cache/askpass arrangement may
+authorize or prompt; a TTY-only setup remains unusable. No askpass program,
+password transport or global authorization rule is installed or changed.
+
+Administrative starters run the pinned helper directly from the existing
+persistent daemon, keeping the caller available while authentication is
+pending. Ordinary desktop entries retain their existing GIO route. Arguments
+are reconstructed only from the approved desktop bytes with the bounded
+desktop tokenizer and expansion below; there is no arbitrary argv input through
+CLI, state or a broker. The helper argument list is bounded to 256 elements and
+64 KiB including terminators. Session state stores trust identity, not argv.
+
+| Desktop field form | Restore expansion |
+| --- | --- |
+| Standalone `%f`, `%F`, `%u`, `%U` | Omitted: restore supplies no file or URI inputs. |
+| Standalone `%c` | The desktop Name as one argument. |
+| Standalone `%i` | `--icon` and Icon as two arguments, or nothing when Icon is absent. |
+| Standalone `%k` | The trusted source desktop path for system entries, or the approved private snapshot path for user-local entries. |
+| `%%` | One literal percent, expanded in a single pass; replacement text is never reinterpreted. |
+
+Unknown field codes and embedded dynamic codes, such as `--name=%c`, fail
+approval. Unquoted/unescaped `#` is rejected for administrative Exec values: quote
+or escape a literal hash, and omit comment syntax. This avoids interpreting GIO
+comments as privileged payload arguments. Replacement values remain individual arguments rather than shell
+syntax or new words.
+
+Approval pins the exact desktop bytes plus helper and payload paths/content,
+including system desktop entries. Registration previews and short-lived
+one-time tokens bind this complete identity; confirmation and launch revalidate
+it before effects. An altered desktop file, helper or payload requires explicit
+reapproval. User-local snapshots retain their existing owner-only checks.
+
+The saved permission permits ordinary Follow/Pinned restore, including
+next-login attempts, without an extra per-launch confirmation. Privilege
+mechanisms and their session agents retain authentication and authorization
+responsibility. Launch acceptance does not prove authentication, cancellation,
+a window or successful placement. A dismissed dialog can leave the same
+uncertainty as another missing window: `mapping_timeout` does not identify its
+cause. Accepted or uncertain work retains its compositor-scoped launch guard
+across daemon restart; repeated reconciliation cannot prompt again in that
+compositor. A new compositor may attempt eligible opted-in work again. No
+credential responses are collected or persisted, and no possibly accepted
+application is killed or rolled back to settle an uncertain outcome. A daemon
+exit may cause pending pkexec authentication to be cancelled. This adapter does
+not guarantee uninterrupted authentication or survival of already started work
+through parent death; those lifecycle boundaries require explicit candidate
+evidence rather than inference from process-start acceptance.
+
+Inventory adds an administrative launcher marker while retaining separate
+policy, presence, launcher validity, launch guard and restore proofs. It adds no
+authentication outcome claims. Existing start/report brokers keep their narrow
+wire contracts and acquire no administrative command capability.
+
+Strict context payloads add optional nested administrative approval; operation
+tokens add paired optional permission and reviewed-identity fields. Existing
+context/database/protocol version numbers and ordinary wire payloads remain
+unchanged. Older strict readers reject opted-in registrations, including
+archived ones. Archive disables restore eligibility only: use the newer binary
+to forget administrative registrations before downgrade, or restore an
+owner-only pre-feature backup. Mixed-version writers are unsupported.
+
+### Application inventory and lifecycle
+
 Application inventory is an additive read surface. Bare `app list` retains
 its saved-context output and bare `app status` retains focused registration
 selection. `app list --inventory [--socket PATH]` explains every saved
@@ -721,7 +802,7 @@ Codebase → Sway Session label:
 
 - LAB-89: stronger sandboxing for broker-created agent sessions.
 - LAB-93: stable native Wayland per-window identity.
-- LAB-94: explicit privileged desktop restore design.
+- LAB-94: explicitly opted-in administrative desktop restore.
 
 The [LAB-180 named-environment design](named-work-environments.md) defines the
 bounded first Reach slice and later optional scopes. LAB-375 implementation is
@@ -755,9 +836,11 @@ unproven durable application adoption keep generic per-window restore gated;
 application-level restore remains the fallback.
 
 The [privileged desktop restore evaluation](https://github.com/marang/sway-session/blob/main/docs/research/privileged-desktop-restore-gate.md)
-documents the current administrative-launcher rejection boundary and the
-consent, identity and upstream mechanism requirements for a future design.
-It does not enable privileged restore or automatic authentication at login.
+retains its 2026-10-03 source findings and stronger historical consent proposal.
+The explicit 2026-10-16 decision in [ADR 0004](adr/0004-opt-in-administrative-desktop-restore.md)
+supersedes per-launch consent and login deferral for the bounded opted-in
+starters above. It does not claim a generic elevated-GUI integration or new
+authentication telemetry.
 
 Active sequencing and acceptance criteria live in Linear; this document owns
 the durable architecture and compatibility decisions.

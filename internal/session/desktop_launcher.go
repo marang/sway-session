@@ -36,6 +36,10 @@ var indirectOrPrivilegedExecutables = map[string]struct{}{
 // ValidateDesktopEntryForApproval performs the launch-shape checks which can
 // be shown during preview without trusting stale catalog filesystem metadata.
 func ValidateDesktopEntryForApproval(entry DesktopEntry) error {
+	return ValidateDesktopEntryForApprovalWithOptions(entry, DesktopApprovalOptions{})
+}
+
+func ValidateDesktopEntryForApprovalWithOptions(entry DesktopEntry, options DesktopApprovalOptions) error {
 	if err := validateDesktopID(entry.ID); err != nil {
 		return err
 	}
@@ -46,7 +50,7 @@ func ValidateDesktopEntryForApproval(entry DesktopEntry) error {
 		launcher := Launcher{Kind: LauncherFlatpak, FlatpakID: entry.FlatpakID, FlatpakInstallation: entry.FlatpakInstallation}
 		return launcher.validate()
 	}
-	if err := rejectAdministrativeDesktopEntry(entry); err != nil {
+	if _, err := validateDesktopApprovalOptions(entry, options); err != nil {
 		return err
 	}
 	if entry.Origin == DesktopEntryUser && entry.Exec == "" {
@@ -58,7 +62,11 @@ func ValidateDesktopEntryForApproval(entry DesktopEntry) error {
 // DesktopApprovalSummary is a bounded human-readable trust preview. It shows
 // only launcher identity and executable origin, never arguments or URI fields.
 func DesktopApprovalSummary(entry DesktopEntry) (string, error) {
-	if err := ValidateDesktopEntryForApproval(entry); err != nil {
+	return DesktopApprovalSummaryWithOptions(entry, DesktopApprovalOptions{})
+}
+
+func DesktopApprovalSummaryWithOptions(entry DesktopEntry, options DesktopApprovalOptions) (string, error) {
+	if err := ValidateDesktopEntryForApprovalWithOptions(entry, options); err != nil {
 		return "", err
 	}
 	if entry.FlatpakID != "" {
@@ -73,6 +81,9 @@ func DesktopApprovalSummary(entry DesktopEntry) (string, error) {
 		}
 	}
 	summary := fmt.Sprintf("%s (%s desktop entry %s; executable %s)", entry.Name, entry.Origin, entry.Path, executable)
+	if _, administrative, _ := administrativeDesktopEntry(entry); administrative {
+		summary += "; administrative restore allowed: may request authentication again"
+	}
 	if len(summary) > 2048 {
 		return "", errors.New("desktop approval summary exceeds 2048 bytes")
 	}
@@ -97,6 +108,10 @@ func PrepareDesktopApproval(stateRoot string, id ContextID, entry DesktopEntry) 
 // PrepareDesktopApprovalContext is PrepareDesktopApproval with cancelable
 // access to protected approval snapshots.
 func PrepareDesktopApprovalContext(ctx context.Context, stateRoot string, id ContextID, entry DesktopEntry) (DesktopApproval, error) {
+	return PrepareDesktopApprovalContextWithOptions(ctx, stateRoot, id, entry, DesktopApprovalOptions{})
+}
+
+func PrepareDesktopApprovalContextWithOptions(ctx context.Context, stateRoot string, id ContextID, entry DesktopEntry, options DesktopApprovalOptions) (DesktopApproval, error) {
 	if ctx == nil {
 		return DesktopApproval{}, errors.New("desktop approval context is nil")
 	}
@@ -114,7 +129,8 @@ func PrepareDesktopApprovalContext(ctx context.Context, stateRoot string, id Con
 	if err != nil {
 		return DesktopApproval{}, err
 	}
-	if err := rejectAdministrativeDesktopEntry(parsed); err != nil {
+	administrative, err := validateDesktopApprovalOptions(parsed, options)
+	if err != nil {
 		return DesktopApproval{}, err
 	}
 	launcher := Launcher{
@@ -122,6 +138,12 @@ func PrepareDesktopApprovalContext(ctx context.Context, stateRoot string, id Con
 		DesktopID:     entry.ID,
 		DesktopOrigin: entry.Origin,
 		DesktopPath:   resolved,
+	}
+	if administrative {
+		launcher.Administrative, err = prepareAdministrativeApproval(ctx, data, parsed)
+		if err != nil {
+			return DesktopApproval{}, err
+		}
 	}
 	switch entry.Origin {
 	case DesktopEntrySystem:
@@ -131,13 +153,15 @@ func PrepareDesktopApprovalContext(ctx context.Context, stateRoot string, id Con
 		}
 		digest := sha256Hex(data)
 		launcher.DesktopEntrySHA256 = digest
-		executable, owner, executableDigest, err := approvedDesktopExecutable(parsed.Exec)
-		if err != nil {
-			return DesktopApproval{}, err
-		}
-		if owner != 0 {
-			launcher.ApprovedExecutablePath = executable
-			launcher.ApprovedExecutableSHA256 = executableDigest
+		if !administrative {
+			executable, owner, executableDigest, err := approvedDesktopExecutable(parsed.Exec)
+			if err != nil {
+				return DesktopApproval{}, err
+			}
+			if owner != 0 {
+				launcher.ApprovedExecutablePath = executable
+				launcher.ApprovedExecutableSHA256 = executableDigest
+			}
 		}
 		directory := filepath.Join(stateRoot, desktopApprovalDirectory)
 		name := string(id) + "-" + digest + ".desktop"
@@ -317,14 +341,10 @@ func (launcher DesktopApplicationLauncher) SpecContext(ctx context.Context, sess
 	}
 	switch sessionContext.Launcher.Kind {
 	case LauncherDesktop:
-		if launcher.GIO != systemGIOExecutable {
+		if sessionContext.Launcher.Administrative == nil && launcher.GIO != systemGIOExecutable {
 			return ProcessSpec{}, launcherValidationFailure(ApplicationLauncherInvalid, "launcher_command_invalid", fmt.Errorf("gio launcher must be %s", systemGIOExecutable))
 		}
-		path, environment, err := revalidateDesktopLaunchContext(ctx, sessionContext.Launcher, launcher.StateRoot)
-		if err != nil {
-			return ProcessSpec{}, err
-		}
-		return ProcessSpec{Name: launcher.GIO, Arguments: []string{"launch", path}, Environment: environment}, nil
+		return revalidateDesktopLaunchContext(ctx, sessionContext.Launcher, launcher.StateRoot)
 	case LauncherFlatpak:
 		if launcher.Flatpak != systemFlatpakExecutable {
 			return ProcessSpec{}, launcherValidationFailure(ApplicationLauncherInvalid, "launcher_command_invalid", fmt.Errorf("flatpak launcher must be %s", systemFlatpakExecutable))
@@ -339,76 +359,90 @@ func (launcher DesktopApplicationLauncher) SpecContext(ctx context.Context, sess
 	}
 }
 
-func revalidateDesktopLaunchContext(ctx context.Context, launcher Launcher, stateRoot string) (string, []string, error) {
+func revalidateDesktopLaunchContext(ctx context.Context, launcher Launcher, stateRoot string) (ProcessSpec, error) {
 	if ctx == nil {
-		return "", nil, errors.New("desktop launch context is nil")
+		return ProcessSpec{}, errors.New("desktop launch context is nil")
 	}
 	if err := ctx.Err(); err != nil {
-		return "", nil, err
+		return ProcessSpec{}, err
 	}
 	switch launcher.DesktopOrigin {
 	case DesktopEntrySystem:
 		data, err := readTrustedRegularFile(launcher.DesktopPath, 0, true, MaxDesktopEntrySize)
 		if err != nil {
-			return "", nil, launcherFileFailure(fmt.Errorf("system desktop entry changed trust: %w", err), ApplicationLauncherInvalid, "desktop_entry_untrusted", "desktop_entry_missing")
+			return ProcessSpec{}, launcherFileFailure(fmt.Errorf("system desktop entry changed trust: %w", err), ApplicationLauncherInvalid, "desktop_entry_untrusted", "desktop_entry_missing")
 		}
 		parsed, hidden, err := parseDesktopEntry(data)
 		if err != nil || hidden {
 			if err == nil {
 				err = errors.New("desktop entry is hidden")
 			}
-			return "", nil, launcherValidationFailure(ApplicationLauncherInvalid, "desktop_entry_invalid", err)
+			return ProcessSpec{}, launcherValidationFailure(ApplicationLauncherInvalid, "desktop_entry_invalid", err)
 		}
-		if err := rejectAdministrativeDesktopEntry(parsed); err != nil {
-			return "", nil, launcherValidationFailure(ApplicationLauncherInvalid, "desktop_entry_invalid", err)
+		if launcher.Administrative != nil {
+			if err := revalidateAdministrativeApproval(ctx, launcher, data, parsed); err != nil {
+				return ProcessSpec{}, err
+			}
+		} else if err := rejectAdministrativeDesktopEntry(parsed); err != nil {
+			return ProcessSpec{}, launcherValidationFailure(ApplicationLauncherInvalid, "desktop_entry_invalid", err)
 		}
-		return launcher.DesktopPath, []string{"PATH=/usr/local/bin:/usr/bin"}, nil
+		return desktopProcessSpec(launcher, parsed, launcher.DesktopPath)
 	case DesktopEntryUser:
 		directory := filepath.Join(stateRoot, desktopApprovalDirectory)
 		if filepath.Dir(launcher.ApprovedDesktopPath) != directory {
-			return "", nil, launcherValidationFailure(ApplicationLauncherInvalid, "approval_invalid", errors.New("approved desktop snapshot is outside the private approval directory"))
+			return ProcessSpec{}, launcherValidationFailure(ApplicationLauncherInvalid, "approval_invalid", errors.New("approved desktop snapshot is outside the private approval directory"))
 		}
 		source, err := readTrustedRegularFile(launcher.DesktopPath, uint32(os.Geteuid()), false, MaxDesktopEntrySize)
 		if err != nil {
 			if contextErr := ctx.Err(); contextErr != nil {
-				return "", nil, contextErr
+				return ProcessSpec{}, contextErr
 			}
 			classified := launcherFileFailure(err, ApplicationLauncherReapprovalRequired, "desktop_entry_changed", "desktop_entry_missing")
-			return "", nil, &launcherValidationError{classified.observation, errors.New("user desktop entry changed and requires explicit reapproval")}
+			return ProcessSpec{}, &launcherValidationError{classified.observation, errors.New("user desktop entry changed and requires explicit reapproval")}
 		}
 		if sha256Hex(source) != launcher.DesktopEntrySHA256 {
-			return "", nil, launcherValidationFailure(ApplicationLauncherReapprovalRequired, "desktop_entry_changed", errors.New("user desktop entry changed and requires explicit reapproval"))
+			return ProcessSpec{}, launcherValidationFailure(ApplicationLauncherReapprovalRequired, "desktop_entry_changed", errors.New("user desktop entry changed and requires explicit reapproval"))
 		}
 		snapshot, err := statefile.ReadPrivateFileContext(ctx, directory, filepath.Base(launcher.ApprovedDesktopPath))
 		if err != nil {
 			if contextErr := ctx.Err(); contextErr != nil {
-				return "", nil, contextErr
+				return ProcessSpec{}, contextErr
 			}
 			if errors.Is(err, os.ErrPermission) {
-				return "", nil, launcherValidationFailure(ApplicationLauncherUnknown, "permission_denied", errors.New("approved desktop snapshot is missing or changed"))
+				return ProcessSpec{}, launcherValidationFailure(ApplicationLauncherUnknown, "permission_denied", errors.New("approved desktop snapshot is missing or changed"))
 			}
-			return "", nil, launcherValidationFailure(ApplicationLauncherReapprovalRequired, "approval_missing_or_changed", errors.New("approved desktop snapshot is missing or changed"))
+			return ProcessSpec{}, launcherValidationFailure(ApplicationLauncherReapprovalRequired, "approval_missing_or_changed", errors.New("approved desktop snapshot is missing or changed"))
 		}
 		if sha256Hex(snapshot) != launcher.DesktopEntrySHA256 {
-			return "", nil, launcherValidationFailure(ApplicationLauncherReapprovalRequired, "approval_missing_or_changed", errors.New("approved desktop snapshot is missing or changed"))
+			return ProcessSpec{}, launcherValidationFailure(ApplicationLauncherReapprovalRequired, "approval_missing_or_changed", errors.New("approved desktop snapshot is missing or changed"))
 		}
-		environment := []string{"PATH=/usr/local/bin:/usr/bin"}
+		var parsed DesktopEntry
+		if launcher.Administrative != nil {
+			var hidden bool
+			parsed, hidden, err = parseDesktopEntry(snapshot)
+			if err != nil || hidden {
+				return ProcessSpec{}, launcherValidationFailure(ApplicationLauncherReapprovalRequired, "approval_missing_or_changed", errors.New("administrative desktop snapshot is invalid"))
+			}
+			if err := revalidateAdministrativeApproval(ctx, launcher, snapshot, parsed); err != nil {
+				return ProcessSpec{}, err
+			}
+		}
 		if launcher.ApprovedExecutablePath != "" {
 			digest, err := hashTrustedExecutableContext(ctx, launcher.ApprovedExecutablePath, uint32(os.Geteuid()), false)
 			if err != nil {
 				if contextErr := ctx.Err(); contextErr != nil {
-					return "", nil, contextErr
+					return ProcessSpec{}, contextErr
 				}
 				classified := launcherFileFailure(err, ApplicationLauncherReapprovalRequired, "approved_executable_changed", "approved_executable_missing")
-				return "", nil, &launcherValidationError{classified.observation, errors.New("approved user executable changed and requires explicit reapproval")}
+				return ProcessSpec{}, &launcherValidationError{classified.observation, errors.New("approved user executable changed and requires explicit reapproval")}
 			}
 			if digest != launcher.ApprovedExecutableSHA256 {
-				return "", nil, launcherValidationFailure(ApplicationLauncherReapprovalRequired, "approved_executable_changed", errors.New("approved user executable changed and requires explicit reapproval"))
+				return ProcessSpec{}, launcherValidationFailure(ApplicationLauncherReapprovalRequired, "approved_executable_changed", errors.New("approved user executable changed and requires explicit reapproval"))
 			}
 		}
-		return launcher.ApprovedDesktopPath, environment, nil
+		return desktopProcessSpec(launcher, parsed, launcher.ApprovedDesktopPath)
 	default:
-		return "", nil, launcherValidationFailure(ApplicationLauncherInvalid, "desktop_origin_invalid", fmt.Errorf("unsupported desktop entry origin %q", launcher.DesktopOrigin))
+		return ProcessSpec{}, launcherValidationFailure(ApplicationLauncherInvalid, "desktop_origin_invalid", fmt.Errorf("unsupported desktop entry origin %q", launcher.DesktopOrigin))
 	}
 }
 
@@ -529,41 +563,81 @@ func isIndirectOrPrivilegedExecutable(path string) bool {
 }
 
 func desktopExecExecutable(value string) (string, error) {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return "", errors.New("desktop entry Exec is empty")
+	words, err := desktopExecWords(value)
+	if err != nil {
+		return "", err
 	}
-	var result strings.Builder
-	quoted := false
-	escaped := false
-	for index := 0; index < len(value); index++ {
-		character := value[index]
-		if escaped {
-			result.WriteByte(character)
-			escaped = false
-			continue
-		}
-		if character == '\\' {
-			escaped = true
-			continue
-		}
-		if character == '"' {
-			quoted = !quoted
-			continue
-		}
-		if !quoted && (character == ' ' || character == '\t') {
-			break
-		}
-		result.WriteByte(character)
+	if len(words) == 0 || words[0] == "" {
+		return "", errors.New("desktop entry Exec has no executable token")
 	}
-	if quoted || escaped || result.Len() == 0 {
-		return "", errors.New("desktop entry Exec has an invalid executable token")
-	}
-	executable := result.String()
-	if strings.Contains(executable, "%") || strings.ContainsAny(executable, "\r\n\x00") {
+	executable := words[0]
+	if strings.Contains(executable, "%") || containsControl(executable) {
 		return "", errors.New("desktop entry executable token contains a field code or control character")
 	}
 	return executable, nil
+}
+
+// Parse the desktop-entry key-file/quote/escape syntax only to identify the
+// helper and payload and to build the bounded administrative argv. It never
+// evaluates shell syntax; ordinary desktop execution remains delegated to GIO.
+func desktopExecWords(value string) ([]string, error) {
+	return parseDesktopExecWords(value, false)
+}
+
+func parseDesktopExecWords(value string, rejectUnquotedHash bool) ([]string, error) {
+	value, err := unescapeDesktopString(value)
+	if err != nil {
+		return nil, fmt.Errorf("decode desktop Exec: %w", err)
+	}
+	var words []string
+	var word strings.Builder
+	var quote rune
+	escaped, started := false, false
+	for _, ch := range value {
+		if ch < 0x20 && ch != '\t' || ch == 0x7f {
+			return nil, errors.New("desktop Exec contains a control character")
+		}
+		if escaped {
+			if quote == '"' && !strings.ContainsRune("\\\"$`", ch) {
+				word.WriteRune('\\')
+			}
+			word.WriteRune(ch)
+			escaped, started = false, true
+			continue
+		}
+		if rejectUnquotedHash && quote == 0 && ch == '#' {
+			return nil, errors.New("administrative desktop Exec must quote or escape literal # characters; comments are unsupported")
+		}
+		switch {
+		case ch == '\\' && quote != '\'':
+			escaped, started = true, true
+		case ch == '\'' || ch == '"':
+			if quote == 0 {
+				quote = ch
+			} else if quote == ch {
+				quote = 0
+			} else {
+				word.WriteRune(ch)
+			}
+			started = true
+		case quote == 0 && (ch == ' ' || ch == '\t'):
+			if started {
+				words = append(words, word.String())
+				word.Reset()
+				started = false
+			}
+		default:
+			word.WriteRune(ch)
+			started = true
+		}
+	}
+	if quote != 0 || escaped {
+		return nil, errors.New("desktop Exec has incomplete quoting")
+	}
+	if started {
+		words = append(words, word.String())
+	}
+	return words, nil
 }
 
 func openTrustedRegular(path string, owner uint32, requireRootAncestors bool) (*os.File, error) {

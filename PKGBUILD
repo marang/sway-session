@@ -69,6 +69,9 @@ package() {
   if [[ -f docs/adr/0003-explicit-remote-terminal-bindings.md ]]; then
     install -Dm644 docs/adr/0003-explicit-remote-terminal-bindings.md "$pkgdir/usr/share/doc/$pkgname/docs/adr/0003-explicit-remote-terminal-bindings.md"
   fi
+  if [[ -f docs/adr/0004-opt-in-administrative-desktop-restore.md ]]; then
+    install -Dm644 docs/adr/0004-opt-in-administrative-desktop-restore.md "$pkgdir/usr/share/doc/$pkgname/docs/adr/0004-opt-in-administrative-desktop-restore.md"
+  fi
   if [[ -f docs/research/lab-374-herdr-remote-restoration.md ]]; then
     install -Dm644 docs/research/lab-374-herdr-remote-restoration.md "$pkgdir/usr/share/doc/$pkgname/docs/research/lab-374-herdr-remote-restoration.md"
   fi

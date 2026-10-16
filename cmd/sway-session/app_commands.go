@@ -56,9 +56,11 @@ func executeAppRegisterFocused(ctx context.Context, arguments []string, deps dep
 	socketFlag := set.String("socket", "", "Sway IPC socket")
 	desktopID := set.String("desktop-id", "", "exact desktop file ID for an ambiguous match")
 	yes := set.Bool("yes", false, "approve without swaynag")
+	allowAdministrative := set.Bool("allow-administrative", false, "explicitly approve administrative restore; authentication may be requested again")
 	if err := set.Parse(arguments); err != nil || set.NArg() != 0 {
-		return commandResult{}, usageFailure("app", "app register-focused accepts only --socket, --desktop-id, and --yes")
+		return commandResult{}, usageFailure("app", "app register-focused accepts only --socket, --desktop-id, --allow-administrative, and --yes")
 	}
+	options := sessionstate.DesktopApprovalOptions{AllowAdministrative: *allowAdministrative}
 	environment, commandFailure := loadApplicationEnvironment(ctx, *socketFlag, deps, true, false)
 	if commandFailure != nil {
 		return commandResult{}, commandFailure
@@ -87,7 +89,7 @@ func executeAppRegisterFocused(ctx context.Context, arguments []string, deps dep
 		if len(candidates) != 1 {
 			return commandResult{}, failure("app_ambiguous", "select focused application launcher", "--yes requires one exact match or --desktop-id")
 		}
-		operation, err := newRegisterOperation([]sessionstate.WindowApplication{resolution.Window}, candidates, deps)
+		operation, err := newRegisterOperationWithOptions(ctx, []sessionstate.WindowApplication{resolution.Window}, candidates, deps, options)
 		if err != nil {
 			return commandResult{}, failure("app_operation", "prepare focused registration", err.Error())
 		}
@@ -95,12 +97,12 @@ func executeAppRegisterFocused(ctx context.Context, arguments []string, deps dep
 	}
 	choices := make([]sessionstate.ApprovalChoice, 0, len(candidates))
 	for _, candidate := range candidates {
-		operation, err := newRegisterOperation([]sessionstate.WindowApplication{resolution.Window}, []sessionstate.DesktopEntry{candidate}, deps)
+		operation, err := newRegisterOperationWithOptions(ctx, []sessionstate.WindowApplication{resolution.Window}, []sessionstate.DesktopEntry{candidate}, deps, options)
 		if err != nil {
 			err = errors.Join(err, discardApplicationOperationChoices(ctx, choices, deps))
 			return commandResult{}, failure("app_operation", "prepare focused registration", err.Error())
 		}
-		choice, err := storeApplicationOperation(ctx, operation, approvalChoiceLabel(candidate), deps)
+		choice, err := storeApplicationOperation(ctx, operation, approvalChoiceLabelWithOptions(candidate, options), deps)
 		if err != nil {
 			err = errors.Join(err, discardApplicationOperationChoices(ctx, choices, deps))
 			return commandResult{}, failure("app_operation", "store focused registration approval", err.Error())
@@ -109,7 +111,7 @@ func executeAppRegisterFocused(ctx context.Context, arguments []string, deps dep
 	}
 	message := fmt.Sprintf("Register the focused application on workspace %s for session restore?", resolution.Window.Workspace)
 	if len(candidates) == 1 {
-		summary, summaryErr := sessionstate.DesktopApprovalSummary(candidates[0])
+		summary, summaryErr := sessionstate.DesktopApprovalSummaryWithOptions(candidates[0], options)
 		if summaryErr != nil {
 			summaryErr = errors.Join(summaryErr, discardApplicationOperationChoices(ctx, choices, deps))
 			return commandResult{}, failure("launcher_trust", "preview desktop launcher", summaryErr.Error())
@@ -127,9 +129,11 @@ func executeAppRegisterWorkspace(ctx context.Context, arguments []string, deps d
 	set := newFlagSet("app register-workspace")
 	socketFlag := set.String("socket", "", "Sway IPC socket")
 	yes := set.Bool("yes", false, "approve without swaynag")
+	allowAdministrative := set.Bool("allow-administrative", false, "explicitly approve administrative restore; authentication may be requested again")
 	if err := set.Parse(arguments); err != nil || set.NArg() != 0 {
-		return commandResult{}, usageFailure("app", "app register-workspace accepts only --socket and --yes")
+		return commandResult{}, usageFailure("app", "app register-workspace accepts only --socket, --allow-administrative, and --yes")
 	}
+	options := sessionstate.DesktopApprovalOptions{AllowAdministrative: *allowAdministrative}
 	environment, commandFailure := loadApplicationEnvironment(ctx, *socketFlag, deps, true, true)
 	if commandFailure != nil {
 		return commandResult{}, commandFailure
@@ -168,20 +172,27 @@ func executeAppRegisterWorkspace(ctx context.Context, arguments []string, deps d
 	if len(pendingWindows) == 0 {
 		return commandResult{Command: "app register-workspace", Message: "No unregistered eligible applications on the focused workspace."}, nil
 	}
-	operation, err := newRegisterOperation(pendingWindows, candidates, deps)
+	operation, err := newRegisterOperationWithOptions(ctx, pendingWindows, candidates, deps, options)
 	if err != nil {
 		return commandResult{}, failure("app_operation", "prepare workspace registration", err.Error())
 	}
 	if *yes {
 		return applyApplicationOperation(ctx, operation, deps, *socketFlag)
 	}
-	choice, err := storeApplicationOperation(ctx, operation, fmt.Sprintf("Register %d applications", len(operation.Items)), deps)
+	label := fmt.Sprintf("Register %d applications", len(operation.Items))
+	for _, candidate := range candidates {
+		if options.AllowAdministrative && sessionstate.ValidateDesktopEntryForApproval(candidate) != nil {
+			label += "; administrative; restore may request authentication again"
+			break
+		}
+	}
+	choice, err := storeApplicationOperation(ctx, operation, label, deps)
 	if err != nil {
 		return commandResult{}, failure("app_operation", "store workspace registration approval", err.Error())
 	}
 	names := make([]string, len(candidates))
 	for index := range candidates {
-		names[index] = approvalChoiceLabel(candidates[index])
+		names[index] = approvalChoiceLabelWithOptions(candidates[index], options)
 	}
 	message := boundedDisplay("Register these applications from workspace "+pendingWindows[0].Workspace+": "+strings.Join(names, ", ")+"?", 4000)
 	if err := deps.presentApproval(message, []sessionstate.ApprovalChoice{choice}); err != nil {
@@ -284,9 +295,11 @@ func executeAppRebindFocused(ctx context.Context, arguments []string, deps depen
 	socketFlag := set.String("socket", "", "Sway IPC socket")
 	desktopID := set.String("desktop-id", "", "exact desktop file ID")
 	yes := set.Bool("yes", false, "approve without swaynag")
+	allowAdministrative := set.Bool("allow-administrative", false, "explicitly approve administrative restore; authentication may be requested again")
 	if err := set.Parse(arguments); err != nil || set.NArg() != 1 {
-		return commandResult{}, usageFailure("app", "app rebind-focused requires one context and optional --socket, --desktop-id, or --yes")
+		return commandResult{}, usageFailure("app", "app rebind-focused requires one context and optional --socket, --desktop-id, --allow-administrative, or --yes")
 	}
+	options := sessionstate.DesktopApprovalOptions{AllowAdministrative: *allowAdministrative}
 	environment, commandFailure := loadApplicationEnvironment(ctx, *socketFlag, deps, true, true)
 	if commandFailure != nil {
 		return commandResult{}, commandFailure
@@ -313,7 +326,7 @@ func executeAppRebindFocused(ctx context.Context, arguments []string, deps depen
 		}
 		return commandResult{}, failure("app_ambiguous", "select rebind launcher", err.Error())
 	}
-	if err := validatePreviewCandidate(candidates[0]); err != nil {
+	if err := sessionstate.ValidateDesktopEntryForApprovalWithOptions(candidates[0], options); err != nil {
 		return commandResult{}, failure("launcher_trust", "preview rebound desktop launcher", err.Error())
 	}
 	context := environment.registry.Contexts[index]
@@ -322,16 +335,23 @@ func executeAppRebindFocused(ctx context.Context, arguments []string, deps depen
 		return commandResult{}, failure("app_operation", "bind application approval to current context", err.Error())
 	}
 	item := sessionstate.ApplicationOperationItem{ContextID: context.ID, ContextRevision: revision, Window: &window, DesktopID: candidates[0].ID}
+	if err := bindAdministrativeOperationApproval(ctx, &item, candidates[0], options); err != nil {
+		return commandResult{}, failure("launcher_trust", "bind rebound desktop approval", err.Error())
+	}
 	operation := applicationOperation(sessionstate.OperationRebind, []sessionstate.ApplicationOperationItem{item}, deps)
 	if *yes {
 		return applyApplicationOperation(ctx, operation, deps, *socketFlag)
 	}
-	choice, err := storeApplicationOperation(ctx, operation, "Rebind to "+candidates[0].Name, deps)
+	label := "Rebind to " + candidates[0].Name
+	if item.AllowAdministrative {
+		label = "Rebind to " + approvalChoiceLabelWithOptions(candidates[0], options)
+	}
+	choice, err := storeApplicationOperation(ctx, operation, label, deps)
 	if err != nil {
 		return commandResult{}, failure("app_operation", "store application rebind approval", err.Error())
 	}
 	old := environment.registry.Contexts[index]
-	summary, err := sessionstate.DesktopApprovalSummary(candidates[0])
+	summary, err := sessionstate.DesktopApprovalSummaryWithOptions(candidates[0], options)
 	if err != nil {
 		err = errors.Join(err, discardApplicationOperationChoices(ctx, []sessionstate.ApprovalChoice{choice}, deps))
 		return commandResult{}, failure("launcher_trust", "preview rebound desktop launcher", err.Error())
@@ -347,9 +367,11 @@ func executeAppRebindFocused(ctx context.Context, arguments []string, deps depen
 func executeAppReapprove(ctx context.Context, arguments []string, deps dependencies) (commandResult, *commandFailure) {
 	set := newFlagSet("app reapprove")
 	yes := set.Bool("yes", false, "approve without swaynag")
+	allowAdministrative := set.Bool("allow-administrative", false, "explicitly approve administrative restore; authentication may be requested again")
 	if err := set.Parse(arguments); err != nil || set.NArg() != 1 {
-		return commandResult{}, usageFailure("app", "app reapprove requires one context and optional --yes")
+		return commandResult{}, usageFailure("app", "app reapprove requires one context and optional --allow-administrative or --yes")
 	}
+	options := sessionstate.DesktopApprovalOptions{AllowAdministrative: *allowAdministrative}
 	root, commandFailure := stateRoot(deps)
 	if commandFailure != nil {
 		return commandResult{}, commandFailure
@@ -363,23 +385,46 @@ func executeAppReapprove(ctx context.Context, arguments []string, deps dependenc
 		return commandResult{}, classifyStateError("select application to reapprove", err)
 	}
 	context := registry.Contexts[index]
-	if context.Launcher.Kind != sessionstate.LauncherDesktop || context.Launcher.DesktopOrigin != sessionstate.DesktopEntryUser {
-		return commandResult{}, failure("app_reapproval", "reapprove application launcher", "only approved user-local desktop entries require reapproval")
+	if context.Launcher.Kind != sessionstate.LauncherDesktop || (context.Launcher.DesktopOrigin != sessionstate.DesktopEntryUser && context.Launcher.Administrative == nil && !options.AllowAdministrative) {
+		return commandResult{}, failure("app_reapproval", "reapprove application launcher", "only approved user-local or administrative desktop entries require reapproval")
 	}
 	revision, err := sessionstate.ApplicationOperationContextRevision(context)
 	if err != nil {
 		return commandResult{}, failure("app_operation", "bind launcher reapproval to current context", err.Error())
 	}
 	item := sessionstate.ApplicationOperationItem{ContextID: context.ID, ContextRevision: revision, DesktopID: context.Launcher.DesktopID}
+	label := "Reapprove " + contextDisplayName(context)
+	message := "Approve the current user-local desktop entry and executable checksums for " + contextDisplayName(context) + "?"
+	if options.AllowAdministrative || context.Launcher.Administrative != nil {
+		catalog, err := deps.desktopCatalog()
+		if err != nil {
+			return commandResult{}, failure("desktop_catalog", "load desktop application catalog", err.Error())
+		}
+		entry, ok := catalog.ByID(context.Launcher.DesktopID)
+		if !ok {
+			return commandResult{}, failure("app_stale", "preview launcher reapproval", "desktop entry no longer exists")
+		}
+		if err := bindAdministrativeOperationApproval(ctx, &item, entry, options); err != nil {
+			return commandResult{}, failure("launcher_trust", "preview launcher reapproval", err.Error())
+		}
+		if options.AllowAdministrative && sessionstate.ValidateDesktopEntryForApproval(entry) != nil {
+			summary, err := sessionstate.DesktopApprovalSummaryWithOptions(entry, options)
+			if err != nil {
+				return commandResult{}, failure("launcher_trust", "preview launcher reapproval", err.Error())
+			}
+			label = "Reapprove " + approvalChoiceLabelWithOptions(entry, options)
+			message = "Approve the current administrative desktop entry and executable checksums for " + summary + "?"
+		}
+	}
 	operation := applicationOperation(sessionstate.OperationReapprove, []sessionstate.ApplicationOperationItem{item}, deps)
 	if *yes {
 		return applyApplicationOperation(ctx, operation, deps, "")
 	}
-	choice, err := storeApplicationOperation(ctx, operation, "Reapprove "+contextDisplayName(context), deps)
+	choice, err := storeApplicationOperation(ctx, operation, label, deps)
 	if err != nil {
 		return commandResult{}, failure("app_operation", "store launcher reapproval", err.Error())
 	}
-	if err := deps.presentApproval("Approve the current user-local desktop entry and executable checksums for "+contextDisplayName(context)+"?", []sessionstate.ApprovalChoice{choice}); err != nil {
+	if err := deps.presentApproval(message, []sessionstate.ApprovalChoice{choice}); err != nil {
 		err = errors.Join(err, discardApplicationOperationChoices(ctx, []sessionstate.ApprovalChoice{choice}, deps))
 		return commandResult{}, failure("approval_ui", "open launcher reapproval confirmation", err.Error())
 	}
@@ -562,13 +607,14 @@ func selectDesktopCandidates(candidates []sessionstate.DesktopEntry, exactID str
 	return candidates, nil
 }
 
-func newRegisterOperation(windows []sessionstate.WindowApplication, candidates []sessionstate.DesktopEntry, deps dependencies) (sessionstate.ApplicationOperation, error) {
+func newRegisterOperationWithOptions(ctx context.Context, windows []sessionstate.WindowApplication, candidates []sessionstate.DesktopEntry, deps dependencies, options sessionstate.DesktopApprovalOptions) (sessionstate.ApplicationOperation, error) {
 	if len(windows) == 0 || len(windows) != len(candidates) {
 		return sessionstate.ApplicationOperation{}, errors.New("registration preview is empty or misaligned")
 	}
 	items := make([]sessionstate.ApplicationOperationItem, len(windows))
 	for index := range windows {
-		if err := validatePreviewCandidate(candidates[index]); err != nil {
+		item := sessionstate.ApplicationOperationItem{DesktopID: candidates[index].ID}
+		if err := bindAdministrativeOperationApproval(ctx, &item, candidates[index], options); err != nil {
 			return sessionstate.ApplicationOperation{}, fmt.Errorf("%s: %w", candidates[index].ID, err)
 		}
 		id, err := deps.newContextID()
@@ -576,21 +622,71 @@ func newRegisterOperation(windows []sessionstate.WindowApplication, candidates [
 			return sessionstate.ApplicationOperation{}, err
 		}
 		window := windows[index]
-		items[index] = sessionstate.ApplicationOperationItem{ContextID: id, Window: &window, DesktopID: candidates[index].ID}
+		item.ContextID, item.Window = id, &window
+		items[index] = item
 	}
 	return applicationOperation(sessionstate.OperationRegister, items, deps), nil
+}
+
+// Administrative permission is bound to the exact reviewed desktop and executable bytes.
+// An ordinary entry never acquires permission merely because the flag was set.
+func bindAdministrativeOperationApproval(ctx context.Context, item *sessionstate.ApplicationOperationItem, entry sessionstate.DesktopEntry, options sessionstate.DesktopApprovalOptions) error {
+	if err := sessionstate.ValidateDesktopEntryForApprovalWithOptions(entry, options); err != nil {
+		return err
+	}
+	if !options.AllowAdministrative || sessionstate.ValidateDesktopEntryForApproval(entry) == nil {
+		return nil
+	}
+	digest, err := sessionstate.AdministrativeDesktopApprovalDigest(ctx, entry)
+	if err != nil {
+		return err
+	}
+	item.AllowAdministrative, item.AdministrativeApprovalSHA256 = true, digest
+	return nil
+}
+
+// Recheck the reviewed desktop and executable bytes before creating an approval snapshot, then compare
+// the actual prepared evidence too so a later file change cannot enter state.
+func prepareApplicationOperationApproval(ctx context.Context, root string, item sessionstate.ApplicationOperationItem, entry sessionstate.DesktopEntry) (sessionstate.DesktopApproval, error) {
+	if item.AllowAdministrative {
+		digest, err := sessionstate.AdministrativeDesktopApprovalDigest(ctx, entry)
+		if err != nil {
+			return sessionstate.DesktopApproval{}, err
+		}
+		if digest != item.AdministrativeApprovalSHA256 {
+			return sessionstate.DesktopApproval{}, errors.New("administrative launcher changed while approval was pending; review it again")
+		}
+	}
+	approval, err := sessionstate.PrepareDesktopApprovalContextWithOptions(ctx, root, item.ContextID, entry, sessionstate.DesktopApprovalOptions{AllowAdministrative: item.AllowAdministrative})
+	if err != nil {
+		return sessionstate.DesktopApproval{}, err
+	}
+	var preparedDigest string
+	if item.AllowAdministrative {
+		preparedDigest, err = approval.Launcher.Administrative.Digest()
+	}
+	if item.AllowAdministrative && (err != nil || preparedDigest != item.AdministrativeApprovalSHA256) {
+		cleanupErr := withAppCleanupContext(ctx, func(cleanupCtx context.Context) error {
+			return sessionstate.DiscardDesktopApprovalContext(cleanupCtx, root, approval)
+		})
+		return sessionstate.DesktopApproval{}, errors.Join(errors.New("administrative launcher changed while approval was pending; review it again"), cleanupErr)
+	}
+	return approval, nil
 }
 
 func applicationOperation(kind sessionstate.ApplicationOperationKind, items []sessionstate.ApplicationOperationItem, deps dependencies) sessionstate.ApplicationOperation {
 	return sessionstate.ApplicationOperation{Version: sessionstate.ApplicationOperationVersion, Kind: kind, ExpiresAt: deps.now().UTC().Add(2 * time.Minute), Items: items}
 }
 
-func validatePreviewCandidate(entry sessionstate.DesktopEntry) error {
-	return sessionstate.ValidateDesktopEntryForApproval(entry)
-}
-
 func approvalChoiceLabel(entry sessionstate.DesktopEntry) string {
 	return boundedDisplay(entry.Name+" ("+entry.ID+")", 240)
+}
+
+func approvalChoiceLabelWithOptions(entry sessionstate.DesktopEntry, options sessionstate.DesktopApprovalOptions) string {
+	if options.AllowAdministrative && sessionstate.ValidateDesktopEntryForApproval(entry) != nil {
+		return boundedDisplay(entry.Name+" ("+entry.ID+")", 160) + "; administrative; restore may request authentication again"
+	}
+	return approvalChoiceLabel(entry)
 }
 
 func boundedDisplay(value string, maxBytes int) string {
@@ -703,7 +799,7 @@ func applyRegisterOperation(ctx context.Context, root string, catalog sessionsta
 			cleanup()
 			return commandResult{}, failure("app_stale", "revalidate desktop launcher", "approved desktop entry no longer matches the window")
 		}
-		approval, err := sessionstate.PrepareDesktopApprovalContext(ctx, root, item.ContextID, entry)
+		approval, err := prepareApplicationOperationApproval(ctx, root, item, entry)
 		if err != nil {
 			cleanup()
 			return commandResult{}, failure("launcher_trust", "approve desktop launcher", err.Error())
@@ -779,7 +875,7 @@ func applyRebindOperation(ctx context.Context, root string, catalog sessionstate
 		}
 		return commandResult{}, failure("app_stale", "revalidate application rebind", err.Error())
 	}
-	approval, err := sessionstate.PrepareDesktopApprovalContext(ctx, root, item.ContextID, entry)
+	approval, err := prepareApplicationOperationApproval(ctx, root, item, entry)
 	if err != nil {
 		return commandResult{}, failure("launcher_trust", "approve rebound desktop launcher", err.Error())
 	}
@@ -834,14 +930,14 @@ func applyReapproveOperation(ctx context.Context, root string, catalog sessionst
 		}
 		return commandResult{}, failure("app_stale", "revalidate launcher reapproval", err.Error())
 	}
-	if previous.Launcher.Kind != sessionstate.LauncherDesktop || previous.Launcher.DesktopOrigin != sessionstate.DesktopEntryUser || previous.Launcher.DesktopID != item.DesktopID {
+	if previous.Launcher.Kind != sessionstate.LauncherDesktop || (previous.Launcher.DesktopOrigin != sessionstate.DesktopEntryUser && previous.Launcher.Administrative == nil && !item.AllowAdministrative) || previous.Launcher.DesktopID != item.DesktopID {
 		return commandResult{}, failure("app_stale", "revalidate launcher reapproval", "application launcher changed while approval was pending")
 	}
 	entry, ok := catalog.ByID(item.DesktopID)
 	if !ok {
 		return commandResult{}, failure("app_stale", "revalidate launcher reapproval", "desktop entry no longer exists")
 	}
-	approval, err := sessionstate.PrepareDesktopApprovalContext(ctx, root, item.ContextID, entry)
+	approval, err := prepareApplicationOperationApproval(ctx, root, item, entry)
 	if err != nil {
 		return commandResult{}, failure("launcher_trust", "reapprove desktop launcher", err.Error())
 	}

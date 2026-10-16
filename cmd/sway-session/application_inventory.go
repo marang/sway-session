@@ -178,13 +178,22 @@ func writeApplicationInventory(writer io.Writer, items []sessionstate.Applicatio
 				return err
 			}
 		}
+		if item.Launcher.Administrative {
+			if _, err := fmt.Fprintln(writer, "  administrative restore allowed; system authentication may be requested"); err != nil {
+				return err
+			}
+		}
 		if item.LauncherValidity.State == sessionstate.ApplicationLauncherMissing {
 			if _, err := fmt.Fprintln(writer, "  launcher missing; restore cannot start it until it is available again"); err != nil {
 				return err
 			}
 		}
 		if item.LauncherValidity.State == sessionstate.ApplicationLauncherReapprovalRequired {
-			if _, err := fmt.Fprintln(writer, "  launcher trust changed; inspect it before app reapprove CONTEXT"); err != nil {
+			hint := "  launcher trust changed; inspect it before app reapprove CONTEXT"
+			if item.Launcher.Administrative {
+				hint = "  administrative launcher trust changed; inspect it before app reapprove --allow-administrative CONTEXT"
+			}
+			if _, err := fmt.Fprintln(writer, hint); err != nil {
 				return err
 			}
 		}

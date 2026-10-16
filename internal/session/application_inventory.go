@@ -29,10 +29,11 @@ type ApplicationInventoryItem struct {
 }
 
 type ApplicationLauncherIdentity struct {
-	Kind         LauncherKind        `json:"kind"`
-	DesktopID    string              `json:"desktop_id,omitempty"`
-	FlatpakID    string              `json:"flatpak_id,omitempty"`
-	Installation FlatpakInstallation `json:"installation,omitempty"`
+	Kind           LauncherKind        `json:"kind"`
+	DesktopID      string              `json:"desktop_id,omitempty"`
+	FlatpakID      string              `json:"flatpak_id,omitempty"`
+	Installation   FlatpakInstallation `json:"installation,omitempty"`
+	Administrative bool                `json:"administrative,omitempty"`
 }
 
 type ApplicationPresence struct {
@@ -106,7 +107,7 @@ func BuildApplicationInventory(snapshot ApplicationInventorySnapshot) []Applicat
 		item := ApplicationInventoryItem{
 			ContextID: registered.ID, Label: registered.Label, State: registered.State,
 			ArchivedAt: registered.ArchivedAt, Lifecycle: registered.Lifecycle,
-			Launcher:    ApplicationLauncherIdentity{Kind: registered.Launcher.Kind, DesktopID: registered.Launcher.DesktopID, FlatpakID: registered.Launcher.FlatpakID, Installation: registered.Launcher.FlatpakInstallation},
+			Launcher:    ApplicationLauncherIdentity{Kind: registered.Launcher.Kind, DesktopID: registered.Launcher.DesktopID, FlatpakID: registered.Launcher.FlatpakID, Installation: registered.Launcher.FlatpakInstallation, Administrative: registered.Launcher.Administrative != nil},
 			DesiredOpen: registered.App.DesiredOpen, Policy: registered.App.RestorePolicy,
 			RestorePolicy:    EvaluateRestorePolicy(registered),
 			Presence:         ApplicationPresence{State: "unknown", Reason: "compositor_unavailable"},

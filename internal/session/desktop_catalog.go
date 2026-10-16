@@ -33,9 +33,8 @@ type DesktopSearchDirectory struct {
 }
 
 // DesktopEntry is an immutable in-memory catalog record. Exec is deliberately
-// not part of persistent session state and is never interpreted by this
-// package; the trusted launcher adapter delegates desktop-entry execution to
-// GIO.
+// not part of persistent session state. Ordinary desktop execution uses GIO;
+// explicitly approved administrative entries use a bounded direct adapter.
 type DesktopEntry struct {
 	ID                  string
 	Name                string
@@ -44,6 +43,7 @@ type DesktopEntry struct {
 	Origin              DesktopEntryOrigin
 	Exec                string `json:"-"`
 	TryExec             string `json:"-"`
+	WorkingDirectory    string `json:"-"` // Raw Path key, used only to reject unsupported administrative cwd.
 	StartupWMClass      string
 	FlatpakID           string
 	FlatpakInstallation FlatpakInstallation
@@ -523,6 +523,7 @@ func parseDesktopEntry(data []byte) (DesktopEntry, bool, error) {
 		Icon:             icon,
 		Exec:             values["Exec"],
 		TryExec:          tryExec,
+		WorkingDirectory: values["Path"],
 		StartupWMClass:   startupWMClass,
 		FlatpakID:        flatpakID,
 		NoDisplay:        noDisplay,
@@ -537,7 +538,7 @@ func catalogKey(key string) bool {
 		return false
 	}
 	switch key {
-	case "Type", "Name", "Icon", "Exec", "TryExec", "StartupWMClass", "X-Flatpak",
+	case "Type", "Name", "Icon", "Exec", "TryExec", "Path", "StartupWMClass", "X-Flatpak",
 		"Hidden", "NoDisplay", "Terminal", "DBusActivatable", "SingleMainWindow":
 		return true
 	default:

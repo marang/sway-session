@@ -79,16 +79,14 @@ func (launcher DesktopApplicationLauncher) ObserveContext(ctx context.Context, i
 	if ctx == nil {
 		return ApplicationLauncherObservation{ApplicationLauncherUnknown, "observation_context_missing"}
 	}
-	if _, err := launcher.SpecContext(ctx, item); err != nil {
+	spec, err := launcher.SpecContext(ctx, item)
+	if err != nil {
 		return launcherObservationError(ctx, err)
 	}
 	if err := ctx.Err(); err != nil {
 		return launcherObservationError(ctx, err)
 	}
-	command := launcher.GIO
-	if item.Launcher.Kind == LauncherFlatpak {
-		command = launcher.Flatpak
-	}
+	command := spec.Name
 	resolve := launcher.ObservationResolveSystem
 	if resolve == nil {
 		resolve = ResolveRootOwnedSystemExecutable

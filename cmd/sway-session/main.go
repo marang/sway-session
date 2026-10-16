@@ -602,6 +602,7 @@ func writeCommandUsage(writer io.Writer, name string, spec commandSpec) {
 	}
 	if name == "app" {
 		_, _ = fmt.Fprintln(writer, "Subcommands: register-focused, register-workspace, confirm, status, list, rebind-focused, reapprove, pin, unpin, archive, activate, forget")
+		_, _ = fmt.Fprintln(writer, "Administrative starters require --allow-administrative on register-focused, register-workspace, rebind-focused, or reapprove; --yes alone does not opt in. Unchanged approved starters may request authentication again during restore.")
 		_, _ = fmt.Fprintln(writer, "Machine-readable inventory: sway-session --json app list")
 		_, _ = fmt.Fprintln(writer, "Lifecycle inventory: app list --inventory [--socket PATH]; saved intent, live window, launcher validity, and restore proofs remain separate. Optional observations share a 3-second deadline; offline windows are unknown.")
 		_, _ = fmt.Fprintln(writer, "Status: app status [--socket PATH] keeps focused-window semantics; --inventory explains the focused registration; --context UUID_OR_LABEL selects saved inventory even offline.")

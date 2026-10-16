@@ -53,10 +53,12 @@ type ApplicationOperation struct {
 }
 
 type ApplicationOperationItem struct {
-	ContextID       ContextID          `json:"context_id"`
-	ContextRevision string             `json:"context_revision,omitempty"`
-	Window          *WindowApplication `json:"window,omitempty"`
-	DesktopID       string             `json:"desktop_id"`
+	ContextID                    ContextID          `json:"context_id"`
+	ContextRevision              string             `json:"context_revision,omitempty"`
+	Window                       *WindowApplication `json:"window,omitempty"`
+	DesktopID                    string             `json:"desktop_id"`
+	AllowAdministrative          bool               `json:"allow_administrative,omitempty"`
+	AdministrativeApprovalSHA256 string             `json:"administrative_approval_sha256,omitempty"`
 }
 
 func (operation *ApplicationOperation) Validate(now time.Time) error {
@@ -90,6 +92,13 @@ func (operation *ApplicationOperation) Validate(now time.Time) error {
 		seenContexts[item.ContextID] = struct{}{}
 		if err := validateDesktopID(item.DesktopID); err != nil {
 			return fmt.Errorf("items[%d]: %w", index, err)
+		}
+		if item.AllowAdministrative {
+			if err := validateSHA256("reviewed administrative launcher", item.AdministrativeApprovalSHA256); err != nil {
+				return fmt.Errorf("items[%d]: %w", index, err)
+			}
+		} else if item.AdministrativeApprovalSHA256 != "" {
+			return fmt.Errorf("items[%d]: administrative launcher fingerprint requires administrative approval", index)
 		}
 		switch operation.Kind {
 		case OperationRegister, OperationRebind:

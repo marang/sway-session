@@ -107,6 +107,7 @@ install: build
 	install -m644 docs/adr/0001-sqlite-session-runtime-state.md "$(DOC_ROOT)/docs/adr/0001-sqlite-session-runtime-state.md"
 	install -m644 docs/adr/0002-nonowning-work-environments.md "$(DOC_ROOT)/docs/adr/0002-nonowning-work-environments.md"
 	install -m644 docs/adr/0003-explicit-remote-terminal-bindings.md "$(DOC_ROOT)/docs/adr/0003-explicit-remote-terminal-bindings.md"
+	install -m644 docs/adr/0004-opt-in-administrative-desktop-restore.md "$(DOC_ROOT)/docs/adr/0004-opt-in-administrative-desktop-restore.md"
 	install -m644 contrib/completions/bash/sway-session "$(PREFIX)/share/bash-completion/completions/sway-session"
 	install -m644 contrib/completions/zsh/_sway-session "$(PREFIX)/share/zsh/site-functions/_sway-session"
 	install -m644 contrib/completions/fish/sway-session.fish "$(PREFIX)/share/fish/vendor_completions.d/sway-session.fish"

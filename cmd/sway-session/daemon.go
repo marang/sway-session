@@ -247,6 +247,9 @@ func (launcher daemonApplicationLauncher) Prepare(ctx context.Context, context s
 	}
 	switch context.Launcher.Kind {
 	case sessionstate.LauncherDesktop:
+		if context.Launcher.Administrative != nil {
+			break // The daemon owns the pinned authentication helper directly.
+		}
 		gio, err := sessionstate.ResolveRootOwnedSystemExecutable("gio")
 		if err != nil {
 			return nil, err

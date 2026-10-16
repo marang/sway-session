@@ -41,8 +41,8 @@ func (service RegistryService) Handle(ctx context.Context, report Report) error 
 		if candidate.ID != report.ContextID {
 			continue
 		}
-		if candidate.Launcher.Kind != sessionstate.LauncherHerdr {
-			return errors.New("registered context does not use Herdr")
+		if sessionstate.IsRemoteTerminal(candidate) || candidate.Launcher.Kind != sessionstate.LauncherHerdr {
+			return errors.New("registered context does not support local Herdr agent reporting")
 		}
 		if err := reportHerdr(ctx, service.HerdrPaths, candidate.Launcher, report.PaneID, report.Agent, report.AgentSessionID, report.EventOrigin, report.PeerPID, now()); err != nil {
 			return fmt.Errorf("record agent session association: %w", err)

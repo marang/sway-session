@@ -69,6 +69,12 @@ func BuildTerminalProcessSpec(context Context, terminalExecutable string, herdrE
 	default:
 		return ProcessSpec{}, fmt.Errorf("unsupported terminal adapter %q", context.Launcher.Terminal.Adapter)
 	}
+	if IsRemoteTerminal(context) {
+		// Replace only Herdr's final argv; the outer local cwd/app identity stay.
+		remote := context.Launcher.Terminal.Remote
+		arguments = arguments[:len(arguments)-2]
+		arguments = append(arguments, "--remote", remote.Target, "--session", remote.Session)
+	}
 	return ProcessSpec{
 		Name:      terminalExecutable,
 		Arguments: arguments,

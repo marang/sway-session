@@ -25,6 +25,7 @@ const (
 )
 
 type TerminalOpenRequest struct {
+	Remote      *TerminalRemoteBinding
 	New         bool
 	ContextID   ContextID
 	Identity    TerminalIdentity
@@ -77,6 +78,20 @@ type TerminalSessionManager interface {
 	BuildProcessSpec(Context, string) (ProcessSpec, error)
 	ValidateRoles([]string) error
 	Initialize(context.Context, Context, []string) (TerminalSessionInitialization, error)
+}
+
+// PrepareTerminalContext runs optional bounded external validation outside any
+// SQLite transaction. It does not initialize or mutate manager state.
+func PrepareTerminalContext(ctx context.Context, manager TerminalSessionManager, value Context) error {
+	if !IsRemoteTerminal(value) {
+		return nil
+	}
+	if preparer, ok := manager.(interface {
+		PrepareContext(context.Context, Context) error
+	}); ok {
+		return preparer.PrepareContext(ctx, value)
+	}
+	return nil
 }
 
 type TerminalSessionInitialization struct {
@@ -235,6 +250,14 @@ func (manager TerminalManager) Open(ctx context.Context, request TerminalOpenReq
 			return TerminalOpenResult{}, fmt.Errorf("invalid terminal context ID: %w", err)
 		}
 	}
+	if request.Remote != nil {
+		if err := request.Remote.Validate(); err != nil {
+			return TerminalOpenResult{}, err
+		}
+		if len(request.Roles) != 0 {
+			return TerminalOpenResult{}, errors.New("remote contexts do not initialize pane roles")
+		}
+	}
 	if len(request.Roles) != 0 {
 		if err := manager.SessionManager.ValidateRoles(request.Roles); err != nil {
 			return TerminalOpenResult{}, err
@@ -279,6 +302,7 @@ func (manager TerminalManager) openSerialized(ctx context.Context, request Termi
 			var createErr error
 			target, createErr = CreateTerminalInstanceContext(registry, TerminalInstanceRequest{
 				Adapter: request.Adapter,
+				Remote:  request.Remote,
 				Cwd:     request.Cwd,
 				Label:   request.Label,
 			}, func() (ContextID, error) {
@@ -298,6 +322,7 @@ func (manager TerminalManager) openSerialized(ctx context.Context, request Termi
 		var ensureErr error
 		target, created, ensureErr = EnsureTerminalContext(registry, TerminalContextRequest{
 			Identity:    request.Identity,
+			Remote:      request.Remote,
 			Adapter:     request.Adapter,
 			Cwd:         request.Cwd,
 			CwdExplicit: request.CwdExplicit,
@@ -416,7 +441,13 @@ func (manager TerminalManager) openSerialized(ctx context.Context, request Termi
 		if request.ContextID == "" && request.CwdExplicit && current.Launcher.Cwd != request.Cwd {
 			return fmt.Errorf("%w: persisted cwd is %q, requested %q", ErrTerminalIdentityConflict, current.Launcher.Cwd, request.Cwd)
 		}
+		if IsRemoteTerminal(current) && len(request.Roles) != 0 {
+			return errors.New("remote contexts do not initialize pane roles")
+		}
 		completedActions := len(result.Actions)
+		if err := PrepareTerminalContext(ctx, manager.SessionManager, current); err != nil {
+			return err
+		}
 		window, err := manager.ensureWindow(ctx, registry, current, request.Focus, &result)
 		managerMayHoldState = window.ManagerStatePossible
 		if err != nil {

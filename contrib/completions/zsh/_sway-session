@@ -71,7 +71,7 @@ _sway_session_marker_is_value() {
 	local command=${arguments[1]-} app_command=${arguments[2]-} start=1 word pending=0 parsing=1
 	local value_options=''
 	case $command in
-		terminal) value_options=' --project --context --cwd --label --socket --role ' ;;
+		terminal) value_options=' --project --context --cwd --label --socket --role --remote --remote-session --machine ' ;;
 		register) value_options=' --session --cwd --label --provider --id ' ;;
 		restore|status|daemon|broker) value_options=' --socket ' ;;
 		restore-report) value_options=' --socket --retry ' ;;
@@ -254,7 +254,7 @@ _sway-session() {
 				--cwd) _files; return ;;
 				--context) _sway_session_contexts terminal-status "$cur"; return ;;
 				--role) _sway_session_add shell agy amp claude cline codex copilot cursor devin droid gemini grok hermes kilo kimi kiro maki mastracode omp opencode pi qodercli qwen; return ;;
-				--project|--label|--socket) return ;;
+				--project|--label|--socket|--remote|--remote-session|--machine) return ;;
 			esac
 			if [[ ${arguments[2]-} == list ]]; then
 				_sway_session_add --json -h --help
@@ -272,14 +272,16 @@ _sway-session() {
 			elif [[ ${arguments[2]-} == reconfigure ]]; then
 				[[ ${arguments[-1]-} == --project || ${arguments[-1]-} == --socket ]] && return
 				_sway_session_add --project --socket --json -h --help
-			elif [[ ${arguments[2]-} == rename ]]; then
+			elif [[ ${arguments[2]-} == forget ]]; then
+                _sway_session_add --yes --socket --json -h --help
+		elif [[ ${arguments[2]-} == rename ]]; then
 				[[ ${arguments[-1]-} == --label ]] && return
 				_sway_session_add --label --json -h --help
 				if [[ $cur != -* ]] && _sway_session_context_pending terminal-status "${arguments[@]:2}"; then
 					_sway_session_contexts terminal-status "$cur"
 				fi
 			else
-				_sway_session_add manage list status cleanup rename reconfigure --new --context --project --cwd --label --socket --role --ephemeral --json -h --help
+				_sway_session_add manage list status cleanup rename reconfigure forget --new --context --project --cwd --label --socket --role --remote --remote-session --machine --ephemeral --json -h --help
 			fi
 			;;
 		register)

@@ -35,6 +35,9 @@ type herdrAPIEndpoint struct {
 // the Unix peer which supplied the report actually descends from the selected
 // pane.
 func ReportHerdrAgentSession(ctx context.Context, paths HerdrPaths, launcher Launcher, paneID string, agent string, agentSessionID string, eventOrigin string, reporterPID int, now time.Time) error {
+	if launcher.Terminal != nil && launcher.Terminal.Remote != nil {
+		return errors.New("remote terminal agent reports cannot use local process ancestry or local Herdr sockets")
+	}
 	if launcher.Kind != LauncherHerdr || !validSessionName(launcher.Session) || launcher.Session == "default" {
 		return errors.New("invalid Herdr launcher")
 	}

@@ -26,6 +26,9 @@ func validateLifecyclePurge(operation LifecycleOperation) error {
 		return errors.New("purge requires one original terminal, one directory pin, and forward-only removal")
 	}
 	before := operation.Before[0]
+	if before.Launcher.Terminal != nil && before.Launcher.Terminal.Remote != nil {
+		return errors.New("remote terminal contexts cannot be purged; use forget to remove only the local registration")
+	}
 	if before.Launcher.Kind != LauncherHerdr || before.Launcher.Session == "default" {
 		return errors.New("purge requires a named Herdr session")
 	}
@@ -57,6 +60,9 @@ func StartTerminalPurgeContext(ctx context.Context, root string, expected Contex
 	}
 	if expected.Launcher.Kind != LauncherHerdr {
 		return LifecycleOperation{}, errors.New("purge requires a Herdr context")
+	}
+	if expected.Launcher.Terminal != nil && expected.Launcher.Terminal.Remote != nil {
+		return LifecycleOperation{}, errors.New("remote terminal contexts cannot be purged; use forget to remove only the local registration")
 	}
 	if now.IsZero() {
 		return LifecycleOperation{}, errors.New("terminal purge time is zero")
@@ -224,6 +230,9 @@ func (manager HerdrManager) DeletePurgeTarget(ctx context.Context, before Contex
 	}
 	if before.Launcher.Kind != LauncherHerdr || before.Launcher.Session == "default" {
 		return errors.New("purge requires a named Herdr session")
+	}
+	if before.Launcher.Terminal != nil && before.Launcher.Terminal.Remote != nil {
+		return errors.New("remote terminal contexts cannot be purged; use forget to remove only the local registration")
 	}
 	if err := validatePurgeTarget(target); err != nil {
 		return err

@@ -86,11 +86,14 @@ func (herdrTerminalSessionManager) Kind() sessionstate.TerminalSessionManagerKin
 }
 
 func (manager herdrTerminalSessionManager) ValidateContext(contextValue sessionstate.Context) error {
-	if manager.paths == nil {
-		return errors.New("herdr path dependency is unavailable")
-	}
 	if contextValue.Launcher.Kind != sessionstate.LauncherHerdr || contextValue.Launcher.Terminal == nil {
 		return errors.New("herdr terminal session manager requires a Herdr terminal context")
+	}
+	if sessionstate.IsRemoteTerminal(contextValue) {
+		return contextValue.Launcher.Terminal.Remote.Validate()
+	}
+	if manager.paths == nil {
+		return errors.New("herdr path dependency is unavailable")
 	}
 	paths, err := manager.paths()
 	if err != nil {
@@ -102,19 +105,41 @@ func (manager herdrTerminalSessionManager) ValidateContext(contextValue sessions
 	return nil
 }
 
+// PrepareContext validates a saved remote pin immediately before launch. This
+// read-only catalog query stays outside registry transactions and does not prove
+// remote connectivity or the selected surface of an already mapped frontend.
+func (manager herdrTerminalSessionManager) PrepareContext(ctx context.Context, contextValue sessionstate.Context) error {
+	if err := manager.ValidateContext(contextValue); err != nil {
+		return err
+	}
+	if !sessionstate.IsRemoteTerminal(contextValue) || contextValue.Launcher.Terminal.Remote.MachineID == "" {
+		return nil
+	}
+	if manager.resolveProgram == nil || manager.runner == nil {
+		return errors.New("herdr remote machine dependencies are incomplete")
+	}
+	executable, err := manager.resolveProgram("herdr")
+	if err != nil {
+		return fmt.Errorf("%w: %v", errHerdrExecutable, err)
+	}
+	return (sessionstate.HerdrManager{Executable: executable, Runner: manager.runner}).ValidateRemoteBinding(ctx, *contextValue.Launcher.Terminal.Remote)
+}
+
 func (manager herdrTerminalSessionManager) BuildProcessSpec(contextValue sessionstate.Context, terminalExecutable string) (sessionstate.ProcessSpec, error) {
 	if err := manager.ValidateContext(contextValue); err != nil {
 		return sessionstate.ProcessSpec{}, err
 	}
-	if manager.validateHistory == nil || manager.resolveProgram == nil {
+	if manager.paths == nil || manager.resolveProgram == nil || !sessionstate.IsRemoteTerminal(contextValue) && manager.validateHistory == nil {
 		return sessionstate.ProcessSpec{}, errors.New("herdr launch dependencies are incomplete")
 	}
 	paths, err := manager.paths()
 	if err != nil {
 		return sessionstate.ProcessSpec{}, fmt.Errorf("resolve Herdr paths: %w", err)
 	}
-	if err := manager.validateHistory(paths); err != nil {
-		return sessionstate.ProcessSpec{}, fmt.Errorf("%w: %v", errHerdrPaneHistory, err)
+	if !sessionstate.IsRemoteTerminal(contextValue) {
+		if err := manager.validateHistory(paths); err != nil {
+			return sessionstate.ProcessSpec{}, fmt.Errorf("%w: %v", errHerdrPaneHistory, err)
+		}
 	}
 	executable, err := manager.resolveProgram("herdr")
 	if err != nil {
@@ -134,6 +159,10 @@ func (manager herdrTerminalSessionManager) Initialize(ctx context.Context, conte
 	}
 	if err := manager.ValidateContext(contextValue); err != nil {
 		return result, err
+	}
+	if sessionstate.IsRemoteTerminal(contextValue) {
+		result.Reason = "remote_initialization_unsupported"
+		return result, errors.New("remote contexts attach existing Herdr work; remote pane initialization is unsupported")
 	}
 	if manager.resolveProgram == nil || manager.initialize == nil {
 		return result, errors.New("herdr initialization dependencies are incomplete")

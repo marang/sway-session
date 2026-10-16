@@ -36,6 +36,7 @@ archives:
       - docs/agent-reporting.md
       - docs/lifecycle-recovery.md
       - docs/named-work-environments.md
+      - docs/research/lab-374-herdr-remote-restoration.md
       - docs/research/lab-375-reach-focus-capability.md
       - docs/research/herdr-plugin-session-deletion.md
       - docs/assets/*.jpeg
@@ -82,6 +83,8 @@ nfpms:
         dst: /usr/share/doc/sway-session/docs/lifecycle-recovery.md
       - src: ./docs/named-work-environments.md
         dst: /usr/share/doc/sway-session/docs/named-work-environments.md
+      - src: ./docs/research/lab-374-herdr-remote-restoration.md
+        dst: /usr/share/doc/sway-session/docs/research/lab-374-herdr-remote-restoration.md
       - src: ./docs/research/lab-375-reach-focus-capability.md
         dst: /usr/share/doc/sway-session/docs/research/lab-375-reach-focus-capability.md
       - src: ./docs/research/herdr-plugin-session-deletion.md

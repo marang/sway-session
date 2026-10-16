@@ -66,6 +66,9 @@ package() {
     install -Dm644 docs/lifecycle-recovery.md "$pkgdir/usr/share/doc/$pkgname/docs/lifecycle-recovery.md"
     install -Dm644 docs/research/herdr-plugin-session-deletion.md "$pkgdir/usr/share/doc/$pkgname/docs/research/herdr-plugin-session-deletion.md"
   fi
+  if [[ -f docs/research/lab-374-herdr-remote-restoration.md ]]; then
+    install -Dm644 docs/research/lab-374-herdr-remote-restoration.md "$pkgdir/usr/share/doc/$pkgname/docs/research/lab-374-herdr-remote-restoration.md"
+  fi
   install -Dm644 docs/sway-session-verification.md "$pkgdir/usr/share/doc/$pkgname/docs/sway-session-verification.md"
   install -Dm644 docs/releasing.md "$pkgdir/usr/share/doc/$pkgname/docs/releasing.md"
   install -Dm644 docs/workflow_conventions.md "$pkgdir/usr/share/doc/$pkgname/docs/workflow_conventions.md"

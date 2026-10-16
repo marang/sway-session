@@ -95,6 +95,7 @@ install: build
 	install -m644 docs/agent-reporting.md "$(DOC_ROOT)/docs/agent-reporting.md"
 	install -m644 docs/lifecycle-recovery.md "$(DOC_ROOT)/docs/lifecycle-recovery.md"
 	install -m644 docs/named-work-environments.md "$(DOC_ROOT)/docs/named-work-environments.md"
+	install -m644 docs/research/lab-374-herdr-remote-restoration.md "$(DOC_ROOT)/docs/research/lab-374-herdr-remote-restoration.md"
 	install -m644 docs/research/lab-375-reach-focus-capability.md "$(DOC_ROOT)/docs/research/lab-375-reach-focus-capability.md"
 	install -m644 docs/research/herdr-plugin-session-deletion.md "$(DOC_ROOT)/docs/research/herdr-plugin-session-deletion.md"
 	install -m644 README.md "$(DOC_ROOT)/README.md"

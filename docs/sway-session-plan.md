@@ -724,8 +724,12 @@ Codebase → Sway Session label:
 - LAB-94: explicit privileged desktop restore design.
 
 The [LAB-180 named-environment design](named-work-environments.md) defines the
-bounded first Reach slice and later optional scopes. Implementation is paused;
-it introduces no runtime feature or release commitment.
+bounded first Reach slice and later optional scopes. LAB-375 implementation is
+authorized: it supports nonowning named definitions, editing/search/preview and
+focus of existing windows. Missing launches remain
+gated by the [real Sway focus investigation](research/lab-375-reach-focus-capability.md)
+and are explicitly excluded from the user-approved safe first version; no
+release is implied.
 
 The [LAB-252 contention investigation](research/lab-252-restore-report-contention.md)
 and [LAB-253 real Chrome/Slack acceptance](research/lab-253-desktop-reboot-acceptance.md)

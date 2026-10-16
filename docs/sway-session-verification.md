@@ -497,6 +497,33 @@ go test ./internal/titleindicator
 The fixture is authoritative. Do not normalize or regenerate it independently
 on one side.
 
+## Named environments and existing-window Reach (LAB-375)
+
+Environment storage/snapshot tests cover nonowning shared references, unresolved
+members after purge, exact names/primary invariants, revision conflicts, uncertain
+commits, recovery exclusion, old-state read-only behavior and backup/recovery.
+TUI tests cover generation-tagged observations, stable targets across refresh,
+blocked new selections canceling prior Reach, input ownership and narrow views.
+The operation adapter tests use real disposable storage and observation-only
+Sway doubles; transport tests cover owner/path checks, strict bounded frames,
+streamed large results, worker admission, stale cleanup and cancellation.
+
+The real private-compositor check is opt-in:
+
+~~~sh
+SWAY_SESSION_HEADLESS_INTEGRATION=1 go test -race ./cmd/sway-session \
+  -run '^TestReachExistingWindowsHeadless$' -count=1 -timeout=2m -v
+~~~
+
+When opted in, missing required Sway/Alacritty prerequisites fail rather than
+silently skip. Use a native owned execution environment with working private
+Wayland sockets. The harness owns disposable XDG roots, its compositor and
+windows on 98/99. It checks repeated/shared/override focus, missing/archived/
+ambiguous cases, real intervening focus events and unchanged identities,
+placements and lifecycle intent. This tests the existing-window executor;
+it does not claim full RPC/TUI acceptance or missing-member launch support.
+See the [focus investigation and actual evidence limits](research/lab-375-reach-focus-capability.md).
+
 ## State and migration checks
 
 All probes use disposable XDG roots. Never point a test command at live user

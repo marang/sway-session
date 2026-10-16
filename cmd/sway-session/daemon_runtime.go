@@ -67,6 +67,7 @@ type sessionRuntimeOptions struct {
 }
 
 type sessionRuntime struct {
+	reach                        *reachDispatcher
 	ctx                          context.Context
 	client                       swayRequester
 	root                         string
@@ -376,6 +377,9 @@ func (runtime *sessionRuntime) HandleEvent(event swayipc.Event, now time.Time) {
 		return
 	}
 	if event.Type == swayipc.EventShutdown {
+		if runtime.reach != nil {
+			runtime.reach.cancel()
+		}
 		runtime.resetApplicationCloseObservations()
 		runtime.expectedFocus = nil
 		runtime.eventStreamReady = false
@@ -389,6 +393,9 @@ func (runtime *sessionRuntime) HandleEvent(event swayipc.Event, now time.Time) {
 		return
 	}
 	if event.Type == swayipc.EventStream && event.Change == "ready" {
+		if runtime.reach != nil {
+			runtime.reach.cancel()
+		}
 		runtime.resetApplicationCloseObservations()
 		// A reconnect creates a new event-generation boundary. Any move whose
 		// event was lost with the old connection must be rediscovered through
@@ -412,6 +419,9 @@ func (runtime *sessionRuntime) HandleEvent(event swayipc.Event, now time.Time) {
 		return
 	}
 	if event.Type == swayipc.EventStream && event.Change == "disconnected" {
+		if runtime.reach != nil {
+			runtime.reach.cancel()
+		}
 		runtime.resetApplicationCloseObservations()
 		clear(runtime.expectedMoves)
 		runtime.expectedFocus = nil
@@ -444,12 +454,17 @@ func (runtime *sessionRuntime) HandleEvent(event swayipc.Event, now time.Time) {
 		runtime.queueTerminalFocus(event.Container, now)
 		// Focus does not change saved placement. Consume command feedback
 		// only to keep later workspace transitions ordered.
-		runtime.consumeRestoreFocus(event)
+		if !runtime.consumeRestoreFocus(event) && runtime.reach != nil {
+			runtime.reach.cancel()
+		}
 		return
 	}
 	if event.Type == swayipc.EventBinding || event.Type == swayipc.EventWorkspace && event.Change == "focus" {
 		if event.Type == swayipc.EventWorkspace && runtime.consumeRestoreFocus(event) {
 			return
+		}
+		if runtime.reach != nil {
+			runtime.reach.cancel()
 		}
 		runtime.cancelConflictingRestore()
 		return
@@ -700,11 +715,17 @@ func (runtime *sessionRuntime) handleFailedMove(containerID int64, sequence uint
 	runtime.discardExpectedMove(containerID, sequence)
 }
 
-func (runtime *sessionRuntime) sendMoveBarrier(sequence uint64) error {
+func (runtime *sessionRuntime) sendMoveBarrierContext(ctx context.Context, sequence uint64) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := runtime.requireCurrentEventStream(); err != nil {
 		return err
 	}
-	message, err := runtime.client.RequestContext(runtime.context(), swayipc.SendTick, []byte(moveBarrierPayload(sequence)))
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	message, err := runtime.client.RequestContext(ctx, swayipc.SendTick, []byte(moveBarrierPayload(sequence)))
 	if err != nil {
 		return err
 	}
@@ -1637,10 +1658,20 @@ func (runtime *sessionRuntime) applyPlannedRestoreAction(root *Node, action sess
 }
 
 func (runtime *sessionRuntime) runSwayCommand(command string) error {
+	return runtime.runSwayCommandContext(runtime.context(), command)
+}
+
+func (runtime *sessionRuntime) runSwayCommandContext(ctx context.Context, command string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := runtime.requireCurrentEventStream(); err != nil {
 		return err
 	}
-	message, err := runtime.client.RequestContext(runtime.context(), swayipc.RunCommand, []byte(command))
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	message, err := runtime.client.RequestContext(ctx, swayipc.RunCommand, []byte(command))
 	if err != nil {
 		return fmt.Errorf("run Sway command: %w", err)
 	}

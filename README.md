@@ -151,6 +151,29 @@ Cleanup previews archived sessions. To delete one, review
 Purging stops and deletes the Herdr session, including its history and running
 work. Archiving keeps it.
 
+### Named work environments
+
+In `sway-session terminal manage`, press Tab to switch to environments. An
+environment groups references to existing terminals and registered applications;
+the same context can belong to several environments.
+
+Use `n` to create an empty environment, `e` to rename it and `v` to edit its
+members. In Members, `a` adds an existing context, `d` removes a reference and
+`p` sets the selected member as primary. Each action saves individually.
+Deleting an environment leaves its contexts and windows alone.
+
+Enter runs **Reach**: focus the primary's existing window where it is. `p`
+previews each member's outcome; `o` chooses a primary for this action without
+changing the saved definition. Existing windows stay on their current
+workspaces. Missing windows are deferred with a reason because a delayed launch
+cannot currently guarantee preserving later user focus. Open them separately
+through their existing per-context action. Archived, ambiguous, hidden or
+unavailable primary members do not get an automatic substitute.
+
+Saved environments remain editable offline. Reach requires Sway and a daemon
+running the updated binary; an older running daemon needs its normal explicit
+restart. See the [environment design and limitations](docs/named-work-environments.md).
+
 ## Restore
 
 ```sh
@@ -269,9 +292,9 @@ command: `sway-session --json terminal list` or
 ## State backup and recovery
 
 State is stored under `~/.local/state/sway-session`, or
-`$XDG_STATE_HOME/sway-session`. Backups contain sway-session registration and
-layout metadata. Back up Herdr history, application data, approved desktop
-launchers, and configuration separately.
+`$XDG_STATE_HOME/sway-session`. Backups contain sway-session registration,
+environment definitions and layout metadata. Back up Herdr history, application
+data, approved desktop launchers, and configuration separately.
 
 ```sh
 install -d -m 0700 "$HOME/sway-session-backups"
@@ -283,6 +306,11 @@ Use a new backup filename. Recovery previews by default; inspect it before
 applying. Use clean absolute paths, with an owner-only `0600` backup file in a
 `0700` directory owned by your user. Use `state backup` instead of copying a live
 database file.
+
+Use the updated binary for backups containing environments: older binaries'
+strict validators can reject the new tables. Keep a pre-upgrade backup if you
+need to downgrade. Recovery replaces metadata rather than merging it; see the
+[environment compatibility notes](docs/named-work-environments.md#metadata-and-compatibility).
 
 Before applying, stop the daemon and all other sway-session processes, including
 standalone brokers. Recovery requires a valid `XDG_RUNTIME_DIR` and refuses

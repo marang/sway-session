@@ -35,6 +35,8 @@ archives:
       - docs/branding.md
       - docs/agent-reporting.md
       - docs/lifecycle-recovery.md
+      - docs/named-work-environments.md
+      - docs/research/lab-375-reach-focus-capability.md
       - docs/research/herdr-plugin-session-deletion.md
       - docs/assets/*.jpeg
       - docs/sway-session-plan.md
@@ -42,6 +44,7 @@ archives:
       - docs/releasing.md
       - docs/workflow_conventions.md
       - docs/adr/0001-sqlite-session-runtime-state.md
+      - docs/adr/0002-nonowning-work-environments.md
       - contrib/sway/50-sway-session.conf
       - contrib/herdr/config.toml
       - contrib/sway-session/config.toml
@@ -77,6 +80,10 @@ nfpms:
         dst: /usr/share/doc/sway-session/docs/agent-reporting.md
       - src: ./docs/lifecycle-recovery.md
         dst: /usr/share/doc/sway-session/docs/lifecycle-recovery.md
+      - src: ./docs/named-work-environments.md
+        dst: /usr/share/doc/sway-session/docs/named-work-environments.md
+      - src: ./docs/research/lab-375-reach-focus-capability.md
+        dst: /usr/share/doc/sway-session/docs/research/lab-375-reach-focus-capability.md
       - src: ./docs/research/herdr-plugin-session-deletion.md
         dst: /usr/share/doc/sway-session/docs/research/herdr-plugin-session-deletion.md
       - src: ./docs/assets/*.jpeg
@@ -93,6 +100,8 @@ nfpms:
         dst: /usr/share/doc/sway-session/docs/workflow_conventions.md
       - src: ./docs/adr/0001-sqlite-session-runtime-state.md
         dst: /usr/share/doc/sway-session/docs/adr/0001-sqlite-session-runtime-state.md
+      - src: ./docs/adr/0002-nonowning-work-environments.md
+        dst: /usr/share/doc/sway-session/docs/adr/0002-nonowning-work-environments.md
       - src: ./contrib/sway/50-sway-session.conf
         dst: /usr/share/doc/sway-session/50-sway-session.conf
       - src: ./contrib/herdr/config.toml

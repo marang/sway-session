@@ -162,7 +162,6 @@ require_fixed .github/workflows/publish-aur.yml 'gh pr close "$pr_url"'
 require_fixed .github/workflows/publish-release.yml 'run: sh "$RUNNER_TEMP/resolve-release-tag.sh" "$RELEASE_TAG" "$RELEASE_COMMIT"'
 require_fixed scripts/resolve-release-tag.sh 'merge-base --is-ancestor "$tag_commit" "$main_commit"'
 require_fixed .github/workflows/ci.yml 'uses: ./.github/workflows/verify.yml'
-require_fixed .github/workflows/verify.yml 'sudo apt-get update && sudo apt-get install --yes fish jq zsh python3-yaml'
 
 require_count contrib/sway/50-sway-session.conf 'exec --no-startup-id /usr/bin/sway-session daemon' 1
 require_count contrib/sway/50-sway-session.conf 'exec --no-startup-id /usr/bin/sway-session restore' 1

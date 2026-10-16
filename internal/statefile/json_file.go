@@ -1,12 +1,9 @@
-// Package statefile provides private, bounded, atomic JSON state files.
+// Package statefile provides private, bounded file and directory operations.
 package statefile
 
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -24,18 +21,9 @@ const (
 	RegularFileMode = 0o600
 	MaxFileSize     = 16 * 1024 * 1024
 
-	temporaryNameAttempts = 128
-	safeResolveFlags      = unix.RESOLVE_BENEATH | unix.RESOLVE_NO_MAGICLINKS | unix.RESOLVE_NO_SYMLINKS
-	lockRetryDelay        = 10 * time.Millisecond
+	safeResolveFlags = unix.RESOLVE_BENEATH | unix.RESOLVE_NO_MAGICLINKS | unix.RESOLVE_NO_SYMLINKS
+	lockRetryDelay   = 10 * time.Millisecond
 )
-
-// JSONFile is one validated state document in a private state directory.
-type JSONFile[T any] struct {
-	directory       string
-	name            string
-	validate        func(*T) error
-	syncAfterRename func(*os.File) error
-}
 
 // LockedPrivateDirectory exposes descriptor-relative operations for one
 // verified owner-only directory while WithPrivateDirectoryLock holds its
@@ -59,17 +47,6 @@ func (err *CommitOutcomeUnknownError) Error() string {
 
 func (err *CommitOutcomeUnknownError) Unwrap() error {
 	return err.Cause
-}
-
-// NewJSONFile describes a state file. Paths and permissions are checked when
-// LoadInto, Save, or Update accesses it.
-func NewJSONFile[T any](directory string, name string, validate func(*T) error) JSONFile[T] {
-	return JSONFile[T]{
-		directory:       directory,
-		name:            name,
-		validate:        validate,
-		syncAfterRename: syncFile,
-	}
 }
 
 // OpenPrivateDirectory opens a symlink-free owner-only directory and can
@@ -445,265 +422,6 @@ func removePrivateFileAt(directory *os.File, name string) error {
 	return nil
 }
 
-// LoadInto replaces target only after a complete strict decode and validation.
-// On any error, target remains the caller's in-memory last known-good value.
-func (file JSONFile[T]) LoadInto(target *T) error {
-	return file.LoadIntoContext(context.Background(), target)
-}
-
-// LoadIntoContext is LoadInto with cancelable state-lock acquisition.
-func (file JSONFile[T]) LoadIntoContext(ctx context.Context, target *T) error {
-	if ctx == nil {
-		return errors.New("state load context is nil")
-	}
-	if target == nil {
-		return errors.New("state target is nil")
-	}
-	if err := file.validatePath(); err != nil {
-		return err
-	}
-	directory, err := openStateDirectory(file.directory, false)
-	if err != nil {
-		return err
-	}
-	defer directory.Close()
-	if err := lockDirectoryContext(ctx, directory, unix.LOCK_SH); err != nil {
-		return err
-	}
-	defer unlockDirectory(directory)
-	return file.loadIntoAt(directory, target)
-}
-
-// LoadSnapshotInto reads one validated old-or-new view of an atomically
-// replaced document without joining the directory lock. Use it only when a
-// stale snapshot is safe and the caller must not wait behind a long external
-// transaction. The descriptor-relative regular-file checks are unchanged.
-func (file JSONFile[T]) LoadSnapshotInto(target *T) error {
-	if target == nil {
-		return errors.New("state target is nil")
-	}
-	if err := file.validatePath(); err != nil {
-		return err
-	}
-	directory, err := openStateDirectory(file.directory, false)
-	if err != nil {
-		return err
-	}
-	defer directory.Close()
-	return file.loadIntoAt(directory, target)
-}
-
-// Save validates and encodes a complete candidate before atomically replacing
-// the existing file. Use Update for a read-modify-write operation that must not
-// lose changes made by another process.
-func (file JSONFile[T]) Save(value T) error {
-	return file.SaveContext(context.Background(), value)
-}
-
-// SaveContext is Save with cancelable state-lock acquisition.
-func (file JSONFile[T]) SaveContext(ctx context.Context, value T) error {
-	if ctx == nil {
-		return errors.New("state save context is nil")
-	}
-	if err := file.validatePath(); err != nil {
-		return err
-	}
-	data, err := file.encode(value)
-	if err != nil {
-		return err
-	}
-	directory, err := openStateDirectory(file.directory, true)
-	if err != nil {
-		return err
-	}
-	defer directory.Close()
-	if err := lockDirectoryContext(ctx, directory, unix.LOCK_EX); err != nil {
-		return err
-	}
-	defer unlockDirectory(directory)
-	return file.saveAt(directory, data)
-}
-
-// Update serializes a complete load-modify-save transaction with other users
-// of this state directory. When the file does not exist, mutate receives
-// initial. Existing malformed or invalid state fails closed before mutation.
-// If the replacement becomes visible but its durability cannot be confirmed,
-// Update returns the candidate with CommitOutcomeUnknownError so callers can
-// reload and reconcile instead of assuming that the mutation was rolled back.
-func (file JSONFile[T]) Update(initial T, mutate func(*T) error) (T, error) {
-	return file.UpdateContext(context.Background(), initial, mutate)
-}
-
-// UpdateContext is Update with cancelable state-lock acquisition.
-func (file JSONFile[T]) UpdateContext(ctx context.Context, initial T, mutate func(*T) error) (T, error) {
-	if ctx == nil {
-		return initial, errors.New("state update context is nil")
-	}
-	if mutate == nil {
-		return initial, errors.New("state mutation is nil")
-	}
-	if err := file.validatePath(); err != nil {
-		return initial, err
-	}
-	directory, err := openStateDirectory(file.directory, true)
-	if err != nil {
-		return initial, err
-	}
-	defer directory.Close()
-	if err := lockDirectoryContext(ctx, directory, unix.LOCK_EX); err != nil {
-		return initial, err
-	}
-	defer unlockDirectory(directory)
-
-	candidate := initial
-	if err := file.loadIntoAt(directory, &candidate); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return initial, err
-	}
-	if err := mutate(&candidate); err != nil {
-		return initial, fmt.Errorf("mutate %s: %w", file.name, err)
-	}
-	data, err := file.encode(candidate)
-	if err != nil {
-		return initial, err
-	}
-	if err := file.saveAt(directory, data); err != nil {
-		var unknown *CommitOutcomeUnknownError
-		if errors.As(err, &unknown) {
-			return candidate, err
-		}
-		return initial, err
-	}
-	return candidate, nil
-}
-
-// InspectLocked loads the current document, or initial when it does not yet
-// exist, and invokes inspect while holding the state-directory exclusive lock.
-// It is intended for read-before-external-action workflows whose observation
-// and side effects must not race a concurrent Update using the same directory.
-// InspectLocked never writes the document itself.
-func (file JSONFile[T]) InspectLocked(initial T, inspect func(T) error) error {
-	return file.InspectLockedContext(context.Background(), initial, inspect)
-}
-
-// InspectLockedContext is InspectLocked with cancelable state-lock acquisition.
-func (file JSONFile[T]) InspectLockedContext(ctx context.Context, initial T, inspect func(T) error) error {
-	if ctx == nil {
-		return errors.New("state inspection context is nil")
-	}
-	if inspect == nil {
-		return errors.New("state inspection is nil")
-	}
-	if err := file.validatePath(); err != nil {
-		return err
-	}
-	directory, err := openStateDirectory(file.directory, true)
-	if err != nil {
-		return err
-	}
-	defer directory.Close()
-	if err := lockDirectoryContext(ctx, directory, unix.LOCK_EX); err != nil {
-		return err
-	}
-	defer unlockDirectory(directory)
-
-	candidate := initial
-	if err := file.loadIntoAt(directory, &candidate); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	if file.validate != nil {
-		if err := file.validate(&candidate); err != nil {
-			return fmt.Errorf("validate %s: %w", file.name, err)
-		}
-	}
-	return inspect(candidate)
-}
-
-func (file JSONFile[T]) loadIntoAt(directory *os.File, target *T) error {
-	data, err := readPrivateRegularFileAt(directory, file.name)
-	if err != nil {
-		return err
-	}
-	var candidate T
-	if err := decodeStrict(data, &candidate); err != nil {
-		return fmt.Errorf("decode %s: %w", file.name, err)
-	}
-	if file.validate != nil {
-		if err := file.validate(&candidate); err != nil {
-			return fmt.Errorf("validate %s: %w", file.name, err)
-		}
-	}
-	*target = candidate
-	return nil
-}
-
-func (file JSONFile[T]) encode(value T) ([]byte, error) {
-	if file.validate != nil {
-		if err := file.validate(&value); err != nil {
-			return nil, fmt.Errorf("validate %s: %w", file.name, err)
-		}
-	}
-	data, err := json.MarshalIndent(value, "", "  ")
-	if err != nil {
-		return nil, fmt.Errorf("encode %s: %w", file.name, err)
-	}
-	data = append(data, '\n')
-	if len(data) > MaxFileSize {
-		return nil, fmt.Errorf("state file %s is too large: %d bytes exceeds %d", file.name, len(data), MaxFileSize)
-	}
-	return data, nil
-}
-
-func (file JSONFile[T]) saveAt(directory *os.File, data []byte) error {
-	return savePrivateDataAt(directory, file.name, data, file.syncAfterRename)
-}
-
-func savePrivateDataAt(directory *os.File, name string, data []byte, syncAfterRename func(*os.File) error) error {
-	previous, previousExists, err := inspectTargetAt(directory, name)
-	if err != nil {
-		return err
-	}
-	temporary, temporaryName, err := createTemporaryFileAt(directory, name)
-	if err != nil {
-		return err
-	}
-	keepTemporary := true
-	defer func() {
-		if keepTemporary {
-			_ = unix.Unlinkat(int(directory.Fd()), temporaryName, 0)
-		}
-	}()
-
-	if err := temporary.Chmod(RegularFileMode); err != nil {
-		_ = temporary.Close()
-		return fmt.Errorf("set temporary state permissions: %w", err)
-	}
-	if _, err := io.Copy(temporary, bytes.NewReader(data)); err != nil {
-		_ = temporary.Close()
-		return fmt.Errorf("write temporary state file: %w", err)
-	}
-	if err := temporary.Sync(); err != nil {
-		_ = temporary.Close()
-		return fmt.Errorf("sync temporary state file: %w", err)
-	}
-	if err := temporary.Close(); err != nil {
-		return fmt.Errorf("close temporary state file: %w", err)
-	}
-	if err := verifyUnchangedTargetAt(directory, name, previous, previousExists); err != nil {
-		return err
-	}
-	if err := unix.Renameat(int(directory.Fd()), temporaryName, int(directory.Fd()), name); err != nil {
-		return fmt.Errorf("replace state file: %w", err)
-	}
-	keepTemporary = false
-	if syncAfterRename == nil {
-		syncAfterRename = syncFile
-	}
-	if err := syncAfterRename(directory); err != nil {
-		return &CommitOutcomeUnknownError{Cause: fmt.Errorf("sync state directory: %w", err)}
-	}
-	return nil
-}
-
 func validatePrivateFilePath(directory string, name string) error {
 	if directory == "" || !filepath.IsAbs(directory) || filepath.Clean(directory) != directory {
 		return errors.New("private directory must be a clean absolute path")
@@ -720,19 +438,6 @@ func validatePrivateFileName(name string) error {
 
 func syncFile(file *os.File) error {
 	return file.Sync()
-}
-
-func (file JSONFile[T]) validatePath() error {
-	if file.directory == "" || !filepath.IsAbs(file.directory) {
-		return errors.New("state directory must be an absolute path")
-	}
-	if filepath.Clean(file.directory) != file.directory {
-		return errors.New("state directory must be a clean absolute path")
-	}
-	if file.name == "" || file.name == "." || file.name == ".." || filepath.Base(file.name) != file.name {
-		return errors.New("state filename must be one base name")
-	}
-	return nil
 }
 
 func openStateDirectory(path string, create bool) (*os.File, error) {
@@ -905,50 +610,6 @@ func inspectTargetAt(directory *os.File, name string) (os.FileInfo, bool, error)
 	return info, true, nil
 }
 
-func verifyUnchangedTargetAt(directory *os.File, name string, previous os.FileInfo, previousExists bool) error {
-	current, exists, err := inspectTargetAt(directory, name)
-	if err != nil {
-		return err
-	}
-	if exists != previousExists {
-		return errors.New("state file changed during atomic write")
-	}
-	if exists && !os.SameFile(previous, current) {
-		return errors.New("state file was replaced during atomic write")
-	}
-	return nil
-}
-
-func createTemporaryFileAt(directory *os.File, targetName string) (*os.File, string, error) {
-	for range temporaryNameAttempts {
-		var entropy [12]byte
-		if _, err := rand.Read(entropy[:]); err != nil {
-			return nil, "", fmt.Errorf("generate temporary state filename: %w", err)
-		}
-		name := "." + targetName + ".tmp-" + hex.EncodeToString(entropy[:])
-		fd, err := openAt2(
-			int(directory.Fd()),
-			name,
-			unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC|unix.O_NOFOLLOW,
-			uint64(RegularFileMode),
-		)
-		if errors.Is(err, unix.EEXIST) {
-			continue
-		}
-		if err != nil {
-			return nil, "", fmt.Errorf("create temporary state file: %w", err)
-		}
-		temporary := os.NewFile(uintptr(fd), name)
-		if temporary == nil {
-			_ = unix.Close(fd)
-			_ = unix.Unlinkat(int(directory.Fd()), name, 0)
-			return nil, "", errors.New("create temporary state file: invalid file descriptor")
-		}
-		return temporary, name, nil
-	}
-	return nil, "", errors.New("create temporary state file: too many filename collisions")
-}
-
 func lockDirectory(directory *os.File, operation int) error {
 	if err := unix.Flock(int(directory.Fd()), operation); err != nil {
 		return fmt.Errorf("lock state directory: %w", err)
@@ -1058,20 +719,4 @@ func checkStateDirectoryAncestorEntry(parent os.FileInfo, child os.FileInfo) err
 
 func trustedStateDirectoryOwner(owner uint32, userID uint32) bool {
 	return owner == 0 || owner == userID
-}
-
-func decodeStrict(data []byte, target any) error {
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(target); err != nil {
-		return err
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		if err == nil {
-			return errors.New("multiple JSON values")
-		}
-		return err
-	}
-	return nil
 }

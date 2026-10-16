@@ -102,7 +102,8 @@ func (config SessionConfig) Validate() error {
 }
 
 func readSessionConfig(path string) ([]byte, error) {
-	fd, err := openNoSymlinks(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
+	// Read-only configuration may use ordinary dotfile symlinks and hardlinks.
+	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, fmt.Errorf("open session config %s: %w", path, err)
 	}
@@ -111,9 +112,9 @@ func readSessionConfig(path string) ([]byte, error) {
 		_ = unix.Close(fd)
 		return nil, fmt.Errorf("inspect session config: %w", err)
 	}
-	if stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Nlink != 1 {
+	if stat.Mode&unix.S_IFMT != unix.S_IFREG {
 		_ = unix.Close(fd)
-		return nil, errors.New("session config must be a single-link regular file")
+		return nil, errors.New("session config must be a regular file")
 	}
 	if stat.Size < 0 || stat.Size > maxSessionConfigSize {
 		_ = unix.Close(fd)

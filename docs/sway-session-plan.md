@@ -211,7 +211,10 @@ $XDG_STATE_HOME/sway-session/state.sqlite3, or
 Configuration is
 $XDG_CONFIG_HOME/sway-session/config.toml, or
 ~/.config/sway-session/config.toml when XDG_CONFIG_HOME is unset. Runtime
-sockets and locks remain below $XDG_RUNTIME_DIR/sway-session.
+sockets and locks remain below $XDG_RUNTIME_DIR/sway-session. Session configuration
+follows ordinary file/directory links; its resolved target must be a regular
+file and remains subject to bounded strict TOML/schema validation. Runtime-state
+link, ownership and permission protections remain separate.
 
 `state backup --output PATH` exports sway-session metadata to a private backup
 file. `state recover --from PATH` validates that input and previews the target
@@ -482,13 +485,14 @@ or executable changes require reapproval.
 
 ### Administrative desktop starters
 
-LAB-94's [accepted decision](adr/0004-opt-in-administrative-desktop-restore.md)
-adds explicit per-registration administrative permission. `app register-focused`,
-`register-workspace`, `rebind-focused` and `reapprove` accept
-`--allow-administrative`; generic `--yes` never grants it. The flag marks only an
-actually recognized administrative starter. Ordinary entries retain their
-ordinary approval and payload. Rebinding or reapproving administrative launch
-material requires the flag again.
+[ADR 0004](adr/0004-opt-in-administrative-desktop-restore.md) records LAB-94's
+administrative starter support and LAB-383's normal registration flow.
+`app register-focused`, `register-workspace`, `rebind-focused` and `reapprove`
+review these starters through their existing confirmation or ordinary `--yes`
+path. The preview explains possible system authentication. No separate
+administrative permission step is required. Only recognized administrative
+starters carry the reviewed helper/payload evidence; ordinary payloads remain
+unchanged.
 
 Supported direct desktop `Exec` prefixes are `/usr/bin/pkexec` and
 `/usr/bin/sudo`, the latter with an optional single `-A` or `--askpass` option,
@@ -530,7 +534,7 @@ one-time tokens bind this complete identity; confirmation and launch revalidate
 it before effects. An altered desktop file, helper or payload requires explicit
 reapproval. User-local snapshots retain their existing owner-only checks.
 
-The saved permission permits ordinary Follow/Pinned restore, including
+Normal registration permits ordinary Follow/Pinned restore, including
 next-login attempts, without an extra per-launch confirmation. Privilege
 mechanisms and their session agents retain authentication and authorization
 responsibility. Launch acceptance does not prove authentication, cancellation,
@@ -538,7 +542,7 @@ a window or successful placement. A dismissed dialog can leave the same
 uncertainty as another missing window: `mapping_timeout` does not identify its
 cause. Accepted or uncertain work retains its compositor-scoped launch guard
 across daemon restart; repeated reconciliation cannot prompt again in that
-compositor. A new compositor may attempt eligible opted-in work again. No
+compositor. A new compositor may attempt eligible registered work again. No
 credential responses are collected or persisted, and no possibly accepted
 application is killed or rolled back to settle an uncertain outcome. A daemon
 exit may cause pending pkexec authentication to be cancelled. This adapter does
@@ -554,10 +558,17 @@ wire contracts and acquire no administrative command capability.
 Strict context payloads add optional nested administrative approval; operation
 tokens add paired optional permission and reviewed-identity fields. Existing
 context/database/protocol version numbers and ordinary wire payloads remain
-unchanged. Older strict readers reject opted-in registrations, including
+unchanged. Older strict readers reject administrative registrations, including
 archived ones. Archive disables restore eligibility only: use the newer binary
 to forget administrative registrations before downgrade, or restore an
 owner-only pre-feature backup. Mixed-version writers are unsupported.
+
+Application approval tokens optionally retain the effective Sway socket selected
+for registration/rebinding. Confirmation uses that endpoint even when inherited
+`SWAYSOCK` is absent or different, while preserving one-use tokens and fresh
+window/context/launcher validation. This is an additive private operation field;
+existing version-2 tokens without it retain their inherited-endpoint behavior.
+The session-start and agent-report broker wire contracts are unchanged.
 
 ### Application inventory and lifecycle
 
@@ -802,7 +813,7 @@ Codebase → Sway Session label:
 
 - LAB-89: stronger sandboxing for broker-created agent sessions.
 - LAB-93: stable native Wayland per-window identity.
-- LAB-94: explicitly opted-in administrative desktop restore.
+- LAB-94: explicitly registered administrative desktop restore.
 
 The [LAB-180 named-environment design](named-work-environments.md) defines the
 bounded first Reach slice and later optional scopes. LAB-375 implementation is
@@ -838,7 +849,7 @@ application-level restore remains the fallback.
 The [privileged desktop restore evaluation](https://github.com/marang/sway-session/blob/main/docs/research/privileged-desktop-restore-gate.md)
 retains its 2026-10-03 source findings and stronger historical consent proposal.
 The explicit 2026-10-16 decision in [ADR 0004](adr/0004-opt-in-administrative-desktop-restore.md)
-supersedes per-launch consent and login deferral for the bounded opted-in
+supersedes per-launch consent and login deferral for the bounded registered
 starters above. It does not claim a generic elevated-GUI integration or new
 authentication telemetry.
 

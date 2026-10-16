@@ -82,7 +82,7 @@ func DesktopApprovalSummaryWithOptions(entry DesktopEntry, options DesktopApprov
 	}
 	summary := fmt.Sprintf("%s (%s desktop entry %s; executable %s)", entry.Name, entry.Origin, entry.Path, executable)
 	if _, administrative, _ := administrativeDesktopEntry(entry); administrative {
-		summary += "; administrative restore allowed: may request authentication again"
+		summary += "; restore may request system authentication"
 	}
 	if len(summary) > 2048 {
 		return "", errors.New("desktop approval summary exceeds 2048 bytes")

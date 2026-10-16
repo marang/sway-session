@@ -45,7 +45,7 @@ func TestAdministrativeRestoreGuardSurvivesRestartWithoutAnotherPrompt(t *testin
 			}
 			plan, err := coordinator.Plan(registry, nil, now.Add(time.Second))
 			if err != nil || len(plan.Launch) != 1 {
-				t.Fatalf("opted-in desired work did not get its startup attempt: %+v, %v", plan, err)
+				t.Fatalf("registered desired work did not get its startup attempt: %+v, %v", plan, err)
 			}
 			state, err = coordinator.BeginAttempt(item.ID, now.Add(time.Second))
 			if err != nil {
@@ -104,7 +104,7 @@ func TestAdministrativeDesktopRequiresExplicitBoundedShape(t *testing.T) {
 	} {
 		t.Run(exec, func(t *testing.T) {
 			entry := DesktopEntry{ID: "org.example.Admin.desktop", Name: "Admin", Path: "/usr/share/applications/org.example.Admin.desktop", Exec: exec, Origin: DesktopEntrySystem}
-			if err := ValidateDesktopEntryForApproval(entry); err == nil || !strings.Contains(err.Error(), "--allow-administrative") {
+			if err := ValidateDesktopEntryForApproval(entry); err == nil || !strings.Contains(err.Error(), "reviewed launcher identity") {
 				t.Fatalf("ordinary approval accepted administrative starter: %v", err)
 			}
 			options := DesktopApprovalOptions{AllowAdministrative: true}
@@ -112,7 +112,7 @@ func TestAdministrativeDesktopRequiresExplicitBoundedShape(t *testing.T) {
 				t.Fatalf("explicit supported starter refused: %v", err)
 			}
 			summary, err := DesktopApprovalSummaryWithOptions(entry, options)
-			if err != nil || !strings.Contains(summary, "may request authentication again") || strings.Contains(summary, "--literal") {
+			if err != nil || !strings.Contains(summary, "may request system authentication") || strings.Contains(summary, "--literal") {
 				t.Fatalf("incorrect bounded trust preview: %q, %v", summary, err)
 			}
 		})

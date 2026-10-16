@@ -10,7 +10,7 @@ Sway starts, with their saved workspaces and window layout. Terminals use
 Desktop applications handle their own tabs, documents, and other internal state.
 
 It runs on Linux with Sway. Persistent terminals require Herdr and either
-Alacritty or Foot. Ordinary desktop-entry launches use `gio`; opted-in
+Alacritty or Foot. Ordinary desktop-entry launches use `gio`; registered
 administrative starters use their pinned system helper directly. Flatpak
 applications also require `flatpak`.
 
@@ -315,16 +315,16 @@ additional application windows may differ after restore.
 
 ### Administrative desktop starters
 
-For a supported administrative launcher, focus its normal application window
-and opt in explicitly:
+Register administrative applications through the same commands as other apps:
 
 ```sh
-sway-session app register-focused --allow-administrative
-sway-session app reapprove --allow-administrative CONTEXT
+sway-session app register-focused
+sway-session app reapprove CONTEXT
 ```
 
-The same flag is available on `register-workspace` and `rebind-focused`.
-`--yes` alone never opts in. The saved Follow/Pinned policy may then restore the
+The normal confirmation explains when restore may request system authentication.
+`register-workspace`, `rebind-focused` and the usual `--yes` path work the same
+way. The saved Follow/Pinned policy may restore the
 unchanged approved starter at login and request normal authentication, without
 another sway-session confirmation. Acceptance or uncertainty, including a
 dismissed authentication dialog, retains a duplicate-launch guard for that
@@ -343,7 +343,7 @@ or askpass setup owns authentication; a TTY-only setup is not made usable and
 sway-session supplies no new askpass mechanism or password transport.
 
 Approval pins the full desktop file and both executable contents, even for
-system entries. Changes require `reapprove --allow-administrative` again.
+system entries. Changes require `app reapprove CONTEXT` again.
 Inventory marks administrative registrations without claiming authentication
 status. Process-start acceptance and `mapping_timeout` cannot establish whether
 authentication succeeded or was cancelled. If the daemon exits, pending pkexec
@@ -364,7 +364,8 @@ for the scope and trade-off.
 ## Configuration and command help
 
 The default terminal is Alacritty. To use Foot, create
-`~/.config/sway-session/config.toml` (or under `$XDG_CONFIG_HOME`):
+`~/.config/sway-session/config.toml` (or under `$XDG_CONFIG_HOME`); linked dotfiles
+and configuration directories are supported:
 
 ```toml
 version = 2

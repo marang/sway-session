@@ -124,15 +124,15 @@ function __sway_session_value_state --argument-names required_option
             switch $app_command[1]
                 case register-focused rebind-focused
                     set value_options --socket --desktop-id
-                    set bool_options --yes --allow-administrative
+                    set bool_options --yes
                 case register-workspace
                     set value_options --socket
-                    set bool_options --yes --allow-administrative
+                    set bool_options --yes
                 case forget
                     set value_options --socket
                     set bool_options --yes
                 case reapprove
-                    set bool_options --yes --allow-administrative
+                    set bool_options --yes
                 case status
                     set value_options --socket --context
                     set bool_options --inventory
@@ -253,11 +253,11 @@ function __sway_session_command_options
             set -l app_command (__sway_session_app_subcommand)
             switch $app_command[1]
                 case register-focused rebind-focused
-                    printf '%s\n' --socket --desktop-id --yes --allow-administrative
+                    printf '%s\n' --socket --desktop-id --yes
                 case register-workspace
-                    printf '%s\n' --socket --yes --allow-administrative
+                    printf '%s\n' --socket --yes
                 case reapprove
-                    printf '%s\n' --yes --allow-administrative
+                    printf '%s\n' --yes
                 case status
                     printf '%s\n' --socket --context --inventory
                 case list
@@ -788,10 +788,8 @@ complete -c sway-session -n '__sway_session_is_command app; and __sway_session_o
 complete -c sway-session -n '__sway_session_is_app_subcommand register-focused; and __sway_session_options_open' -l socket -r -F
 complete -c sway-session -n '__sway_session_is_app_subcommand register-focused; and __sway_session_options_open' -l desktop-id -x
 complete -c sway-session -n '__sway_session_is_app_subcommand register-focused; and __sway_session_options_open' -l yes
-complete -c sway-session -n '__sway_session_is_app_subcommand register-focused; and __sway_session_options_open' -l allow-administrative -d 'Approve administrative restore; authentication may be requested again'
 complete -c sway-session -n '__sway_session_is_app_subcommand register-workspace; and __sway_session_options_open' -l socket -r -F
 complete -c sway-session -n '__sway_session_is_app_subcommand register-workspace; and __sway_session_options_open' -l yes
-complete -c sway-session -n '__sway_session_is_app_subcommand register-workspace; and __sway_session_options_open' -l allow-administrative -d 'Approve administrative restore; authentication may be requested again'
 complete -c sway-session -n '__sway_session_is_app_subcommand status; and __sway_session_value_state __options' -l socket -r -F
 complete -c sway-session -n '__sway_session_is_app_subcommand status; and __sway_session_value_state __options' -l context -x -a '(__sway_session_contexts app-status)' -d 'Inspect a saved application by UUID or exact label'
 complete -c sway-session -n '__sway_session_is_app_subcommand status; and __sway_session_value_state --context' -a '(__sway_session_contexts app-status)'
@@ -802,9 +800,7 @@ complete -c sway-session -n '__sway_session_is_app_subcommand status; and __sway
 complete -c sway-session -n '__sway_session_app_context_pending rebind-focused; and __sway_session_options_open' -l socket -r -F
 complete -c sway-session -n '__sway_session_app_context_pending rebind-focused; and __sway_session_options_open' -l desktop-id -x
 complete -c sway-session -n '__sway_session_app_context_pending rebind-focused; and __sway_session_options_open' -l yes
-complete -c sway-session -n '__sway_session_app_context_pending rebind-focused; and __sway_session_options_open' -l allow-administrative -d 'Approve administrative restore; authentication may be requested again'
 complete -c sway-session -n '__sway_session_app_context_pending reapprove; and __sway_session_options_open' -l yes
-complete -c sway-session -n '__sway_session_app_context_pending reapprove; and __sway_session_options_open' -l allow-administrative -d 'Approve administrative restore; authentication may be requested again'
 complete -c sway-session -n '__sway_session_app_context_pending forget; and __sway_session_options_open' -l socket -r -F
 complete -c sway-session -n '__sway_session_app_context_pending forget; and __sway_session_options_open' -l yes
 complete -c sway-session -n '__sway_session_app_context_pending forget' -a '(__sway_session_contexts app-forget)'

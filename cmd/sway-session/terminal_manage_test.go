@@ -56,18 +56,18 @@ func TestTerminalManageDerivesNamesFromHerdrPaneDirectories(t *testing.T) {
 		at := created.Add(time.Duration(index) * time.Minute)
 		items[index].CreatedAt = &at
 	}
-	observer := &terminalManageDirectoryTestOperations{
-		terminalManageTestOperations: terminalManageTestOperations{snapshots: [][]terminalInventoryResult{items}},
-		observations: map[sessionstate.ContextID]sessionstate.HerdrDirectoryObservation{
-			items[0].ContextID: {Directory: "/work/alpha/project"},
-			items[1].ContextID: {Directory: "/work/beta/project"},
-			items[2].ContextID: {Ambiguous: true},
-		},
+	observer := &terminalManageActivityTestOperations{terminalManageTestOperations: terminalManageTestOperations{snapshots: [][]terminalInventoryResult{items}}}
+	observer.observe = func(_ context.Context, observed []terminalInventoryResult) map[sessionstate.ContextID]sessionstate.TerminalSessionObservation {
+		if len(observed) != len(items) {
+			t.Fatalf("bulk observation received %d terminals, want %d", len(observed), len(items))
+		}
+		return map[sessionstate.ContextID]sessionstate.TerminalSessionObservation{
+			items[0].ContextID: {Directory: sessionstate.HerdrDirectoryObservation{Directory: "/work/alpha/project"}},
+			items[1].ContextID: {Directory: sessionstate.HerdrDirectoryObservation{Directory: "/work/beta/project"}},
+			items[2].ContextID: {Directory: sessionstate.HerdrDirectoryObservation{Ambiguous: true}},
+		}
 	}
 	model := terminalManageRunInit(t, newTerminalManageModel(observer))
-	if len(observer.probed) != 3 {
-		t.Fatalf("probed %d terminals, want only the three unnamed contexts", len(observer.probed))
-	}
 	for _, item := range model.items {
 		switch item.ContextID {
 		case items[0].ContextID:
@@ -103,9 +103,9 @@ func TestTerminalManageUnavailableHerdrKeepsCreatedName(t *testing.T) {
 	item.Identity = terminalIdentityResult{}
 	item.Cwd = "/work/start"
 	item.CreatedAt = &created
-	observer := &terminalManageDirectoryTestOperations{
-		terminalManageTestOperations: terminalManageTestOperations{snapshots: [][]terminalInventoryResult{{item}}},
-		err:                          errors.New("Herdr socket unavailable"),
+	observer := &terminalManageActivityTestOperations{terminalManageTestOperations: terminalManageTestOperations{snapshots: [][]terminalInventoryResult{{item}}}}
+	observer.observe = func(context.Context, []terminalInventoryResult) map[sessionstate.ContextID]sessionstate.TerminalSessionObservation {
+		return map[sessionstate.ContextID]sessionstate.TerminalSessionObservation{item.ContextID: sessionstate.UnknownTerminalSessionObservation("observation_unavailable")}
 	}
 	model := terminalManageRunInit(t, newTerminalManageModel(observer))
 	if got := terminalManageName(model.items[0]); got != "Terminal · 26 Sep 22:53:00" {
@@ -116,33 +116,25 @@ func TestTerminalManageUnavailableHerdrKeepsCreatedName(t *testing.T) {
 func TestTerminalManageRefreshDiscardsOldHerdrDirectoryResult(t *testing.T) {
 	item := terminalManageTestItem("11111111-1111-4111-8111-111111111111", "Terminal", sessionstate.ContextActive)
 	item.Identity = terminalIdentityResult{}
-	observer := &terminalManageDirectoryTestOperations{
-		terminalManageTestOperations: terminalManageTestOperations{snapshots: [][]terminalInventoryResult{{item}, {item}}},
-		observations: map[sessionstate.ContextID]sessionstate.HerdrDirectoryObservation{
-			item.ContextID: {Directory: "/work/current"},
-		},
+	observer := &terminalManageActivityTestOperations{terminalManageTestOperations: terminalManageTestOperations{snapshots: [][]terminalInventoryResult{{item}, {item}}}}
+	directory := "/work/stale"
+	observer.observe = func(context.Context, []terminalInventoryResult) map[sessionstate.ContextID]sessionstate.TerminalSessionObservation {
+		return map[sessionstate.ContextID]sessionstate.TerminalSessionObservation{item.ContextID: {Directory: sessionstate.HerdrDirectoryObservation{Directory: directory}}}
 	}
 	model := newTerminalManageModel(observer)
 	model, oldProbe := terminalManageUpdateWithCommand(t, model, model.Init()())
 	if oldProbe == nil {
 		t.Fatal("initial load did not schedule a Herdr observation")
 	}
-	oldGeneration := model.loadID
+	stale := oldProbe()
+	directory = "/work/current"
 	model, reload := terminalManageUpdateWithCommand(t, model, terminalManageKey("r"))
-	if reload == nil || model.loadID == oldGeneration {
-		t.Fatal("refresh did not start a new inventory generation")
-	}
-	model, next := terminalManageUpdateWithCommand(t, model, terminalManageDirectoryMsg{
-		generation: oldGeneration,
-		id:         item.ContextID,
-		observation: sessionstate.HerdrDirectoryObservation{
-			Directory: "/work/stale",
-		},
-	})
+	model, current := terminalManageUpdateWithCommand(t, model, reload())
+	model, next := terminalManageUpdateWithCommand(t, model, stale)
 	if next != nil || model.items[0].PaneDirectory != "" {
 		t.Fatalf("stale observation changed the refreshed model: %+v", model.items[0])
 	}
-	model = terminalManageRunCommand(t, model, reload)
+	model = terminalManageRunCommand(t, model, current)
 	if got := model.items[0].PaneDirectory; got != "/work/current" {
 		t.Fatalf("new observation was lost after refresh: %q", got)
 	}
@@ -948,18 +940,6 @@ type terminalManageTestOperations struct {
 	stateChanges []terminalManageTestStateChange
 	renames      []terminalManageTestRename
 	purges       []sessionstate.ContextID
-}
-
-type terminalManageDirectoryTestOperations struct {
-	terminalManageTestOperations
-	observations map[sessionstate.ContextID]sessionstate.HerdrDirectoryObservation
-	probed       []sessionstate.ContextID
-	err          error
-}
-
-func (operations *terminalManageDirectoryTestOperations) ObservePaneDirectory(_ context.Context, item terminalInventoryResult) (sessionstate.HerdrDirectoryObservation, error) {
-	operations.probed = append(operations.probed, item.ContextID)
-	return operations.observations[item.ContextID], operations.err
 }
 
 type terminalManageTestStateChange struct {

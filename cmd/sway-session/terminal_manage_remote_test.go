@@ -1,7 +1,6 @@
 package main
 
 import (
-	"strings"
 	"testing"
 
 	sessionstate "github.com/marang/sway-session/internal/session"
@@ -20,12 +19,8 @@ func TestRemoteInventoryNeverUsesLocalHerdrObservation(t *testing.T) {
 	}
 	observed := operations.ObserveActivity(t.Context(), []terminalInventoryResult{remote})
 	value, ok := observed[remote.ContextID]
-	if !ok || value.SessionState != "unknown" || value.AgentState != "unknown" || value.Reason != "remote_not_observed" {
+	if !ok || value.SessionState != "unknown" || value.AgentState != "unknown" || value.Reason != "remote_not_observed" || value.Directory.Directory != "" || value.Directory.Ambiguous {
 		t.Fatalf("remote health inferred from local session: %+v", observed)
-	}
-	directory, err := operations.ObservePaneDirectory(t.Context(), remote)
-	if err == nil || !strings.Contains(err.Error(), "remote pane") || directory.Directory != "" || directory.Ambiguous {
-		t.Fatalf("remote directory attributed to local session: %+v %v", directory, err)
 	}
 }
 

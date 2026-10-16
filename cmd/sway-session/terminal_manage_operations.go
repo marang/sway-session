@@ -27,10 +27,6 @@ func (operations commandTerminalManageOperations) RetryRestore(ctx context.Conte
 	return executeRestoreRetry(ctx, id, socket, operations.deps)
 }
 
-type terminalManageDirectoryObserver interface {
-	ObservePaneDirectory(context.Context, terminalInventoryResult) (sessionstate.HerdrDirectoryObservation, error)
-}
-
 type terminalManageActivityObserver interface {
 	ObserveActivity(context.Context, []terminalInventoryResult) map[sessionstate.ContextID]sessionstate.TerminalSessionObservation
 }
@@ -83,24 +79,6 @@ type terminalManageSnapshot struct {
 type commandTerminalManageOperations struct {
 	configPath string
 	deps       dependencies
-}
-
-func (operations commandTerminalManageOperations) ObservePaneDirectory(ctx context.Context, item terminalInventoryResult) (sessionstate.HerdrDirectoryObservation, error) {
-	if item.Remote != nil {
-		return sessionstate.HerdrDirectoryObservation{}, errors.New("remote pane directories cannot be observed through a local Herdr session")
-	}
-	if operations.deps.herdrPaths == nil || operations.deps.homeDir == nil {
-		return sessionstate.HerdrDirectoryObservation{}, errors.New("herdr directory observation dependencies are unavailable")
-	}
-	paths, err := operations.deps.herdrPaths()
-	if err != nil {
-		return sessionstate.HerdrDirectoryObservation{}, err
-	}
-	home, err := operations.deps.homeDir()
-	if err != nil {
-		return sessionstate.HerdrDirectoryObservation{}, err
-	}
-	return sessionstate.ObserveHerdrPaneDirectory(ctx, paths, item.Session, home)
 }
 
 func (operations commandTerminalManageOperations) Load(ctx context.Context, socket string) (terminalManageSnapshot, error) {

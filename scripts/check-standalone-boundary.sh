@@ -9,7 +9,10 @@ test ! -e config.example.toml
 test ! -e docs/sound-presets-plan.md
 test ! -e docs/assets/logo.svg
 
-if grep -R -n --include='*.go' 'github.com/marang/sway-title-animator' .; then
+# Follow the current module's dependency graph, including tests. Unrelated
+# checkouts under hidden directories are not part of this build.
+dependencies=$(go list -deps -test ./...)
+if printf '%s\n' "$dependencies" | grep -E '^github\.com/marang/sway-title-animator(/|$)'; then
 	echo 'Retained Go code still imports the former combined module.' >&2
 	exit 1
 fi

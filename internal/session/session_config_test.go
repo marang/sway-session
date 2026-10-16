@@ -5,6 +5,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 func TestLoadSessionConfigDefaultsToAlacrittyWhenDefaultFileIsAbsent(t *testing.T) {
@@ -65,5 +68,90 @@ func TestLoadSessionConfigExplicitPathMustExistAndBeRegular(t *testing.T) {
 	directory := t.TempDir()
 	if _, _, err := LoadSessionConfig(directory); err == nil {
 		t.Fatal("directory was accepted as session config")
+	}
+}
+
+func TestLoadSessionConfigFollowsFilesystemLinks(t *testing.T) {
+	for _, kind := range []string{"symlink", "hardlink", "directory symlink"} {
+		t.Run(kind, func(t *testing.T) {
+			root := t.TempDir()
+			sourceDirectory := filepath.Join(root, "dotfiles", "sway-session")
+			if err := os.MkdirAll(sourceDirectory, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			source := filepath.Join(sourceDirectory, "config.toml")
+			contents := []byte("version = 2\n[terminal]\nadapter = \"foot\"\nsession_manager = \"herdr\"\n")
+			if err := os.WriteFile(source, contents, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(root, "config.toml")
+			switch kind {
+			case "symlink":
+				if err := os.Symlink(source, path); err != nil {
+					t.Fatal(err)
+				}
+			case "hardlink":
+				if err := os.Link(source, path); err != nil {
+					t.Fatal(err)
+				}
+			case "directory symlink":
+				configHome := filepath.Join(root, "config")
+				if err := os.Symlink(filepath.Dir(sourceDirectory), configHome); err != nil {
+					t.Fatal(err)
+				}
+				t.Setenv("XDG_CONFIG_HOME", configHome)
+				path = ""
+			}
+			config, _, err := LoadSessionConfig(path)
+			if err != nil || config.Terminal.Adapter != TerminalAdapterFoot || config.Terminal.SessionManager != TerminalSessionManagerHerdr {
+				t.Fatalf("linked config = %+v, err = %v", config, err)
+			}
+		})
+	}
+}
+
+func TestLoadSessionConfigRejectsFIFOWithoutBlocking(t *testing.T) {
+	for _, linked := range []bool{false, true} {
+		name := "direct"
+		if linked {
+			name = "symlink"
+		}
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			path := filepath.Join(root, "config.toml")
+			if err := unix.Mkfifo(path, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if linked {
+				link := filepath.Join(root, "linked.toml")
+				if err := os.Symlink(path, link); err != nil {
+					t.Fatal(err)
+				}
+				path = link
+			}
+			done := make(chan error, 1)
+			go func() {
+				_, _, err := LoadSessionConfig(path)
+				done <- err
+			}()
+			select {
+			case err := <-done:
+				if err == nil {
+					t.Fatal("FIFO was accepted as configuration")
+				}
+			case <-time.After(time.Second):
+				t.Fatal("configuration read blocked on FIFO")
+			}
+		})
+	}
+}
+
+func TestLoadSessionConfigRejectsOversizedFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, make([]byte, maxSessionConfigSize+1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := LoadSessionConfig(path); err == nil {
+		t.Fatal("oversized configuration was accepted")
 	}
 }

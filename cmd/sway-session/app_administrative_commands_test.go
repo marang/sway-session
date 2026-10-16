@@ -55,33 +55,24 @@ func runAdministrativeCommand(t *testing.T, deps dependencies, args ...string) (
 	return code, out.String(), err.String()
 }
 
-func TestAppAdministrativeRegistrationRequiresSeparateOptIn(t *testing.T) {
+func TestAppAdministrativeUsesNormalRegistration(t *testing.T) {
+	requireAdministrativeCommandHelper(t)
 	for _, command := range []string{"register-focused", "register-workspace"} {
 		t.Run(command, func(t *testing.T) {
-			deps, client, _ := administrativeCommandFixture(t)
+			deps, _, _ := administrativeCommandFixture(t)
 			code, _, stderr := runAdministrativeCommand(t, deps, "app", command, "--yes", "--socket", "/run/user/1000/sway.sock")
-			if code != exitOperation || !strings.Contains(stderr, "--allow-administrative") {
-				t.Fatalf("generic approval authorized administrative registration: code=%d stderr=%q", code, stderr)
+			if code != exitSuccess {
+				t.Fatalf("normal registration failed: code=%d stderr=%q", code, stderr)
 			}
-			if len(client.commands) != 0 || len(loadRegistryOrEmpty(t, deps).Contexts) != 0 {
-				t.Fatal("rejected administrative registration mutated state or Sway")
+			registered := loadTestRegistry(t, deps).Contexts
+			if len(registered) != 1 || registered[0].Launcher.Administrative == nil {
+				t.Fatalf("normal approval omitted reviewed helper identity: %+v", registered)
 			}
-			t.Run("explicit-opt-in", func(t *testing.T) {
-				requireAdministrativeCommandHelper(t)
-				code, _, stderr = runAdministrativeCommand(t, deps, "app", command, "--yes", "--allow-administrative", "--socket", "/run/user/1000/sway.sock")
-				if code != exitSuccess {
-					t.Fatalf("explicit administrative registration failed: code=%d stderr=%q", code, stderr)
-				}
-				registered := loadTestRegistry(t, deps).Contexts
-				if len(registered) != 1 || registered[0].Launcher.Administrative == nil {
-					t.Fatalf("administrative permission was not durably recorded: %+v", registered)
-				}
-			})
 		})
 	}
 }
 
-func TestAppAdministrativePreviewTokenCarriesOnlyExplicitOptIn(t *testing.T) {
+func TestAppAdministrativePreviewTokenCarriesReviewedIdentity(t *testing.T) {
 	requireAdministrativeCommandHelper(t)
 	t.Setenv("SWAYSOCK", "/run/user/1000/sway.sock")
 	for _, command := range []string{"register-focused", "register-workspace"} {
@@ -93,7 +84,7 @@ func TestAppAdministrativePreviewTokenCarriesOnlyExplicitOptIn(t *testing.T) {
 				message, choices = got, gotChoices
 				return nil
 			}
-			code, _, stderr := runAdministrativeCommand(t, deps, "app", command, "--allow-administrative", "--socket", "/run/user/1000/sway.sock")
+			code, _, stderr := runAdministrativeCommand(t, deps, "app", command, "--socket", "/run/user/1000/sway.sock")
 			if code != exitSuccess || len(choices) != 1 || !strings.Contains(strings.ToLower(message), "authentication") || !strings.Contains(choices[0].Label, "authentication") {
 				t.Fatalf("administrative warning missing: code=%d message=%q choices=%+v stderr=%q", code, message, choices, stderr)
 			}
@@ -119,7 +110,7 @@ func TestAppAdministrativePreviewTokenCarriesOnlyExplicitOptIn(t *testing.T) {
 	}
 }
 
-func TestAppAdministrativeRebindRequiresFreshOptIn(t *testing.T) {
+func TestAppAdministrativeRebindUsesNormalApproval(t *testing.T) {
 	deps, _, _ := administrativeCommandFixture(t)
 	root, _ := deps.stateRoot()
 	old := sessionstate.Context{
@@ -130,24 +121,18 @@ func TestAppAdministrativeRebindRequiresFreshOptIn(t *testing.T) {
 	if _, err := sessionstate.UpdateRegistry(root, func(registry *sessionstate.Registry) error { return sessionstate.AddContext(registry, old) }); err != nil {
 		t.Fatal(err)
 	}
+	requireAdministrativeCommandHelper(t)
 	code, _, stderr := runAdministrativeCommand(t, deps, "app", "rebind-focused", "--yes", "--socket", "/run/user/1000/sway.sock", string(old.ID))
-	if code != exitOperation || !strings.Contains(stderr, "--allow-administrative") {
-		t.Fatalf("rebind inherited generic approval: code=%d stderr=%q", code, stderr)
+	if code != exitSuccess {
+		t.Fatalf("normal rebind failed: code=%d stderr=%q", code, stderr)
 	}
-	t.Run("explicit-opt-in", func(t *testing.T) {
-		requireAdministrativeCommandHelper(t)
-		code, _, stderr = runAdministrativeCommand(t, deps, "app", "rebind-focused", "--yes", "--allow-administrative", "--socket", "/run/user/1000/sway.sock", string(old.ID))
-		if code != exitSuccess {
-			t.Fatalf("explicit administrative rebind failed: code=%d stderr=%q", code, stderr)
-		}
-		registered := loadTestRegistry(t, deps).Contexts[0]
-		if registered.ID != old.ID || registered.Launcher.Administrative == nil || registered.App.RestorePolicy != sessionstate.ApplicationRestorePinned {
-			t.Fatalf("rebind lost explicit permission or existing policy: %+v", registered)
-		}
-	})
+	registered := loadTestRegistry(t, deps).Contexts[0]
+	if registered.ID != old.ID || registered.Launcher.Administrative == nil || registered.App.RestorePolicy != sessionstate.ApplicationRestorePinned {
+		t.Fatalf("rebind lost reviewed launcher or existing policy: %+v", registered)
+	}
 }
 
-func TestAppAdministrativeSystemReapprovalRequiresExplicitOptIn(t *testing.T) {
+func TestAppAdministrativeSystemReapprovalUsesNormalApproval(t *testing.T) {
 	requireAdministrativeCommandHelper(t)
 	deps, _, catalog := administrativeCommandFixture(t)
 	root, _ := deps.stateRoot()
@@ -168,16 +153,14 @@ func TestAppAdministrativeSystemReapprovalRequiresExplicitOptIn(t *testing.T) {
 	if _, err := sessionstate.UpdateRegistry(root, func(registry *sessionstate.Registry) error { return sessionstate.AddContext(registry, previous) }); err != nil {
 		t.Fatal(err)
 	}
-	if code, _, stderr := runAdministrativeCommand(t, deps, "app", "reapprove", "--yes", string(testContextID)); code != exitOperation || !strings.Contains(stderr, "--allow-administrative") {
-		t.Fatalf("system administrative reapproval silently reused permission: code=%d stderr=%q", code, stderr)
-	}
+
 	var message string
 	var choices []sessionstate.ApprovalChoice
 	deps.presentApproval = func(got string, gotChoices []sessionstate.ApprovalChoice) error {
 		message, choices = got, gotChoices
 		return nil
 	}
-	if code, _, stderr := runAdministrativeCommand(t, deps, "app", "reapprove", "--allow-administrative", string(testContextID)); code != exitSuccess {
+	if code, _, stderr := runAdministrativeCommand(t, deps, "app", "reapprove", string(testContextID)); code != exitSuccess {
 		t.Fatalf("existing system administrative metadata could not be reapproved: code=%d stderr=%q", code, stderr)
 	}
 	if len(choices) != 1 || !strings.Contains(message, "authentication") || !strings.Contains(choices[0].Label, "authentication") {
@@ -196,7 +179,7 @@ func TestAppAdministrativeSystemReapprovalRequiresExplicitOptIn(t *testing.T) {
 	}
 }
 
-func TestAppAdministrativeOptInCanUpgradeExistingSystemRegistration(t *testing.T) {
+func TestAppAdministrativeReapprovalCanUpgradeExistingSystemRegistration(t *testing.T) {
 	requireAdministrativeCommandHelper(t)
 	deps, _, _ := administrativeCommandFixture(t)
 	root, _ := deps.stateRoot()
@@ -210,11 +193,11 @@ func TestAppAdministrativeOptInCanUpgradeExistingSystemRegistration(t *testing.T
 	if _, err := sessionstate.UpdateRegistry(root, func(registry *sessionstate.Registry) error { return sessionstate.AddContext(registry, previous) }); err != nil {
 		t.Fatal(err)
 	}
-	if code, _, stderr := runAdministrativeCommand(t, deps, "app", "reapprove", "--yes", "--allow-administrative", string(testContextID)); code != exitSuccess {
-		t.Fatalf("explicit opt-in could not upgrade an existing system registration: code=%d stderr=%q", code, stderr)
+	if code, _, stderr := runAdministrativeCommand(t, deps, "app", "reapprove", "--yes", string(testContextID)); code != exitSuccess {
+		t.Fatalf("normal reapproval could not upgrade an existing system registration: code=%d stderr=%q", code, stderr)
 	}
 	if got := loadTestRegistry(t, deps).Contexts[0]; got.ID != previous.ID || got.Launcher.Administrative == nil || got.App.RestorePolicy != sessionstate.ApplicationRestorePinned {
-		t.Fatalf("opt-in lost context or policy: %+v", got)
+		t.Fatalf("reapproval lost context or policy: %+v", got)
 	}
 }
 
@@ -230,7 +213,7 @@ func TestAppAdministrativeConfirmationRejectsChangedReviewedEntry(t *testing.T) 
 			}
 			var choices []sessionstate.ApprovalChoice
 			deps.presentApproval = func(_ string, got []sessionstate.ApprovalChoice) error { choices = got; return nil }
-			if code, _, stderr := runAdministrativeCommand(t, deps, "app", command, "--allow-administrative", "--socket", "/run/user/1000/sway.sock"); code != exitSuccess {
+			if code, _, stderr := runAdministrativeCommand(t, deps, "app", command, "--socket", "/run/user/1000/sway.sock"); code != exitSuccess {
 				t.Fatalf("preview failed: code=%d stderr=%q", code, stderr)
 			}
 			store, _ := deps.operationStore()
@@ -272,15 +255,15 @@ func TestAppAdministrativeConfirmationRejectsChangedReviewedEntry(t *testing.T) 
 	}
 }
 
-func TestAppOrdinaryEntryDoesNotInheritAdministrativeOptIn(t *testing.T) {
+func TestAppOrdinaryEntryDoesNotAcquireAdministrativeMetadata(t *testing.T) {
 	deps, _, _ := administrativeCommandFixture(t)
 	catalog := testDesktopCatalog(t, map[string]string{
 		"org.example.Admin.desktop": "[Desktop Entry]\nType=Application\nName=Ordinary Example\nExec=/usr/bin/true\n",
 	}, false)
 	deps.desktopCatalog = func() (sessionstate.DesktopCatalog, error) { return catalog, nil }
 	deps.presentApproval = func(string, []sessionstate.ApprovalChoice) error { return nil }
-	if code, _, stderr := runAdministrativeCommand(t, deps, "app", "register-focused", "--allow-administrative", "--socket", "/run/user/1000/sway.sock"); code != exitSuccess {
-		t.Fatalf("ordinary preview with an unused permission flag failed: code=%d stderr=%q", code, stderr)
+	if code, _, stderr := runAdministrativeCommand(t, deps, "app", "register-focused", "--socket", "/run/user/1000/sway.sock"); code != exitSuccess {
+		t.Fatalf("ordinary preview failed: code=%d stderr=%q", code, stderr)
 	}
 	store, _ := deps.operationStore()
 	active, err := store.Active()

@@ -387,3 +387,36 @@ func TestApplicationOperationAdministrativePermissionRequiresReviewedIdentity(t 
 		t.Fatal("reviewed administrative identity without permission was accepted")
 	}
 }
+
+func TestApplicationOperationSwaySocketIsOptionalAndValidated(t *testing.T) {
+	now := time.Now().UTC()
+	base := ApplicationOperation{Version: ApplicationOperationVersion, Kind: OperationRegister, ExpiresAt: now.Add(time.Minute), Items: []ApplicationOperationItem{{
+		ContextID: testContextID, DesktopID: "org.example.App.desktop",
+		Window: &WindowApplication{ContainerID: 42, Workspace: "98", Identity: ApplicationIdentity{Protocol: WindowWayland, WaylandAppID: "org.example.App"}},
+	}}}
+	encoded, err := json.Marshal(base)
+	if err != nil || bytes.Contains(encoded, []byte("sway_socket")) {
+		t.Fatal("legacy token wire changed")
+	}
+	for _, socket := range []string{"relative.sock", "/tmp/../socket", "/tmp/socket\n", strings.Repeat("/", 4097)} {
+		candidate := base
+		candidate.SwaySocket = socket
+		if err := candidate.Validate(now); err == nil {
+			t.Fatalf("invalid approval socket accepted: %q", socket)
+		}
+	}
+	base.SwaySocket = "/run/user/1000/selected.sock"
+	store := ApplicationOperationStore{RuntimeRoot: t.TempDir()}
+	token, err := store.Create(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	consumed, err := store.Consume(token)
+	if err != nil || consumed.SwaySocket != base.SwaySocket {
+		t.Fatalf("token lost compositor endpoint: %+v %v", consumed, err)
+	}
+	base.Kind = OperationReapprove
+	if err := base.Validate(now); err == nil {
+		t.Fatal("offline reapproval accepted unused socket evidence")
+	}
+}

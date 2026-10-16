@@ -46,10 +46,11 @@ const (
 // no executable command, arguments, environment, title, URI, or private app
 // state.
 type ApplicationOperation struct {
-	Version   int                        `json:"version"`
-	Kind      ApplicationOperationKind   `json:"kind"`
-	ExpiresAt time.Time                  `json:"expires_at"`
-	Items     []ApplicationOperationItem `json:"items"`
+	Version    int                        `json:"version"`
+	Kind       ApplicationOperationKind   `json:"kind"`
+	ExpiresAt  time.Time                  `json:"expires_at"`
+	Items      []ApplicationOperationItem `json:"items"`
+	SwaySocket string                     `json:"sway_socket,omitempty"`
 }
 
 type ApplicationOperationItem struct {
@@ -72,6 +73,14 @@ func (operation *ApplicationOperation) Validate(now time.Time) error {
 	case OperationRegister, OperationRebind, OperationReapprove:
 	default:
 		return fmt.Errorf("unsupported application operation kind %q", operation.Kind)
+	}
+	if operation.SwaySocket != "" {
+		if operation.Kind == OperationReapprove {
+			return errors.New("launcher reapproval must not contain a Sway socket")
+		}
+		if err := validateAbsoluteFilePath("approval Sway socket", operation.SwaySocket, ""); err != nil {
+			return err
+		}
 	}
 	if operation.ExpiresAt.IsZero() || !operation.ExpiresAt.After(now) || operation.ExpiresAt.After(now.Add(maxOperationTTL)) {
 		return errors.New("application operation expiry is invalid or expired")

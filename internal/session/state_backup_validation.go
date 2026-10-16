@@ -291,6 +291,9 @@ func validateStateBackupDatabase(ctx context.Context, db *sql.DB) (StateBackupRe
 	if err := validateLifecycleOperationsQuery(ctx, tx, registry); err != nil {
 		return result, err
 	}
+	if _, err := loadWorkEnvironments(ctx, tx, ""); err != nil {
+		return result, err
+	}
 	if err := ctx.Err(); err != nil {
 		return result, err
 	}
@@ -371,6 +374,9 @@ func stateBackupSchemaV1() map[string]stateBackupSchemaObject {
 		"sqlite_stat4": {kind: "table", table: "sqlite_stat4", optional: true, sql: `CREATE TABLE sqlite_stat4(tbl,idx,neq,nlt,ndlt,sample)`},
 	}
 	for name, object := range applicationAdoptionSchemaV1() {
+		objects[name] = object
+	}
+	for name, object := range workEnvironmentSchemaV1() {
 		objects[name] = object
 	}
 	return objects

@@ -56,6 +56,11 @@ package() {
   if [[ -f docs/agent-reporting.md ]]; then
     install -Dm644 docs/agent-reporting.md "$pkgdir/usr/share/doc/$pkgname/docs/agent-reporting.md"
   fi
+  if [[ -f docs/named-work-environments.md ]]; then
+    install -Dm644 docs/named-work-environments.md "$pkgdir/usr/share/doc/$pkgname/docs/named-work-environments.md"
+    install -Dm644 docs/research/lab-375-reach-focus-capability.md "$pkgdir/usr/share/doc/$pkgname/docs/research/lab-375-reach-focus-capability.md"
+    install -Dm644 docs/adr/0002-nonowning-work-environments.md "$pkgdir/usr/share/doc/$pkgname/docs/adr/0002-nonowning-work-environments.md"
+  fi
   # Keep the release template usable with the currently pinned older source.
   if [[ -f docs/lifecycle-recovery.md ]]; then
     install -Dm644 docs/lifecycle-recovery.md "$pkgdir/usr/share/doc/$pkgname/docs/lifecycle-recovery.md"

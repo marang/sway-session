@@ -133,6 +133,20 @@ func runSessionDaemon(ctx context.Context, swaySocket string, reportError func(e
 		}
 	}()
 
+	runtime.reach = newReachDispatcher(compositorID)
+	defer runtime.reach.cancel()
+	reachPath, reachErr := defaultReachSocketPath()
+	if reachErr == nil {
+		var reachServer io.Closer
+		reachServer, reachErr = startReachServer(ctx, reachPath, runtime.reach.call)
+		if reachErr == nil {
+			defer reachServer.Close()
+		}
+	}
+	if reachErr != nil && reportError != nil {
+		reportError(fmt.Errorf("start owner-only Reach navigation: %w", reachErr))
+	}
+
 	sessionBroker, err := startSessionRequestBroker(swaySocket, reportError)
 	if err != nil && reportError != nil {
 		reportError(fmt.Errorf("start typed session request broker: %w", err))
@@ -294,6 +308,13 @@ func runSessionDaemonLoop(
 		select {
 		case <-ctx.Done():
 			return nil
+		case invocation := <-runtime.reachInbox():
+			result, err := runtime.executeReach(invocation.ctx, invocation.request, events)
+			invocation.reply <- reachReply{result: result, err: err}
+			if runtime.reach.shutdown {
+				return nil
+			}
+			resetTimer()
 		case event := <-events:
 			if event.Type == swayipc.EventShutdown {
 				return nil

@@ -1,10 +1,77 @@
 # Named work environments and reaching work
 
-Status: planning design for [LAB-180](https://linear.app/riotbox/issue/LAB-180/design-named-work-environments-and-a-unified-resume-and-switch),
-2026-10-15. Implementation remains paused. This document chooses the first
-slice and its semantics; it adds no commands, database tables, startup policy or
-release scope. Future implementation requires its own approved issue and the
-normal branch, review, verification and merge workflow.
+Status: design from [LAB-180](https://linear.app/riotbox/issue/LAB-180/design-named-work-environments-and-a-unified-resume-and-switch),
+2026-10-15; implementation authorized on 2026-10-16 under
+[LAB-375](https://linear.app/riotbox/issue/LAB-375/add-named-work-environments-and-safe-reach-in-the-existing-manager).
+The first version implements definitions and Reach for existing windows. Real Sway
+tests found that the generic focus-preserving launch gate below is unavailable;
+all missing launches are deferred with an explicit reason. The user explicitly
+selected this safe first version on 2026-10-16. Complete missing-member opening
+requires a separately proven focus capability and is outside this delivery.
+
+## First implementation
+
+`sway-session terminal manage` retains its terminal default. Tab opens named
+environments in the same manager. Create an empty definition with `n`, rename
+with `e`, and use `v` to add existing terminal or application contexts and select
+a primary. Each membership/primary action saves individually. Search includes
+referenced context fields; missing references remain visible. `p` previews,
+Enter reaches the selected primary, and `o` chooses a primary for that action
+without editing the definition. `d` deletes only the definition.
+
+Reach focuses a uniquely present active primary in place and leaves
+other existing members alone, including a shared desired-closed application.
+It does not open missing windows, activate archived contexts, reveal hidden
+scratchpad windows or interrupt a window still in restore staging. Those cases
+have individual reasons in preview and outcomes. Explicit per-context Open
+retains its existing separate semantics. The
+[focus investigation](research/lab-375-reach-focus-capability.md) records the
+actual counterexamples and limits; the launch rows later in this design remain
+requirements for a future capability, not implemented behavior.
+
+`internal/session` owns validated definitions, coherent read snapshots and the
+pure shared planner. The daemon serializes the exact-ID Reach intent and
+revalidates the definition revision, context identity, canonical anchor, current
+focus and live event stream before one attributed focus command. New explicit
+Reach selections, unexpected focus/binding events and stream loss revoke pending
+authority. Cancellation cannot undo a command Sway has already received; an
+uncertain result is not automatically retried. Event drains are finite and IPC
+uses the request deadline. No SQL transaction contains external calls.
+
+The daemon adds the owner-only `sway-session/reach.sock` under
+`XDG_RUNTIME_DIR`. Its version-1 request carries only an environment ID, optional
+member override and compositor identity; framed results stream per member with
+bounded frame sizes and worker admission. It does not change the established
+session-start v1 or agent-report v2 protocols. The manager and daemon must run
+the updated binary; saved definitions remain editable if Sway or Reach is
+unavailable. There is no additional standalone broker command or startup rule.
+
+### Metadata and compatibility
+
+The first explicit environment creation atomically adds optional strict
+`work_environments` and `work_environment_members` tables to `state.sqlite3`.
+Read-only listing and preview do not create state or migrate an old database.
+Existing database v1, context v5 and layout v2 versions remain unchanged. This
+is nevertheless a real schema extension, not a promise of older-binary backup
+compatibility. Malformed or incomplete extensions fail closed.
+
+The new binary accepts old metadata/backups without definitions and includes
+definitions, order, primary and unresolved references in consistent backup and
+recovery. Membership references have no context-deletion cascade; only deleting
+an environment cascades to its own membership rows. Revision checks and the
+registry lock serialize edits with final Reach validation/effects. An uncertain
+commit preserves the candidate identity and asks for inspection/refresh rather
+than recreating it under a second ID.
+
+Older binaries' strict backup validators do not recognize this extension and
+can reject backup/recovery once it exists, even after the last environment is
+deleted. Use the updated binary for backup/recovery. Before downgrading, retain
+a pre-extension backup and understand that recovering it replaces metadata,
+including later changes; it does not merge definitions into the older state.
+No automatic destructive downgrade or table removal is provided.
+
+The following sections preserve the full design and later scopes. They must be
+read with the first version's explicit existing-window boundary above.
 
 ## Existing capabilities and actual gaps
 
@@ -25,16 +92,17 @@ restore outcome. Those observations do not prove one another.
 
 LAB-129/130/131/132/133/136 are all Done, verified against Linear and current
 source on 2026-10-15. They must not be reopened or duplicated. Relevant modules:
-[terminal manager UI](../cmd/sway-session/terminal_manage.go),
-[terminal operations](../cmd/sway-session/terminal_manage_operations.go),
-[restore policy](../internal/session/restore_policy.go),
-[terminal observation](../internal/session/terminal_observation.go),
-[restore reports/retry](../cmd/sway-session/restore_report_cli.go),
-[app inventory](../cmd/sway-session/application_inventory.go),
-[Doctor](../internal/doctor/doctor.go) and [metadata backup](../cmd/sway-session/state.go).
+[terminal manager UI](https://github.com/marang/sway-session/blob/main/cmd/sway-session/terminal_manage.go),
+[terminal operations](https://github.com/marang/sway-session/blob/main/cmd/sway-session/terminal_manage_operations.go),
+[restore policy](https://github.com/marang/sway-session/blob/main/internal/session/restore_policy.go),
+[terminal observation](https://github.com/marang/sway-session/blob/main/internal/session/terminal_observation.go),
+[restore reports/retry](https://github.com/marang/sway-session/blob/main/cmd/sway-session/restore_report_cli.go),
+[app inventory](https://github.com/marang/sway-session/blob/main/cmd/sway-session/application_inventory.go),
+[Doctor](https://github.com/marang/sway-session/blob/main/internal/doctor/doctor.go) and
+[metadata backup](https://github.com/marang/sway-session/blob/main/cmd/sway-session/state.go).
 
-There is no environment collection or generic mixed-context Reach operation
-today. Public terminal Open always requests focus. Explicit `restore UUID` can
+Before LAB-375 there was no environment collection or generic mixed-context
+Reach operation. Public terminal Open always requests focus. Explicit `restore UUID` can
 set an application's desired-open intent and request its saved arrangement.
 A loop over those commands would violate the new Reach contract. New execution
 work is required; renaming existing UI actions cannot supply these semantics.
@@ -73,12 +141,12 @@ backup coherent. Store only environment identity/name, membership/order and
 primary; do not copy context policy, application identity, runtime observations
 or layouts. See [ADR-0002](adr/0002-nonowning-work-environments.md).
 
-The future migration must preserve existing contexts and compatibility, include
+The migration must preserve existing contexts and forward compatibility, include
 the definitions in LAB-133 backup/recovery validation, enforce environment-owned
 member cleanup, and deliberately preserve unresolved context references. A
 context deletion must not cascade into deleting environments or silently
 changing their primary. Existing schema versions remain unchanged in this
-design branch. No total context-count or environment/member-count ceiling is
+implementation. No total context-count or environment/member-count ceiling is
 introduced; operations use bounded resumable work instead.
 
 Distinct Git worktrees use distinct existing terminal UUIDs or distinct project
@@ -169,7 +237,7 @@ reachable primary can still be focused. Choosing another primary or per-member
 Open remains explicit. Do not silently call today's
 always-focus terminal Open or claim background launch succeeded.
 
-This is a release gate for the future slice, not an assertion that the current
+This is a capability gate for missing-member opening, not an assertion that the current
 interface already supports it. Before that gate passes, the slice cannot claim
 complete missing-member opening. User-initiated per-member Open remains a
 distinct focus-authorizing action with its existing semantics.
@@ -267,10 +335,11 @@ not a browser/session-content or named-layout feature by itself.
 
 ## First implementation slice and behavioral acceptance
 
-The first future issue is **named membership plus Reach in the existing manager**:
+LAB-375 covers **named membership plus Reach in the existing manager**:
 definitions/editing/search, primary selection, shared preview/execution,
 per-member outcomes, migration/backup compatibility and the focus capability
-gate. It excludes favorites, new startup modes, named-layout application,
+gate, with the approved existing-window delivery boundary recorded above. It
+excludes favorites, new startup modes, named-layout application,
 templates, output roles and diagnostic export. No placeholder/duplicate issues
 are created by this design. Later features above are bounded follow-up scopes,
 not additions to the next consolidated release.

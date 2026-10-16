@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"slices"
 
@@ -27,16 +28,24 @@ type restoreFocusExpectation struct {
 }
 
 func (runtime *sessionRuntime) runAttributedCommand(root *Node, action sessionstate.RestoreAction, command string, move bool) error {
+	return runtime.runAttributedCommandContext(runtime.context(), root, action, command, move)
+}
+
+func (runtime *sessionRuntime) runAttributedCommandContext(ctx context.Context, root *Node, action sessionstate.RestoreAction, command string, move bool) error {
 	events := predictedRestoreFocus(root, action)
 	if move {
-		return runtime.runAttributedCommandFocus(action.ContainerID, command, true, nil, events)
+		return runtime.runAttributedCommandFocusContext(ctx, action.ContainerID, command, true, nil, events)
 	}
-	return runtime.runAttributedCommandFocus(action.ContainerID, command, false, events, nil)
+	return runtime.runAttributedCommandFocusContext(ctx, action.ContainerID, command, false, events, nil)
 }
 
 // Scratchpad show focuses before emitting move; ordinary moves focus after it.
 // Keep the two portions ordered under the same command sequence and barrier.
 func (runtime *sessionRuntime) runAttributedCommandFocus(containerID int64, command string, move bool, beforeMove, afterMove []restoreFocusEvent) error {
+	return runtime.runAttributedCommandFocusContext(runtime.context(), containerID, command, move, beforeMove, afterMove)
+}
+
+func (runtime *sessionRuntime) runAttributedCommandFocusContext(ctx context.Context, containerID int64, command string, move bool, beforeMove, afterMove []restoreFocusEvent) error {
 	allowances := 0
 	for _, events := range [][]restoreFocusEvent{beforeMove, afterMove} {
 		if len(events) != 0 {
@@ -61,9 +70,9 @@ func (runtime *sessionRuntime) runAttributedCommandFocus(containerID int64, comm
 			})
 		}
 	}
-	err := runtime.runSwayCommand(command)
+	err := runtime.runSwayCommandContext(ctx, command)
 	if err == nil && sequence != 0 {
-		if barrierErr := runtime.sendMoveBarrier(sequence); barrierErr != nil {
+		if barrierErr := runtime.sendMoveBarrierContext(ctx, sequence); barrierErr != nil {
 			err = &swayipc.CommandOutcomeUnknownError{Cause: fmt.Errorf("establish command attribution barrier: %w", barrierErr)}
 		}
 	}

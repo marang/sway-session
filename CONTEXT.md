@@ -45,7 +45,7 @@ It does not establish whether a process is currently running.
 A saved workspace arrangement that retains application placement without a
 recoverable exact layout.
 
-### Planned work organization
+### Work organization
 
 **Work environment**:
 A user-named, nonowning collection of persistent contexts. Its members may also
@@ -56,9 +56,12 @@ _Avoid_: Workspace, cloned session
 The explicitly chosen context through which a work environment is reached.
 
 **Reach**:
-The intent to focus available work and open eligible missing members while
-preserving their existing arrangement and lifecycle intent.
+The intent to focus a work environment's explicit primary in place while
+preserving existing arrangement and lifecycle intent. Missing members require
+proven focus safety before they may be opened by Reach.
 _Avoid_: Restore layout
+
+### Planned arrangements
 
 **Last-used arrangement**:
 The most recently observed outer arrangement of work contexts.

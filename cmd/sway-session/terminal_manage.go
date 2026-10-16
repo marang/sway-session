@@ -97,6 +97,7 @@ type terminalManagePulseMsg struct{}
 const terminalManagePulseInterval = 180 * time.Millisecond
 
 type terminalManageModel struct {
+	environment     terminalManageEnvironmentState
 	ctx             context.Context
 	operations      terminalManageOperations
 	socket          string
@@ -152,6 +153,9 @@ func (model terminalManageModel) Init() tea.Cmd {
 }
 
 func (model terminalManageModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
+	if command, handled := model.updateEnvironment(message); handled {
+		return model, command
+	}
 	switch message := message.(type) {
 	case tea.WindowSizeMsg:
 		model.width, model.height = message.Width, message.Height
@@ -278,15 +282,26 @@ func (model terminalManageModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 
 func (model terminalManageModel) handleKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	key := message.String()
+	if key == "tab" && model.mode == terminalManageListMode && !model.pending {
+		if _, ok := model.environmentOperations(); ok {
+			model.environment.active = true
+			if !model.environment.loaded {
+				return model, model.environmentLoad()
+			}
+			return model, model.environmentObserve()
+		}
+	}
 	if model.pending {
 		return model, nil
 	}
 	if key == "ctrl+c" {
+		model.environmentCancelReach()
 		model.stopProbes()
 		return model, tea.Quit
 	}
 	if model.width > 0 && (model.width < 48 || model.height < 16) {
 		if key == "q" {
+			model.environmentCancelReach()
 			model.stopProbes()
 			return model, tea.Quit
 		}
@@ -294,6 +309,7 @@ func (model terminalManageModel) handleKey(message tea.KeyPressMsg) (tea.Model, 
 	}
 	if model.loading {
 		if key == "q" {
+			model.environmentCancelReach()
 			model.stopProbes()
 			return model, tea.Quit
 		}
@@ -382,6 +398,7 @@ func (model terminalManageModel) handleKey(message tea.KeyPressMsg) (tea.Model, 
 		}
 	case terminalManageHelpMode:
 		if key == "q" {
+			model.environmentCancelReach()
 			model.stopProbes()
 			return model, tea.Quit
 		}
@@ -393,6 +410,7 @@ func (model terminalManageModel) handleKey(message tea.KeyPressMsg) (tea.Model, 
 
 	switch key {
 	case "q":
+		model.environmentCancelReach()
 		model.stopProbes()
 		return model, tea.Quit
 	case "?":
@@ -506,6 +524,9 @@ func (model terminalManageModel) View() tea.View {
 }
 
 func (model terminalManageModel) render() string {
+	if model.environment.active {
+		return model.renderEnvironment()
+	}
 	if model.width > 0 && (model.width < 48 || model.height < 16) {
 		if model.width == 1 {
 			return "q"
@@ -529,6 +550,12 @@ func (model terminalManageModel) render() string {
 	var output strings.Builder
 	hasFeedback := model.err != nil || model.status != "" || model.windowErr != nil
 	output.WriteString(styles.title.Render("Persistent terminals"))
+	snapshotHint := "Snapshot [r] refresh"
+	narrowSnapshotHint := "Snapshot · [r] refresh"
+	if _, ok := model.environmentOperations(); ok {
+		snapshotHint = "[Tab] Environments"
+		narrowSnapshotHint = snapshotHint
+	}
 	open, unknown := model.windowCounts()
 	counts := fmt.Sprintf("%d saved · %d open", len(model.items), open)
 	if unknown != 0 {
@@ -536,10 +563,10 @@ func (model terminalManageModel) render() string {
 	}
 	filterInHeader := model.tightLayout() && width < 72 && model.mode != terminalManageFilterMode && model.filter != ""
 	if width >= 72 {
-		output.WriteString(styles.muted.Render("  " + counts + " · Snapshot [r] refresh"))
+		output.WriteString(styles.muted.Render("  " + counts + " · " + snapshotHint))
 	} else {
 		output.WriteString("\n" + styles.muted.Render(counts))
-		output.WriteString("\n" + styles.muted.Render("Snapshot · [r] refresh"))
+		output.WriteString("\n" + styles.muted.Render(narrowSnapshotHint))
 		if filterInHeader {
 			output.WriteString(styles.muted.Render(" · Filter: " + model.filter))
 		}

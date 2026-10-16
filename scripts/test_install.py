@@ -17,6 +17,7 @@ DOC_FILES = (
     "docs/agent-reporting.md",
     "docs/lifecycle-recovery.md",
     "docs/named-work-environments.md",
+    "docs/research/lab-374-herdr-remote-restoration.md",
     "docs/research/lab-375-reach-focus-capability.md",
     "docs/research/herdr-plugin-session-deletion.md",
     "docs/sway-session-plan.md",

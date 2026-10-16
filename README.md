@@ -151,6 +151,18 @@ Cleanup previews archived sessions. To delete one, review
 Purging stops and deletes the Herdr session, including its history and running
 work. Archiving keeps it.
 
+### Herdr remote work
+
+Saved Machines in Herdr already reconnect when sway-session reopens the local
+terminal, including after a local reboot while the remote server stays alive.
+SSH must become available again. Herdr shares the last selected machine across
+new frontends; a sway-session context does not pin its own remote machine.
+An offline frontend can show Local while the remote row says reconnecting.
+See the [remote restoration assessment](docs/research/lab-374-herdr-remote-restoration.md)
+for tested behavior, diagnostics and the per-context limitation. Existing purge
+operates on the local named Herdr session; it does not delete a saved remote
+profile or introduce remote-session deletion.
+
 ### Named work environments
 
 In `sway-session terminal manage`, press Tab to switch to environments. An

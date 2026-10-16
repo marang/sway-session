@@ -731,6 +731,16 @@ gated by the [real Sway focus investigation](research/lab-375-reach-focus-capabi
 and are explicitly excluded from the user-approved safe first version; no
 release is implied.
 
+The [LAB-374 remote-restoration assessment](research/lab-374-herdr-remote-restoration.md)
+confirms that ordinary local Herdr frontends already reconnect saved Machines,
+including after two actual local guest reboots with a surviving remote server.
+The shared desired machine selection is not a per-context binding. Exact remote
+identity and observation need a separate bounded design before adding a remote
+launcher contract;
+[LAB-376](https://linear.app/riotbox/issue/LAB-376/design-explicit-herdr-remote-bindings-for-persistent-contexts)
+records preparation for both saved Machines and direct remote attach. Remote
+transport, credentials and server ownership remain with Herdr.
+
 The [LAB-252 contention investigation](research/lab-252-restore-report-contention.md)
 and [LAB-253 real Chrome/Slack acceptance](research/lab-253-desktop-reboot-acceptance.md)
 record their delivered scope and evidence limits. LAB-253 includes two regular

@@ -19,7 +19,7 @@ Run make verify before handing off code changes. It checks formatting, unit and
 race tests, go vet, staticcheck, AppArmor, completion, packaging, standalone
 boundaries, a CGO_ENABLED=0 build, and whitespace. Use make fmt for Go
 formatting. The module requires Go 1.26; the preferred security-patched
-toolchain is Go 1.26.5 as declared in go.mod.
+toolchain is Go 1.26.10 as declared in go.mod.
 
 Run the code-review skill before opening or finalizing a PR. Run review-codebase
 after every fifth substantive branch or at a meaningful project checkpoint,

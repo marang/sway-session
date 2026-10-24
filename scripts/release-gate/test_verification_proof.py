@@ -293,6 +293,29 @@ class LocalContractTest(unittest.TestCase):
         Path("sway-session").write_bytes(b"generated binary")
         self.assertEqual(proof.local_contract(self.commit), result)
 
+    def test_precise_go_directive_without_redundant_toolchain_pins_actual_compiler(self):
+        Path("go.mod").write_text("module fixture\n\ngo 1.26.10\n")
+        self.git("add", "go.mod")
+        self.git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                 "commit", "-qm", "Precise Go directive")
+        commit = self.git("rev-parse", "HEAD").strip()
+        original = proof.command
+        for selected in ("go1.26.10", "go1.26.9", "go1.27.0"):
+            with self.subTest(selected=selected), mock.patch.object(proof, "command", side_effect=lambda *args:
+                    selected if args == ("go", "env", "GOVERSION") else original(*args)):
+                if selected == "go1.26.10":
+                    self.assertEqual(proof.local_contract(commit)["toolchain"], selected)
+                else:
+                    with self.assertRaises(proof.Rejected):
+                        proof.local_contract(commit)
+
+    def test_ambiguous_or_invalid_toolchain_pins_are_rejected(self):
+        for module in ("module fixture\ngo 1.26\n",
+                       "module fixture\ngo 1.26.10\ntoolchain default\n",
+                       "module fixture\ngo 1.26.10\ntoolchain go1.26\n"):
+            with self.subTest(module=module), self.assertRaises(proof.Rejected):
+                proof.pinned_toolchain(module)
+
     def test_wrong_checkout_or_dirty_tracked_sources_are_rejected(self):
         with self.assertRaises(proof.Rejected):
             proof.local_contract(COMMIT)

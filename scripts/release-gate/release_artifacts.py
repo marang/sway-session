@@ -66,6 +66,19 @@ def command(*args):
     return subprocess.check_output(args, text=True, stderr=subprocess.PIPE).strip()
 
 
+def pinned_toolchain(module):
+    explicit = re.search(r"^toolchain (go[0-9]+\.[0-9]+\.[0-9]+)\s*$", module, re.M)
+    if explicit is not None:
+        return explicit[1]
+    # Never ignore an explicit but unsupported toolchain selection.
+    require(re.search(r"^toolchain\b", module, re.M) is None,
+            "Invalid explicit Go toolchain pin")
+    minimum = re.search(r"^go ([0-9]+\.[0-9]+\.[0-9]+)\s*$", module, re.M)
+    require(minimum is not None, "An exact Go patch version is required")
+    # go mod tidy removes a redundant toolchain directive equal to this version.
+    return "go" + minimum[1]
+
+
 def source_identity(commit):
     require(re.fullmatch(r"[0-9a-f]{40}", commit), "Invalid full commit")
     require(command("git", "rev-parse", "HEAD") == commit, "Checkout commit mismatch")
@@ -75,9 +88,7 @@ def source_identity(commit):
     inputs = {name: digest(read_file(root / name)) for name in ("go.mod", "go.sum", ".goreleaser.yaml")}
     inputs["source_tree"] = command("git", "rev-parse", "HEAD^{tree}")
     module = (root / "go.mod").read_text()
-    match = re.search(r"^toolchain (go[0-9]+\.[0-9]+\.[0-9]+)$", module, re.M)
-    require(match is not None, "A pinned Go toolchain is required")
-    return digest(json.dumps(inputs, sort_keys=True, separators=(",", ":")).encode()), match[1]
+    return digest(json.dumps(inputs, sort_keys=True, separators=(",", ":")).encode()), pinned_toolchain(module)
 
 
 def expected_files(tag):

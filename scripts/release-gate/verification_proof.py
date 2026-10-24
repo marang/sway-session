@@ -51,16 +51,27 @@ def command(*args):
                                    timeout=30).strip()
 
 
+def pinned_toolchain(module):
+    explicit = re.search(r"^toolchain (go[0-9]+\.[0-9]+\.[0-9]+)\s*$", module, re.M)
+    if explicit is not None:
+        return explicit[1]
+    # Never ignore an explicit but unsupported toolchain selection.
+    require(re.search(r"^toolchain\b", module, re.M) is None,
+            "Invalid explicit Go toolchain pin")
+    minimum = re.search(r"^go ([0-9]+\.[0-9]+\.[0-9]+)\s*$", module, re.M)
+    require(minimum is not None, "An exact Go patch version is required")
+    # go mod tidy removes a redundant toolchain directive equal to this version.
+    return "go" + minimum[1]
+
+
 def local_contract(commit):
     require(bool(SHA.fullmatch(commit)), "commit must be a full SHA")
     require(command("git", "rev-parse", "HEAD") == commit, "checkout differs from commit")
     subprocess.run(["git", "diff", "--quiet", "HEAD", "--"], check=True,
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
-    toolchain = re.search(r"^toolchain (go\d+\.\d+\.\d+)\s*$",
-                          Path("go.mod").read_text(), re.MULTILINE)
-    require(toolchain is not None, "go.mod must pin a toolchain")
+    toolchain = pinned_toolchain(Path("go.mod").read_text())
     actual = command("go", "env", "GOVERSION")
-    require(actual == toolchain[1], "actual Go toolchain differs from go.mod")
+    require(actual == toolchain, "actual Go toolchain differs from go.mod")
     paths = set(command("git", "ls-files", "scripts", ".github/workflows").splitlines())
     paths.update({"Makefile", "go.mod", "go.sum", ".goreleaser.yaml"})
     # Historical immutable releases predate the shared verifier. Hash their

@@ -177,7 +177,7 @@ func TestAdministrativeApprovalDigestBindsEachTrustInput(t *testing.T) {
 func TestAdministrativeUserApprovalPinsTrustAndDoesNotLaunch(t *testing.T) {
 	helper := ""
 	for _, candidate := range []string{"/usr/bin/pkexec", "/usr/bin/sudo"} {
-		if _, err := os.Stat(candidate); err == nil {
+		if info, err := os.Lstat(candidate); err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0 {
 			helper = candidate
 			break
 		}
@@ -187,7 +187,8 @@ func TestAdministrativeUserApprovalPinsTrustAndDoesNotLaunch(t *testing.T) {
 	}
 	root := t.TempDir()
 	path := filepath.Join(root, "org.example.Admin.desktop")
-	data := []byte("[Desktop Entry]\nType=Application\nName=Admin\nExec=" + helper + " /usr/bin/true\n")
+	executable := directTrueExecutable(t)
+	data := []byte("[Desktop Entry]\nType=Application\nName=Admin\nExec=" + helper + " " + executable + "\n")
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -218,7 +219,7 @@ func TestAdministrativeUserApprovalPinsTrustAndDoesNotLaunch(t *testing.T) {
 	}
 	// pkexec requires a living parent through authentication. Starting GIO
 	// here instead loses that parent before the authorization can complete.
-	if spec.Name != helper || !reflect.DeepEqual(spec.Arguments, []string{"/usr/bin/true"}) {
+	if spec.Name != helper || !reflect.DeepEqual(spec.Arguments, []string{executable}) {
 		t.Fatalf("administrative dispatch must directly own the pinned helper: %+v", spec)
 	}
 	if starter.spec.Name != "" {

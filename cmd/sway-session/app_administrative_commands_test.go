@@ -21,7 +21,7 @@ func administrativeCommandFixture(t *testing.T) (dependencies, *appCommandClient
 		helper = "/usr/bin/pkexec" // Default rejection tests need no installed helper.
 	}
 	catalog := testDesktopCatalog(t, map[string]string{
-		"org.example.Admin.desktop": "[Desktop Entry]\nType=Application\nName=Administrative Example\nExec=" + helper + " /usr/bin/true --private-argument=not-for-preview\nStartupWMClass=AdministrativeExample\n",
+		"org.example.Admin.desktop": "[Desktop Entry]\nType=Application\nName=Administrative Example\nExec=" + helper + " " + directTrueExecutable(t) + " --private-argument=not-for-preview\nStartupWMClass=AdministrativeExample\n",
 	}, false)
 	deps.desktopCatalog = func() (sessionstate.DesktopCatalog, error) { return catalog, nil }
 	appID := "org.example.Admin"
@@ -34,7 +34,7 @@ func administrativeCommandFixture(t *testing.T) (dependencies, *appCommandClient
 
 func administrativeCommandHelper() string {
 	for _, path := range []string{"/usr/bin/pkexec", "/usr/bin/sudo"} {
-		if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0 {
+		if info, err := os.Lstat(path); err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0 {
 			return path
 		}
 	}
@@ -232,7 +232,11 @@ func TestAppAdministrativeConfirmationRejectsChangedReviewedEntry(t *testing.T) 
 			if err != nil {
 				t.Fatal(err)
 			}
-			data = bytes.Replace(data, []byte("/usr/bin/true"), []byte("/usr/bin/false"), 1)
+			changed := bytes.Replace(data, []byte("--private-argument=not-for-preview"), []byte("--private-argument=changed-after-preview"), 1)
+			if bytes.Equal(changed, data) {
+				t.Fatal("fixture payload argument was not changed")
+			}
+			data = changed
 			if err := os.WriteFile(entry.Path, data, 0o600); err != nil {
 				t.Fatal(err)
 			}
@@ -258,7 +262,7 @@ func TestAppAdministrativeConfirmationRejectsChangedReviewedEntry(t *testing.T) 
 func TestAppOrdinaryEntryDoesNotAcquireAdministrativeMetadata(t *testing.T) {
 	deps, _, _ := administrativeCommandFixture(t)
 	catalog := testDesktopCatalog(t, map[string]string{
-		"org.example.Admin.desktop": "[Desktop Entry]\nType=Application\nName=Ordinary Example\nExec=/usr/bin/true\n",
+		"org.example.Admin.desktop": "[Desktop Entry]\nType=Application\nName=Ordinary Example\nExec=" + directTrueExecutable(t) + "\n",
 	}, false)
 	deps.desktopCatalog = func() (sessionstate.DesktopCatalog, error) { return catalog, nil }
 	deps.presentApproval = func(string, []sessionstate.ApprovalChoice) error { return nil }

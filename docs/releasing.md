@@ -52,7 +52,12 @@ tag to its full commit and requires an exact checkout and main ancestry.
 that exact commit. It accepts only the canonical repository's successful
 `ci.yml` push to main, the current run attempt, and an unexpired proof artifact
 whose archive digest, workflow source, verification contract and actual pinned
-Go toolchain match. Pull-request checks, cache hits, missing artifacts and
+Go toolchain match. The compiler pin is the explicit `toolchain goX.Y.Z`
+directive when present, otherwise the exact three-part `go X.Y.Z` directive.
+This supports the canonical form produced when `go mod tidy` removes a redundant
+toolchain directive. Verification still requires exact compiler equality, not
+merely a compiler newer than the module minimum; malformed or imprecise pins
+are rejected. Pull-request checks, cache hits, missing artifacts and
 failed, skipped or running checks cannot authorize publication.
 
 If compatible evidence is unavailable, the pipeline calls the complete

@@ -179,6 +179,19 @@ class ArtifactGuardTest(unittest.TestCase):
                 SOURCE_IDENTITY(commit)
             git("checkout", "--", "go.mod")
             self.assertEqual(SOURCE_IDENTITY(commit)[0], original)
+            (repo / "go.mod").write_text("module fixture\ngo 1.26.10\n")
+            git("add", "go.mod")
+            git("commit", "-m", "Precise Go patch pin")
+            updated, toolchain = SOURCE_IDENTITY(git("rev-parse", "HEAD"))
+            self.assertEqual(toolchain, "go1.26.10")
+            self.assertNotEqual(updated, original)
+
+    def test_precise_go_directive_is_an_exact_artifact_toolchain_pin(self):
+        self.assertEqual(ARTIFACTS.pinned_toolchain("module fixture\ngo 1.26.10\n"), "go1.26.10")
+        self.assertEqual(ARTIFACTS.pinned_toolchain("go 1.26.0\ntoolchain go1.26.10\n"), "go1.26.10")
+        for module in ("go 1.26\n", "go 1.26.10\ntoolchain default\n", "go 1.26.10\ntoolchain go1.26\n"):
+            with self.subTest(module=module), self.assertRaises(ValueError):
+                ARTIFACTS.pinned_toolchain(module)
 
     def test_signed_asset_download_never_forwards_token(self):
         opener = MagicMock()

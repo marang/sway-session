@@ -332,7 +332,7 @@ func executeAppRebindFocused(ctx context.Context, arguments []string, deps depen
 		return commandResult{}, failure("app_operation", "bind application approval to current context", err.Error())
 	}
 	item := sessionstate.ApplicationOperationItem{ContextID: context.ID, ContextRevision: revision, Window: &window, DesktopID: candidates[0].ID}
-	if err := bindAdministrativeOperationApproval(ctx, &item, candidates[0]); err != nil {
+	if err := bindApplicationOperationApproval(ctx, &item, candidates[0]); err != nil {
 		return commandResult{}, failure("launcher_trust", "bind rebound desktop approval", err.Error())
 	}
 	operation := applicationOperation(sessionstate.OperationRebind, []sessionstate.ApplicationOperationItem{item}, deps)
@@ -397,7 +397,7 @@ func executeAppReapprove(ctx context.Context, arguments []string, deps dependenc
 	if !ok {
 		return commandResult{}, failure("app_stale", "preview launcher reapproval", "desktop entry no longer exists")
 	}
-	if err := bindAdministrativeOperationApproval(ctx, &item, entry); err != nil {
+	if err := bindApplicationOperationApproval(ctx, &item, entry); err != nil {
 		return commandResult{}, failure("launcher_trust", "preview launcher reapproval", err.Error())
 	}
 	if selected.Launcher.DesktopOrigin != sessionstate.DesktopEntryUser && selected.Launcher.Administrative == nil && !item.AllowAdministrative {
@@ -609,7 +609,7 @@ func newRegisterOperation(ctx context.Context, windows []sessionstate.WindowAppl
 	items := make([]sessionstate.ApplicationOperationItem, len(windows))
 	for index := range windows {
 		item := sessionstate.ApplicationOperationItem{DesktopID: candidates[index].ID}
-		if err := bindAdministrativeOperationApproval(ctx, &item, candidates[index]); err != nil {
+		if err := bindApplicationOperationApproval(ctx, &item, candidates[index]); err != nil {
 			return sessionstate.ApplicationOperation{}, fmt.Errorf("%s: %w", candidates[index].ID, err)
 		}
 		id, err := deps.newContextID()
@@ -623,48 +623,45 @@ func newRegisterOperation(ctx context.Context, windows []sessionstate.WindowAppl
 	return applicationOperation(sessionstate.OperationRegister, items, deps), nil
 }
 
-// Administrative permission is bound to the exact reviewed desktop and executable bytes.
-// Ordinary registration supplies this reviewed identity without a separate user option.
-func bindAdministrativeOperationApproval(ctx context.Context, item *sessionstate.ApplicationOperationItem, entry sessionstate.DesktopEntry) error {
-	if err := sessionstate.ValidateDesktopEntryForApprovalWithOptions(entry, sessionstate.DesktopApprovalOptions{AllowAdministrative: true}); err != nil {
-		return err
-	}
-	if sessionstate.ValidateDesktopEntryForApproval(entry) == nil {
-		return nil
-	}
-	digest, err := sessionstate.AdministrativeDesktopApprovalDigest(ctx, entry)
+// Bind every pending decision to its reviewed launch material. Administrative
+// starters retain their existing permission and helper/payload fingerprint too.
+func bindApplicationOperationApproval(ctx context.Context, item *sessionstate.ApplicationOperationItem, entry sessionstate.DesktopEntry) error {
+	review, err := sessionstate.ReviewDesktopApproval(ctx, entry)
 	if err != nil {
 		return err
 	}
-	item.AllowAdministrative, item.AdministrativeApprovalSHA256 = true, digest
+	item.ReviewedLauncherSHA256 = review.LauncherSHA256
+	item.AllowAdministrative = review.AdministrativeSHA256 != ""
+	item.AdministrativeApprovalSHA256 = review.AdministrativeSHA256
 	return nil
 }
 
 // Recheck the reviewed desktop and executable bytes before creating an approval snapshot, then compare
 // the actual prepared evidence too so a later file change cannot enter state.
 func prepareApplicationOperationApproval(ctx context.Context, root string, item sessionstate.ApplicationOperationItem, entry sessionstate.DesktopEntry) (sessionstate.DesktopApproval, error) {
-	if item.AllowAdministrative {
-		digest, err := sessionstate.AdministrativeDesktopApprovalDigest(ctx, entry)
-		if err != nil {
-			return sessionstate.DesktopApproval{}, err
-		}
-		if digest != item.AdministrativeApprovalSHA256 {
-			return sessionstate.DesktopApproval{}, errors.New("administrative launcher changed while approval was pending; review it again")
-		}
+	if item.ReviewedLauncherSHA256 == "" {
+		return sessionstate.DesktopApproval{}, errors.New("desktop launcher approval has no reviewed identity; open a fresh preview")
+	}
+	review, err := sessionstate.ReviewDesktopApproval(ctx, entry)
+	if err != nil {
+		return sessionstate.DesktopApproval{}, err
+	}
+	if review.LauncherSHA256 != item.ReviewedLauncherSHA256 || review.AdministrativeSHA256 != item.AdministrativeApprovalSHA256 {
+		return sessionstate.DesktopApproval{}, errors.New("desktop launcher changed while approval was pending; review it again")
 	}
 	approval, err := sessionstate.PrepareDesktopApprovalContextWithOptions(ctx, root, item.ContextID, entry, sessionstate.DesktopApprovalOptions{AllowAdministrative: item.AllowAdministrative})
 	if err != nil {
 		return sessionstate.DesktopApproval{}, err
 	}
-	var preparedDigest string
-	if item.AllowAdministrative {
-		preparedDigest, err = approval.Launcher.Administrative.Digest()
-	}
-	if item.AllowAdministrative && (err != nil || preparedDigest != item.AdministrativeApprovalSHA256) {
+	return validatePreparedApplicationOperationApproval(ctx, root, item, approval)
+}
+
+func validatePreparedApplicationOperationApproval(ctx context.Context, root string, item sessionstate.ApplicationOperationItem, approval sessionstate.DesktopApproval) (sessionstate.DesktopApproval, error) {
+	if approval.ReviewedLauncherSHA256 != item.ReviewedLauncherSHA256 {
 		cleanupErr := withAppCleanupContext(ctx, func(cleanupCtx context.Context) error {
 			return sessionstate.DiscardDesktopApprovalContext(cleanupCtx, root, approval)
 		})
-		return sessionstate.DesktopApproval{}, errors.Join(errors.New("administrative launcher changed while approval was pending; review it again"), cleanupErr)
+		return sessionstate.DesktopApproval{}, errors.Join(errors.New("desktop launcher changed while approval was pending; review it again"), cleanupErr)
 	}
 	return approval, nil
 }

@@ -702,17 +702,16 @@ func checkStateDirectoryAncestorMode(mode os.FileMode) error {
 }
 
 func checkStateDirectoryAncestorEntry(parent os.FileInfo, child os.FileInfo) error {
-	if parent.Mode().Perm()&0o022 == 0 || parent.Mode()&os.ModeSticky == 0 {
-		return nil
-	}
+	// Directory owners can replace entries even without group or world write
+	// permission, so every traversed ancestor must have a trusted owner.
 	parentStat, parentOK := parent.Sys().(*syscall.Stat_t)
 	childStat, childOK := child.Sys().(*syscall.Stat_t)
 	if !parentOK || !childOK {
-		return errors.New("sticky ancestor ownership metadata is unavailable")
+		return errors.New("ancestor ownership metadata is unavailable")
 	}
 	userID := uint32(os.Geteuid())
 	if !trustedStateDirectoryOwner(parentStat.Uid, userID) || !trustedStateDirectoryOwner(childStat.Uid, userID) {
-		return fmt.Errorf("sticky writable ancestor and its entry must be owned by uid %d or root", userID)
+		return fmt.Errorf("ancestor and its entry must be owned by uid %d or root", userID)
 	}
 	return nil
 }

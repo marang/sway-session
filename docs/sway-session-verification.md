@@ -1086,6 +1086,36 @@ Treat Chrome, Slack, and similar application-internal restoration as app-owned.
 Registered application anchors also support typed scratchpad placement. Native Wayland parent/type limits in Sway
 1.12 remain documented rather than guessed around.
 
+### Desktop approval identity and path ownership
+
+LAB-401 requires the confirmation to approve the launcher shown by its preview.
+Use disposable desktop entries and state roots to check these boundaries:
+
+- An unchanged ordinary starter can be registered, rebound and reapproved. A
+  changed desktop entry or user-executable content between preview and
+  confirmation must reject the decision, including a change which preserves
+  the desktop ID and compositor-visible application identity.
+- A change between the fresh identity check and approval preparation must not
+  retain a new snapshot or mutate the registry. Existing referenced snapshots
+  must survive rejection and cleanup.
+- Flatpak approval keeps the exact application ID and installation. System
+  desktop entry changes invalidate a pending decision; ordinary system
+  executable updates retain their established package-owned trust policy.
+- A legacy version-2 pending item without `reviewed_launcher_sha256` can still
+  be decoded, but confirmation requires a fresh preview. Existing persistent
+  registrations, administrative authentication and broker versions stay usable.
+- Native filesystem checks preserve current-user paths and root-owned sticky
+  directories, reject symlinked paths and unsafe modes, and exercise the trusted
+  ancestor policy with root/current-user/foreign ownership metadata. A foreign
+  owner must be rejected even for a non-writable `0755` ancestor. This applies
+  to user-local launchers and state directories; root-only executable paths
+  remain root-only.
+
+Run the focused regressions and `make verify` under the module's Go toolchain.
+Ownership-sensitive tests need native filesystem ownership semantics; mapped
+sandbox UIDs do not establish a product failure. Record live AppArmor and
+cross-user integration results separately from metadata-policy/unit evidence.
+
 ### Administrative desktop restore acceptance
 
 The [LAB-94 contract](adr/0004-opt-in-administrative-desktop-restore.md) requires

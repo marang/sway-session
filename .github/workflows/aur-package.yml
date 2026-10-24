@@ -47,7 +47,7 @@ jobs:
             base-devel git go pacman-contrib openssh curl sudo
 
       - name: Checkout source repo
-        uses: actions/checkout@v5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.commit }}
           fetch-depth: 0
@@ -146,7 +146,7 @@ jobs:
           sudo -u build makepkg --printsrcinfo > release-metadata/SRCINFO
 
       - name: Upload verified package metadata
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: aur-release-metadata
           path: release-metadata/
@@ -166,13 +166,13 @@ jobs:
 
     steps:
       - name: Download verified package metadata
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: aur-release-metadata
           path: release-metadata
 
       - name: Prepare SSH agent
-        uses: webfactory/ssh-agent@v0.9.0
+        uses: webfactory/ssh-agent@e83874834305fe9a4a2997156cb26c5de65a8555 # v0.10.0
         with:
           ssh-private-key: ${{ secrets.AUR_PRIVATE_KEY }}
 
@@ -313,14 +313,14 @@ jobs:
 
     steps:
       - name: Checkout main without persisted credentials
-        uses: actions/checkout@v5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
           fetch-depth: 0
           persist-credentials: false
 
       - name: Download verified package metadata
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: aur-release-metadata
           path: release-metadata

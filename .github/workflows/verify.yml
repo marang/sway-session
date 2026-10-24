@@ -26,7 +26,7 @@ jobs:
       # Stage them from the immutable caller workflow source before checking
       # out the requested application commit; never fetch mutable main here.
       - name: Checkout immutable workflow tooling without persisted credentials
-        uses: actions/checkout@v5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.workflow_sha }}
           persist-credentials: false
@@ -38,7 +38,7 @@ jobs:
           cp scripts/release-gate/verification_proof.py "$RUNNER_TEMP/verification-tooling/verification_proof.py"
 
       - name: Checkout exact commit without persisted credentials
-        uses: actions/checkout@v5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.commit }}
           persist-credentials: false
@@ -50,7 +50,7 @@ jobs:
 
       - name: Setup Go
         id: go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           cache: false
@@ -64,7 +64,7 @@ jobs:
 
       - name: Restore module downloads
         id: modules
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ steps.cache-paths.outputs.modules }}
           key: modules-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.go.outputs.go-version }}-${{ hashFiles('go.mod', 'go.sum') }}
@@ -74,7 +74,7 @@ jobs:
       # a stable prefix restores the most recent compatible successful run.
       - name: Restore compiled and race cache
         id: compiled
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ steps.cache-paths.outputs.build }}
           key: build-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.go.outputs.go-version }}-${{ hashFiles('go.mod', 'go.sum') }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -83,7 +83,7 @@ jobs:
 
       - name: Restore staticcheck binary
         id: staticcheck
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ steps.cache-paths.outputs.tools }}
           key: staticcheck-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.go.outputs.go-version }}-v0.7.0
@@ -99,27 +99,27 @@ jobs:
         run: python3 -B "$RUNNER_TEMP/verification-tooling/verify-profile.py" --output "$RUNNER_TEMP/verify-profile"
 
       - name: Check GoReleaser configuration
-        uses: goreleaser/goreleaser-action@v7
+        uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
         with:
           version: "v2.18.2"
           args: check
 
       - name: Save module downloads
         if: steps.modules.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ steps.cache-paths.outputs.modules }}
           key: ${{ steps.modules.outputs.cache-primary-key }}
 
       - name: Save updated compiled and race cache
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ steps.cache-paths.outputs.build }}
           key: ${{ steps.compiled.outputs.cache-primary-key }}
 
       - name: Save staticcheck binary
         if: steps.staticcheck.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ steps.cache-paths.outputs.tools }}
           key: ${{ steps.staticcheck.outputs.cache-primary-key }}
@@ -128,7 +128,7 @@ jobs:
         run: python3 -B "$RUNNER_TEMP/verification-tooling/verification_proof.py" create --commit "$VERIFY_COMMIT" --output "$RUNNER_TEMP/verification-proof.json"
 
       - name: Upload verification proof
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: verification-proof-${{ inputs.commit }}
           path: ${{ runner.temp }}/verification-proof.json
@@ -138,7 +138,7 @@ jobs:
 
       - name: Upload verification profile
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: verification-profile-${{ inputs.commit }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/verify-profile

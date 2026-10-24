@@ -483,6 +483,21 @@ matches are rejected. System entries are root-owned launch material. Approved
 user-local entries are copied into owner-only immutable snapshots; later source
 or executable changes require reapproval.
 
+Pending registration, rebind and reapproval decisions bind the reviewed launcher
+identity, including the exact desktop bytes and user-executable content, before
+the confirmation is shown. Confirmation compares both freshly observed and
+prepared approval evidence against that identity. A changed launcher is rejected
+and requires a fresh preview; it cannot replace the launcher shown in an already
+open confirmation. Flatpak decisions retain their exact application and
+installation identity. Ordinary system executable content remains governed by
+the system installation rather than being pinned by these temporary decisions.
+
+User-local desktop files and executables require every ancestor to be owned by
+root or the current user, as well as satisfying the existing mode and symlink
+checks. A foreign-owned `0755` directory is replaceable by its owner and is not a
+trusted ancestor. Root-owned sticky directories remain supported. System and
+administrative executable paths retain their stricter root-only ownership rule.
+
 ### Administrative desktop starters
 
 [ADR 0004](adr/0004-opt-in-administrative-desktop-restore.md) records LAB-94's
@@ -556,9 +571,9 @@ authentication outcome claims. Existing start/report brokers keep their narrow
 wire contracts and acquire no administrative command capability.
 
 Strict context payloads add optional nested administrative approval; operation
-tokens add paired optional permission and reviewed-identity fields. Existing
-context/database/protocol version numbers and ordinary wire payloads remain
-unchanged. Older strict readers reject administrative registrations, including
+tokens add paired optional administrative permission and reviewed-identity fields.
+Existing context/database/broker-protocol version numbers remain unchanged.
+Older strict readers reject administrative registrations, including
 archived ones. Archive disables restore eligibility only: use the newer binary
 to forget administrative registrations before downgrade, or restore an
 owner-only pre-feature backup. Mixed-version writers are unsupported.
@@ -569,6 +584,14 @@ for registration/rebinding. Confirmation uses that endpoint even when inherited
 window/context/launcher validation. This is an additive private operation field;
 existing version-2 tokens without it retain their inherited-endpoint behavior.
 The session-start and agent-report broker wire contracts are unchanged.
+
+LAB-401 adds the optional `reviewed_launcher_sha256` field to private version-2
+approval items. Newly created decisions always include it. The reader still
+recognizes older items, but confirmation rejects an item without this binding
+and asks for a fresh preview, including an older administrative decision. This
+affects only pending short-lived confirmations, not persistent registrations.
+Older strict binaries cannot consume newly generated approval items; pending
+tokens must not be shared between binary versions.
 
 ### Application inventory and lifecycle
 
@@ -721,6 +744,11 @@ or runtime dependency for this small contract.
 IPC payload sizes are fixed-bounded before allocation. File-backed state
 requires private directories and safe regular files. Daemon and terminal
 lifecycle locks are held for their defined process/effect windows.
+
+State-directory traversal requires root or current-user ownership for every
+ancestor, including non-writable ancestors. A different directory owner can
+rename descendants despite their private modes. Sticky writable directories
+retain the same trusted-owner requirement for both the parent and its entry.
 
 session-start.sock accepts one versioned ensure-and-start request without pane
 roles or command strings. agent-report.sock accepts a protocol-v3 association

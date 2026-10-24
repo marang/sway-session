@@ -97,6 +97,9 @@ type DesktopApproval struct {
 	Launcher        Launcher
 	SnapshotPath    string
 	SnapshotCreated bool
+	// ReviewedLauncherSHA256 describes the bytes and executable identities
+	// actually prepared, independent of a preceding catalog trust check.
+	ReviewedLauncherSHA256 string
 }
 
 // PrepareDesktopApproval revalidates a catalog entry and derives one typed
@@ -123,7 +126,11 @@ func PrepareDesktopApprovalContextWithOptions(ctx context.Context, stateRoot str
 		if err := launcher.validate(); err != nil {
 			return DesktopApproval{}, err
 		}
-		return DesktopApproval{Launcher: launcher}, nil
+		review, err := desktopApprovalReview(nil, launcher)
+		if err != nil {
+			return DesktopApproval{}, err
+		}
+		return DesktopApproval{Launcher: launcher, ReviewedLauncherSHA256: review.LauncherSHA256}, nil
 	}
 	data, resolved, parsed, err := revalidateCatalogDesktopEntry(entry)
 	if err != nil {
@@ -154,7 +161,7 @@ func PrepareDesktopApprovalContextWithOptions(ctx context.Context, stateRoot str
 		digest := sha256Hex(data)
 		launcher.DesktopEntrySHA256 = digest
 		if !administrative {
-			executable, owner, executableDigest, err := approvedDesktopExecutable(parsed.Exec)
+			executable, owner, executableDigest, err := approvedDesktopExecutableContext(ctx, parsed.Exec)
 			if err != nil {
 				return DesktopApproval{}, err
 			}
@@ -162,6 +169,10 @@ func PrepareDesktopApprovalContextWithOptions(ctx context.Context, stateRoot str
 				launcher.ApprovedExecutablePath = executable
 				launcher.ApprovedExecutableSHA256 = executableDigest
 			}
+		}
+		review, err := desktopApprovalReview(data, launcher)
+		if err != nil {
+			return DesktopApproval{}, err
 		}
 		directory := filepath.Join(stateRoot, desktopApprovalDirectory)
 		name := string(id) + "-" + digest + ".desktop"
@@ -196,14 +207,18 @@ func PrepareDesktopApprovalContextWithOptions(ctx context.Context, stateRoot str
 			}
 			return DesktopApproval{}, err
 		}
-		return DesktopApproval{Launcher: launcher, SnapshotPath: launcher.ApprovedDesktopPath, SnapshotCreated: created}, nil
+		return DesktopApproval{Launcher: launcher, SnapshotPath: launcher.ApprovedDesktopPath, SnapshotCreated: created, ReviewedLauncherSHA256: review.LauncherSHA256}, nil
 	default:
 		return DesktopApproval{}, fmt.Errorf("unsupported desktop entry origin %q", entry.Origin)
 	}
 	if err := launcher.validate(); err != nil {
 		return DesktopApproval{}, err
 	}
-	return DesktopApproval{Launcher: launcher, SnapshotPath: launcher.ApprovedDesktopPath}, nil
+	review, err := desktopApprovalReview(data, launcher)
+	if err != nil {
+		return DesktopApproval{}, err
+	}
+	return DesktopApproval{Launcher: launcher, SnapshotPath: launcher.ApprovedDesktopPath, ReviewedLauncherSHA256: review.LauncherSHA256}, nil
 }
 
 // DiscardDesktopApproval removes only a snapshot created by this uncommitted
@@ -505,6 +520,16 @@ func rejectAdministrativeDesktopEntry(entry DesktopEntry) error {
 }
 
 func approvedDesktopExecutable(execValue string) (string, uint32, string, error) {
+	return approvedDesktopExecutableContext(context.Background(), execValue)
+}
+
+func approvedDesktopExecutableContext(ctx context.Context, execValue string) (string, uint32, string, error) {
+	if ctx == nil {
+		return "", 0, "", errors.New("desktop executable approval context is nil")
+	}
+	if err := ctx.Err(); err != nil {
+		return "", 0, "", err
+	}
 	if execValue == "" {
 		return "", 0, "", errors.New("user-local D-Bus-only desktop entries are unsupported")
 	}
@@ -547,7 +572,19 @@ func approvedDesktopExecutable(execValue string) (string, uint32, string, error)
 	if stat.Uid != 0 && stat.Uid != uint32(os.Geteuid()) {
 		return "", 0, "", fmt.Errorf("desktop executable is owned by untrusted uid %d", stat.Uid)
 	}
-	digest, err := hashTrustedExecutable(resolved, stat.Uid, stat.Uid == 0)
+	if stat.Uid == 0 {
+		file, err := openTrustedRegular(resolved, 0, true)
+		if err != nil {
+			return "", 0, "", err
+		}
+		defer file.Close()
+		info, err := file.Stat()
+		if err != nil || info.Mode().Perm()&0o111 == 0 {
+			return "", 0, "", errors.New("approved system executable is no longer executable")
+		}
+		return resolved, 0, "", ctx.Err()
+	}
+	digest, err := hashTrustedExecutableContext(ctx, resolved, stat.Uid, false)
 	if err != nil {
 		return "", 0, "", err
 	}
@@ -700,10 +737,17 @@ func openTrustedRegular(path string, owner uint32, requireRootAncestors bool) (*
 				_ = currentFile.Close()
 				return nil, fmt.Errorf("path component %s is not root-owned", nextPath)
 			}
-		} else if last && stat.Uid != owner {
-			_ = nextFile.Close()
-			_ = currentFile.Close()
-			return nil, fmt.Errorf("file is not owned by uid %d", owner)
+		} else {
+			if !trustedDesktopPathOwner(stat.Uid, owner) {
+				_ = nextFile.Close()
+				_ = currentFile.Close()
+				return nil, fmt.Errorf("path component %s must be owned by uid %d or root", nextPath, owner)
+			}
+			if last && stat.Uid != owner {
+				_ = nextFile.Close()
+				_ = currentFile.Close()
+				return nil, fmt.Errorf("file is not owned by uid %d", owner)
+			}
 		}
 		if last {
 			_ = currentFile.Close()
@@ -735,10 +779,6 @@ func readTrustedRegularFile(path string, owner uint32, requireRootAncestors bool
 		return nil, fmt.Errorf("trusted file exceeds %d bytes", maximum)
 	}
 	return data, nil
-}
-
-func hashTrustedExecutable(path string, owner uint32, requireRootAncestors bool) (string, error) {
-	return hashTrustedExecutableContext(context.Background(), path, owner, requireRootAncestors)
 }
 
 func hashTrustedExecutableContext(ctx context.Context, path string, owner uint32, requireRootAncestors bool) (string, error) {

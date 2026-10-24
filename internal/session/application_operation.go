@@ -58,6 +58,7 @@ type ApplicationOperationItem struct {
 	ContextRevision              string             `json:"context_revision,omitempty"`
 	Window                       *WindowApplication `json:"window,omitempty"`
 	DesktopID                    string             `json:"desktop_id"`
+	ReviewedLauncherSHA256       string             `json:"reviewed_launcher_sha256,omitempty"`
 	AllowAdministrative          bool               `json:"allow_administrative,omitempty"`
 	AdministrativeApprovalSHA256 string             `json:"administrative_approval_sha256,omitempty"`
 }
@@ -101,6 +102,13 @@ func (operation *ApplicationOperation) Validate(now time.Time) error {
 		seenContexts[item.ContextID] = struct{}{}
 		if err := validateDesktopID(item.DesktopID); err != nil {
 			return fmt.Errorf("items[%d]: %w", index, err)
+		}
+		// Legacy v2 items remain readable, but applying an unbound approval
+		// requires a fresh preview at the CLI boundary.
+		if item.ReviewedLauncherSHA256 != "" {
+			if err := validateSHA256("reviewed desktop launcher", item.ReviewedLauncherSHA256); err != nil {
+				return fmt.Errorf("items[%d]: %w", index, err)
+			}
 		}
 		if item.AllowAdministrative {
 			if err := validateSHA256("reviewed administrative launcher", item.AdministrativeApprovalSHA256); err != nil {

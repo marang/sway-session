@@ -502,8 +502,8 @@ func TestAppRegisterFocusedAmbiguityUsesOneTimeTypedSwaynagChoices(t *testing.T)
 	t.Setenv("SWAYSOCK", "/run/user/1000/sway.sock")
 	deps := testDependencies(t)
 	catalog := testDesktopCatalog(t, map[string]string{
-		"first.desktop":  "[Desktop Entry]\nType=Application\nName=First\nExec=/usr/bin/true\nStartupWMClass=Shared\n",
-		"second.desktop": "[Desktop Entry]\nType=Application\nName=Second\nExec=/usr/bin/true\nStartupWMClass=Shared\n",
+		"first.desktop":  "[Desktop Entry]\nType=Application\nName=First\nExec=" + directTrueExecutable(t) + "\nStartupWMClass=Shared\n",
+		"second.desktop": "[Desktop Entry]\nType=Application\nName=Second\nExec=" + directTrueExecutable(t) + "\nStartupWMClass=Shared\n",
 	}, false)
 	deps.desktopCatalog = func() (sessionstate.DesktopCatalog, error) { return catalog, nil }
 	client := &appCommandClient{tree: applicationCommandTree(&swayipc.TreeNode{ID: 43, Type: "con", Focused: true, WindowProperties: swayipc.WindowProperties{Class: "Shared", Instance: "shared"}})}
@@ -550,7 +550,7 @@ func TestAppRegisterFocusedAmbiguityUsesOneTimeTypedSwaynagChoices(t *testing.T)
 func TestAppRegisterFocusedRollsBackApprovalWhenPresentationFails(t *testing.T) {
 	deps := testDependencies(t)
 	catalog := testDesktopCatalog(t, map[string]string{
-		"org.example.App.desktop": "[Desktop Entry]\nType=Application\nName=Example App\nExec=/usr/bin/true\nStartupWMClass=Example\n",
+		"org.example.App.desktop": "[Desktop Entry]\nType=Application\nName=Example App\nExec=" + directTrueExecutable(t) + "\nStartupWMClass=Example\n",
 	}, false)
 	deps.desktopCatalog = func() (sessionstate.DesktopCatalog, error) { return catalog, nil }
 	appID := "org.example.App"
@@ -582,8 +582,8 @@ func TestAppRegisterFocusedRollsBackApprovalWhenPresentationFails(t *testing.T) 
 func TestAppRegisterFocusedRollsBackEarlierChoicesWhenLaterStoreFails(t *testing.T) {
 	deps := testDependencies(t)
 	catalog := testDesktopCatalog(t, map[string]string{
-		"first.desktop":  "[Desktop Entry]\nType=Application\nName=First\nExec=/usr/bin/true\nStartupWMClass=Shared\n",
-		"second.desktop": "[Desktop Entry]\nType=Application\nName=Second\nExec=/usr/bin/true\nStartupWMClass=Shared\n",
+		"first.desktop":  "[Desktop Entry]\nType=Application\nName=First\nExec=" + directTrueExecutable(t) + "\nStartupWMClass=Shared\n",
+		"second.desktop": "[Desktop Entry]\nType=Application\nName=Second\nExec=" + directTrueExecutable(t) + "\nStartupWMClass=Shared\n",
 	}, false)
 	deps.desktopCatalog = func() (sessionstate.DesktopCatalog, error) { return catalog, nil }
 	client := &appCommandClient{tree: applicationCommandTree(&swayipc.TreeNode{
@@ -817,7 +817,7 @@ func TestAppApprovalRetainsSelectedSocketAcrossConfirmation(t *testing.T) {
 				t.Setenv("SWAYSOCK", inherited)
 				deps, client, _ := administrativeCommandFixture(t)
 				catalog := testDesktopCatalog(t, map[string]string{
-					"org.example.Admin.desktop": "[Desktop Entry]\nType=Application\nName=Example\nExec=/usr/bin/true\n",
+					"org.example.Admin.desktop": "[Desktop Entry]\nType=Application\nName=Example\nExec=" + directTrueExecutable(t) + "\n",
 				}, false)
 				deps.desktopCatalog = func() (sessionstate.DesktopCatalog, error) { return catalog, nil }
 				const selectedSocket = "/run/user/1000/selected-compositor.sock"
@@ -857,4 +857,15 @@ func TestAppApprovalRetainsSelectedSocketAcrossConfirmation(t *testing.T) {
 			})
 		}
 	}
+}
+
+// directTrueExecutable resolves only test fixture input. Production approval
+// continues to reject symlinks, including links in ancestor directories.
+func directTrueExecutable(t *testing.T) string {
+	t.Helper()
+	path, err := filepath.EvalSymlinks("/usr/bin/true")
+	if err != nil {
+		t.Fatalf("resolve direct true fixture: %v", err)
+	}
+	return path
 }

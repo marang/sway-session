@@ -92,11 +92,13 @@ jobs:
         if: steps.staticcheck.outputs.cache-hit != 'true'
         run: go install honnef.co/go/tools/cmd/staticcheck@v0.7.0
 
+      # Positive admin-approval tests need a direct helper; sudo may be an alternatives symlink.
       - name: Install verification tools
-        run: sudo apt-get update && sudo apt-get install --yes fish jq zsh python3-yaml
+        run: sudo apt-get update && sudo apt-get install --yes fish jq zsh python3-yaml pkexec
 
       - name: Diagnose executable fixture paths
         run: |
+          test -f /usr/bin/pkexec && test -x /usr/bin/pkexec && test ! -L /usr/bin/pkexec
           for path in /usr/bin/pkexec /usr/bin/sudo /usr/bin/true /usr/bin/false; do
             if test -e "$path" || test -L "$path"; then
               namei -l -- "$path"

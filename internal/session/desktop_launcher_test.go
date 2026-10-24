@@ -82,7 +82,7 @@ func TestDesktopLaunchSpecStopsWaitingForApprovalLockWhenCanceled(t *testing.T) 
 		t.Fatal(err)
 	}
 	desktopPath := filepath.Join(applications, "org.example.Local.desktop")
-	if err := os.WriteFile(desktopPath, []byte("[Desktop Entry]\nType=Application\nName=Local\nExec=/usr/bin/true\n"), 0o600); err != nil {
+	if err := os.WriteFile(desktopPath, []byte("[Desktop Entry]\nType=Application\nName=Local\nExec="+directTrueExecutable(t)+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	entry := parsedCatalogEntry(t, desktopPath, "org.example.Local.desktop", DesktopEntryUser)
@@ -176,7 +176,7 @@ func TestDesktopApprovalReuseIsNotDiscardedByFailedTransaction(t *testing.T) {
 		t.Fatal(err)
 	}
 	desktopPath := filepath.Join(applications, "org.example.Local.desktop")
-	if err := os.WriteFile(desktopPath, []byte("[Desktop Entry]\nType=Application\nName=Local\nExec=/usr/bin/true\n"), 0o600); err != nil {
+	if err := os.WriteFile(desktopPath, []byte("[Desktop Entry]\nType=Application\nName=Local\nExec="+directTrueExecutable(t)+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	entry := parsedCatalogEntry(t, desktopPath, "org.example.Local.desktop", DesktopEntryUser)
@@ -204,7 +204,7 @@ func TestDesktopApprovalCreatorFailureDoesNotRemoveSnapshotCommittedByConcurrent
 		t.Fatal(err)
 	}
 	desktopPath := filepath.Join(applications, "org.example.Local.desktop")
-	if err := os.WriteFile(desktopPath, []byte("[Desktop Entry]\nType=Application\nName=Local\nExec=/usr/bin/true\nStartupWMClass=LocalApp\n"), 0o600); err != nil {
+	if err := os.WriteFile(desktopPath, []byte("[Desktop Entry]\nType=Application\nName=Local\nExec="+directTrueExecutable(t)+"\nStartupWMClass=LocalApp\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	entry := parsedCatalogEntry(t, desktopPath, "org.example.Local.desktop", DesktopEntryUser)
@@ -265,7 +265,7 @@ func TestDesktopApprovalReuserCannotCommitAfterCreatorRemovedUnreferencedSnapsho
 		t.Fatal(err)
 	}
 	desktopPath := filepath.Join(applications, "org.example.Local.desktop")
-	if err := os.WriteFile(desktopPath, []byte("[Desktop Entry]\nType=Application\nName=Local\nExec=/usr/bin/true\nStartupWMClass=LocalApp\n"), 0o600); err != nil {
+	if err := os.WriteFile(desktopPath, []byte("[Desktop Entry]\nType=Application\nName=Local\nExec="+directTrueExecutable(t)+"\nStartupWMClass=LocalApp\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	entry := parsedCatalogEntry(t, desktopPath, "org.example.Local.desktop", DesktopEntryUser)
@@ -308,7 +308,7 @@ func TestDesktopApprovalReuserCannotCommitAfterCreatorRemovedUnreferencedSnapsho
 func TestUserDesktopApprovalRejectsSymlinkedTrustMaterial(t *testing.T) {
 	root := t.TempDir()
 	realDesktop := filepath.Join(root, "real.desktop")
-	if err := os.WriteFile(realDesktop, []byte("[Desktop Entry]\nType=Application\nName=Local\nExec=/usr/bin/true\n"), 0o600); err != nil {
+	if err := os.WriteFile(realDesktop, []byte("[Desktop Entry]\nType=Application\nName=Local\nExec="+directTrueExecutable(t)+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	linkedDesktop := filepath.Join(root, "linked.desktop")
@@ -388,4 +388,37 @@ func (runner *desktopCommandRunner) CombinedOutput(_ context.Context, name strin
 	runner.name = name
 	runner.arguments = append([]string(nil), arguments...)
 	return nil, runner.err
+}
+
+// Resolving a positive fixture is not approval policy: the production code
+// still rejects any link supplied by a desktop entry.
+func directTrueExecutable(t *testing.T) string {
+	t.Helper()
+	path, err := filepath.EvalSymlinks("/usr/bin/true")
+	if err != nil {
+		t.Fatalf("resolve direct true fixture: %v", err)
+	}
+	return path
+}
+
+func TestDesktopExecutableApprovalRejectsSymlinkedAncestor(t *testing.T) {
+	root := t.TempDir()
+	direct := filepath.Join(root, "direct")
+	if err := os.Mkdir(direct, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	executable := filepath.Join(direct, "app")
+	if err := os.WriteFile(executable, []byte("fixture, never executed"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := approvedDesktopExecutable(executable); err != nil {
+		t.Fatalf("direct fixture rejected: %v", err)
+	}
+	linked := filepath.Join(root, "linked")
+	if err := os.Symlink(direct, linked); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := approvedDesktopExecutable(filepath.Join(linked, "app")); err == nil {
+		t.Fatal("executable with a symlinked ancestor was approved")
+	}
 }

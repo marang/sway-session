@@ -12,7 +12,7 @@ arch=('x86_64' 'aarch64')
 url="https://github.com/marang/sway-session"
 license=('MIT')
 depends=('sway')
-makedepends=('go>=1.26.5')
+makedepends=('go>=1.26.10')
 options=('!debug')
 source=("sway-session-$pkgver.tar.gz::$url/archive/069b800d11c785a3d9a3a4cb58fd3a2b8661e412.tar.gz")
 sha256sums=('eef122ad6725ce848858a6459154cf8ed4db9651f73fab1695812b600b01f81a')

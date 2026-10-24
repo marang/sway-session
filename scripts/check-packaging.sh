@@ -96,7 +96,7 @@ reject_fixed .goreleaser.yaml '      - jq'
 require_fixed PKGBUILD 'pkgname=sway-session'
 require_fixed PKGBUILD 'url="https://github.com/marang/sway-session"'
 require_fixed PKGBUILD "depends=('sway')"
-require_fixed PKGBUILD "makedepends=('go>=1.26.5')"
+require_fixed PKGBUILD "makedepends=('go>=1.26.10')"
 require_fixed PKGBUILD 'CGO_ENABLED=0 go build'
 require_fixed PKGBUILD '-o sway-session ./cmd/sway-session'
 require_fixed PKGBUILD 'install -Dm755 sway-session "$pkgdir/usr/bin/sway-session"'

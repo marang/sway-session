@@ -3,11 +3,13 @@ package herdrinit
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -16,7 +18,8 @@ import (
 )
 
 // TestHerdrLiveInitialization exercises the public Herdr CLI against a
-// disposable headless server. It never launches a terminal window or Codex.
+// disposable headless server. Its Codex executable is a harmless local shim;
+// it never launches a terminal window or the real Codex executable.
 func TestHerdrLiveInitialization(t *testing.T) {
 	if os.Getenv("SWAY_SESSION_HERDR_INTEGRATION") != "1" {
 		t.Skip("set SWAY_SESSION_HERDR_INTEGRATION=1 for disposable real-Herdr acceptance")
@@ -25,6 +28,23 @@ func TestHerdrLiveInitialization(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	for _, scenario := range []struct {
+		name    string
+		roles   []string
+		lostAck bool
+	}{
+		{name: "successful", roles: []string{"codex", "shell"}},
+		{name: "lost_ack_codex_left", roles: []string{"codex", "shell"}, lostAck: true},
+		{name: "lost_ack_codex_right", roles: []string{"shell", "codex"}, lostAck: true},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			herdrLiveInitialization(t, herdr, scenario.roles, scenario.lostAck)
+		})
+	}
+}
+
+func herdrLiveInitialization(t *testing.T, herdr string, roles []string, lostAck bool) {
+	t.Helper()
 	root, err := os.MkdirTemp("/tmp", "ss195-")
 	if err != nil {
 		t.Fatal(err)
@@ -105,7 +125,12 @@ func TestHerdrLiveInitialization(t *testing.T) {
 	})
 
 	work := filepath.Join(root, "work")
-	runner := ExecRunner{Executable: herdr, ConfigFile: configFile}
+	runner := &herdrLiveRunner{Runner: ExecRunner{Executable: herdr, ConfigFile: configFile}}
+	if lostAck {
+		// The real CLI must finish a successful launch before this injected error.
+		// This models an uncertain caller outcome, not an upstream readiness timeout.
+		runner.startError = errors.New("injected lost acknowledgement after successful real agent start")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 	if _, err := runner.Run(ctx, sessionName, work, "workspace", "create", "--cwd", work, "--label", "LAB-195 acceptance", "--focus"); err != nil {
@@ -127,9 +152,17 @@ func TestHerdrLiveInitialization(t *testing.T) {
 	if err != nil || !empty {
 		t.Fatalf("new Herdr session is not an empty one-pane layout: empty=%v error=%v", empty, err)
 	}
-	result, err := Initialize(ctx, contextValue, []string{"codex", "shell"}, runner)
-	if err != nil || !result.Initialized {
+	result, err := Initialize(ctx, contextValue, roles, runner)
+	if lostAck {
+		if !errors.Is(err, runner.startError) || result.Initialized {
+			t.Fatalf("Initialize should retain uncertain start failure: result=%+v error=%v; Herdr log: %s", result, err, herdrLiveLog(root))
+		}
+	} else if err != nil || !result.Initialized {
 		t.Fatalf("Initialize: result=%+v error=%v; Herdr log: %s", result, err, herdrLiveLog(root))
+	}
+	right, err := parseCreatedPane(runner.splitOutput, left)
+	if err != nil {
+		t.Fatalf("real split response: %s: %v", runner.splitOutput, err)
 	}
 	first, err := runner.Run(ctx, sessionName, work, "api", "snapshot")
 	if err != nil {
@@ -149,13 +182,29 @@ func TestHerdrLiveInitialization(t *testing.T) {
 	if err := json.Unmarshal(snapshot.Layouts[0].Splits[0], &split); err != nil || split.Direction != "right" || split.Ratio != 0.5 {
 		t.Fatalf("Initialize did not split right at half width: %s: %v", snapshot.Layouts[0].Splits[0], err)
 	}
-	if snapshot.Panes[0].PaneID != left || snapshot.Panes[0].Agent == nil || *snapshot.Panes[0].Agent != "codex" || snapshot.Panes[1].PaneID == left || snapshot.Panes[1].Agent != nil {
-		t.Fatalf("left Codex and right shell were not established: %s", first)
+	if snapshot.Panes[0].PaneID != left || snapshot.Panes[1].PaneID != right {
+		t.Fatalf("Initialize did not preserve both exact panes: left=%s right=%s snapshot=%s", left, right, first)
+	}
+	for index, role := range roles {
+		agent := snapshot.Panes[index].Agent
+		if role == "shell" && agent != nil || role == "codex" && (agent == nil || *agent != "codex") {
+			t.Fatalf("requested pane roles were not established: roles=%v snapshot=%s", roles, first)
+		}
 	}
 	if data, err := os.ReadFile(filepath.Join(root, "codex-started.json")); err != nil || string(data) != "[]" {
 		t.Fatalf("harmless Codex fixture did not start: args=%s error=%v", data, err)
 	}
-	secondResult, err := Initialize(ctx, contextValue, []string{"codex", "shell"}, runner)
+	pidData, err := os.ReadFile(filepath.Join(root, "codex-pid"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(pidData)))
+	if err != nil || pid <= 0 {
+		t.Fatalf("invalid harmless Codex PID: %s: %v", pidData, err)
+	}
+	processStart := herdrLiveProcessStart(t, pid)
+	identities := herdrLivePaneIdentities(t, first)
+	secondResult, err := Initialize(ctx, contextValue, roles, runner)
 	if err != nil || secondResult.Initialized || secondResult.Reason == "" {
 		t.Fatalf("repeat Initialize should leave populated layout unchanged: result=%+v error=%v", secondResult, err)
 	}
@@ -170,7 +219,88 @@ func TestHerdrLiveInitialization(t *testing.T) {
 	if len(after.Panes) != 2 || len(after.Layouts) != 1 || len(after.Layouts[0].Splits) != 1 || after.Panes[0].PaneID != snapshot.Panes[0].PaneID || after.Panes[1].PaneID != snapshot.Panes[1].PaneID {
 		t.Fatalf("repeat Initialize changed Herdr topology: before=%s after=%s", first, second)
 	}
-	t.Logf("%s initialized Codex-left/shell-right in disposable session %s, then left it unchanged on repeat", versionLabel, sessionName)
+	afterIdentities := herdrLivePaneIdentities(t, second)
+	for pane, terminal := range identities {
+		if afterIdentities[pane] != terminal {
+			t.Fatalf("repeat Initialize replaced a pane terminal: pane=%s before=%s after=%s", pane, terminal, afterIdentities[pane])
+		}
+	}
+	if afterStart := herdrLiveProcessStart(t, pid); afterStart != processStart {
+		t.Fatalf("repeat Initialize replaced harmless Codex process: pid=%d before=%s after=%s", pid, processStart, afterStart)
+	}
+	if runner.agentStarts != 1 {
+		t.Fatalf("expected one real agent start across repeated Initialize, got %d", runner.agentStarts)
+	}
+	if data, err := os.ReadFile(filepath.Join(root, "codex-pid")); err != nil || string(data) != string(pidData) {
+		t.Fatalf("repeat Initialize changed harmless Codex PID: before=%s after=%s error=%v", pidData, data, err)
+	}
+	t.Logf("%s roles=%v injected_lost_ack=%v preserved exact panes %s/%s and Codex pid=%d across repeat; real agent starts=%d", versionLabel, roles, lostAck, left, right, pid, runner.agentStarts)
+}
+
+type herdrLiveRunner struct {
+	Runner
+	startError  error
+	agentStarts int
+	splitOutput []byte
+}
+
+func (runner *herdrLiveRunner) Run(ctx context.Context, session, cwd string, args ...string) ([]byte, error) {
+	start := len(args) >= 2 && args[0] == "agent" && args[1] == "start"
+	if start {
+		runner.agentStarts++
+	}
+	output, err := runner.Runner.Run(ctx, session, cwd, args...)
+	if err == nil && len(args) >= 2 && args[0] == "pane" && args[1] == "split" {
+		runner.splitOutput = append([]byte(nil), output...)
+	}
+	if start && err == nil && runner.startError != nil {
+		return nil, runner.startError
+	}
+	return output, err
+}
+
+func herdrLivePaneIdentities(t *testing.T, output []byte) map[string]string {
+	t.Helper()
+	var response struct {
+		Result struct {
+			Snapshot struct {
+				Panes []struct {
+					PaneID     string `json:"pane_id"`
+					TerminalID string `json:"terminal_id"`
+				} `json:"panes"`
+			} `json:"snapshot"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(output, &response); err != nil {
+		t.Fatal(err)
+	}
+	identities := make(map[string]string)
+	for _, pane := range response.Result.Snapshot.Panes {
+		if pane.PaneID == "" || pane.TerminalID == "" || identities[pane.PaneID] != "" {
+			t.Fatalf("missing or duplicate live pane identity: %s", output)
+		}
+		identities[pane.PaneID] = pane.TerminalID
+	}
+	return identities
+}
+
+func herdrLiveProcessStart(t *testing.T, pid int) string {
+	t.Helper()
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		t.Fatalf("harmless Codex process %d is not alive: %v", pid, err)
+	}
+	// The parenthesized command can contain spaces. Fields after it begin at
+	// field 3 (state); field 22 (start time) distinguishes reuse of the same PID.
+	end := strings.LastIndexByte(string(data), ')')
+	if end < 0 {
+		t.Fatalf("invalid stat for harmless Codex process %d: %s", pid, data)
+	}
+	fields := strings.Fields(string(data[end+1:]))
+	if len(fields) <= 19 || fields[0] == "Z" || fields[0] == "X" {
+		t.Fatalf("harmless Codex process %d is not running: %s", pid, data)
+	}
+	return fields[19]
 }
 
 func herdrLiveEnvironment(root string) []string {
@@ -209,8 +339,8 @@ func herdrLiveLog(root string) string {
 }
 
 const herdrLiveCodex = `package main
-import("bufio";"encoding/json";"fmt";"os";"path/filepath")
-func main(){root:=os.Getenv("LAB195_ROOT");if root!=""{data,_:=json.Marshal(os.Args[1:]);_ = os.WriteFile(filepath.Join(root,"codex-started.json"),data,0600)}
+import("bufio";"encoding/json";"fmt";"os";"path/filepath";"strconv")
+func main(){root:=os.Getenv("LAB195_ROOT");if root!=""{data,_:=json.Marshal(os.Args[1:]);_ = os.WriteFile(filepath.Join(root,"codex-started.json"),data,0600);_ = os.WriteFile(filepath.Join(root,"codex-pid"),[]byte(strconv.Itoa(os.Getpid())),0600)}
 fmt.Println("OpenAI Codex");fmt.Println("› Ask Codex to do anything")
 reader:=bufio.NewReader(os.Stdin);for {if _,err:=reader.ReadString('\n');err!=nil{return};fmt.Println("› Ask Codex to do anything")}}
 `

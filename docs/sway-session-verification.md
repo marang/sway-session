@@ -468,6 +468,22 @@ Codex stand-in, including an unchanged second initialization. Keep those proof
 boundaries explicit rather than treating shell-only fixtures as real agents.
 The ordinary automated gate skips compositor/Herdr opt-ins.
 
+LAB-421's deterministic initializer regressions cover startup timeouts in either
+pane, missing managed-agent metadata, all known observed turn states, an
+unavailable snapshot, observation deadlines/cancellation, and an unchanged
+second initialization. A successful Herdr response with Codex `unknown` and
+`interactive_ready=true` remains successful; diagnostic observations never
+turn a failed start into success. Run these with:
+
+```sh
+go test ./internal/herdrinit -run 'TestInitialize|TestFailedStart' -count=1
+```
+
+The original timeout's upstream cause is not established by these regressions.
+The owner-facing initializer error retains the failed command and adds bounded
+observation details; the session-start broker's existing generic rejection and
+private error-reporting boundary are unchanged.
+
 ## Standalone extraction checks
 
 Confirm the Go package graph contains the sway-session command and exactly the
@@ -652,6 +668,14 @@ server or opening a Sway window:
 SWAY_SESSION_HERDR_INTEGRATION=1 go test ./internal/herdrinit \
   -run '^TestHerdrLiveInitialization$' -count=1 -v
 ```
+
+This fixture covers ordinary initialization and an injected lost acknowledgement
+after a real successful agent start in either pane. It verifies unchanged pane
+and terminal IDs, the same live harmless Codex-shim PID and process start time,
+and one agent-start call across repeated initialization. The server and CLI are
+real; the Codex shim and acknowledgement failure are injected. This proves
+preservation after an uncertain result, not an upstream readiness-timeout cause
+or authenticated Codex startup.
 
 The scheduled `Herdr compatibility` workflow runs this check against the latest
 stable Linux x86_64 release every week and can also be started manually. It

@@ -104,11 +104,7 @@ func Initialize(ctx context.Context, contextValue sessionstate.Context, roles []
 		if _, err := runner.Run(ctx, contextValue.Launcher.Session, contextValue.Launcher.Cwd,
 			"agent", "start", name, "--kind", role, "--pane", panes[index], "--timeout", "30000"); err != nil {
 			startErr := fmt.Errorf("start %s in requested Herdr pane: %w", role, err)
-			if _, rollbackErr := runner.Run(ctx, contextValue.Launcher.Session, contextValue.Launcher.Cwd,
-				"pane", "close", panes[index]); rollbackErr != nil {
-				return result, errors.Join(startErr, fmt.Errorf("roll back failed Herdr initialization: %w", rollbackErr))
-			}
-			return result, startErr
+			return result, observeFailedAgentStart(ctx, contextValue, panes[index], startErr, runner)
 		}
 	}
 	result.Initialized = true

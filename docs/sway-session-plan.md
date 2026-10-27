@@ -426,6 +426,19 @@ state may exist despite window loss, so the context remains the recovery
 identity. Role initialization is idempotent and never restarts an agent in an
 occupied pane.
 
+A failed Herdr agent-start command does not prove that no process started.
+Initialization therefore preserves both panes after any agent-start error and
+retains that original error. It makes at most one read-only snapshot request,
+bounded by two seconds and the remaining caller deadline, to report the target
+pane's observed presence and known Herdr labels. Missing metadata is not proof
+of an absent process. An unavailable observation does not authorize cleanup or
+erase the start failure. Herdr's successful start command remains the authority
+for input readiness; a Codex status of `unknown` is not independently rejected
+or interpreted as turn completion. The split remains available for inspection
+even when an agent is not detected. Retrying a populated session leaves its
+panes and agent unchanged. Split-failure recovery before agent startup retains
+its existing proof requirements.
+
 After exactly one adapter start has been accepted by the current open request,
 multiple matching pending processes are resampled under the existing mapping
 deadline. No process is selected and no window focus or role initialization is

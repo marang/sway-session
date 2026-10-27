@@ -288,7 +288,7 @@ func TestProtocolMismatchDiagnosticRedactsUntrustedVersion(t *testing.T) {
 	}
 }
 
-func TestInitializeRollsBackFailedAgentStartAndRetryConverges(t *testing.T) {
+func TestInitializePreservesFailedAgentStartAndRetryLeavesSessionUnchanged(t *testing.T) {
 	contextValue := testContext(t)
 	runner := &fakeRunner{
 		outputs: [][]byte{
@@ -296,11 +296,8 @@ func TestInitializeRollsBackFailedAgentStartAndRetryConverges(t *testing.T) {
 			readyShell(contextValue.Launcher.Cwd),
 			[]byte(`{"result":{"type":"pane_info","pane":{"pane_id":"w1:p2"}}}`),
 			nil,
-			nil,
-			[]byte(strings.ReplaceAll(emptySnapshot, "w1:p1", "w1:p2")),
-			[]byte(strings.ReplaceAll(string(readyShell(contextValue.Launcher.Cwd)), "w1:p1", "w1:p2")),
-			[]byte(`{"result":{"type":"pane_info","pane":{"pane_id":"w1:p3"}}}`),
-			[]byte(`{"result":{"type":"agent_info"}}`),
+			splitSnapshot("w1:p1", "w1:p2"),
+			splitSnapshot("w1:p1", "w1:p2"),
 		},
 		errors: []error{nil, nil, nil, errors.New("agent trust required")},
 	}
@@ -308,26 +305,26 @@ func TestInitializeRollsBackFailedAgentStartAndRetryConverges(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "agent trust required") {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(runner.calls) != 5 || !reflect.DeepEqual(runner.calls[4].arguments, []string{"pane", "close", "w1:p1"}) {
-		t.Fatalf("failed agent start was not rolled back: %#v", runner.calls)
+	if len(runner.calls) != 5 || !reflect.DeepEqual(runner.calls[4].arguments, []string{"api", "snapshot"}) {
+		t.Fatalf("failed agent start was not observed without cleanup: %#v", runner.calls)
 	}
 	result, err := Initialize(context.Background(), contextValue, []string{"codex", "shell"}, runner)
 	if err != nil {
 		t.Fatalf("retry failed: %v", err)
 	}
-	if !result.Initialized || len(runner.calls) != 9 {
-		t.Fatalf("retry did not converge: result=%+v calls=%#v", result, runner.calls)
+	if result.Initialized || result.Reason == "" || len(runner.calls) != 6 {
+		t.Fatalf("retry did not preserve the existing session: result=%+v calls=%#v", result, runner.calls)
 	}
 }
 
-func TestInitializeReportsAgentAndRollbackFailure(t *testing.T) {
+func TestInitializeReportsAgentAndObservationFailure(t *testing.T) {
 	contextValue := testContext(t)
 	runner := &fakeRunner{
 		outputs: [][]byte{[]byte(emptySnapshot), readyShell(contextValue.Launcher.Cwd), []byte(`{"result":{"type":"pane_info","pane":{"pane_id":"w1:p2"}}}`)},
-		errors:  []error{nil, nil, nil, errors.New("agent trust required"), errors.New("pane close failed")},
+		errors:  []error{nil, nil, nil, errors.New("agent trust required"), errors.New("snapshot unavailable")},
 	}
 	_, err := Initialize(context.Background(), contextValue, []string{"codex", "shell"}, runner)
-	if err == nil || !strings.Contains(err.Error(), "agent trust required") || !strings.Contains(err.Error(), "pane close failed") {
+	if err == nil || !strings.Contains(err.Error(), "agent trust required") || !strings.Contains(err.Error(), "snapshot unavailable") {
 		t.Fatalf("partial failure details were lost: %v", err)
 	}
 }
